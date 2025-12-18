@@ -12,7 +12,7 @@ members = ["plugins/llm"]
 llm = { workspace = true }
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -51,6 +51,7 @@ unresolved-attribute = "ignore"  # Supybot has no type stubs
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.0.1",
     "pytest>=9.0.2",
     "ruff>=0.14.9",
     "ty>=0.0.1a34",

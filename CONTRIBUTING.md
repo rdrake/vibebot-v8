@@ -17,13 +17,14 @@ make install-hooks
 The hooks check:
 
 - **Secrets** (gitleaks) - blocks API keys, passwords, tokens
-- **Lint** (ruff) - catches code issues
+- **Lint** (ruff) - catches code issues and auto-fixes where possible
 - **Format** (ruff) - ensures consistent style
 - **Types** (ty) - catches type errors
 - **Merge conflicts** - blocks unresolved conflict markers
 - **Large files** - blocks files over 500KB
+- **Whitespace** - fixes trailing whitespace and end-of-file issues
 
-If a check fails, fix the issue and try committing again. Use `make lint` or `make format` to see details or auto-fix formatting.
+If a check fails, fix the issue and try committing again. Run `make pre-commit` to manually run all hooks on all files.
 
 ## Code Quality
 
@@ -51,6 +52,6 @@ make test        # Run tests
 
 ## Dependencies
 
-- Install [gitleaks](https://github.com/gitleaks/gitleaks) for secrets detection
 - Python 3.14+ required
 - Uses [uv](https://github.com/astral-sh/uv) for dependency management
+- Uses [pre-commit](https://pre-commit.com/) for git hooks (installed automatically)

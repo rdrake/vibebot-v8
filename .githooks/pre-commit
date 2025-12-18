@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# Pre-commit hook to detect API keys using gitleaks
-set -euo pipefail
-
-gitleaks protect --staged --no-banner --redact || {
-    echo ""
-    echo "Commit blocked: secrets detected. Fix the issue or use --no-verify to bypass."
-    exit 1
-}
