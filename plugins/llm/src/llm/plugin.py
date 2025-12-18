@@ -250,40 +250,36 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        try:
-            nick = self._get_nick(msg)
-            channel = self._get_channel(msg)
+        nick = self._get_nick(msg)
+        channel = self._get_channel(msg)
 
-            # Detect images for vision
-            images = self.llm_service.detect_images(text)
+        # Detect images for vision
+        images = self.llm_service.detect_images(text)
 
-            # Get conversation history
-            history = self.context.get_messages(nick, channel)
+        # Get conversation history
+        history = self.context.get_messages(nick, channel)
 
-            if images:
-                # Clean prompt by removing image URLs
-                clean_prompt = text
-                for img in images:
-                    clean_prompt = clean_prompt.replace(img, "").strip()
+        if images:
+            # Clean prompt by removing image URLs
+            clean_prompt = text
+            for img in images:
+                clean_prompt = clean_prompt.replace(img, "").strip()
 
-                irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
-                response = self.llm_service.completion(
-                    clean_prompt, command="ask", images=images, history=history, irc=irc, msg=msg
-                )
-            else:
-                response = self.llm_service.completion(
-                    text, command="ask", history=history, irc=irc, msg=msg
-                )
+            irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
+            response = self.llm_service.completion(
+                clean_prompt, command="ask", images=images, history=history, irc=irc, msg=msg
+            )
+        else:
+            response = self.llm_service.completion(
+                text, command="ask", history=history, irc=irc, msg=msg
+            )
 
-            # Reply first, then store context (so user gets response even if context fails)
-            irc.reply(response, prefixNick=False)
+        # Reply first, then store context (so user gets response even if context fails)
+        irc.reply(response, prefixNick=False)
 
-            # Store conversation in context
-            self.context.add_message(nick, channel, "user", text)
-            self.context.add_message(nick, channel, "assistant", response)
-        except Exception:
-            # Only log - completion() already returns error strings transparently
-            self.log.exception("Error in ask command")
+        # Store conversation in context
+        self.context.add_message(nick, channel, "user", text)
+        self.context.add_message(nick, channel, "assistant", response)
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -308,32 +304,28 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        try:
-            nick = self._get_nick(msg)
-            channel = self._get_channel(msg)
+        nick = self._get_nick(msg)
+        channel = self._get_channel(msg)
 
-            # Get conversation history for iterating on code
-            history = self.context.get_messages(nick, channel)
+        # Get conversation history for iterating on code
+        history = self.context.get_messages(nick, channel)
 
-            response = self.llm_service.completion(
-                text, command="code", history=history, irc=irc, msg=msg
-            )
+        response = self.llm_service.completion(
+            text, command="code", history=history, irc=irc, msg=msg
+        )
 
-            # Reply first, then store context
-            lines = response.count("\n")
-            url = self.llm_service.save_code_to_http(response)
-            if url:
-                irc.reply(_("Code generated (%d lines): %s") % (lines, url), prefixNick=False)
-            else:
-                # Fallback to IRC paging if save failed
-                irc.reply(response, prefixNick=False)
+        # Reply first, then store context
+        lines = response.count("\n")
+        url = self.llm_service.save_code_to_http(response)
+        if url:
+            irc.reply(_("Code generated (%d lines): %s") % (lines, url), prefixNick=False)
+        else:
+            # Fallback to IRC paging if save failed
+            irc.reply(response, prefixNick=False)
 
-            # Store conversation in context
-            self.context.add_message(nick, channel, "user", text)
-            self.context.add_message(nick, channel, "assistant", response)
-        except Exception:
-            # Only log - completion() already returns error strings transparently
-            self.log.exception("Error in code command")
+        # Store conversation in context
+        self.context.add_message(nick, channel, "user", text)
+        self.context.add_message(nick, channel, "assistant", response)
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
@@ -357,13 +349,9 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        try:
-            # Typing indicator sent by service - no "Generating..." message needed
-            result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-            irc.reply(result, prefixNick=False)
-        except Exception:
-            # Only log - image_generation() already returns error strings transparently
-            self.log.exception("Error in draw command")
+        # Typing indicator sent by service - no "Generating..." message needed
+        result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+        irc.reply(result, prefixNick=False)
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
@@ -379,18 +367,13 @@ class LLM(callbacks.Plugin):
         Clear your conversation context (memory) for the current or specified channel.
         Use this to start fresh.
         """
-        try:
-            nick = self._get_nick(msg)
+        nick = self._get_nick(msg)
+        cleared = self.context.clear(nick, channel)
 
-            cleared = self.context.clear(nick, channel)
-
-            if cleared:
-                irc.reply(_("Conversation context cleared. Starting fresh!"), prefixNick=False)
-            else:
-                irc.reply(_("No conversation context to clear."), prefixNick=False)
-        except Exception:
-            self.log.exception("Error in forget command")
-            irc.reply(_("Error clearing context."), prefixNick=False)
+        if cleared:
+            irc.reply(_("Conversation context cleared. Starting fresh!"), prefixNick=False)
+        else:
+            irc.reply(_("No conversation context to clear."), prefixNick=False)
 
     forget = wrap(forget, ["channel"])
 
@@ -406,29 +389,25 @@ class LLM(callbacks.Plugin):
 
         This is a diagnostic command to verify keys are configured without exposing them.
         """
-        try:
-            # Get all API keys
-            ask_key = self.registryValue("askApiKey")
-            code_key = self.registryValue("codeApiKey")
-            draw_key = self.registryValue("drawApiKey")
+        # Get all API keys
+        ask_key = self.registryValue("askApiKey")
+        code_key = self.registryValue("codeApiKey")
+        draw_key = self.registryValue("drawApiKey")
 
-            # Safely display each key
-            ask_status = self.llm_service.safe_key_display(ask_key)
-            code_status = self.llm_service.safe_key_display(code_key)
-            draw_status = self.llm_service.safe_key_display(draw_key)
+        # Safely display each key
+        ask_status = self.llm_service.safe_key_display(ask_key)
+        code_status = self.llm_service.safe_key_display(code_key)
+        draw_status = self.llm_service.safe_key_display(draw_key)
 
-            # Build response
-            response = _("API Key Status: ask=%s, code=%s, draw=%s") % (
-                ask_status,
-                code_status,
-                draw_status,
-            )
+        # Build response
+        response = _("API Key Status: ask=%s, code=%s, draw=%s") % (
+            ask_status,
+            code_status,
+            draw_status,
+        )
 
-            # Send as private message for extra security
-            irc.reply(response, private=True)
-        except Exception:
-            self.log.exception("Error checking API keys")
-            irc.reply(_("Error checking API key status."), private=True)
+        # Send as private message for extra security
+        irc.reply(response, private=True)
 
     llmkeys = wrap(llmkeys, ["admin"])
 

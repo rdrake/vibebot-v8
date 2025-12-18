@@ -13,12 +13,13 @@ from typing import TYPE_CHECKING
 
 import litellm
 import markdown
-from pygments.formatters import HtmlFormatter
 import supybot.conf as conf
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.utils as utils
+from supybot.utils.file import AtomicFile
+from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 
 _ = PluginInternationalization("LLM")
@@ -110,14 +111,16 @@ class LLMService:
         lines.append(f"Date: {date_str}")
 
         # Bot uptime
-        if hasattr(self.plugin, "startup_time"):
-            uptime_seconds = int(time.time() - self.plugin.startup_time)
+        startup_time = getattr(self.plugin, "startup_time", None)
+        if startup_time is not None:
+            uptime_seconds = int(time.time() - startup_time)
             uptime_str = self._format_uptime(uptime_seconds)
             lines.append(f"Uptime: {uptime_str}")
 
         # Network
-        if hasattr(irc, "network") and irc.network:
-            lines.append(f"Network: {irc.network}")
+        network = getattr(irc, "network", None)
+        if network:
+            lines.append(f"Network: {network}")
 
         # Channel or PM context
         channel = msg.args[0] if msg.args else None
@@ -142,8 +145,9 @@ class LLMService:
             lines.append(f"Caller: {caller_info}")
 
         # Bot nick
-        if hasattr(irc, "nick") and irc.nick:
-            lines.append(f"Bot: {irc.nick}")
+        bot_nick = getattr(irc, "nick", None)
+        if bot_nick:
+            lines.append(f"Bot: {bot_nick}")
 
         # Language preference
         try:
@@ -194,24 +198,28 @@ CONTEXT (use naturally if relevant):
         Returns:
             Formatted channel info like "#chat (42 users, +nts)"
         """
-        try:
-            if not hasattr(irc, "state") or channel not in irc.state.channels:
-                return f"Channel: {channel}"
-
-            ch_state = irc.state.channels[channel]
-            user_count = len(ch_state.users) if hasattr(ch_state, "users") else 0
-
-            # Get channel modes
-            modes_str = ""
-            if hasattr(ch_state, "modes") and ch_state.modes:
-                # modes is a dict like {'n': None, 't': None, 's': None}
-                mode_chars = "".join(sorted(ch_state.modes.keys()))
-                if mode_chars:
-                    modes_str = f", +{mode_chars}"
-
-            return f"Channel: {channel} ({user_count} users{modes_str})"
-        except Exception:
+        state = getattr(irc, "state", None)
+        if not state:
             return f"Channel: {channel}"
+
+        channels = getattr(state, "channels", {})
+        ch_state = channels.get(channel)
+        if not ch_state:
+            return f"Channel: {channel}"
+
+        users = getattr(ch_state, "users", set())
+        user_count = len(users)
+
+        # Get channel modes
+        modes_str = ""
+        modes = getattr(ch_state, "modes", None)
+        if modes:
+            # modes is a dict like {'n': None, 't': None, 's': None}
+            mode_chars = "".join(sorted(modes.keys()))
+            if mode_chars:
+                modes_str = f", +{mode_chars}"
+
+        return f"Channel: {channel} ({user_count} users{modes_str})"
 
     def _get_channel_topic(self, irc: Irc, channel: str) -> str | None:
         """Get channel topic.
@@ -223,14 +231,17 @@ CONTEXT (use naturally if relevant):
         Returns:
             Channel topic or None
         """
-        try:
-            if not hasattr(irc, "state") or channel not in irc.state.channels:
-                return None
-
-            ch_state = irc.state.channels[channel]
-            return ch_state.topic if hasattr(ch_state, "topic") and ch_state.topic else None
-        except Exception:
+        state = getattr(irc, "state", None)
+        if not state:
             return None
+
+        channels = getattr(state, "channels", {})
+        ch_state = channels.get(channel)
+        if not ch_state:
+            return None
+
+        topic = getattr(ch_state, "topic", None)
+        return topic if topic else None
 
     def _get_caller_info(
         self,
@@ -251,29 +262,31 @@ CONTEXT (use naturally if relevant):
             Formatted caller info like "JohnDoe (voiced, identified as john)"
         """
         status_parts = []
+        state = getattr(irc, "state", None)
 
         # Channel status (op/halfop/voice)
-        if channel and ircutils.isChannel(channel):
-            try:
-                if hasattr(irc, "state") and channel in irc.state.channels:
-                    ch_state = irc.state.channels[channel]
-                    if hasattr(ch_state, "isOp") and ch_state.isOp(nick):
-                        status_parts.append("op")
-                    elif hasattr(ch_state, "isHalfop") and ch_state.isHalfop(nick):
-                        status_parts.append("halfop")
-                    elif hasattr(ch_state, "isVoice") and ch_state.isVoice(nick):
-                        status_parts.append("voiced")
-            except Exception:
-                pass
+        if channel and ircutils.isChannel(channel) and state:
+            channels = getattr(state, "channels", {})
+            ch_state = channels.get(channel)
+            if ch_state:
+                is_op = getattr(ch_state, "isOp", None)
+                is_halfop = getattr(ch_state, "isHalfop", None)
+                is_voice = getattr(ch_state, "isVoice", None)
+
+                if is_op and is_op(nick):
+                    status_parts.append("op")
+                elif is_halfop and is_halfop(nick):
+                    status_parts.append("halfop")
+                elif is_voice and is_voice(nick):
+                    status_parts.append("voiced")
 
         # Account/identification status
-        try:
-            if hasattr(irc, "state") and hasattr(irc.state, "nickToAccount"):
-                account = irc.state.nickToAccount(nick)
+        if state:
+            nick_to_account = getattr(state, "nickToAccount", None)
+            if nick_to_account:
+                account = nick_to_account(nick)
                 if account:
                     status_parts.append(f"identified as {account}")
-        except Exception:
-            pass
 
         if status_parts:
             return f"{nick} ({', '.join(status_parts)})"
@@ -292,22 +305,19 @@ CONTEXT (use naturally if relevant):
             state: Typing state - 'active', 'paused', or 'done'
         """
         # Check if server supports message-tags capability
-        if not hasattr(irc, "state"):
+        irc_state = getattr(irc, "state", None)
+        if not irc_state:
             return
-        capabilities = getattr(irc.state, "capabilities_ack", set())
+        capabilities = getattr(irc_state, "capabilities_ack", set())
         if "message-tags" not in capabilities:
             return
 
-        try:
-            msg = ircmsgs.IrcMsg(
-                command="TAGMSG",
-                args=(target,),
-                server_tags={"+typing": state},
-            )
-            irc.queueMsg(msg)
-        except Exception:
-            # Silently fail - typing indicators are optional UX enhancement
-            pass
+        msg = ircmsgs.IrcMsg(
+            command="TAGMSG",
+            args=(target,),
+            server_tags={"+typing": state},
+        )
+        irc.queueMsg(msg)
 
     def safe_key_display(self, api_key: str) -> str:
         """Safely display API key with only first 3 characters visible.
@@ -717,40 +727,36 @@ CONTEXT (use naturally if relevant):
         Returns:
             Public URL to saved file or None on error
         """
-        try:
-            http_root, url_base = self._get_http_paths()
+        http_root, url_base = self._get_http_paths()
 
-            # Create unique filename
-            hash_input = f"{content}{time.time()}".encode()
-            hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
-            filename = f"code_{hash_str}.html"
-            filepath = os.path.join(http_root, filename)
+        # Create unique filename
+        hash_input = f"{content}{time.time()}".encode()
+        hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
+        filename = f"code_{hash_str}.html"
+        filepath = os.path.join(http_root, filename)
 
-            # Ensure directory exists
-            os.makedirs(http_root, exist_ok=True)
+        # Convert markdown to HTML with syntax highlighting
+        md = markdown.Markdown(
+            extensions=[
+                "fenced_code",
+                "codehilite",
+            ],
+            extension_configs={
+                "codehilite": {
+                    "css_class": "highlight",
+                    "guess_lang": True,
+                    "use_pygments": True,
+                }
+            },
+        )
+        rendered = md.convert(content)
 
-            # Convert markdown to HTML with syntax highlighting
-            md = markdown.Markdown(
-                extensions=[
-                    "fenced_code",
-                    "codehilite",
-                ],
-                extension_configs={
-                    "codehilite": {
-                        "css_class": "highlight",
-                        "guess_lang": True,
-                        "use_pygments": True,
-                    }
-                },
-            )
-            rendered = md.convert(content)
+        # Generate Pygments CSS for monokai theme
+        formatter = HtmlFormatter(style="monokai")
+        pygments_css = formatter.get_style_defs(".highlight")
 
-            # Generate Pygments CSS for monokai theme
-            formatter = HtmlFormatter(style="monokai")
-            pygments_css = formatter.get_style_defs(".highlight")
-
-            # Pastebin-style HTML with syntax highlighting
-            html = f"""<!DOCTYPE html>
+        # Pastebin-style HTML with syntax highlighting
+        html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -776,13 +782,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 </body>
 </html>"""
 
-            with open(filepath, "w") as f:
+        try:
+            os.makedirs(http_root, exist_ok=True)
+            with AtomicFile(filepath, "w") as f:
                 f.write(html)
-
             return f"{url_base}/{filename}"
-
-        except Exception as e:
-            self.log.error(f"Failed to save code: {e}")
+        except OSError as e:
+            self.log.error(f"Failed to save code file: {e}")
             return None
 
     def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
@@ -798,29 +804,29 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Returns:
             Public URL to saved image or None on error
         """
+        http_root, url_base = self._get_http_paths()
+
+        # Decode base64
         try:
-            http_root, url_base = self._get_http_paths()
-
-            # Decode base64
             image_bytes = base64.b64decode(b64_data)
+        except base64.binascii.Error as e:
+            self.log.error(f"Invalid base64 image data: {e}")
+            return None
 
-            # Generate unique filename
-            hash_input = f"{b64_data[:100]}{time.time()}".encode()
-            hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
-            filename = f"img_{hash_str}.{extension}"
-            filepath = os.path.join(http_root, filename)
+        # Generate unique filename
+        hash_input = f"{b64_data[:100]}{time.time()}".encode()
+        hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
+        filename = f"img_{hash_str}.{extension}"
+        filepath = os.path.join(http_root, filename)
 
-            # Ensure directory exists
+        # Write binary image file
+        try:
             os.makedirs(http_root, exist_ok=True)
-
-            # Write binary image file
-            with open(filepath, "wb") as f:
+            with AtomicFile(filepath, "wb") as f:
                 f.write(image_bytes)
-
             return f"{url_base}/{filename}"
-
-        except Exception as e:
-            self.log.error(f"Failed to save image: {e}")
+        except OSError as e:
+            self.log.error(f"Failed to save image file: {e}")
             return None
 
     def _build_messages(
