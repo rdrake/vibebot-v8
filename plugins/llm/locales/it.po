@@ -102,6 +102,10 @@ msgstr "Errore: Chiave API non configurata per il comando draw"
 msgid "Error: Failed to save generated image"
 msgstr "Errore: Impossibile salvare l'immagine generata"
 
-#: service.py:595
-msgid "Error: No image data in response"
-msgstr "Errore: Nessun dato immagine nella risposta"
+#: service.py:616
+msgid ""
+"Error: No image generated. The prompt may have been blocked by content "
+"safety filters. Try rephrasing your request."
+msgstr ""
+"Errore: Nessuna immagine generata. Il prompt potrebbe essere stato bloccato "
+"dai filtri di sicurezza. Prova a riformulare la tua richiesta."

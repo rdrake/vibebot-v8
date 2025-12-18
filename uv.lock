@@ -529,6 +529,7 @@ dependencies = [
     { name = "limnoria" },
     { name = "litellm" },
     { name = "markdown" },
+    { name = "pygments" },
 ]
 
 [package.optional-dependencies]
@@ -546,6 +547,7 @@ requires-dist = [
     { name = "limnoria", specifier = ">=2023.1.20" },
     { name = "litellm", specifier = ">=1.55.0" },
     { name = "markdown", specifier = ">=3.5.0" },
+    { name = "pygments", specifier = ">=2.17.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },

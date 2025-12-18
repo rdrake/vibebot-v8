@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import litellm
 import markdown
+from pygments.formatters import HtmlFormatter
 import supybot.conf as conf
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
@@ -425,7 +426,7 @@ CONTEXT (use naturally if relevant):
         ]
 
         if any(supported in model_lower for supported in supported_models):
-            return [{"googleSearch": {}}]
+            return [{"googleSearch": {}}, {"urlContext": {}}]
 
         # Default: no tools
         return None
@@ -610,7 +611,13 @@ CONTEXT (use naturally if relevant):
                         return url
                     return _("Error: Failed to save generated image")
 
-            return _("Error: No image data in response")
+            # No image data - check for blocked content reasons
+            # Google Imagen returns empty data when content is blocked
+            self.log.warning(f"Image generation returned no data. Response: {response}")
+            return _(
+                "Error: No image generated. The prompt may have been blocked by "
+                "content safety filters. Try rephrasing your request."
+            )
 
         except Exception as e:
             return self._handle_llm_error(e, "image generation")
@@ -722,11 +729,27 @@ CONTEXT (use naturally if relevant):
             # Ensure directory exists
             os.makedirs(http_root, exist_ok=True)
 
-            # Convert markdown to HTML with fenced code blocks support
-            md = markdown.Markdown(extensions=["fenced_code"])
+            # Convert markdown to HTML with syntax highlighting
+            md = markdown.Markdown(
+                extensions=[
+                    "fenced_code",
+                    "codehilite",
+                ],
+                extension_configs={
+                    "codehilite": {
+                        "css_class": "highlight",
+                        "guess_lang": True,
+                        "use_pygments": True,
+                    }
+                },
+            )
             rendered = md.convert(content)
 
-            # Simple pastebin-style HTML
+            # Generate Pygments CSS for monokai theme
+            formatter = HtmlFormatter(style="monokai")
+            pygments_css = formatter.get_style_defs(".highlight")
+
+            # Pastebin-style HTML with syntax highlighting
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -734,12 +757,18 @@ CONTEXT (use naturally if relevant):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Code</title>
 <style>
-body {{ margin: 0; padding: 20px; background: #1e1e1e; color: #d4d4d4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }}
-pre {{ padding: 16px; background: #252526; border-radius: 4px; overflow-x: auto; }}
-code {{ font-family: 'SF Mono', Consolas, monospace; font-size: 14px; }}
+body {{ margin: 0; padding: 20px; background: #272822; color: #f8f8f2; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }}
+pre {{ padding: 16px; background: #1e1e1e; border-radius: 6px; overflow-x: auto; margin: 1em 0; }}
+code {{ font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 14px; }}
 p {{ margin: 1em 0; }}
 strong {{ color: #fff; }}
+em {{ color: #e6db74; }}
 ul, ol {{ margin: 1em 0; padding-left: 2em; }}
+a {{ color: #66d9ef; }}
+h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
+.highlight {{ background: #1e1e1e; border-radius: 6px; padding: 0; }}
+.highlight pre {{ margin: 0; padding: 16px; background: transparent; }}
+{pygments_css}
 </style>
 </head>
 <body>

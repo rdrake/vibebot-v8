@@ -102,6 +102,10 @@ msgstr "Virhe: API-avainta ei ole määritetty draw-komennolle"
 msgid "Error: Failed to save generated image"
 msgstr "Virhe: Luodun kuvan tallennus epäonnistui"
 
-#: service.py:595
-msgid "Error: No image data in response"
-msgstr "Virhe: Vastauksessa ei ole kuvatietoja"
+#: service.py:616
+msgid ""
+"Error: No image generated. The prompt may have been blocked by content "
+"safety filters. Try rephrasing your request."
+msgstr ""
+"Virhe: Kuvaa ei luotu. Kehote on saattanut estyä sisältöturvasuodattimien "
+"vuoksi. Yritä muotoilla pyyntösi uudelleen."

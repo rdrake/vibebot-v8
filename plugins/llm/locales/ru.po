@@ -102,6 +102,10 @@ msgstr "Ошибка: API-ключ не настроен для команды d
 msgid "Error: Failed to save generated image"
 msgstr "Ошибка: Не удалось сохранить сгенерированное изображение"
 
-#: service.py:595
-msgid "Error: No image data in response"
-msgstr "Ошибка: Нет данных изображения в ответе"
+#: service.py:616
+msgid ""
+"Error: No image generated. The prompt may have been blocked by content "
+"safety filters. Try rephrasing your request."
+msgstr ""
+"Ошибка: Изображение не создано. Запрос мог быть заблокирован фильтрами "
+"безопасности. Попробуйте переформулировать запрос."

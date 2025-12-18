@@ -978,14 +978,15 @@ class TestImageGenerationWithBase64:
         assert second_msg.server_tags == {"+typing": "done"}
 
     def test_image_generation_no_data_in_response(self) -> None:
-        """GIVEN empty response WHEN generating THEN returns error."""
+        """GIVEN empty response WHEN generating THEN returns content filter error."""
         mock_response = Mock()
         mock_response.data = []
 
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert "Error: No image data in response" in result
+        assert "No image generated" in result
+        assert "content safety filters" in result
 
     def test_image_generation_without_irc_context(self) -> None:
         """GIVEN no irc context WHEN generating THEN works without typing indicators."""
