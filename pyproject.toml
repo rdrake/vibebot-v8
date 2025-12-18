@@ -3,7 +3,7 @@ name = "vibebot-v8"
 version = "0.1.0"
 description = "VibeBot v8 - Modern IRC bot with AI capabilities"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = ["llm"]
 
 [tool.uv.workspace]
 members = ["plugins/llm"]
