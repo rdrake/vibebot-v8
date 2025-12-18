@@ -18,9 +18,9 @@ import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.utils as utils
-from supybot.utils.file import AtomicFile
 from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
+from supybot.utils.file import AtomicFile
 
 _ = PluginInternationalization("LLM")
 

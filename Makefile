@@ -1,8 +1,13 @@
 .PHONY: install run test lint format format-check typecheck check clean deep-clean setup-http help \
-       docker-build docker-run install-service uninstall-service
+       docker-build docker-run install-service uninstall-service install-hooks
 
 install:
 	uv sync
+
+install-hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Git hooks installed"
 
 run:
 	uv run limnoria bot.conf
@@ -52,6 +57,7 @@ setup-http:
 help:
 	@echo "Available targets:"
 	@echo "  install         - Install dependencies with uv"
+	@echo "  install-hooks   - Install git pre-commit hooks"
 	@echo "  run             - Start the bot"
 	@echo "  test            - Run all tests"
 	@echo "  lint            - Run ruff linter"
