@@ -21,12 +21,8 @@ WORKDIR /app
 COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app
-USER appuser
-
 # Volumes for persistent data
 VOLUME ["/app/conf", "/app/data", "/app/logs"]
 
+# Use --user at runtime for proper volume permissions
 ENTRYPOINT ["limnoria", "bot.conf"]
