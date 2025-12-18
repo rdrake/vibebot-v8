@@ -1,4 +1,4 @@
-.PHONY: install run test lint format format-check typecheck check clean setup-http help \
+.PHONY: install run test lint format format-check typecheck check clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service
 
 install:
@@ -32,6 +32,10 @@ clean:
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.pyo" -delete
 
+deep-clean: clean
+	rm -rf .venv
+	uv cache clean
+
 setup-http:
 	@echo "Creating HTTP directory for code/image output..."
 	mkdir -p /var/www/llm
@@ -56,6 +60,7 @@ help:
 	@echo "  typecheck       - Run ty type checker"
 	@echo "  check           - Run all checks (lint, format-check, typecheck, test)"
 	@echo "  clean           - Remove cache files"
+	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
 	@echo "  setup-http      - Create HTTP directory for code/image output"
 	@echo "  docker-build    - Build Docker image locally"
 	@echo "  docker-run      - Run Docker container locally"
