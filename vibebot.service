@@ -15,6 +15,7 @@ EnvironmentFile=-%h/.config/vibebot/env
 ExecStartPre=-/usr/bin/docker pull ${IMAGE}
 ExecStartPre=-/usr/bin/docker rm -f vibebot
 ExecStart=/usr/bin/docker run --rm --name vibebot \
+    --user %U:%G \
     --env-file %h/.config/vibebot/env \
     -v %h/.config/vibebot/bot.conf:/app/bot.conf:ro \
     -v %h/.local/share/vibebot/conf:/app/conf \
