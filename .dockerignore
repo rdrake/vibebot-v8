@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+*.md
+logs/
+backup/
+tmp/
+.env
+*.db
+
+# Config files - must be mounted at runtime
+bot.conf
+bot.conf.bak
+conf/
+data/

@@ -1,0 +1,107 @@
+# French translations for LLM Plugin.
+# Copyright (C) 2025 LLM Plugin Authors
+# This file is distributed under the same license as the LLM package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: LLM Plugin\n"
+"POT-Creation-Date: 2025-01-01 00:00+0000\n"
+"PO-Revision-Date: 2025-01-01 00:00+0000\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: French\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: plugin.py:318
+msgid "Processing with %d image(s)..."
+msgstr "Traitement avec %d image(s)..."
+
+#: plugin.py:379
+msgid "Code generated (%d lines): %s"
+msgstr "Code généré (%d lignes) : %s"
+
+#: plugin.py:441
+msgid "Conversation context cleared. Starting fresh!"
+msgstr "Contexte de conversation effacé. Nouveau départ !"
+
+#: plugin.py:456
+msgid "No conversation context to clear."
+msgstr "Aucun contexte de conversation à effacer."
+
+#: plugin.py:459
+msgid "Error clearing context."
+msgstr "Erreur lors de l'effacement du contexte."
+
+#: plugin.py:487
+msgid "API Key Status: ask=%s, code=%s, draw=%s"
+msgstr "État des clés API : ask=%s, code=%s, draw=%s"
+
+#: plugin.py:497
+msgid "Error checking API key status."
+msgstr "Erreur lors de la vérification de l'état des clés API."
+
+#: plugin.py:517
+msgid "Rate limit reset for %s"
+msgstr "Limite de requêtes réinitialisée pour %s"
+
+#: plugin.py:521
+msgid "All rate limits reset"
+msgstr "Toutes les limites de requêtes réinitialisées"
+
+#: plugin.py:524
+msgid "Failed to reset rate limits"
+msgstr "Échec de la réinitialisation des limites de requêtes"
+
+#: service.py:334
+msgid "Prompt cannot be empty"
+msgstr "L'invite ne peut pas être vide"
+
+#: service.py:338
+msgid "Prompt too long (max %d characters)"
+msgstr "Invite trop longue (max %d caractères)"
+
+#: service.py:427
+msgid "Error: %s timed out. Try again or simplify your request."
+msgstr "Erreur : %s a expiré. Réessayez ou simplifiez votre demande."
+
+#: service.py:431
+msgid "Error: API rate limit reached. Please wait a few minutes and try again."
+msgstr "Erreur : Limite de requêtes API atteinte. Veuillez patienter quelques minutes et réessayer."
+
+#: service.py:433
+msgid "Error: Invalid API key for %s. Please check your configuration."
+msgstr "Erreur : Clé API invalide pour %s. Veuillez vérifier votre configuration."
+
+#: service.py:435
+msgid "Error: Content violates AI safety policies. Please rephrase your request."
+msgstr "Erreur : Le contenu viole les politiques de sécurité de l'IA. Veuillez reformuler votre demande."
+
+#: service.py:439
+msgid "Error: API returned an error. Check logs for details."
+msgstr "Erreur : L'API a renvoyé une erreur. Consultez les logs pour plus de détails."
+
+#: service.py:445
+msgid "Error: Unable to complete %s. Check your configuration or try again later."
+msgstr "Erreur : Impossible de terminer %s. Vérifiez votre configuration ou réessayez plus tard."
+
+#: service.py:482 service.py:558
+msgid "Error: %s"
+msgstr "Erreur : %s"
+
+#: service.py:500
+msgid "Error: API key not configured for %s command"
+msgstr "Erreur : Clé API non configurée pour la commande %s"
+
+#: service.py:566
+msgid "Error: API key not configured for draw command"
+msgstr "Erreur : Clé API non configurée pour la commande draw"
+
+#: service.py:593
+msgid "Error: Failed to save generated image"
+msgstr "Erreur : Échec de l'enregistrement de l'image générée"
+
+#: service.py:595
+msgid "Error: No image data in response"
+msgstr "Erreur : Aucune donnée d'image dans la réponse"

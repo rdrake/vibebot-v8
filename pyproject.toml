@@ -1,0 +1,57 @@
+[project]
+name = "vibebot-v8"
+version = "0.1.0"
+description = "VibeBot v8 - Modern IRC bot with AI capabilities"
+requires-python = ">=3.14"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["plugins/llm"]
+
+[tool.uv.sources]
+llm = { workspace = true }
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["plugins/llm/tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+unresolved-import = "ignore"  # External deps (supybot, litellm) not in workspace
+unresolved-attribute = "ignore"  # Supybot has no type stubs
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.14.9",
+    "ty>=0.0.1a34",
+]

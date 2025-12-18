@@ -1,0 +1,28 @@
+[Unit]
+Description=VibeBot IRC Bot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+
+Environment=IMAGE=ghcr.io/rdrake/vibebot-v8:latest
+EnvironmentFile=-%h/.config/vibebot/env
+
+ExecStartPre=-/usr/bin/docker pull ${IMAGE}
+ExecStartPre=-/usr/bin/docker rm -f vibebot
+ExecStart=/usr/bin/docker run --rm --name vibebot \
+    --env-file %h/.config/vibebot/env \
+    -v %h/.config/vibebot/bot.conf:/app/bot.conf:ro \
+    -v %h/.local/share/vibebot/conf:/app/conf \
+    -v %h/.local/share/vibebot/data:/app/data \
+    -v %h/.local/share/vibebot/logs:/app/logs \
+    ${IMAGE}
+
+ExecStop=/usr/bin/docker stop vibebot
+
+[Install]
+WantedBy=default.target
