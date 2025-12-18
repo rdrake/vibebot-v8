@@ -141,37 +141,6 @@ conf.registerChannelValue(
 )
 
 # ============================================================================
-# Rate Limiting (channel-specific with global defaults)
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "rateLimitEnabled",
-    registry.Boolean(
-        True,
-        _("""Enable rate limiting for LLM commands"""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "rateLimitRequests",
-    registry.PositiveInteger(
-        10,
-        _("""Maximum requests per user per time window"""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "rateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window for rate limiting in seconds"""),
-    ),
-)
-
-# ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================
 

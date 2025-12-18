@@ -42,18 +42,6 @@ msgstr "Статус API-ключей: ask=%s, code=%s, draw=%s"
 msgid "Error checking API key status."
 msgstr "Ошибка проверки статуса API-ключей."
 
-#: plugin.py:517
-msgid "Rate limit reset for %s"
-msgstr "Лимит запросов сброшен для %s"
-
-#: plugin.py:521
-msgid "All rate limits reset"
-msgstr "Все лимиты запросов сброшены"
-
-#: plugin.py:524
-msgid "Failed to reset rate limits"
-msgstr "Не удалось сбросить лимиты запросов"
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "Запрос не может быть пустым"

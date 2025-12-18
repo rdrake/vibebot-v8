@@ -42,18 +42,6 @@ msgstr "API-avainten tila: ask=%s, code=%s, draw=%s"
 msgid "Error checking API key status."
 msgstr "Virhe API-avainten tilan tarkistuksessa."
 
-#: plugin.py:517
-msgid "Rate limit reset for %s"
-msgstr "Pyyntöraja nollattu käyttäjälle %s"
-
-#: plugin.py:521
-msgid "All rate limits reset"
-msgstr "Kaikki pyyntörajat nollattu"
-
-#: plugin.py:524
-msgid "Failed to reset rate limits"
-msgstr "Pyyntörajojen nollaus epäonnistui"
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "Kehote ei voi olla tyhjä"

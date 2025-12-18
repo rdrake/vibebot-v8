@@ -15,11 +15,10 @@ import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.schedule as schedule
-from supybot.commands import optional, wrap
+from supybot.commands import wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext
-from .rate_limiter import RateLimitConfig, RateLimiter
 from .service import LLMService
 
 if TYPE_CHECKING:
@@ -88,8 +87,8 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
 class LLM(callbacks.Plugin):
     """AI-powered commands using LiteLLM.
 
-    Provides ask, code, draw commands with rate limiting,
-    conversation context, and multi-provider support.
+    Provides ask, code, draw commands with conversation context
+    and multi-provider support.
     """
 
     threaded = True  # Commands run in threads for non-blocking I/O
@@ -104,9 +103,6 @@ class LLM(callbacks.Plugin):
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
-
-        # Initialize rate limiter
-        self._update_rate_limiter()
 
         # Initialize conversation context
         self._update_context()
@@ -191,15 +187,6 @@ class LLM(callbacks.Plugin):
         # Store in conversation context for richer follow-up questions
         self.context.add_message(nick, channel, "user", message_text)
 
-    def _update_rate_limiter(self) -> None:
-        """Update rate limiter from current config."""
-        config = RateLimitConfig(
-            max_requests=self.registryValue("rateLimitRequests"),
-            window_seconds=self.registryValue("rateLimitWindow"),
-            enabled=self.registryValue("rateLimitEnabled"),
-        )
-        self.rate_limiter = RateLimiter(config)
-
     def _update_context(self) -> None:
         """Update context manager from current config."""
         config = ContextConfig(
@@ -208,19 +195,6 @@ class LLM(callbacks.Plugin):
             enabled=self.registryValue("contextEnabled"),
         )
         self.context = ConversationContext(config)
-
-    def _get_rate_limit_id(self, msg: IrcMsg) -> str:
-        """Generate unique identifier for rate limiting.
-
-        Args:
-            msg: IRC message
-
-        Returns:
-            Identifier string like "nick!user@host#channel"
-        """
-        # Use full hostmask + channel for granular rate limiting
-        channel = msg.args[0] if msg.args else "unknown"
-        return f"{msg.prefix}#{channel}"
 
     def _get_nick(self, msg: IrcMsg) -> str:
         """Extract nick from IRC message.
@@ -255,25 +229,6 @@ class LLM(callbacks.Plugin):
         """
         return msg.time < self.startup_time
 
-    def _check_rate_limit(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
-        """Check rate limit for this user/channel.
-
-        Args:
-            irc: IRC connection
-            msg: IRC message
-
-        Returns:
-            True if allowed, False if rate limited (and error sent to user)
-        """
-        identifier = self._get_rate_limit_id(msg)
-        allowed, error_msg = self.rate_limiter.check_rate_limit(identifier)
-
-        if not allowed:
-            irc.reply(error_msg, prefixNick=False)
-            return False
-
-        return True
-
     def ask(
         self,
         irc: callbacks.Irc,
@@ -293,10 +248,6 @@ class LLM(callbacks.Plugin):
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
-            return
-
-        # Check rate limit
-        if not self._check_rate_limit(irc, msg):
             return
 
         try:
@@ -357,10 +308,6 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        # Check rate limit
-        if not self._check_rate_limit(irc, msg):
-            return
-
         try:
             nick = self._get_nick(msg)
             channel = self._get_channel(msg)
@@ -408,10 +355,6 @@ class LLM(callbacks.Plugin):
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
-            return
-
-        # Check rate limit
-        if not self._check_rate_limit(irc, msg):
             return
 
         try:
@@ -488,33 +431,6 @@ class LLM(callbacks.Plugin):
             irc.reply(_("Error checking API key status."), private=True)
 
     llmkeys = wrap(llmkeys, ["admin"])
-
-    def llmreset(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        target: str | None,
-    ) -> None:
-        """[nick]
-
-        Reset rate limit for a user or all users (admin only).
-        If nick is provided, resets that user's limits. Otherwise resets all.
-        """
-        try:
-            if target:
-                # Reset specific user (simplified - uses nick directly)
-                self.rate_limiter.reset(target)
-                irc.replySuccess(_("Rate limit reset for %s") % target)
-            else:
-                # Reset all
-                self.rate_limiter.reset()
-                irc.replySuccess(_("All rate limits reset"))
-        except Exception:
-            self.log.exception("Error resetting rate limits")
-            irc.replyError(_("Failed to reset rate limits"))
-
-    llmreset = wrap(llmreset, ["admin", optional("somethingWithoutSpaces")])
 
 
 Class = LLM

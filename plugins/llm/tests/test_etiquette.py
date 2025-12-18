@@ -15,7 +15,6 @@ import time
 from unittest.mock import Mock, patch
 
 import pytest
-from llm.rate_limiter import RateLimitConfig, RateLimiter
 from llm.service import LLMService
 
 # =============================================================================
@@ -363,67 +362,6 @@ class TestEmojiAndFormattingGuidelines:
         """GIVEN plain text WHEN checked THEN no IRC formatting detected."""
         text = "This is normal text"
         assert has_irc_formatting(text) is False
-
-
-class TestRateLimitingEtiquette:
-    """Tests for rate limiting as an etiquette enforcement mechanism."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self) -> None:
-        """Set up test fixtures."""
-        self.config = RateLimitConfig(max_requests=2, window_seconds=60, enabled=True)
-        self.limiter = RateLimiter(self.config)
-
-    def test_rate_limit_message_is_user_friendly(self) -> None:
-        """GIVEN rate limit hit WHEN error returned THEN message is friendly."""
-        # Fill the limit
-        self.limiter.check_rate_limit("user1")
-        self.limiter.check_rate_limit("user1")
-
-        # Hit the limit
-        allowed, message = self.limiter.check_rate_limit("user1")
-
-        assert allowed is False
-        assert "Rate limit exceeded" in message
-        assert "Try again" in message
-        # Should mention how long to wait
-        assert "s" in message  # seconds
-
-    def test_rate_limit_does_not_block_other_users(self) -> None:
-        """GIVEN user1 limited WHEN user2 requests THEN user2 allowed."""
-        # User1 hits limit
-        self.limiter.check_rate_limit("user1")
-        self.limiter.check_rate_limit("user1")
-        allowed1, _ = self.limiter.check_rate_limit("user1")
-        assert allowed1 is False
-
-        # User2 should still be allowed
-        allowed2, _ = self.limiter.check_rate_limit("user2")
-        assert allowed2 is True
-
-    def test_rate_limit_includes_limit_info(self) -> None:
-        """GIVEN rate limit hit WHEN error returned THEN includes limit info."""
-        # Fill the limit
-        self.limiter.check_rate_limit("user1")
-        self.limiter.check_rate_limit("user1")
-
-        # Hit the limit
-        allowed, message = self.limiter.check_rate_limit("user1")
-
-        assert allowed is False
-        # Should mention the limit configuration
-        assert "2" in message  # max_requests
-        assert "60" in message  # window_seconds
-
-    def test_rate_limit_allows_requests_under_limit(self) -> None:
-        """GIVEN requests under limit WHEN checked THEN all allowed."""
-        allowed1, msg1 = self.limiter.check_rate_limit("user1")
-        allowed2, msg2 = self.limiter.check_rate_limit("user1")
-
-        assert allowed1 is True
-        assert allowed2 is True
-        assert msg1 == ""
-        assert msg2 == ""
 
 
 class TestResponseAppropriateness:

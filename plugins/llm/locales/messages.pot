@@ -44,18 +44,6 @@ msgstr ""
 msgid "Error checking API key status."
 msgstr ""
 
-#: plugin.py:517
-msgid "Rate limit reset for %s"
-msgstr ""
-
-#: plugin.py:521
-msgid "All rate limits reset"
-msgstr ""
-
-#: plugin.py:524
-msgid "Failed to reset rate limits"
-msgstr ""
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr ""

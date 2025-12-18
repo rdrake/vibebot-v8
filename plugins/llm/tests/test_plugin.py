@@ -70,13 +70,6 @@ class TestCommandExistence:
         assert hasattr(LLM, "llmkeys")
         assert callable(LLM.llmkeys)
 
-    def test_llmreset_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for llmreset THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "llmreset")
-        assert callable(LLM.llmreset)
-
 
 class TestPluginConfiguration:
     """Test plugin configuration and service dependencies."""
@@ -99,13 +92,6 @@ class TestPluginConfiguration:
 
         assert ConversationContext is not None
         assert ContextConfig is not None
-
-    def test_rate_limiter_module_imports(self) -> None:
-        """GIVEN llm.rate_limiter module WHEN imported THEN no errors."""
-        from llm.rate_limiter import RateLimitConfig, RateLimiter
-
-        assert RateLimiter is not None
-        assert RateLimitConfig is not None
 
 
 class TestHTTPCallback:

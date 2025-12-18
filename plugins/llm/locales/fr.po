@@ -42,18 +42,6 @@ msgstr "État des clés API : ask=%s, code=%s, draw=%s"
 msgid "Error checking API key status."
 msgstr "Erreur lors de la vérification de l'état des clés API."
 
-#: plugin.py:517
-msgid "Rate limit reset for %s"
-msgstr "Limite de requêtes réinitialisée pour %s"
-
-#: plugin.py:521
-msgid "All rate limits reset"
-msgstr "Toutes les limites de requêtes réinitialisées"
-
-#: plugin.py:524
-msgid "Failed to reset rate limits"
-msgstr "Échec de la réinitialisation des limites de requêtes"
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "L'invite ne peut pas être vide"
