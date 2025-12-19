@@ -53,6 +53,7 @@ unresolved-attribute = "ignore"  # Supybot has no type stubs
 dev = [
     "pre-commit>=4.0.1",
     "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
     "ruff>=0.14.9",
     "ty>=0.0.1a34",
 ]

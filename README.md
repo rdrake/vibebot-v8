@@ -9,7 +9,7 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Vision support**: Automatically detects image URLs in prompts
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen
-- **Rate limiting**: Per-user rate limits to prevent abuse
+- **Abuse protection**: Uses Limnoria's built-in flood protection
 - **Modern Python**: Python 3.14 with full type hints
 - **Quality tools**: Ruff for linting/formatting, ty for type checking
 
@@ -67,16 +67,15 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | Command | Description |
 |---------|-------------|
 | `%ask <question>` | Ask AI a question (supports vision with image URLs, remembers context) |
-| `%code <request>` | Generate code (no context, each request independent) |
-| `%draw <prompt>` | Generate an image |
-| `%forget` | Clear your conversation context |
+| `%code <request>` | Generate code (remembers context for iterating on code) |
+| `%draw <prompt>` | Generate an image (no context) |
+| `%forget [channel]` | Clear your conversation context |
 
 ### Admin Commands
 
 | Command | Description |
 |---------|-------------|
-| `%llmkeys` | Check API key status (shows first 3 chars only) |
-| `%llmreset [nick]` | Reset rate limits for a user or all users |
+| `%llmkeys` | Check API key status (shows first 3 chars only, sent privately) |
 
 ## Configuration
 
@@ -95,16 +94,6 @@ supybot.plugins.LLM.drawModel: vertex_ai/imagen-4.0-generate-001
 
 See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for supported models.
 
-### Rate Limiting
-
-```
-supybot.plugins.LLM.rateLimitEnabled: True
-supybot.plugins.LLM.rateLimitRequests: 10
-supybot.plugins.LLM.rateLimitWindow: 60
-```
-
-This allows 10 requests per user per 60 seconds.
-
 ### Conversation Context
 
 ```
@@ -119,11 +108,13 @@ Context is per-user per-channel. Cleared after 30 minutes of inactivity or when 
 
 ```
 supybot.plugins.LLM.httpRoot: /var/www/llm
-supybot.plugins.LLM.codeUrlBase: https://example.com/llm
+supybot.plugins.LLM.httpUrlBase: https://example.com/llm
 supybot.plugins.LLM.codeThreshold: 20
 ```
 
 Code longer than `codeThreshold` lines is saved to HTTP instead of pasted to IRC.
+
+If `httpRoot` is empty (default), uses Limnoria's built-in HTTP server at `data/web/llm/`.
 
 ## Development
 
@@ -160,7 +151,6 @@ vibebot-v8/
 │   │   ├── plugin.py       # IRC command handlers
 │   │   ├── service.py      # LiteLLM business logic
 │   │   ├── config.py       # Configuration definitions
-│   │   ├── rate_limiter.py # Rate limiting
 │   │   └── context.py      # Conversation history
 │   └── tests/              # Unit tests
 ├── bot.conf                # Bot configuration
@@ -177,7 +167,6 @@ vibebot-v8/
 2. **Separation of Concerns**
    - `plugin.py`: IRC protocol and command routing
    - `service.py`: AI API calls and business logic
-   - `rate_limiter.py`: Rate limiting logic
    - `context.py`: Conversation history management
 
 3. **Modern Python**
@@ -195,14 +184,6 @@ Check configuration:
 ```
 
 Should show `AIz...(36 chars hidden)` or similar.
-
-### Rate Limited
-
-Admin can reset:
-```
-%llmreset         # Reset all
-%llmreset nick    # Reset specific user
-```
 
 ### Context Not Working
 

@@ -79,9 +79,15 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected - this is normal, ignore silently
+            pass
         except OSError:
-            handler.send_response(500)
-            handler.end_headers()
+            try:
+                handler.send_response(500)
+                handler.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
 
 class LLM(callbacks.Plugin):

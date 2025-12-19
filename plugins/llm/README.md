@@ -7,7 +7,6 @@ AI-powered IRC commands using LiteLLM.
 - Multi-provider support (OpenAI, Anthropic, Google, etc.)
 - Vision support with automatic image URL detection
 - Conversation context (memory between messages)
-- Rate limiting per user/channel
 - Thread-safe API key handling
 - Comprehensive error handling
 
@@ -57,16 +56,6 @@ Main service class for AI interactions.
 - `validate_image_url(url)` - Validate image URL for security
 - `safe_key_display(api_key)` - Safely display API key
 
-### RateLimiter
-
-Thread-safe rate limiter using sliding window algorithm.
-
-#### Methods
-
-- `check_rate_limit(identifier)` - Check if request allowed
-- `reset(identifier)` - Reset rate limit for user
-- `get_stats(identifier)` - Get usage statistics
-
 ### ConversationContext
 
 Thread-safe conversation history manager.
@@ -94,8 +83,8 @@ def mycommand(self, irc, msg, args, text):
 
     Help text here.
     """
-    # Check rate limit
-    if not self._check_rate_limit(irc, msg):
+    # Skip ZNC playback messages
+    if self._is_old_message(msg):
         return
 
     # Your logic here
