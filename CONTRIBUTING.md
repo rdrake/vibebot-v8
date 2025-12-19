@@ -43,6 +43,14 @@ make typecheck   # Check types
 make test        # Run tests
 ```
 
+### Coverage
+
+Tests must maintain ≥80% code coverage. Run with coverage report:
+
+```bash
+uv run pytest plugins/llm/tests/ --cov --cov-report=term-missing
+```
+
 ## Pull Request Guidelines
 
 1. Create a feature branch from `main`

@@ -35,8 +35,8 @@ jobs:
       - name: Run type checker
         run: uv run ty check plugins/llm/src/
 
-      - name: Run tests
-        run: uv run pytest plugins/llm/tests/ -v
+      - name: Run tests with coverage
+        run: uv run pytest plugins/llm/tests/ -v --cov --cov-report=term-missing
 
   secrets:
     runs-on: ubuntu-latest

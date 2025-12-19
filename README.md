@@ -50,6 +50,27 @@ make install-service
 
 Then follow the printed instructions to copy your `bot.conf` and enable the service.
 
+### Auto-Updates
+
+Install the auto-update timer to automatically pull new images from GHCR:
+
+```bash
+make install-timer
+```
+
+This checks for updates every 15 minutes and restarts the bot if a new version is found.
+
+```bash
+# Check timer status
+systemctl --user status vibebot-updater.timer
+
+# View update logs
+journalctl --user -u vibebot-updater.service -f
+
+# Disable auto-updates
+make uninstall-timer
+```
+
 ## Static Assets (Reverse Proxy)
 
 When serving code/images via Nginx or Apache, set the public URL:
@@ -136,11 +157,13 @@ make check       # Run all checks
 ### Code Quality
 
 This project uses:
+- **uv**: Fast Python package manager
 - **Ruff**: Fast Python linter and formatter
 - **ty**: Astral's static type checker
-- **pytest**: Testing framework
+- **pytest**: Testing framework with 80% coverage threshold
+- **Dependabot**: Automated dependency updates (weekly)
 
-All code must pass linting, formatting, type checking, and tests.
+All code must pass linting, formatting, type checking, and tests with ≥80% coverage.
 
 ## Architecture
 

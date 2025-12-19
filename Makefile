@@ -1,5 +1,5 @@
 .PHONY: install run test lint format format-check typecheck check clean deep-clean setup-http help \
-       docker-build docker-run install-service uninstall-service install-hooks pre-commit
+       docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit
 
 install:
 	uv sync
@@ -75,6 +75,8 @@ help:
 	@echo "  docker-run      - Run Docker container locally"
 	@echo "  install-service - Install systemd user service"
 	@echo "  uninstall-service - Remove systemd user service"
+	@echo "  install-timer   - Install auto-update timer (checks GHCR every 15 min)"
+	@echo "  uninstall-timer - Remove auto-update timer"
 
 # Docker
 IMAGE_NAME ?= ghcr.io/rdrake/vibebot-v8
@@ -121,3 +123,18 @@ uninstall-service:
 	rm -f ~/.config/systemd/user/vibebot.service
 	systemctl --user daemon-reload
 	@echo "Service removed. Config files in ~/.config/vibebot/ preserved."
+
+install-timer:
+	@echo "Installing update timer..."
+	mkdir -p ~/.config/systemd/user
+	cp vibebot-updater.service vibebot-updater.timer ~/.config/systemd/user/
+	systemctl --user daemon-reload
+	systemctl --user enable --now vibebot-updater.timer
+	@echo "Timer installed. Check status with: systemctl --user status vibebot-updater.timer"
+
+uninstall-timer:
+	-systemctl --user disable --now vibebot-updater.timer
+	rm -f ~/.config/systemd/user/vibebot-updater.service
+	rm -f ~/.config/systemd/user/vibebot-updater.timer
+	systemctl --user daemon-reload
+	@echo "Timer removed."

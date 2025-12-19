@@ -49,6 +49,19 @@ python-version = "3.14"
 unresolved-import = "ignore"  # External deps (supybot, litellm) not in workspace
 unresolved-attribute = "ignore"  # Supybot has no type stubs
 
+[tool.coverage.run]
+source = ["plugins/llm/src"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.0.1",

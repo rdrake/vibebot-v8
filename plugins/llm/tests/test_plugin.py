@@ -724,6 +724,55 @@ class TestUpdateContext:
             assert isinstance(plugin.context, ConversationContext)
 
 
+class TestPluginInitialization:
+    """Test plugin initialization paths."""
+
+    def test_init_with_httproot_skips_http_callback(self) -> None:
+        """GIVEN httpRoot configured WHEN plugin initialized THEN skips HTTP callback."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+
+        with (
+            patch.object(LLM, "registryValue", return_value="/var/www/llm"),
+            patch("llm.plugin.LLMService"),
+            patch("llm.plugin.log"),
+            patch("llm.plugin.httpserver.hook") as mock_hook,
+            patch("llm.plugin.schedule.addPeriodicEvent"),
+            patch("llm.plugin.schedule.removeEvent"),
+        ):
+            plugin = LLM(mock_irc)
+
+        # Should NOT hook HTTP callback when httpRoot is set
+        mock_hook.assert_not_called()
+        assert plugin._http_callback is None
+
+    def test_init_without_httproot_registers_http_callback(self) -> None:
+        """GIVEN httpRoot empty WHEN plugin initialized THEN registers HTTP callback."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+
+        def registry_side_effect(key, *args):
+            if key == "httpRoot":
+                return ""
+            return MagicMock()
+
+        with (
+            patch.object(LLM, "registryValue", side_effect=registry_side_effect),
+            patch("llm.plugin.LLMService"),
+            patch("llm.plugin.log"),
+            patch("llm.plugin.httpserver.hook") as mock_hook,
+            patch("llm.plugin.schedule.addPeriodicEvent"),
+            patch("llm.plugin.schedule.removeEvent"),
+        ):
+            plugin = LLM(mock_irc)
+
+        # Should hook HTTP callback when httpRoot is not set
+        mock_hook.assert_called_once()
+        assert plugin._http_callback is not None
+
+
 class TestPluginLifecycle:
     """Test plugin initialization and cleanup."""
 
