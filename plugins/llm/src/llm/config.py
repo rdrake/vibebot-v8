@@ -131,15 +131,6 @@ conf.registerGlobalValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "codeThreshold",
-    registry.PositiveInteger(
-        20,
-        _("""Line count threshold - use HTTP link if code exceeds this"""),
-    ),
-)
-
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================

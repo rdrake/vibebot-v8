@@ -59,19 +59,37 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
         web_dir = self._get_web_dir()
         filepath = os.path.join(web_dir, path)
 
-        # Check file exists and is within web_dir
-        if not os.path.isfile(filepath):
+        # Security: resolve symlinks and verify path is under web root
+        try:
+            real_web_dir = os.path.realpath(web_dir)
+            real_filepath = os.path.realpath(filepath)
+
+            # Ensure resolved path is under web directory
+            if (
+                not real_filepath.startswith(real_web_dir + os.sep)
+                and real_filepath != real_web_dir
+            ):
+                handler.send_response(403)
+                handler.end_headers()
+                return
+        except OSError:
+            handler.send_response(403)
+            handler.end_headers()
+            return
+
+        # Check file exists
+        if not os.path.isfile(real_filepath):
             handler.send_response(404)
             handler.end_headers()
             return
 
         # Determine content type
-        content_type, _ = mimetypes.guess_type(filepath)
+        content_type, _ = mimetypes.guess_type(real_filepath)
         if content_type is None:
             content_type = "application/octet-stream"
 
         try:
-            with open(filepath, "rb") as f:
+            with open(real_filepath, "rb") as f:
                 content = f.read()
 
             handler.send_response(200)
@@ -298,7 +316,7 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """<request>
 
-        Generate code based on your request. Long code is saved to HTTP link.
+        Generate code based on your request. Code is saved to HTTP link.
         Supports conversation context for iterating on code.
 
         Examples:
@@ -321,10 +339,13 @@ class LLM(callbacks.Plugin):
         )
 
         # Reply first, then store context
-        lines = response.count("\n")
         url = self.llm_service.save_code_to_http(response)
         if url:
-            irc.reply(_("Code generated (%d lines): %s") % (lines, url), prefixNick=False)
+            # Show truncated preview (first ~60 chars, single line)
+            preview = response.replace("\n", " ").strip()
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            irc.reply(f"{preview} — {url}", prefixNick=False)
         else:
             # Fallback to IRC paging if save failed
             irc.reply(response, prefixNick=False)
@@ -345,19 +366,29 @@ class LLM(callbacks.Plugin):
         """<prompt>
 
         Generate an image from a text description.
-        This command does NOT use conversation context.
+        Uses conversation context to understand references.
 
         Examples:
           %draw A sunset over mountains in watercolor style
-          %draw Cyberpunk city with neon lights
+          %draw Now make it more cyberpunk (uses context)
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
             return
 
+        nick = self._get_nick(msg)
+        channel = self._get_channel(msg)
+
+        # Get conversation history for context
+        history = self.context.get_messages(nick, channel)
+
         # Typing indicator sent by service - no "Generating..." message needed
-        result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+        result = self.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
         irc.reply(result, prefixNick=False)
+
+        # Store in context for follow-up references
+        self.context.add_message(nick, channel, "user", text)
+        self.context.add_message(nick, channel, "assistant", f"[Generated image: {result}]")
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 

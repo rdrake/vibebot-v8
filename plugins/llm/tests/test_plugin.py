@@ -264,6 +264,60 @@ class TestHTTPCallbackDoGet:
 
             mock_handler.send_response.assert_called_with(500)
 
+    def test_doget_blocks_symlink_escape(self, http_callback, mock_handler: MagicMock) -> None:
+        """GIVEN symlink pointing outside web dir WHEN doGet called THEN returns 403."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_dir = os.path.join(tmpdir, "web")
+            os.makedirs(web_dir)
+
+            # Create a file outside web dir
+            outside_file = os.path.join(tmpdir, "secret.txt")
+            with open(outside_file, "w") as f:
+                f.write("secret data")
+
+            # Create a symlink inside web dir pointing outside
+            symlink_path = os.path.join(web_dir, "escape.txt")
+            os.symlink(outside_file, symlink_path)
+
+            with patch.object(http_callback, "_get_web_dir", return_value=web_dir):
+                http_callback.doGet(mock_handler, "escape.txt")
+
+            # Should return 403 because resolved path is outside web_dir
+            mock_handler.send_response.assert_called_with(403)
+
+    def test_doget_allows_symlink_within_web_dir(
+        self, http_callback, mock_handler: MagicMock
+    ) -> None:
+        """GIVEN symlink pointing within web dir WHEN doGet called THEN serves file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_dir = os.path.join(tmpdir, "web")
+            os.makedirs(web_dir)
+
+            # Create a file inside web dir
+            real_file = os.path.join(web_dir, "real.txt")
+            with open(real_file, "wb") as f:
+                f.write(b"content")
+
+            # Create a symlink inside web dir pointing to the file
+            symlink_path = os.path.join(web_dir, "link.txt")
+            os.symlink(real_file, symlink_path)
+
+            with patch.object(http_callback, "_get_web_dir", return_value=web_dir):
+                http_callback.doGet(mock_handler, "link.txt")
+
+            # Should serve the file
+            mock_handler.send_response.assert_called_with(200)
+
+    def test_doget_handles_realpath_oserror(self, http_callback, mock_handler: MagicMock) -> None:
+        """GIVEN realpath raises OSError WHEN doGet called THEN returns 403."""
+        with (
+            patch.object(http_callback, "_get_web_dir", return_value="/some/dir"),
+            patch("os.path.realpath", side_effect=OSError("permission denied")),
+        ):
+            http_callback.doGet(mock_handler, "test.txt")
+
+        mock_handler.send_response.assert_called_with(403)
+
 
 class TestHTTPCallbackGetWebDir:
     """Test HTTP callback _get_web_dir method."""
@@ -556,10 +610,13 @@ class TestCommandFlows:
             text, command="code", history=history, irc=irc, msg=msg
         )
 
-        lines = response.count("\n")
         url = plugin.llm_service.save_code_to_http(response)
         if url:
-            irc.reply(f"Code generated ({lines} lines): {url}", prefixNick=False)
+            # Show truncated preview (first ~60 chars, single line)
+            preview = response.replace("\n", " ").strip()
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            irc.reply(f"{preview} — {url}", prefixNick=False)
         else:
             irc.reply(response, prefixNick=False)
 
@@ -571,8 +628,18 @@ class TestCommandFlows:
         if plugin._is_old_message(msg):
             return
 
-        result = plugin.llm_service.image_generation(text, irc=irc, msg=msg)
+        nick = plugin._get_nick(msg)
+        channel = plugin._get_channel(msg)
+
+        # Get conversation history for context
+        history = plugin.context.get_messages(nick, channel)
+
+        result = plugin.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
         irc.reply(result, prefixNick=False)
+
+        # Store in context for follow-up references
+        plugin.context.add_message(nick, channel, "user", text)
+        plugin.context.add_message(nick, channel, "assistant", f"[Generated image: {result}]")
 
     def _call_forget(self, plugin: MagicMock, irc: MagicMock, msg: MagicMock, channel: str) -> None:
         """Call the forget command implementation directly."""
@@ -654,15 +721,61 @@ class TestCommandFlows:
 
         mock_irc.reply.assert_called_with("print('hello')", prefixNick=False)
 
+    def test_code_shows_truncated_preview(self, plugin_with_service: tuple) -> None:
+        """GIVEN long code response WHEN code called THEN shows truncated preview."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        long_response = (
+            "Here is a really long explanation of what this code does and how it works in detail"
+        )
+        plugin.llm_service.completion.return_value = long_response
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python function")
+
+        # Should show truncated preview (57 chars) + ... + URL
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        assert "..." in reply_text
+        assert "http://code.url/test.py" in reply_text
+        assert len(reply_text.split(" — ")[0]) <= 60
+
+    def test_code_shows_short_content_preview(self, plugin_with_service: tuple) -> None:
+        """GIVEN short code response WHEN code called THEN shows full preview."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        short_response = "def foo(): pass"
+        plugin.llm_service.completion.return_value = short_response
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python function")
+
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        # Short content should not have ellipsis
+        assert reply_text == "def foo(): pass — http://code.url/test.py"
+
+    def test_code_preview_collapses_newlines(self, plugin_with_service: tuple) -> None:
+        """GIVEN multiline code WHEN code called THEN preview collapses to single line."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        multiline = "def foo():\n    return 1"
+        plugin.llm_service.completion.return_value = multiline
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python function")
+
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        # Newlines should be replaced with spaces
+        assert "\n" not in reply_text
+        assert "def foo():     return 1 —" in reply_text
+
     def test_draw_calls_image_generation(self, plugin_with_service: tuple) -> None:
         """GIVEN draw request WHEN draw called THEN calls image_generation."""
         plugin, mock_irc, mock_msg = plugin_with_service
 
         self._call_draw(plugin, mock_irc, mock_msg, "a sunset")
 
-        plugin.llm_service.image_generation.assert_called_once_with(
-            "a sunset", irc=mock_irc, msg=mock_msg
-        )
+        plugin.llm_service.image_generation.assert_called_once()
+        call_args = plugin.llm_service.image_generation.call_args
+        assert call_args[0][0] == "a sunset"  # First positional arg is prompt
+        assert call_args.kwargs.get("irc") == mock_irc
+        assert call_args.kwargs.get("msg") == mock_msg
         mock_irc.reply.assert_called_with("http://img.url/test.png", prefixNick=False)
 
     def test_draw_skips_old_messages(self, plugin_with_service: tuple) -> None:
@@ -673,6 +786,29 @@ class TestCommandFlows:
         self._call_draw(plugin, mock_irc, mock_msg, "a sunset")
 
         mock_irc.reply.assert_not_called()
+
+    def test_draw_uses_context(self, plugin_with_service: tuple) -> None:
+        """GIVEN draw request WHEN called THEN passes history to image_generation."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        plugin.context.get_messages.return_value = [
+            {"role": "user", "content": "Tell me about space"}
+        ]
+
+        self._call_draw(plugin, mock_irc, mock_msg, "a rocket")
+
+        # Should pass history to image_generation
+        plugin.llm_service.image_generation.assert_called_once()
+        call_kwargs = plugin.llm_service.image_generation.call_args
+        assert call_kwargs.kwargs.get("history") is not None
+
+    def test_draw_stores_context(self, plugin_with_service: tuple) -> None:
+        """GIVEN draw command WHEN executed THEN stores context."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+
+        self._call_draw(plugin, mock_irc, mock_msg, "a sunset")
+
+        # Should add user message and assistant response
+        assert plugin.context.add_message.call_count == 2
 
     def test_forget_clears_context(self, plugin_with_service: tuple) -> None:
         """GIVEN forget command WHEN called THEN clears user context."""
