@@ -1,4 +1,4 @@
-.PHONY: install run test lint format format-check typecheck check clean deep-clean setup-http help \
+.PHONY: install run test lint format format-check typecheck check ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit
 
 install:
@@ -15,7 +15,7 @@ run:
 	uv run limnoria bot.conf
 
 test:
-	uv run pytest plugins/llm/tests/ -v
+	uv run pytest plugins/llm/tests/ -v --cov --cov-report=term-missing --cov-fail-under=80
 
 lint:
 	uv run ruff check .
@@ -30,6 +30,11 @@ typecheck:
 	uv run ty check plugins/llm/src/
 
 check: lint format-check typecheck test
+
+ci:
+	uv sync --locked
+	uv run pre-commit run --all-files
+	$(MAKE) test
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
@@ -68,6 +73,7 @@ help:
 	@echo "  format-check    - Check formatting without changes"
 	@echo "  typecheck       - Run ty type checker"
 	@echo "  check           - Run all checks (lint, format-check, typecheck, test)"
+	@echo "  ci              - Run CI checks (sync --locked, pre-commit, test with coverage)"
 	@echo "  clean           - Remove cache files"
 	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
 	@echo "  setup-http      - Create HTTP directory for code/image output"
