@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import bleach
 import litellm
 import markdown
 import supybot.conf as conf
@@ -81,6 +82,92 @@ class LLMService:
             return text
         return self.api_key_pattern.sub("[REDACTED]", str(text))
 
+    def _sanitize_html(self, html: str) -> str:
+        """Sanitize HTML to prevent XSS attacks.
+
+        Allows safe tags for code display and syntax highlighting
+        while stripping potentially dangerous elements.
+
+        Args:
+            html: Raw HTML content
+
+        Returns:
+            Sanitized HTML safe for display
+        """
+        # First, completely remove script/style tags and their contents
+        # (bleach's strip=True keeps text content, but we want these gone entirely)
+        script_style_pattern = re.compile(
+            r"<(script|style)[^>]*>.*?</\1>",
+            re.IGNORECASE | re.DOTALL,
+        )
+        html = script_style_pattern.sub("", html)
+
+        # Tags allowed for markdown/code rendering
+        allowed_tags = [
+            # Structure
+            "p",
+            "br",
+            "hr",
+            "div",
+            "span",
+            # Headings
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            # Lists
+            "ul",
+            "ol",
+            "li",
+            # Code/preformatted
+            "pre",
+            "code",
+            # Text formatting
+            "strong",
+            "em",
+            "b",
+            "i",
+            "u",
+            "s",
+            "del",
+            "ins",
+            # Links (href will be filtered by protocols)
+            "a",
+            # Tables
+            "table",
+            "thead",
+            "tbody",
+            "tr",
+            "th",
+            "td",
+            # Blockquote
+            "blockquote",
+        ]
+
+        # Attributes allowed per tag
+        allowed_attributes = {
+            "a": ["href", "title"],
+            "code": ["class"],  # For language classes
+            "pre": ["class"],
+            "span": ["class"],  # For Pygments syntax highlighting
+            "div": ["class"],
+            "td": ["align"],
+            "th": ["align"],
+        }
+
+        # Only allow safe URL schemes for links
+        allowed_protocols = ["http", "https", "mailto"]
+
+        return bleach.clean(
+            html,
+            tags=allowed_tags,
+            attributes=allowed_attributes,
+            protocols=allowed_protocols,
+            strip=True,
+        )
+
     def _build_system_prompt(
         self,
         base_prompt: str,
@@ -150,10 +237,10 @@ class LLMService:
             channel_info = self._get_channel_info(irc, channel)
             context_lines.append(channel_info)
 
-            # Topic
+            # Topic (triple-quoted to prevent prompt injection)
             topic = self._get_channel_topic(irc, channel)
             if topic:
-                context_lines.append(f"Topic: {topic}")
+                context_lines.append(f'Topic: """{topic}"""')
         else:
             # Private message
             context_lines.append("Context: Private message")
@@ -563,6 +650,7 @@ class LLMService:
     def image_generation(
         self,
         prompt: str,
+        history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
     ) -> str:
@@ -570,9 +658,11 @@ class LLMService:
 
         Generates an image using the configured model, saves it to HTTP server,
         and returns the URL. Sends IRCv3 typing indicators during generation.
+        If conversation history is provided, context is prepended to the prompt.
 
         Args:
             prompt: Text description of image to generate
+            history: Conversation history for context (optional)
             irc: IRC connection for typing indicators (optional)
             msg: IRC message for context (optional)
 
@@ -603,6 +693,12 @@ class LLMService:
 
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
+
+            # Build contextual prompt if history available
+            if history:
+                context_summary = self._build_context_summary(history)
+                if context_summary:
+                    prompt = f"Context from our conversation: {context_summary}\n\nNow generate an image: {prompt}"
 
             # Generate image with API key passed directly (thread-safe)
             response = litellm.image_generation(
@@ -758,6 +854,9 @@ class LLMService:
         )
         rendered = md.convert(content)
 
+        # Sanitize HTML to prevent XSS attacks
+        rendered = self._sanitize_html(rendered)
+
         # Generate Pygments CSS for monokai theme
         formatter = HtmlFormatter(style="monokai")
         pygments_css = formatter.get_style_defs(".highlight")
@@ -876,6 +975,56 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             messages.append({"role": "user", "content": prompt})
 
         return messages
+
+    def _build_context_summary(
+        self,
+        history: list[dict[str, str]] | None,
+        max_chars: int = 500,
+    ) -> str:
+        """Build a brief context summary from conversation history.
+
+        Creates a condensed summary of recent conversation for use in
+        image generation prompts where the API doesn't support message arrays.
+
+        Args:
+            history: Conversation history messages
+            max_chars: Maximum characters for the summary
+
+        Returns:
+            Summary string or empty string if no history
+        """
+        if not history:
+            return ""
+
+        # Take last few messages (up to 4 exchanges)
+        recent = history[-8:] if len(history) > 8 else history
+
+        # Build summary from recent exchanges
+        parts = []
+        for msg in recent:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                # Truncate long user messages
+                if len(content) > 100:
+                    content = content[:97] + "..."
+                parts.append(f"User: {content}")
+            elif role == "assistant":
+                # For assistant, just note the topic
+                if len(content) > 80:
+                    content = content[:77] + "..."
+                parts.append(f"Assistant: {content}")
+
+        if not parts:
+            return ""
+
+        summary = " | ".join(parts)
+
+        # Truncate if too long
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 3] + "..."
+
+        return summary
 
     def _cleanup_old_files(
         self,
