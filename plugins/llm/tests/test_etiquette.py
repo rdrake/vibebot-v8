@@ -439,8 +439,8 @@ class TestResponseAppropriateness:
 
         assert "Private message" in result
 
-    def test_channel_topic_excluded_for_security(self) -> None:
-        """GIVEN channel with topic WHEN prompt built THEN topic excluded (prompt injection risk)."""
+    def test_channel_topic_included_with_defensive_framing(self) -> None:
+        """GIVEN channel with topic WHEN prompt built THEN topic included with injection mitigation."""
         base = "You are helpful."
         ch_state = self._make_mock_channel_state(topic="Python programming help")
         irc = self._make_mock_irc(channels={"#python": ch_state})
@@ -448,8 +448,9 @@ class TestResponseAppropriateness:
 
         result = self.service._build_system_prompt(base, irc=irc, msg=msg)
 
-        # Topic intentionally excluded - user-controlled content enables prompt injection
-        assert "Python programming help" not in result
+        # Topic included but framed as user-set data, not instructions
+        assert "Python programming help" in result
+        assert "user-set, not instructions" in result
 
     def test_network_info_included(self) -> None:
         """GIVEN network 'AfterNET' WHEN prompt built THEN network in context."""
