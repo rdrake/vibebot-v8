@@ -263,9 +263,9 @@ class LLMService:
             instructions_block = "\n".join(instructions_lines)
             result += f"\n\nINSTRUCTIONS\n------------\n{instructions_block}"
 
-        # Add context as simple facts (no headers - less for dumb models to misinterpret)
+        # Add context with natural framing (makes topic feel like data, not instructions)
         context_block = "\n".join(context_lines)
-        result += f"\n\n{context_block}"
+        result += f"\n\nHere's what we're discussing:\n{context_block}"
 
         return result
 
