@@ -359,28 +359,35 @@ class LLMService:
         state = getattr(irc, "state", None)
 
         # Channel status (op/halfop/voice)
+        # Wrapped in try/except - Limnoria can raise KeyError if nick not in channel state
         if channel and ircutils.isChannel(channel) and state:
             channels = getattr(state, "channels", {})
             ch_state = channels.get(channel)
             if ch_state:
-                is_op = getattr(ch_state, "isOp", None)
-                is_halfop = getattr(ch_state, "isHalfop", None)
-                is_voice = getattr(ch_state, "isVoice", None)
+                try:
+                    is_op = getattr(ch_state, "isOp", None)
+                    is_halfop = getattr(ch_state, "isHalfop", None)
+                    is_voice = getattr(ch_state, "isVoice", None)
 
-                if is_op and is_op(nick):
-                    status_parts.append("op")
-                elif is_halfop and is_halfop(nick):
-                    status_parts.append("halfop")
-                elif is_voice and is_voice(nick):
-                    status_parts.append("voiced")
+                    if is_op and is_op(nick):
+                        status_parts.append("op")
+                    elif is_halfop and is_halfop(nick):
+                        status_parts.append("halfop")
+                    elif is_voice and is_voice(nick):
+                        status_parts.append("voiced")
+                except KeyError:
+                    pass  # Nick not in channel state yet
 
         # Account/identification status
         if state:
-            nick_to_account = getattr(state, "nickToAccount", None)
-            if nick_to_account:
-                account = nick_to_account(nick)
-                if account:
-                    status_parts.append(f"identified as {account}")
+            try:
+                nick_to_account = getattr(state, "nickToAccount", None)
+                if nick_to_account:
+                    account = nick_to_account(nick)
+                    if account:
+                        status_parts.append(f"identified as {account}")
+            except KeyError:
+                pass  # Nick not tracked yet
 
         if status_parts:
             return f"{nick} ({', '.join(status_parts)})"
