@@ -561,9 +561,10 @@ class LLMService:
             self.log.error(f"LLM API error ({operation}): {sanitized}")
             return _("Error: API returned an error. Check logs for details.")
 
-        # Generic exception - sanitize and log
+        # Generic exception - sanitize and log with type for debugging
+        error_type = type(error).__name__
         sanitized = self._sanitize(str(error))
-        self.log.error(f"LLM {operation} error: {sanitized}")
+        self.log.error(f"LLM {operation} error ({error_type}): {sanitized}")
         return (
             _("Error: Unable to complete %s. Check your configuration or try again later.")
             % operation
