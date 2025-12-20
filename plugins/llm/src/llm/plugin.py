@@ -111,8 +111,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
 class LLM(callbacks.Plugin):
     """AI-powered commands using LiteLLM.
 
-    Provides ask, code, draw commands with conversation context
-    and multi-provider support.
+    Provides ask, code, draw commands with multi-provider support.
     """
 
     threaded = True  # Commands run in threads for non-blocking I/O
@@ -366,29 +365,18 @@ class LLM(callbacks.Plugin):
         """<prompt>
 
         Generate an image from a text description.
-        Uses conversation context to understand references.
 
         Examples:
           %draw A sunset over mountains in watercolor style
-          %draw Now make it more cyberpunk (uses context)
+          %draw A cyberpunk cityscape at night
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
             return
 
-        nick = self._get_nick(msg)
-        channel = self._get_channel(msg)
-
-        # Get conversation history for context
-        history = self.context.get_messages(nick, channel)
-
         # Typing indicator sent by service - no "Generating..." message needed
-        result = self.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
+        result = self.llm_service.image_generation(text, irc=irc, msg=msg)
         irc.reply(result, prefixNick=False)
-
-        # Store in context for follow-up references
-        self.context.add_message(nick, channel, "user", text)
-        self.context.add_message(nick, channel, "assistant", f"[Generated image: {result}]")
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
