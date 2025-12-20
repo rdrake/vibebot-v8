@@ -237,10 +237,7 @@ class LLMService:
             channel_info = self._get_channel_info(irc, channel)
             context_lines.append(channel_info)
 
-            # Topic as vibe (framed as atmosphere, not instructions to follow)
-            topic = self._get_channel_topic(irc, channel)
-            if topic:
-                context_lines.append(f"Vibe: {topic}")
+            # Topic intentionally excluded - user-controlled content enables prompt injection
         else:
             # Private message
             context_lines.append("Context: Private message")

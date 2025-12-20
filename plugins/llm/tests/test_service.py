@@ -535,7 +535,7 @@ class TestBuildSystemPrompt:
         assert "Channel: #test" in result
         assert "4 users" in result
         assert "+nst" in result
-        assert "Vibe: Welcome to the test channel" in result
+        # Topic intentionally excluded to prevent prompt injection
 
     def test_build_system_prompt_pm_context(self) -> None:
         """GIVEN private message WHEN building prompt THEN shows PM context."""
@@ -698,8 +698,8 @@ class TestBuildSystemPrompt:
         # But no verbose CONTEXT header (simpler = less prompt injection risk)
         assert "CONTEXT" not in result
 
-    def test_topic_included_in_prompt(self) -> None:
-        """GIVEN channel with topic WHEN building prompt THEN topic included as simple fact."""
+    def test_topic_excluded_from_prompt(self) -> None:
+        """GIVEN channel with topic WHEN building prompt THEN topic excluded (prompt injection risk)."""
         base = "You are helpful."
         ch_state = self._make_mock_channel_state(topic="Welcome to our channel")
         irc = self._make_mock_irc(channels={"#test": ch_state})
@@ -707,14 +707,13 @@ class TestBuildSystemPrompt:
 
         result = self.service._build_system_prompt(base, irc=irc, msg=msg)
 
-        # Topic should be included as simple key: value
-        assert "Vibe: Welcome to our channel" in result
+        # Topic intentionally excluded - user-controlled content enables prompt injection
+        assert "Welcome to our channel" not in result
 
     def test_instructions_section_when_non_english(self) -> None:
         """GIVEN non-English language WHEN building prompt THEN INSTRUCTIONS section with language."""
         base = "You are helpful."
-        ch_state = self._make_mock_channel_state(topic="Welcome to our channel")
-        irc = self._make_mock_irc(channels={"#test": ch_state})
+        irc = self._make_mock_irc(channels={"#test": self._make_mock_channel_state()})
         msg = self._make_mock_msg(channel="#test")
 
         with patch("llm.service.conf") as mock_conf:
@@ -725,13 +724,10 @@ class TestBuildSystemPrompt:
         assert "INSTRUCTIONS" in result
         assert "Language: Spanish (respond in this language)" in result
 
-        # Topic should be included as simple fact
-        assert "Vibe: Welcome to our channel" in result
-
         # INSTRUCTIONS should come before context facts
         instructions_pos = result.find("INSTRUCTIONS")
-        topic_pos = result.find("Vibe:")
-        assert instructions_pos < topic_pos, "INSTRUCTIONS should come before context"
+        context_pos = result.find("Here's what we're discussing:")
+        assert instructions_pos < context_pos, "INSTRUCTIONS should come before context"
 
     def test_get_channel_info_with_modes(self) -> None:
         """GIVEN channel with modes WHEN getting info THEN includes sorted modes."""
