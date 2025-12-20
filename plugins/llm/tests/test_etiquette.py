@@ -449,7 +449,7 @@ class TestResponseAppropriateness:
         result = self.service._build_system_prompt(base, irc=irc, msg=msg)
 
         assert "Python programming help" in result
-        assert "Topic:" in result
+        assert "Vibe:" in result
 
     def test_network_info_included(self) -> None:
         """GIVEN network 'AfterNET' WHEN prompt built THEN network in context."""

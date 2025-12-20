@@ -535,7 +535,7 @@ class TestBuildSystemPrompt:
         assert "Channel: #test" in result
         assert "4 users" in result
         assert "+nst" in result
-        assert "Topic: Welcome to the test channel" in result
+        assert "Vibe: Welcome to the test channel" in result
 
     def test_build_system_prompt_pm_context(self) -> None:
         """GIVEN private message WHEN building prompt THEN shows PM context."""
@@ -708,7 +708,7 @@ class TestBuildSystemPrompt:
         result = self.service._build_system_prompt(base, irc=irc, msg=msg)
 
         # Topic should be included as simple key: value
-        assert "Topic: Welcome to our channel" in result
+        assert "Vibe: Welcome to our channel" in result
 
     def test_instructions_section_when_non_english(self) -> None:
         """GIVEN non-English language WHEN building prompt THEN INSTRUCTIONS section with language."""
@@ -726,11 +726,11 @@ class TestBuildSystemPrompt:
         assert "Language: Spanish (respond in this language)" in result
 
         # Topic should be included as simple fact
-        assert "Topic: Welcome to our channel" in result
+        assert "Vibe: Welcome to our channel" in result
 
         # INSTRUCTIONS should come before context facts
         instructions_pos = result.find("INSTRUCTIONS")
-        topic_pos = result.find("Topic:")
+        topic_pos = result.find("Vibe:")
         assert instructions_pos < topic_pos, "INSTRUCTIONS should come before context"
 
     def test_get_channel_info_with_modes(self) -> None:
