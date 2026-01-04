@@ -18,6 +18,7 @@ class ContextConfig:
     max_messages: int  # Maximum messages to keep per conversation
     timeout_minutes: int  # Clear context after this many minutes of inactivity
     enabled: bool = True  # Whether context is enabled
+    channel_max_messages: int = 10  # Maximum messages in shared channel context
 
 
 @dataclass
@@ -25,6 +26,18 @@ class Conversation:
     """A single conversation's state."""
 
     messages: list[dict[str, str]] = field(default_factory=list)
+    last_activity: float = field(default_factory=time.time)
+
+
+@dataclass
+class ChannelContext:
+    """Shared channel context state.
+
+    Messages include nick to track who said what.
+    """
+
+    messages: list[dict[str, str]] = field(default_factory=list)
+    # Messages have: {"nick": str, "role": str, "content": str}
     last_activity: float = field(default_factory=time.time)
 
 
@@ -44,6 +57,8 @@ class ConversationContext:
         self._lock = Lock()
         # Key: (nick, channel) -> Conversation
         self._conversations: dict[tuple[str, str], Conversation] = {}
+        # Key: channel -> ChannelContext (shared across all users)
+        self._channel_contexts: dict[str, ChannelContext] = {}
 
     def _get_key(self, nick: str, channel: str) -> tuple[str, str]:
         """Generate conversation key.
@@ -76,6 +91,27 @@ class ConversationContext:
         expired_keys = [key for key, conv in self._conversations.items() if self._is_expired(conv)]
         for key in expired_keys:
             del self._conversations[key]
+
+        # Also prune expired channel contexts
+        expired_channels = [
+            ch for ch, ctx in self._channel_contexts.items() if self._is_channel_expired(ctx)
+        ]
+        for ch in expired_channels:
+            del self._channel_contexts[ch]
+
+    def _is_channel_expired(self, context: ChannelContext) -> bool:
+        """Check if a channel context has expired.
+
+        Args:
+            context: Channel context to check
+
+        Returns:
+            True if expired
+        """
+        if not self.config.enabled:
+            return True
+        timeout_seconds = self.config.timeout_minutes * 60
+        return time.time() - context.last_activity > timeout_seconds
 
     def add_message(self, nick: str, channel: str, role: str, content: str) -> None:
         """Add a message to conversation history.
@@ -131,6 +167,72 @@ class ConversationContext:
             # Return a copy to prevent external modification
             return list(conv.messages)
 
+    def add_channel_message(self, channel: str, nick: str, role: str, content: str) -> None:
+        """Add a message to shared channel context.
+
+        Channel context is shared across all users in a channel, allowing
+        the bot to follow group conversations.
+
+        Args:
+            channel: IRC channel
+            nick: Nick of who sent the message
+            role: Message role ("user" or "assistant")
+            content: Message content
+        """
+        if not self.config.enabled:
+            return
+
+        with self._lock:
+            self._prune_expired()
+
+            ch_key = channel.lower()
+            if ch_key not in self._channel_contexts:
+                self._channel_contexts[ch_key] = ChannelContext()
+
+            ctx = self._channel_contexts[ch_key]
+            ctx.messages.append({"nick": nick, "role": role, "content": content})
+            ctx.last_activity = time.time()
+
+            # Trim to max messages
+            if len(ctx.messages) > self.config.channel_max_messages:
+                ctx.messages = ctx.messages[-self.config.channel_max_messages :]
+
+    def get_channel_messages(
+        self, channel: str, exclude_nick: str | None = None
+    ) -> list[dict[str, str]]:
+        """Get shared channel context.
+
+        Args:
+            channel: IRC channel
+            exclude_nick: Optional nick to exclude (typically the current user,
+                since their messages are in personal context)
+
+        Returns:
+            List of channel messages with nick, role, and content
+        """
+        if not self.config.enabled:
+            return []
+
+        with self._lock:
+            self._prune_expired()
+
+            ch_key = channel.lower()
+            ctx = self._channel_contexts.get(ch_key)
+
+            if ctx is None or self._is_channel_expired(ctx):
+                return []
+
+            # Filter out excluded nick if specified
+            if exclude_nick:
+                exclude_lower = exclude_nick.lower()
+                return [
+                    dict(msg)
+                    for msg in ctx.messages
+                    if msg.get("nick", "").lower() != exclude_lower
+                ]
+
+            return [dict(msg) for msg in ctx.messages]
+
     def clear(self, nick: str, channel: str) -> bool:
         """Clear conversation context for a specific user.
 
@@ -149,14 +251,15 @@ class ConversationContext:
             return False
 
     def clear_all(self) -> int:
-        """Clear all conversation contexts.
+        """Clear all conversation and channel contexts.
 
         Returns:
-            Number of conversations cleared
+            Number of conversations cleared (not including channel contexts)
         """
         with self._lock:
             count = len(self._conversations)
             self._conversations.clear()
+            self._channel_contexts.clear()
             return count
 
     def get_stats(self) -> dict[str, Any]:
@@ -169,6 +272,7 @@ class ConversationContext:
             self._prune_expired()
 
             total_messages = sum(len(conv.messages) for conv in self._conversations.values())
+            channel_messages = sum(len(ctx.messages) for ctx in self._channel_contexts.values())
 
             return {
                 "active_conversations": len(self._conversations),
@@ -176,4 +280,7 @@ class ConversationContext:
                 "max_messages_per_conv": self.config.max_messages,
                 "timeout_minutes": self.config.timeout_minutes,
                 "enabled": self.config.enabled,
+                "active_channels": len(self._channel_contexts),
+                "channel_messages": channel_messages,
+                "channel_max_messages": self.config.channel_max_messages,
             }

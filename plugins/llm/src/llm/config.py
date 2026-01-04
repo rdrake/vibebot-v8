@@ -172,6 +172,17 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "channelContextMaxMessages",
+    registry.PositiveInteger(
+        10,
+        _("""Maximum messages in shared channel context. This allows the bot to
+        follow group conversations - when Alice asks something, Bob can continue
+        the thread because the bot remembers Alice's exchange."""),
+    ),
+)
+
 # ============================================================================
 # Advanced Settings
 # ============================================================================

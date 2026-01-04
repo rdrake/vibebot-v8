@@ -492,6 +492,7 @@ class LLMService:
         command: str = "ask",
         images: list[str] | None = None,
         history: list[dict[str, str]] | None = None,
+        channel_history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
     ) -> str:
@@ -508,7 +509,8 @@ class LLMService:
             prompt: User's text prompt
             command: Command name (ask/code) for config lookup
             images: Optional list of image URLs for vision
-            history: Optional conversation history for context
+            history: Optional conversation history for context (personal)
+            channel_history: Optional shared channel history (group conversations)
             irc: IRC connection object for context (optional)
             msg: IRC message object for context (optional)
 
@@ -543,7 +545,9 @@ class LLMService:
             system_prompt = self._build_system_prompt(base_system_prompt)
 
             # Build messages with history, system prompt, and context
-            messages = self._build_messages(prompt, images, history, system_prompt, irc, msg)
+            messages = self._build_messages(
+                prompt, images, history, channel_history, system_prompt, irc, msg
+            )
 
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
@@ -857,6 +861,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         prompt: str,
         images: list[str] | None,
         history: list[dict[str, str]] | None = None,
+        channel_history: list[dict[str, str]] | None = None,
         system_prompt: str | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
@@ -866,7 +871,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Args:
             prompt: Text prompt
             images: Optional image URLs
-            history: Optional conversation history
+            history: Optional conversation history (personal)
+            channel_history: Optional shared channel history (group conversations)
             system_prompt: Optional system prompt for bot personality
             irc: IRC connection for context (optional)
             msg: IRC message for context (optional)
@@ -886,7 +892,19 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             messages.append(context_msg)
             messages.append({"role": "assistant", "content": "Got it."})
 
-        # Add conversation history if provided
+        # Add shared channel context (allows following group conversations)
+        if channel_history:
+            channel_summary = self._format_channel_history(channel_history)
+            if channel_summary:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"[Recent channel discussion]\n{channel_summary}",
+                    }
+                )
+                messages.append({"role": "assistant", "content": "I see the context."})
+
+        # Add personal conversation history if provided
         if history:
             messages.extend(history)
 
@@ -902,6 +920,32 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             messages.append({"role": "user", "content": prompt})
 
         return messages
+
+    def _format_channel_history(
+        self,
+        channel_history: list[dict[str, str]],
+    ) -> str:
+        """Format channel history for inclusion in messages.
+
+        Converts channel messages (which include nick) into a readable
+        summary showing who said what.
+
+        Args:
+            channel_history: Channel messages with nick, role, and content
+
+        Returns:
+            Formatted string like "Alice: message\\nBot: response"
+        """
+        lines = []
+        for msg in channel_history:
+            nick = msg.get("nick", "Unknown")
+            content = msg.get("content", "")
+            # Truncate long messages
+            if len(content) > 150:
+                content = content[:147] + "..."
+            lines.append(f"{nick}: {content}")
+
+        return "\n".join(lines)
 
     def _build_context_summary(
         self,

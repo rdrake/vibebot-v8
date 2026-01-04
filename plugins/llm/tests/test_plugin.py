@@ -853,7 +853,8 @@ class TestUpdateContext:
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
-            plugin.registryValue = MagicMock(side_effect=[20, 30, True])
+            # Returns: contextMaxMessages, contextTimeoutMinutes, contextEnabled, channelContextMaxMessages
+            plugin.registryValue = MagicMock(side_effect=[20, 30, True, 10])
 
             plugin._update_context()
 

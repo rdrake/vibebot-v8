@@ -216,6 +216,7 @@ class LLM(callbacks.Plugin):
             max_messages=self.registryValue("contextMaxMessages"),
             timeout_minutes=self.registryValue("contextTimeoutMinutes"),
             enabled=self.registryValue("contextEnabled"),
+            channel_max_messages=self.registryValue("channelContextMaxMessages"),
         )
         self.context = ConversationContext(config)
 
@@ -279,8 +280,9 @@ class LLM(callbacks.Plugin):
         # Detect images for vision
         images = self.llm_service.detect_images(text)
 
-        # Get conversation history
+        # Get conversation history (personal + shared channel)
         history = self.context.get_messages(nick, channel)
+        channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
 
         if images:
             # Clean prompt by removing image URLs
@@ -290,19 +292,34 @@ class LLM(callbacks.Plugin):
 
             irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
             response = self.llm_service.completion(
-                clean_prompt, command="ask", images=images, history=history, irc=irc, msg=msg
+                clean_prompt,
+                command="ask",
+                images=images,
+                history=history,
+                channel_history=channel_history,
+                irc=irc,
+                msg=msg,
             )
         else:
             response = self.llm_service.completion(
-                text, command="ask", history=history, irc=irc, msg=msg
+                text,
+                command="ask",
+                history=history,
+                channel_history=channel_history,
+                irc=irc,
+                msg=msg,
             )
 
         # Reply first, then store context (so user gets response even if context fails)
         irc.reply(response, prefixNick=False)
 
-        # Store conversation in context
+        # Store conversation in personal context
         self.context.add_message(nick, channel, "user", text)
         self.context.add_message(nick, channel, "assistant", response)
+
+        # Store in shared channel context (allows group conversation flow)
+        self.context.add_channel_message(channel, nick, "user", text)
+        self.context.add_channel_message(channel, irc.nick, "assistant", response)
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -330,11 +347,17 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Get conversation history for iterating on code
+        # Get conversation history (personal + shared channel)
         history = self.context.get_messages(nick, channel)
+        channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
 
         response = self.llm_service.completion(
-            text, command="code", history=history, irc=irc, msg=msg
+            text,
+            command="code",
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
         )
 
         # Reply first, then store context
@@ -349,9 +372,13 @@ class LLM(callbacks.Plugin):
             # Fallback to IRC paging if save failed
             irc.reply(response, prefixNick=False)
 
-        # Store conversation in context
+        # Store conversation in personal context
         self.context.add_message(nick, channel, "user", text)
         self.context.add_message(nick, channel, "assistant", response)
+
+        # Store in shared channel context (allows group conversation flow)
+        self.context.add_channel_message(channel, nick, "user", text)
+        self.context.add_channel_message(channel, irc.nick, "assistant", response)
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 

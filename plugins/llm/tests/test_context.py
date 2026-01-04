@@ -196,3 +196,182 @@ class TestConversationContext:
         # Each user should have their messages
         stats = ctx.get_stats()
         assert stats["active_conversations"] == 10
+
+
+class TestChannelContext:
+    """Test shared channel context functionality."""
+
+    def test_channel_context_add_and_get(self) -> None:
+        """GIVEN channel context WHEN add messages THEN get returns them."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Hello everyone")
+        ctx.add_channel_message("#channel", "bot", "assistant", "Hi Alice!")
+
+        messages = ctx.get_channel_messages("#channel")
+        assert len(messages) == 2
+        assert messages[0]["nick"] == "alice"
+        assert messages[0]["content"] == "Hello everyone"
+        assert messages[1]["nick"] == "bot"
+        assert messages[1]["content"] == "Hi Alice!"
+
+    def test_channel_context_shared_across_users(self) -> None:
+        """GIVEN channel context WHEN different users THEN same context."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "What's 2+2?")
+        ctx.add_channel_message("#channel", "bot", "assistant", "4")
+
+        # Both alice and bob should see the same channel context
+        alice_view = ctx.get_channel_messages("#channel")
+        bob_view = ctx.get_channel_messages("#channel")
+
+        assert len(alice_view) == 2
+        assert len(bob_view) == 2
+        assert alice_view == bob_view
+
+    def test_channel_context_exclude_nick(self) -> None:
+        """GIVEN channel context WHEN exclude nick THEN filters correctly."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Question from Alice")
+        ctx.add_channel_message("#channel", "bot", "assistant", "Answer to Alice")
+        ctx.add_channel_message("#channel", "bob", "user", "Question from Bob")
+        ctx.add_channel_message("#channel", "bot", "assistant", "Answer to Bob")
+
+        # Bob's view should exclude his own messages
+        bob_view = ctx.get_channel_messages("#channel", exclude_nick="bob")
+
+        assert len(bob_view) == 3
+        nicks = [m["nick"] for m in bob_view]
+        assert "bob" not in nicks
+        assert "alice" in nicks
+        assert "bot" in nicks
+
+    def test_channel_context_exclude_nick_case_insensitive(self) -> None:
+        """GIVEN channel context WHEN exclude nick with different case THEN filters."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "Alice", "user", "From Alice")
+        ctx.add_channel_message("#channel", "bob", "user", "From Bob")
+
+        # Exclude with different case
+        view = ctx.get_channel_messages("#channel", exclude_nick="ALICE")
+
+        assert len(view) == 1
+        assert view[0]["nick"] == "bob"
+
+    def test_channel_context_max_messages_limit(self) -> None:
+        """GIVEN channel context with limit WHEN exceed THEN oldest removed."""
+        config = ContextConfig(
+            max_messages=20, timeout_minutes=30, enabled=True, channel_max_messages=3
+        )
+        ctx = ConversationContext(config)
+
+        # Add 5 messages (exceeds limit of 3)
+        for i in range(5):
+            ctx.add_channel_message("#channel", f"user{i}", "user", f"Message {i}")
+
+        messages = ctx.get_channel_messages("#channel")
+        assert len(messages) == 3
+        # Should have messages 2-4, not 0-1
+        assert messages[0]["content"] == "Message 2"
+        assert messages[2]["content"] == "Message 4"
+
+    def test_channel_context_isolated_by_channel(self) -> None:
+        """GIVEN channel context WHEN different channels THEN isolated."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel1", "alice", "user", "In channel 1")
+        ctx.add_channel_message("#channel2", "alice", "user", "In channel 2")
+
+        ch1_messages = ctx.get_channel_messages("#channel1")
+        ch2_messages = ctx.get_channel_messages("#channel2")
+
+        assert len(ch1_messages) == 1
+        assert ch1_messages[0]["content"] == "In channel 1"
+        assert len(ch2_messages) == 1
+        assert ch2_messages[0]["content"] == "In channel 2"
+
+    def test_channel_context_expiry(self) -> None:
+        """GIVEN channel context WHEN timeout expires THEN cleared."""
+        config = ContextConfig(
+            max_messages=20,
+            timeout_minutes=0,
+            enabled=True,  # Immediate expiry
+        )
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Hello")
+
+        time.sleep(0.1)
+
+        messages = ctx.get_channel_messages("#channel")
+        assert len(messages) == 0
+
+    def test_channel_context_disabled(self) -> None:
+        """GIVEN context disabled WHEN channel operations THEN no storage."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Hello")
+        messages = ctx.get_channel_messages("#channel")
+
+        assert len(messages) == 0
+
+    def test_channel_context_in_stats(self) -> None:
+        """GIVEN channel context WHEN get stats THEN includes channel stats."""
+        config = ContextConfig(
+            max_messages=20, timeout_minutes=30, enabled=True, channel_max_messages=10
+        )
+        ctx = ConversationContext(config)
+
+        # Add personal context
+        ctx.add_message("user1", "#channel", "user", "Personal message")
+
+        # Add channel context
+        ctx.add_channel_message("#channel", "alice", "user", "Channel msg 1")
+        ctx.add_channel_message("#channel", "bob", "user", "Channel msg 2")
+
+        stats = ctx.get_stats()
+        assert stats["active_channels"] == 1
+        assert stats["channel_messages"] == 2
+        assert stats["channel_max_messages"] == 10
+
+    def test_channel_context_clear_all(self) -> None:
+        """GIVEN channel context WHEN clear all THEN channel context also cleared."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#channel", "user", "Personal")
+        ctx.add_channel_message("#channel", "alice", "user", "Channel")
+
+        ctx.clear_all()
+
+        assert len(ctx.get_messages("user1", "#channel")) == 0
+        assert len(ctx.get_channel_messages("#channel")) == 0
+
+    def test_channel_context_returns_copies(self) -> None:
+        """GIVEN channel context WHEN get messages THEN returns copies."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Hello")
+
+        messages1 = ctx.get_channel_messages("#channel")
+        messages2 = ctx.get_channel_messages("#channel")
+
+        # Should be different list objects
+        assert messages1 is not messages2
+        # But with same content
+        assert messages1 == messages2
+
+        # Modifying one should not affect the other or the stored data
+        messages1[0]["content"] = "Modified"
+        messages3 = ctx.get_channel_messages("#channel")
+        assert messages3[0]["content"] == "Hello"
