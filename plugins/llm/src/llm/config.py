@@ -211,3 +211,13 @@ conf.registerGlobalValue(
         _("""Maximum number of files to keep in HTTP directory"""),
     ),
 )
+
+conf.registerGlobalValue(
+    LLM,
+    "commandPrefixes",
+    registry.SpaceSeparatedListOfStrings(
+        [".", "/"],
+        _("""Command prefixes to sanitize in output. Lines starting with these
+        are prefixed with a space to prevent IRC command injection. Default: . /"""),
+    ),
+)

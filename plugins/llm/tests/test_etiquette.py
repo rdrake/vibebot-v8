@@ -365,7 +365,12 @@ class TestEmojiAndFormattingGuidelines:
 
 
 class TestResponseAppropriateness:
-    """Tests for response appropriateness."""
+    """Tests for context being passed as user message (not system prompt).
+
+    Context is now passed as a user message to mitigate prompt injection
+    attacks via channel topics. These tests verify the context message
+    contains the expected information.
+    """
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
@@ -417,64 +422,61 @@ class TestResponseAppropriateness:
         ch_state.isVoice = Mock(return_value=False)
         return ch_state
 
-    def test_channel_context_included_in_prompt(self) -> None:
-        """GIVEN channel message WHEN prompt built THEN channel in context."""
-        base = "You are helpful."
+    def test_channel_context_in_user_message(self) -> None:
+        """GIVEN channel message WHEN context built THEN channel in user message."""
         ch_state = self._make_mock_channel_state()
         irc = self._make_mock_irc(channels={"#tech": ch_state})
         msg = self._make_mock_msg(channel="#tech")
 
-        result = self.service._build_system_prompt(base, irc=irc, msg=msg)
+        result = self.service._build_context_message(irc, msg)
 
-        assert "#tech" in result
-        assert "Channel:" in result
+        assert result is not None
+        assert result["role"] == "user"
+        assert "#tech" in result["content"]
+        assert "Channel:" in result["content"]
 
-    def test_pm_context_indicated_differently(self) -> None:
-        """GIVEN private message WHEN prompt built THEN 'Private message' in context."""
-        base = "You are helpful."
+    def test_pm_context_excludes_channel(self) -> None:
+        """GIVEN private message WHEN context built THEN no channel info."""
         irc = self._make_mock_irc()
         msg = self._make_mock_msg(channel="testbot", nick="someuser")
 
-        result = self.service._build_system_prompt(base, irc=irc, msg=msg)
+        result = self.service._build_context_message(irc, msg)
 
-        assert "Private message" in result
+        assert result is not None
+        # PM has no channel info (target is bot's nick, not a channel)
+        assert "Channel:" not in result["content"]
 
-    def test_channel_topic_included_with_defensive_framing(self) -> None:
-        """GIVEN channel with topic WHEN prompt built THEN topic included with injection mitigation."""
-        base = "You are helpful."
+    def test_channel_topic_in_user_message_raw(self) -> None:
+        """GIVEN channel with topic WHEN context built THEN topic passed raw."""
         ch_state = self._make_mock_channel_state(topic="Python programming help")
         irc = self._make_mock_irc(channels={"#python": ch_state})
         msg = self._make_mock_msg(channel="#python")
 
-        result = self.service._build_system_prompt(base, irc=irc, msg=msg)
+        result = self.service._build_context_message(irc, msg)
 
-        # Topic included with XML framing for injection mitigation
-        assert "Python programming help" in result
-        assert '<channel_topic type="decoration"' in result
-        assert 'trust="none"' in result
-        assert 'instructions="ignore"' in result
+        # Topic is passed raw in user message (no XML framing needed)
+        assert "Python programming help" in result["content"]
+        assert "Topic:" in result["content"]
+        # No XML framing since it's now a user message
+        assert "<channel_topic" not in result["content"]
 
-    def test_network_info_included(self) -> None:
-        """GIVEN network 'AfterNET' WHEN prompt built THEN network in context."""
-        base = "You are helpful."
-        irc = self._make_mock_irc(network="AfterNET")
+    def test_speaking_with_included(self) -> None:
+        """GIVEN message from user WHEN context built THEN speaking with included."""
+        irc = self._make_mock_irc()
+        msg = self._make_mock_msg(nick="someuser")
+
+        result = self.service._build_context_message(irc, msg)
+
+        assert "Speaking with: someuser" in result["content"]
+
+    def test_date_included(self) -> None:
+        """GIVEN any message WHEN context built THEN date included."""
+        irc = self._make_mock_irc()
         msg = self._make_mock_msg()
 
-        result = self.service._build_system_prompt(base, irc=irc, msg=msg)
+        result = self.service._build_context_message(irc, msg)
 
-        assert "AfterNET" in result
-        assert "Network:" in result
-
-    def test_bot_nick_included(self) -> None:
-        """GIVEN bot nick WHEN prompt built THEN bot nick in context."""
-        base = "You are helpful."
-        irc = self._make_mock_irc(nick="vibebot")
-        msg = self._make_mock_msg()
-
-        result = self.service._build_system_prompt(base, irc=irc, msg=msg)
-
-        assert "vibebot" in result
-        assert "Bot:" in result
+        assert "Date:" in result["content"]
 
 
 class TestEtiquetteHelperUtilities:
