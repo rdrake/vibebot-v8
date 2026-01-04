@@ -126,6 +126,7 @@ class LLMService:
 
         # Suspicious patterns that suggest prompt injection
         injection_patterns = [
+            # Classic "ignore previous" style
             r"(?i)\b(ignore|disregard|forget)\b.{0,20}\b(above|previous|instructions?|rules?)\b",
             r"(?i)\b(new|actual|real)\b.{0,10}\b(instructions?|rules?|prompt)\b",
             r"(?i)\byou\s+(are|must|should|will)\s+now\b",
@@ -135,6 +136,13 @@ class LLMService:
             r"(?i)\brole\s*play\b",
             r"(?i)\bact\s+as\b",
             r"(?i)\bdo\s+not\s+follow\b",
+            # Direct instructions to AI/bot
+            r"(?i)\b(ai|bot|assistant|agent)s?\b.{0,30}\b(please|must|should|always|never)\b",
+            r"(?i)\battention\b.{0,20}\b(ai|bot|assistant|agent)s?\b",
+            r"(?i)\b(always|never)\b.{0,20}\b(respond|reply|include|add|end|start)\b",
+            r"(?i)\b(end|start)\b.{0,10}\b(all\s+)?(replies?|responses?|messages?)\b.{0,15}\bwith\b",
+            r"(?i)\bplease\b.{0,10}\b(always|end|start|include|add)\b",
+            r"(?i)\binsult\b",  # Just block "insult" entirely - no legit topic needs it
         ]
 
         for pattern in injection_patterns:
