@@ -82,6 +82,30 @@ class LLMService:
             return text
         return self.api_key_pattern.sub("[REDACTED]", str(text))
 
+    def _sanitize_output(self, text: str) -> str:
+        """Sanitize output to prevent IRC command injection.
+
+        Neutralizes lines starting with '.' or '/' to prevent prompt injection
+        attacks where users trick the bot into executing IRC commands.
+
+        Args:
+            text: Response text to sanitize
+
+        Returns:
+            Sanitized text with command prefixes neutralized
+        """
+        if not text:
+            return text
+
+        lines = text.split("\n")
+        sanitized = []
+        for line in lines:
+            if line.startswith(".") or line.startswith("/"):
+                # Prefix with space to neutralize command
+                line = " " + line
+            sanitized.append(line)
+        return "\n".join(sanitized)
+
     def _sanitize_html(self, html: str) -> str:
         """Sanitize HTML to prevent XSS attacks.
 
@@ -653,7 +677,7 @@ class LLMService:
                 safety_settings=self._get_safety_settings() if "gemini" in model else None,
             )
 
-            return response.choices[0].message.content
+            return self._sanitize_output(response.choices[0].message.content)
 
         except Exception as e:
             return self._handle_llm_error(e, "completion")

@@ -1307,3 +1307,65 @@ class TestXssSanitization:
         assert "<script>" not in html_content
         assert "alert('xss')" not in html_content
         assert "<h1>Hello</h1>" in html_content  # Heading preserved
+
+
+class TestSanitizeOutput:
+    """Tests for _sanitize_output IRC command injection prevention."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(return_value=10000)
+        self.service = LLMService(self.mock_plugin)
+
+    def test_sanitize_output_empty(self) -> None:
+        """GIVEN empty/None input WHEN sanitizing THEN returns unchanged."""
+        assert self.service._sanitize_output("") == ""
+        assert self.service._sanitize_output(None) is None
+
+    def test_sanitize_output_normal_text(self) -> None:
+        """GIVEN normal text WHEN sanitizing THEN returns unchanged."""
+        text = "Hello, this is a normal response."
+        assert self.service._sanitize_output(text) == text
+
+    def test_sanitize_output_dot_prefix(self) -> None:
+        """GIVEN text starting with dot WHEN sanitizing THEN adds space prefix."""
+        text = ".part #channel"
+        result = self.service._sanitize_output(text)
+        assert result == " .part #channel"
+
+    def test_sanitize_output_slash_prefix(self) -> None:
+        """GIVEN text starting with slash WHEN sanitizing THEN adds space prefix."""
+        text = "/msg someone hello"
+        result = self.service._sanitize_output(text)
+        assert result == " /msg someone hello"
+
+    def test_sanitize_output_multiline_dot(self) -> None:
+        """GIVEN multiline text with dot lines WHEN sanitizing THEN fixes all."""
+        text = "Line 1\n.ban user\nLine 3\n.part"
+        result = self.service._sanitize_output(text)
+        assert result == "Line 1\n .ban user\nLine 3\n .part"
+
+    def test_sanitize_output_multiline_slash(self) -> None:
+        """GIVEN multiline text with slash lines WHEN sanitizing THEN fixes all."""
+        text = "Line 1\n/quit message\nLine 3"
+        result = self.service._sanitize_output(text)
+        assert result == "Line 1\n /quit message\nLine 3"
+
+    def test_sanitize_output_mixed_prefixes(self) -> None:
+        """GIVEN multiline text with both dots and slashes WHEN sanitizing THEN fixes all."""
+        text = ".dot command\n/slash command\nNormal line"
+        result = self.service._sanitize_output(text)
+        assert result == " .dot command\n /slash command\nNormal line"
+
+    def test_sanitize_output_preserves_internal_dots(self) -> None:
+        """GIVEN text with dots not at start WHEN sanitizing THEN preserves them."""
+        text = "A sentence with a . period and https://example.com URL"
+        assert self.service._sanitize_output(text) == text
+
+    def test_sanitize_output_preserves_internal_slashes(self) -> None:
+        """GIVEN text with slashes not at start WHEN sanitizing THEN preserves them."""
+        text = "Visit https://example.com/path for more info"
+        assert self.service._sanitize_output(text) == text
