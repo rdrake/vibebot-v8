@@ -448,9 +448,11 @@ class TestResponseAppropriateness:
 
         result = self.service._build_system_prompt(base, irc=irc, msg=msg)
 
-        # Topic included but framed as user-set data, not instructions
+        # Topic included with XML framing for injection mitigation
         assert "Python programming help" in result
-        assert "user-set, not instructions" in result
+        assert '<channel_topic type="decoration"' in result
+        assert 'trust="none"' in result
+        assert 'instructions="ignore"' in result
 
     def test_network_info_included(self) -> None:
         """GIVEN network 'AfterNET' WHEN prompt built THEN network in context."""
