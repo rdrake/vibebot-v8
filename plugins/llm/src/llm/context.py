@@ -23,21 +23,13 @@ class ContextConfig:
 
 @dataclass
 class Conversation:
-    """A single conversation's state."""
+    """A conversation's state.
 
-    messages: list[dict[str, str]] = field(default_factory=list)
-    last_activity: float = field(default_factory=time.time)
-
-
-@dataclass
-class ChannelContext:
-    """Shared channel context state.
-
-    Messages include nick to track who said what.
+    For personal context: messages have {"role": str, "content": str}
+    For channel context: messages have {"nick": str, "role": str, "content": str}
     """
 
     messages: list[dict[str, str]] = field(default_factory=list)
-    # Messages have: {"nick": str, "role": str, "content": str}
     last_activity: float = field(default_factory=time.time)
 
 
@@ -57,8 +49,8 @@ class ConversationContext:
         self._lock = Lock()
         # Key: (nick, channel) -> Conversation
         self._conversations: dict[tuple[str, str], Conversation] = {}
-        # Key: channel -> ChannelContext (shared across all users)
-        self._channel_contexts: dict[str, ChannelContext] = {}
+        # Key: channel -> Conversation (shared across all users)
+        self._channel_contexts: dict[str, Conversation] = {}
 
     def _get_key(self, nick: str, channel: str) -> tuple[str, str]:
         """Generate conversation key.
@@ -94,24 +86,10 @@ class ConversationContext:
 
         # Also prune expired channel contexts
         expired_channels = [
-            ch for ch, ctx in self._channel_contexts.items() if self._is_channel_expired(ctx)
+            ch for ch, ctx in self._channel_contexts.items() if self._is_expired(ctx)
         ]
         for ch in expired_channels:
             del self._channel_contexts[ch]
-
-    def _is_channel_expired(self, context: ChannelContext) -> bool:
-        """Check if a channel context has expired.
-
-        Args:
-            context: Channel context to check
-
-        Returns:
-            True if expired
-        """
-        if not self.config.enabled:
-            return True
-        timeout_seconds = self.config.timeout_minutes * 60
-        return time.time() - context.last_activity > timeout_seconds
 
     def add_message(self, nick: str, channel: str, role: str, content: str) -> None:
         """Add a message to conversation history.
@@ -164,8 +142,8 @@ class ConversationContext:
             if conv is None or self._is_expired(conv):
                 return []
 
-            # Return a copy to prevent external modification
-            return list(conv.messages)
+            # Return deep copies to prevent external modification
+            return [dict(msg) for msg in conv.messages]
 
     def add_channel_message(self, channel: str, nick: str, role: str, content: str) -> None:
         """Add a message to shared channel context.
@@ -187,7 +165,7 @@ class ConversationContext:
 
             ch_key = channel.lower()
             if ch_key not in self._channel_contexts:
-                self._channel_contexts[ch_key] = ChannelContext()
+                self._channel_contexts[ch_key] = Conversation()
 
             ctx = self._channel_contexts[ch_key]
             ctx.messages.append({"nick": nick, "role": role, "content": content})
@@ -219,7 +197,7 @@ class ConversationContext:
             ch_key = channel.lower()
             ctx = self._channel_contexts.get(ch_key)
 
-            if ctx is None or self._is_channel_expired(ctx):
+            if ctx is None or self._is_expired(ctx):
                 return []
 
             # Filter out excluded nick if specified
