@@ -27,6 +27,114 @@ if TYPE_CHECKING:
 _ = PluginInternationalization("LLM")
 
 
+HELP_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Bot Commands</title>
+<style>
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 20px;
+    background: #272822;
+    color: #f8f8f2;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+    max-width: 800px;
+    margin: 0 auto;
+}
+h1 { color: #f8f8f2; margin-bottom: 0.5em; }
+h2 { color: #a6e22e; margin-top: 1.5em; border-bottom: 1px solid #49483e; padding-bottom: 0.3em; }
+h3 { color: #66d9ef; margin-top: 1.2em; }
+code {
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace;
+    font-size: 14px;
+    background: #1e1e1e;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+pre {
+    background: #1e1e1e;
+    padding: 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 1em 0;
+}
+pre code { padding: 0; background: none; }
+.command { color: #e6db74; font-weight: bold; }
+.param { color: #fd971f; }
+.example { color: #75715e; font-style: italic; }
+ul { margin: 0.5em 0; padding-left: 1.5em; }
+li { margin: 0.3em 0; }
+a { color: #66d9ef; }
+.note {
+    background: #3e3d32;
+    border-left: 3px solid #a6e22e;
+    padding: 10px 15px;
+    margin: 1em 0;
+    border-radius: 0 6px 6px 0;
+}
+@media (max-width: 600px) {
+    body { padding: 15px; }
+    pre { padding: 12px; font-size: 13px; }
+}
+</style>
+</head>
+<body>
+<h1>LLM Bot Commands</h1>
+<p>AI-powered IRC bot commands using LiteLLM.</p>
+
+<h2>Commands</h2>
+
+<h3><code class="command">%ask</code> <span class="param">&lt;question&gt;</span></h3>
+<p>Ask the AI a question. Supports conversation context (follow-up questions) and vision (include image URLs).</p>
+<pre><code><span class="example">%ask What is the capital of France?</span>
+<span class="example">%ask Describe this: https://example.com/image.jpg</span>
+<span class="example">%ask And what about Germany?</span>  <span class="example">(follow-up using context)</span></code></pre>
+
+<h3><code class="command">%code</code> <span class="param">&lt;request&gt;</span></h3>
+<p>Generate code based on your request. Code is saved to an HTTP link with syntax highlighting.</p>
+<pre><code><span class="example">%code Python function to calculate fibonacci numbers</span>
+<span class="example">%code Now add memoization to that</span>
+<span class="example">%code JavaScript async fetch with error handling</span></code></pre>
+
+<h3><code class="command">%draw</code> <span class="param">&lt;prompt&gt;</span></h3>
+<p>Generate an image from a text description.</p>
+<pre><code><span class="example">%draw A sunset over mountains in watercolor style</span>
+<span class="example">%draw A cyberpunk cityscape at night</span></code></pre>
+
+<h3><code class="command">%forget</code> <span class="param">[channel]</span></h3>
+<p>Clear your conversation context (memory) for the current or specified channel. Use this to start fresh.</p>
+<pre><code><span class="example">%forget</span>
+<span class="example">%forget #channel</span></code></pre>
+
+<h2>Features</h2>
+<ul>
+<li><strong>Conversation Context</strong> &ndash; The bot remembers recent exchanges for natural follow-up questions</li>
+<li><strong>Vision Support</strong> &ndash; Include image URLs in <code>%ask</code> for image analysis</li>
+<li><strong>Syntax Highlighting</strong> &ndash; Generated code is displayed with full highlighting</li>
+<li><strong>Multi-Provider</strong> &ndash; Supports various AI providers via LiteLLM</li>
+</ul>
+
+<h2>Configuration</h2>
+<div class="note">
+Configuration is managed by the bot operator via Limnoria's config system.
+Commands require the appropriate capability (e.g., <code>llm.ask</code>).
+</div>
+
+<p>Key settings include:</p>
+<ul>
+<li><strong>Model selection</strong> &ndash; Different models for ask/code/draw commands</li>
+<li><strong>System prompts</strong> &ndash; Customize bot personality per command</li>
+<li><strong>Context settings</strong> &ndash; Configure conversation memory limits</li>
+</ul>
+
+</body>
+</html>"""
+
+
 class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
     """HTTP callback to serve LLM-generated files (images, code)."""
 
@@ -45,10 +153,42 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             return http_root
         return conf.supybot.directories.data.web.dirize("llm")
 
+    def _serve_help_page(self, handler: httpserver.RequestHandler) -> None:
+        """Serve the help documentation page.
+
+        Serves custom help.html from web dir if it exists,
+        otherwise falls back to built-in HELP_HTML_TEMPLATE.
+        """
+        web_dir = Path(self._get_web_dir())
+        custom_help = web_dir / "help.html"
+
+        # Try custom help.html first
+        if custom_help.is_file():
+            try:
+                content = custom_help.read_bytes()
+            except OSError:
+                content = HELP_HTML_TEMPLATE.encode("utf-8")
+        else:
+            content = HELP_HTML_TEMPLATE.encode("utf-8")
+
+        try:
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/html; charset=utf-8")
+            handler.send_header("Content-Length", str(len(content)))
+            handler.end_headers()
+            handler.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Client disconnected
+
     def doGet(self, handler: httpserver.RequestHandler, path: str) -> None:  # noqa: N802
         """Serve static files from LLM web directory."""
         # Remove leading slash
         path = path.lstrip("/")
+
+        # Serve help page at root
+        if path == "":
+            self._serve_help_page(handler)
+            return
 
         # Security: prevent directory traversal (early check before path operations)
         if ".." in path or path.startswith("/"):
@@ -216,6 +356,41 @@ class LLM(callbacks.Plugin):
             channel_max_messages=self.registryValue("channelContextMaxMessages"),
         )
         self.context = ConversationContext(config)
+
+    def _get_help_url(self) -> str:
+        """Get the URL to the web help documentation.
+
+        Uses same URL construction pattern as service._get_http_paths().
+
+        Returns:
+            Full URL to help page (e.g., http://localhost:8080/llm/)
+        """
+        url_base = self.registryValue("httpUrlBase")
+
+        if not url_base:
+            public_url = conf.supybot.servers.http.publicUrl()
+            if public_url:
+                url_base = public_url.rstrip("/") + "/llm"
+            else:
+                port = conf.supybot.servers.http.port()
+                url_base = f"http://localhost:{port}/llm"
+
+        return f"{url_base}/"
+
+    def getPluginHelp(self) -> str:  # noqa: N802
+        """Return plugin help with dynamic documentation URL.
+
+        Overrides Limnoria's default to include web docs URL.
+        """
+        url = self._get_help_url()
+        return (
+            _(
+                "AI-powered commands using LiteLLM. "
+                "Commands: ask, code, draw, forget. "
+                "Full documentation: %s"
+            )
+            % url
+        )
 
     def _get_nick(self, msg: IrcMsg) -> str:
         """Extract nick from IRC message.

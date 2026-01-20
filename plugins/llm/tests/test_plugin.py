@@ -150,6 +150,12 @@ class TestHTTPCallbackDoGet:
         handler.wfile = MagicMock()
         return handler
 
+    def test_doget_serves_help_at_root(self, http_callback, mock_handler: MagicMock) -> None:
+        """GIVEN empty path WHEN doGet called THEN serves help page."""
+        http_callback.doGet(mock_handler, "")
+        mock_handler.send_response.assert_called_with(200)
+        mock_handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
+
     def test_doget_blocks_directory_traversal(self, http_callback, mock_handler: MagicMock) -> None:
         """GIVEN path with .. WHEN doGet called THEN returns 403."""
         http_callback.doGet(mock_handler, "../etc/passwd")
@@ -352,6 +358,94 @@ class TestHTTPCallbackGetWebDir:
         mock_plugin.registryValue.assert_called_with("httpRoot")
 
 
+class TestHTTPCallbackServeHelpPage:
+    """Test HTTP callback _serve_help_page method."""
+
+    @pytest.fixture
+    def mock_plugin(self) -> MagicMock:
+        """Create a mock plugin for HTTP callback."""
+        plugin = MagicMock()
+        plugin.registryValue.return_value = ""
+        return plugin
+
+    @pytest.fixture
+    def http_callback(self, mock_plugin: MagicMock):
+        """Create an HTTP callback with mock plugin."""
+        from llm.plugin import LLMHTTPCallback
+
+        return LLMHTTPCallback(mock_plugin)
+
+    @pytest.fixture
+    def mock_handler(self) -> MagicMock:
+        """Create a mock HTTP handler."""
+        handler = MagicMock()
+        handler.wfile = MagicMock()
+        return handler
+
+    def test_serve_help_page_uses_builtin_template(
+        self, http_callback, mock_handler: MagicMock
+    ) -> None:
+        """GIVEN no custom help.html WHEN _serve_help_page THEN uses builtin template."""
+        from llm.plugin import HELP_HTML_TEMPLATE
+
+        with patch.object(http_callback, "_get_web_dir", return_value="/nonexistent"):
+            http_callback._serve_help_page(mock_handler)
+
+        mock_handler.send_response.assert_called_with(200)
+        mock_handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
+        # Verify content matches template
+        written_content = mock_handler.wfile.write.call_args[0][0]
+        assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
+
+    def test_serve_help_page_uses_custom_file_when_exists(
+        self, http_callback, mock_handler: MagicMock
+    ) -> None:
+        """GIVEN custom help.html WHEN _serve_help_page THEN uses custom file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_help = os.path.join(tmpdir, "help.html")
+            custom_content = b"<html>Custom Help</html>"
+            with open(custom_help, "wb") as f:
+                f.write(custom_content)
+
+            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
+                http_callback._serve_help_page(mock_handler)
+
+            mock_handler.send_response.assert_called_with(200)
+            written_content = mock_handler.wfile.write.call_args[0][0]
+            assert written_content == custom_content
+
+    def test_serve_help_page_handles_broken_pipe(
+        self, http_callback, mock_handler: MagicMock
+    ) -> None:
+        """GIVEN client disconnect WHEN _serve_help_page THEN no error raised."""
+        mock_handler.wfile.write.side_effect = BrokenPipeError()
+
+        with patch.object(http_callback, "_get_web_dir", return_value="/nonexistent"):
+            # Should not raise
+            http_callback._serve_help_page(mock_handler)
+
+    def test_serve_help_page_falls_back_on_read_error(
+        self, http_callback, mock_handler: MagicMock
+    ) -> None:
+        """GIVEN custom file read error WHEN _serve_help_page THEN falls back to template."""
+        from llm.plugin import HELP_HTML_TEMPLATE
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_help = os.path.join(tmpdir, "help.html")
+            # Create file then make it unreadable by mocking
+            with open(custom_help, "wb") as f:
+                f.write(b"content")
+
+            with (
+                patch.object(http_callback, "_get_web_dir", return_value=tmpdir),
+                patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")),
+            ):
+                http_callback._serve_help_page(mock_handler)
+
+            written_content = mock_handler.wfile.write.call_args[0][0]
+            assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
+
+
 class TestPluginHelperMethods:
     """Test plugin helper methods."""
 
@@ -425,6 +519,81 @@ class TestPluginHelperMethods:
             result = plugin._is_old_message(mock_msg)
 
         assert result is False
+
+    def test_get_help_url_uses_http_url_base_when_set(self) -> None:
+        """GIVEN httpUrlBase configured WHEN _get_help_url THEN uses configured base."""
+        from llm.plugin import LLM
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.registryValue = MagicMock(return_value="https://example.com/llm")
+
+            result = plugin._get_help_url()
+
+        assert result == "https://example.com/llm/"
+
+    def test_get_help_url_uses_public_url_fallback(self) -> None:
+        """GIVEN httpUrlBase empty WHEN _get_help_url THEN uses publicUrl."""
+        from llm import plugin as plugin_module
+        from llm.plugin import LLM
+
+        # Create mock conf with nested structure
+        mock_conf = MagicMock()
+        mock_conf.supybot.servers.http.publicUrl.return_value = "https://bot.example.com/"
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.registryValue = MagicMock(return_value="")
+
+            # Patch conf at the module level
+            original_conf = plugin_module.conf
+            plugin_module.conf = mock_conf
+            try:
+                result = plugin._get_help_url()
+            finally:
+                plugin_module.conf = original_conf
+
+        assert result == "https://bot.example.com/llm/"
+
+    def test_get_help_url_uses_localhost_fallback(self) -> None:
+        """GIVEN no publicUrl WHEN _get_help_url THEN uses localhost with port."""
+        from llm import plugin as plugin_module
+        from llm.plugin import LLM
+
+        # Create mock conf with nested structure
+        mock_conf = MagicMock()
+        mock_conf.supybot.servers.http.publicUrl.return_value = ""
+        mock_conf.supybot.servers.http.port.return_value = 8080
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.registryValue = MagicMock(return_value="")
+
+            # Patch conf at the module level
+            original_conf = plugin_module.conf
+            plugin_module.conf = mock_conf
+            try:
+                result = plugin._get_help_url()
+            finally:
+                plugin_module.conf = original_conf
+
+        assert result == "http://localhost:8080/llm/"
+
+    def test_get_plugin_help_includes_url(self) -> None:
+        """GIVEN plugin WHEN getPluginHelp called THEN includes help URL."""
+        from llm.plugin import LLM
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.registryValue = MagicMock(return_value="https://example.com/llm")
+
+            result = plugin.getPluginHelp()
+
+        assert "https://example.com/llm/" in result
+        assert "ask" in result
+        assert "code" in result
+        assert "draw" in result
+        assert "forget" in result
 
 
 class TestDoPrivmsg:
