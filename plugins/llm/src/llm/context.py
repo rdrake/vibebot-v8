@@ -11,6 +11,14 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+class Role:
+    """Message role constants for LLM conversations."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 @dataclass
 class ContextConfig:
     """Configuration for conversation context."""
@@ -51,6 +59,13 @@ class ConversationContext:
         self._conversations: dict[tuple[str, str], Conversation] = {}
         # Key: channel -> Conversation (shared across all users)
         self._channel_contexts: dict[str, Conversation] = {}
+
+    def __repr__(self) -> str:
+        """Return string representation for debugging."""
+        return (
+            f"ConversationContext(conversations={len(self._conversations)}, "
+            f"channels={len(self._channel_contexts)}, enabled={self.config.enabled})"
+        )
 
     def _get_key(self, nick: str, channel: str) -> tuple[str, str]:
         """Generate conversation key.

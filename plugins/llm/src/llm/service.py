@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import bleach
 import litellm
@@ -22,7 +23,17 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
+from .context import Role
+
 _ = PluginInternationalization("LLM")
+
+
+class ValidationResult(NamedTuple):
+    """Result of input validation."""
+
+    is_valid: bool
+    error: str = ""
+
 
 if TYPE_CHECKING:
     from typing import Any
@@ -233,8 +244,8 @@ class LLMService:
                 }
                 lang_name = language_names.get(language, language)
                 result += f"\n\nRespond in {lang_name}."
-        except Exception:
-            pass  # Fail silently if conf not available
+        except (AttributeError, KeyError, RuntimeError):
+            pass  # Config not available (e.g., in test environment)
 
         return result
 
@@ -300,7 +311,7 @@ class LLMService:
             nick = ircutils.nickFromHostmask(msg.prefix)
             lines.append(f"Speaking with: {nick}")
 
-        return {"role": "user", "content": "Context:\n" + "\n".join(lines)}
+        return {"role": Role.USER, "content": "Context:\n" + "\n".join(lines)}
 
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.
@@ -359,23 +370,23 @@ class LLMService:
         """
         return self.image_pattern.findall(text)
 
-    def validate_prompt(self, prompt: str) -> tuple[bool, str]:
+    def validate_prompt(self, prompt: str) -> ValidationResult:
         """Validate prompt input.
 
         Args:
             prompt: User prompt to validate
 
         Returns:
-            Tuple of (is_valid, error_message)
+            ValidationResult with is_valid flag and error message if invalid
         """
         if not prompt or not prompt.strip():
-            return False, _("Prompt cannot be empty")
+            return ValidationResult(False, _("Prompt cannot be empty"))
 
         max_length = self.plugin.registryValue("maxPromptLength")
         if len(prompt) > max_length:
-            return False, _("Prompt too long (max %d characters)") % max_length
+            return ValidationResult(False, _("Prompt too long (max %d characters)") % max_length)
 
-        return True, ""
+        return ValidationResult(True)
 
     def validate_image_url(self, url: str) -> bool:
         """Validate image URL format and extension.
@@ -884,13 +895,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         # Add system prompt if provided
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": Role.SYSTEM, "content": system_prompt})
 
         # Add context as user message (mitigates topic prompt injection)
         context_msg = self._build_context_message(irc, msg)
         if context_msg:
             messages.append(context_msg)
-            messages.append({"role": "assistant", "content": "Got it."})
+            messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
         # Add shared channel context (allows following group conversations)
         if channel_history:
@@ -898,11 +909,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             if channel_summary:
                 messages.append(
                     {
-                        "role": "user",
+                        "role": Role.USER,
                         "content": f"[Recent channel discussion]\n{channel_summary}",
                     }
                 )
-                messages.append({"role": "assistant", "content": "I see the context."})
+                messages.append({"role": Role.ASSISTANT, "content": "I see the context."})
 
         # Add personal conversation history if provided
         if history:
@@ -914,10 +925,10 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
             for img_url in images:
                 content.append({"type": "image_url", "image_url": {"url": img_url}})
-            messages.append({"role": "user", "content": content})
+            messages.append({"role": Role.USER, "content": content})
         else:
             # Simple text message
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": Role.USER, "content": prompt})
 
         return messages
 
@@ -1045,8 +1056,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         # If still too many files, remove oldest
         if len(files) > max_files:
-            import contextlib
-
             files.sort(key=lambda x: x[1])  # Sort by mtime
             for file_path, _ in files[:-max_files]:
                 with contextlib.suppress(OSError):

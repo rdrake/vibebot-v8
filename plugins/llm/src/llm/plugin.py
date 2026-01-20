@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import mimetypes
-import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import supybot.callbacks as callbacks
@@ -18,7 +18,7 @@ import supybot.schedule as schedule
 from supybot.commands import wrap
 from supybot.i18n import PluginInternationalization
 
-from .context import ContextConfig, ConversationContext
+from .context import ContextConfig, ConversationContext, Role
 from .service import LLMService
 
 if TYPE_CHECKING:
@@ -50,46 +50,43 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
         # Remove leading slash
         path = path.lstrip("/")
 
-        # Security: prevent directory traversal
+        # Security: prevent directory traversal (early check before path operations)
         if ".." in path or path.startswith("/"):
             handler.send_response(403)
             handler.end_headers()
             return
 
-        web_dir = self._get_web_dir()
-        filepath = os.path.join(web_dir, path)
+        web_dir = Path(self._get_web_dir())
+        filepath = web_dir / path
 
         # Security: resolve symlinks and verify path is under web root
         try:
-            real_web_dir = os.path.realpath(web_dir)
-            real_filepath = os.path.realpath(filepath)
+            resolved_web_dir = web_dir.resolve()
+            resolved_filepath = filepath.resolve()
 
-            # Ensure resolved path is under web directory
-            if (
-                not real_filepath.startswith(real_web_dir + os.sep)
-                and real_filepath != real_web_dir
-            ):
+            # Ensure resolved path is under web directory (Python 3.9+)
+            if not resolved_filepath.is_relative_to(resolved_web_dir):
                 handler.send_response(403)
                 handler.end_headers()
                 return
-        except OSError:
+        except (OSError, ValueError):
             handler.send_response(403)
             handler.end_headers()
             return
 
         # Check file exists
-        if not os.path.isfile(real_filepath):
+        if not resolved_filepath.is_file():
             handler.send_response(404)
             handler.end_headers()
             return
 
         # Determine content type
-        content_type, _ = mimetypes.guess_type(real_filepath)
+        content_type, _ = mimetypes.guess_type(str(resolved_filepath))
         if content_type is None:
             content_type = "application/octet-stream"
 
         try:
-            with open(real_filepath, "rb") as f:
+            with open(resolved_filepath, "rb") as f:
                 content = f.read()
 
             handler.send_response(200)
@@ -208,7 +205,7 @@ class LLM(callbacks.Plugin):
         message_text = msg.args[1] if len(msg.args) > 1 else ""
 
         # Store in conversation context for richer follow-up questions
-        self.context.add_message(nick, channel, "user", message_text)
+        self.context.add_message(nick, channel, Role.USER, message_text)
 
     def _update_context(self) -> None:
         """Update context manager from current config."""
@@ -314,12 +311,12 @@ class LLM(callbacks.Plugin):
         irc.reply(response, prefixNick=False)
 
         # Store conversation in personal context
-        self.context.add_message(nick, channel, "user", text)
-        self.context.add_message(nick, channel, "assistant", response)
+        self.context.add_message(nick, channel, Role.USER, text)
+        self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
         # Store in shared channel context (allows group conversation flow)
-        self.context.add_channel_message(channel, nick, "user", text)
-        self.context.add_channel_message(channel, irc.nick, "assistant", response)
+        self.context.add_channel_message(channel, nick, Role.USER, text)
+        self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -373,12 +370,12 @@ class LLM(callbacks.Plugin):
             irc.reply(response, prefixNick=False)
 
         # Store conversation in personal context
-        self.context.add_message(nick, channel, "user", text)
-        self.context.add_message(nick, channel, "assistant", response)
+        self.context.add_message(nick, channel, Role.USER, text)
+        self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
         # Store in shared channel context (allows group conversation flow)
-        self.context.add_channel_message(channel, nick, "user", text)
-        self.context.add_channel_message(channel, irc.nick, "assistant", response)
+        self.context.add_channel_message(channel, nick, Role.USER, text)
+        self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
