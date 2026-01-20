@@ -130,10 +130,7 @@ Context is per-user per-channel. Cleared after 30 minutes of inactivity or when 
 ```
 supybot.plugins.LLM.httpRoot: /var/www/llm
 supybot.plugins.LLM.httpUrlBase: https://example.com/llm
-supybot.plugins.LLM.codeThreshold: 20
 ```
-
-Code longer than `codeThreshold` lines is saved to HTTP instead of pasted to IRC.
 
 If `httpRoot` is empty (default), uses Limnoria's built-in HTTP server at `data/web/llm/`.
 

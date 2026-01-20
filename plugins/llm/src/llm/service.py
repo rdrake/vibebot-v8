@@ -393,8 +393,8 @@ class LLMService:
 
         Security checks:
         - Only http/https schemes allowed (blocks javascript:, data:, file:, ftp:)
-        - No path traversal attempts (blocks ../)
-        - Must have valid image extension
+        - No path traversal attempts (blocks ../ in path)
+        - Must have valid image extension (checked on path, ignoring query string)
 
         Args:
             url: Image URL to validate
@@ -402,17 +402,24 @@ class LLMService:
         Returns:
             True if valid and safe, False otherwise
         """
+        from urllib.parse import urlparse
+
         # Only allow http/https
         if not url.startswith(("http://", "https://")):
             return False
 
-        # Block path traversal attempts
-        if "../" in url or "..\\" in url:
+        try:
+            parsed = urlparse(url)
+        except ValueError:
             return False
 
-        # Check for valid image extension
+        # Block path traversal attempts (check path component only)
+        if ".." in parsed.path:
+            return False
+
+        # Check for valid image extension (path only, ignores query/fragment)
         valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        return any(url.lower().endswith(ext) for ext in valid_extensions)
+        return any(parsed.path.lower().endswith(ext) for ext in valid_extensions)
 
     def _get_safety_settings(self) -> list[dict[str, str]]:
         """Get Gemini safety settings (all categories set to BLOCK_NONE).

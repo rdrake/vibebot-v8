@@ -346,6 +346,7 @@ class LLM(callbacks.Plugin):
 
         # Store in conversation context for richer follow-up questions
         self.context.add_message(nick, channel, Role.USER, message_text)
+        self.context.add_channel_message(channel, nick, Role.USER, message_text)
 
     def _update_context(self) -> None:
         """Update context manager from current config."""
@@ -425,6 +426,17 @@ class LLM(callbacks.Plugin):
         """
         return msg.time < self.startup_time
 
+    def _get_context_enabled(self, channel: str) -> bool:
+        """Check if context is enabled for a channel.
+
+        Args:
+            channel: Channel name
+
+        Returns:
+            True if context is enabled for this channel
+        """
+        return self.registryValue("contextEnabled", channel)
+
     def ask(
         self,
         irc: callbacks.Irc,
@@ -452,9 +464,12 @@ class LLM(callbacks.Plugin):
         # Detect images for vision
         images = self.llm_service.detect_images(text)
 
-        # Get conversation history (personal + shared channel)
-        history = self.context.get_messages(nick, channel)
-        channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+        # Get conversation history (personal + shared channel) if context enabled
+        if self._get_context_enabled(channel):
+            history = self.context.get_messages(nick, channel)
+            channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+        else:
+            history, channel_history = [], []
 
         if images:
             # Clean prompt by removing image URLs
@@ -485,13 +500,15 @@ class LLM(callbacks.Plugin):
         # Reply first, then store context (so user gets response even if context fails)
         irc.reply(response, prefixNick=False)
 
-        # Store conversation in personal context
-        self.context.add_message(nick, channel, Role.USER, text)
-        self.context.add_message(nick, channel, Role.ASSISTANT, response)
+        # Store conversation context if enabled for this channel
+        if self._get_context_enabled(channel):
+            # Store in personal context
+            self.context.add_message(nick, channel, Role.USER, text)
+            self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
-        # Store in shared channel context (allows group conversation flow)
-        self.context.add_channel_message(channel, nick, Role.USER, text)
-        self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+            # Store in shared channel context (allows group conversation flow)
+            self.context.add_channel_message(channel, nick, Role.USER, text)
+            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -519,9 +536,12 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Get conversation history (personal + shared channel)
-        history = self.context.get_messages(nick, channel)
-        channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+        # Get conversation history (personal + shared channel) if context enabled
+        if self._get_context_enabled(channel):
+            history = self.context.get_messages(nick, channel)
+            channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+        else:
+            history, channel_history = [], []
 
         response = self.llm_service.completion(
             text,
@@ -538,24 +558,27 @@ class LLM(callbacks.Plugin):
             # Try AI-generated summary first
             summary = self.llm_service.summarize(response, channel)
             if summary:
-                preview = summary
+                preview = self.llm_service._sanitize_output(summary)
             else:
                 # Fallback to truncation if summarization fails
                 preview = response.replace("\n", " ").strip()
                 if len(preview) > 60:
                     preview = preview[:57] + "..."
+                preview = self.llm_service._sanitize_output(preview)
             irc.reply(f"{preview} — {url}", prefixNick=False)
         else:
             # Fallback to IRC paging if save failed
             irc.reply(response, prefixNick=False)
 
-        # Store conversation in personal context
-        self.context.add_message(nick, channel, Role.USER, text)
-        self.context.add_message(nick, channel, Role.ASSISTANT, response)
+        # Store conversation context if enabled for this channel
+        if self._get_context_enabled(channel):
+            # Store in personal context
+            self.context.add_message(nick, channel, Role.USER, text)
+            self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
-        # Store in shared channel context (allows group conversation flow)
-        self.context.add_channel_message(channel, nick, Role.USER, text)
-        self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+            # Store in shared channel context (allows group conversation flow)
+            self.context.add_channel_message(channel, nick, Role.USER, text)
+            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 

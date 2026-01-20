@@ -129,8 +129,7 @@ class ConversationContext:
             conv.messages.append({"role": role, "content": content})
             conv.last_activity = time.time()
 
-            # Trim to max messages (keep pairs to maintain context coherence)
-            # Each exchange is 2 messages (user + assistant)
+            # Trim to max messages, keeping most recent
             if len(conv.messages) > self.config.max_messages:
                 # Remove oldest messages, keeping most recent
                 conv.messages = conv.messages[-self.config.max_messages :]
