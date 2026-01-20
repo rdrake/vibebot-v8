@@ -110,13 +110,19 @@ class TestLLMService:
 
     def test_validate_image_url_accepts_valid_http(self) -> None:
         """GIVEN valid http URLs WHEN validated THEN accepted."""
-        assert self.service.validate_image_url("http://example.com/image.jpg") is True
-        assert self.service.validate_image_url("http://example.com/photo.png") is True
+        # Mock SSRF check to allow public URLs (real DNS may vary)
+        with patch.object(self.service, "_is_private_host", return_value=False):
+            assert self.service.validate_image_url("http://example.com/image.jpg") is True
+            assert self.service.validate_image_url("http://example.com/photo.png") is True
 
     def test_validate_image_url_accepts_valid_https(self) -> None:
         """GIVEN valid https URLs WHEN validated THEN accepted."""
-        assert self.service.validate_image_url("https://example.com/image.jpg") is True
-        assert self.service.validate_image_url("https://cdn.example.com/path/to/image.gif") is True
+        # Mock SSRF check to allow public URLs (real DNS may vary)
+        with patch.object(self.service, "_is_private_host", return_value=False):
+            assert self.service.validate_image_url("https://example.com/image.jpg") is True
+            assert (
+                self.service.validate_image_url("https://cdn.example.com/path/to/image.gif") is True
+            )
 
     def test_validate_image_url_rejects_invalid_extension(self) -> None:
         """GIVEN URL without image extension WHEN validated THEN rejected."""
@@ -185,31 +191,6 @@ class TestLLMService:
         clean, lang = self.service._strip_markdown_fences(code)
         assert lang is None
         assert clean == code
-
-    def test_detect_language_python(self) -> None:
-        """Language detection identifies Python."""
-        assert self.service._detect_language("def hello():\n    pass") == "python"
-        assert self.service._detect_language("import os") == "python"
-
-    def test_detect_language_javascript(self) -> None:
-        """Language detection identifies JavaScript."""
-        assert self.service._detect_language("const x = 5;") == "javascript"
-        assert self.service._detect_language("let y = 10;") == "javascript"
-        assert self.service._detect_language("function foo() {}") == "javascript"
-
-    def test_detect_language_go(self) -> None:
-        """Language detection identifies Go."""
-        assert self.service._detect_language("package main") == "go"
-        assert self.service._detect_language("func main() {}") == "go"
-
-    def test_detect_language_c(self) -> None:
-        """Language detection identifies C."""
-        assert self.service._detect_language("#include <stdio.h>") == "c"
-        assert self.service._detect_language("int main() {}") == "c"
-
-    def test_detect_language_unknown(self) -> None:
-        """Language detection returns text for unknown."""
-        assert self.service._detect_language("random stuff here") == "text"
 
     def test_concurrent_api_key_isolation(self) -> None:
         """GIVEN concurrent requests WHEN different API keys THEN no cross-contamination."""
@@ -1414,3 +1395,83 @@ class TestSummarize:
             self.service.summarize("content")
 
         assert completion_kwargs.get("safety_settings") is None
+
+
+class TestImageUrlSsrfProtection:
+    """Tests for SSRF protection in image URL validation."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
+        self.service = LLMService(self.mock_plugin)
+
+    def test_blocks_localhost(self) -> None:
+        """GIVEN localhost URL WHEN validated THEN rejected."""
+        assert self.service.validate_image_url("http://localhost/image.png") is False
+        assert self.service.validate_image_url("http://127.0.0.1/image.png") is False
+
+    def test_blocks_private_ranges(self) -> None:
+        """GIVEN private IP range URLs WHEN validated THEN rejected."""
+        assert self.service.validate_image_url("http://192.168.1.1/image.png") is False
+        assert self.service.validate_image_url("http://10.0.0.1/image.png") is False
+        assert self.service.validate_image_url("http://172.16.0.1/image.png") is False
+
+    def test_blocks_metadata_endpoints(self) -> None:
+        """GIVEN cloud metadata endpoint WHEN validated THEN rejected."""
+        assert self.service.validate_image_url("http://169.254.169.254/image.png") is False
+
+    def test_allows_public_urls(self) -> None:
+        """GIVEN public URL WHEN validated THEN accepted."""
+        # Note: This test requires DNS resolution, so we mock the private check
+        with patch.object(self.service, "_is_private_host", return_value=False):
+            assert self.service.validate_image_url("https://example.com/image.png") is True
+
+    def test_is_private_host_fails_closed(self) -> None:
+        """GIVEN DNS resolution failure WHEN checking host THEN returns True (blocked)."""
+        # Invalid hostname should fail closed
+        assert (
+            self.service._is_private_host("definitely-not-a-valid-hostname-12345.invalid") is True
+        )
+
+
+class TestHtmlSanitizationSecurity:
+    """Additional tests for XSS prevention via nh3."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
+        self.service = LLMService(self.mock_plugin)
+
+    def test_strips_script_tags_completely(self) -> None:
+        """GIVEN script tag with content WHEN sanitized THEN entirely removed."""
+        html = '<p>Hello</p><script>alert("xss")</script>'
+        result = self.service._sanitize_html(html)
+        assert "<script>" not in result
+        assert "alert" not in result
+
+    def test_strips_event_handlers(self) -> None:
+        """GIVEN element with event handler WHEN sanitized THEN handler removed."""
+        html = '<img src="x" onerror="alert(1)">'
+        result = self.service._sanitize_html(html)
+        assert "onerror" not in result
+
+    def test_preserves_safe_tags(self) -> None:
+        """GIVEN safe HTML WHEN sanitized THEN tags preserved."""
+        html = "<p>Hello <strong>world</strong></p>"
+        result = self.service._sanitize_html(html)
+        assert "<p>" in result
+        assert "<strong>" in result
+
+    def test_strips_style_tags(self) -> None:
+        """GIVEN style tag WHEN sanitized THEN removed."""
+        html = "<style>body { background: red; }</style><p>Text</p>"
+        result = self.service._sanitize_html(html)
+        assert "<style>" not in result
+        assert "background" not in result
+        assert "<p>" in result

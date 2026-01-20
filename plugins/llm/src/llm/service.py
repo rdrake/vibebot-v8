@@ -12,9 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-import bleach
 import litellm
 import markdown
+import nh3
 import supybot.conf as conf
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
@@ -26,6 +26,14 @@ from supybot.utils.file import AtomicFile
 from .context import Role
 
 _ = PluginInternationalization("LLM")
+
+# Constants
+CLEANUP_INTERVAL_SECONDS = 3600
+CHANNEL_MSG_TRUNCATE_LEN = 150
+CONTEXT_SUMMARY_MAX_CHARS = 500
+CONTEXT_SUMMARY_MAX_MESSAGES = 8
+CODE_PREVIEW_MAX_LEN = 60
+CODE_PREVIEW_TRUNCATE_LEN = 57  # 60 - len("...")
 
 
 class ValidationResult(NamedTuple):
@@ -133,78 +141,52 @@ class LLMService:
         Returns:
             Sanitized HTML safe for display
         """
-        # First, completely remove script/style tags and their contents
-        # (bleach's strip=True keeps text content, but we want these gone entirely)
-        script_style_pattern = re.compile(
-            r"<(script|style)[^>]*>.*?</\1>",
-            re.IGNORECASE | re.DOTALL,
-        )
-        html = script_style_pattern.sub("", html)
-
-        # Tags allowed for markdown/code rendering
-        allowed_tags = [
-            # Structure
-            "p",
-            "br",
-            "hr",
-            "div",
-            "span",
-            # Headings
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "h6",
-            # Lists
-            "ul",
-            "ol",
-            "li",
-            # Code/preformatted
-            "pre",
-            "code",
-            # Text formatting
-            "strong",
-            "em",
-            "b",
-            "i",
-            "u",
-            "s",
-            "del",
-            "ins",
-            # Links (href will be filtered by protocols)
-            "a",
-            # Tables
-            "table",
-            "thead",
-            "tbody",
-            "tr",
-            "th",
-            "td",
-            # Blockquote
-            "blockquote",
-        ]
-
-        # Attributes allowed per tag
-        allowed_attributes = {
-            "a": ["href", "title"],
-            "code": ["class"],  # For language classes
-            "pre": ["class"],
-            "span": ["class"],  # For Pygments syntax highlighting
-            "div": ["class"],
-            "td": ["align"],
-            "th": ["align"],
-        }
-
-        # Only allow safe URL schemes for links
-        allowed_protocols = ["http", "https", "mailto"]
-
-        return bleach.clean(
+        return nh3.clean(
             html,
-            tags=allowed_tags,
-            attributes=allowed_attributes,
-            protocols=allowed_protocols,
-            strip=True,
+            tags={
+                "p",
+                "br",
+                "hr",
+                "div",
+                "span",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "ul",
+                "ol",
+                "li",
+                "pre",
+                "code",
+                "strong",
+                "em",
+                "b",
+                "i",
+                "u",
+                "s",
+                "del",
+                "ins",
+                "a",
+                "table",
+                "thead",
+                "tbody",
+                "tr",
+                "th",
+                "td",
+                "blockquote",
+            },
+            attributes={
+                "a": {"href", "title"},
+                "code": {"class"},
+                "pre": {"class"},
+                "span": {"class"},
+                "div": {"class"},
+                "td": {"align"},
+                "th": {"align"},
+            },
+            url_schemes={"http", "https", "mailto"},
         )
 
     def _build_system_prompt(self, base_prompt: str) -> str:
@@ -388,12 +370,39 @@ class LLMService:
 
         return ValidationResult(True)
 
+    def _is_private_host(self, hostname: str) -> bool:
+        """Check if hostname resolves to private/internal IP.
+
+        Fails closed — returns True (blocked) on any resolution error.
+
+        Args:
+            hostname: Hostname to check
+
+        Returns:
+            True if private/internal (should be blocked), False if public
+        """
+        import ipaddress
+        import socket
+
+        try:
+            ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(ip)
+            return (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_reserved
+            )
+        except (socket.gaierror, ValueError):
+            return True  # Fail closed
+
     def validate_image_url(self, url: str) -> bool:
-        """Validate image URL format and extension.
+        """Validate image URL for safety.
 
         Security checks:
         - Only http/https schemes allowed (blocks javascript:, data:, file:, ftp:)
         - No path traversal attempts (blocks ../ in path)
+        - SSRF protection: blocks private/internal IP addresses
         - Must have valid image extension (checked on path, ignoring query string)
 
         Args:
@@ -404,7 +413,7 @@ class LLMService:
         """
         from urllib.parse import urlparse
 
-        # Only allow http/https
+        # Guard clauses — fail fast
         if not url.startswith(("http://", "https://")):
             return False
 
@@ -413,11 +422,13 @@ class LLMService:
         except ValueError:
             return False
 
-        # Block path traversal attempts (check path component only)
         if ".." in parsed.path:
             return False
 
-        # Check for valid image extension (path only, ignores query/fragment)
+        # SSRF protection
+        if self._is_private_host(parsed.hostname or ""):
+            return False
+
         valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
         return any(parsed.path.lower().endswith(ext) for ext in valid_extensions)
 
@@ -757,30 +768,6 @@ class LLMService:
         # No fences
         return code, None
 
-    def _detect_language(self, code: str) -> str:
-        """Simple language detection based on common keywords.
-
-        Args:
-            code: Code to analyze
-
-        Returns:
-            Detected language or 'text'
-        """
-        code_lower = code.lower()
-
-        if "def " in code_lower or "import " in code_lower:
-            return "python"
-        elif "function " in code_lower or "const " in code_lower or "let " in code_lower:
-            return "javascript"
-        elif "package main" in code or "func " in code:
-            return "go"
-        elif "#include" in code or "int main" in code:
-            return "c"
-        elif "class " in code and "public " in code:
-            return "java"
-        else:
-            return "text"
-
     def _get_http_paths(self) -> tuple[str, str]:
         """Get HTTP root directory and URL base for file storage.
 
@@ -812,14 +799,13 @@ class LLMService:
 
         return http_root, url_base
 
-    def save_code_to_http(self, content: str, language: str | None = None) -> str | None:
+    def save_code_to_http(self, content: str) -> str | None:
         """Save content to HTTP server as HTML and return URL.
 
         Converts markdown to HTML for a pastebin-style page.
 
         Args:
             content: Markdown content from LLM
-            language: Optional language hint (unused, kept for compatibility)
 
         Returns:
             Public URL to saved file or None on error
@@ -1014,8 +1000,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             nick = msg.get("nick", "Unknown")
             content = msg.get("content", "")
             # Truncate long messages
-            if len(content) > 150:
-                content = content[:147] + "..."
+            if len(content) > CHANNEL_MSG_TRUNCATE_LEN:
+                content = content[: CHANNEL_MSG_TRUNCATE_LEN - 3] + "..."
             lines.append(f"{nick}: {content}")
 
         return "\n".join(lines)
@@ -1023,7 +1009,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
     def _build_context_summary(
         self,
         history: list[dict[str, str]] | None,
-        max_chars: int = 500,
+        max_chars: int = CONTEXT_SUMMARY_MAX_CHARS,
     ) -> str:
         """Build a brief context summary from conversation history.
 
@@ -1041,7 +1027,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             return ""
 
         # Take last few messages (up to 4 exchanges)
-        recent = history[-8:] if len(history) > 8 else history
+        recent = (
+            history[-CONTEXT_SUMMARY_MAX_MESSAGES:]
+            if len(history) > CONTEXT_SUMMARY_MAX_MESSAGES
+            else history
+        )
 
         # Build summary from recent exchanges
         parts = []
@@ -1083,7 +1073,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             max_age_hours: Delete files older than this (uses config if None)
             max_files: Keep at most this many files (uses config if None)
         """
-        # Get config values if not provided
         if max_age_hours is None:
             max_age_hours = self.plugin.registryValue("fileCleanupAge")
         if max_files is None:
@@ -1093,32 +1082,33 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         if not dir_path.exists():
             return
 
-        files: list[tuple[Path, float]] = []
         current_time = time.time()
         max_age_seconds = max_age_hours * 3600
 
-        # Collect all code and image files with their modification times
-        patterns = ["*.html", "*.png", "*.jpg", "*.jpeg", "*.webp"]
-        for pattern in patterns:
+        # Collect files with mtime
+        files: list[tuple[Path, float]] = []
+        for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp"):
             for file_path in dir_path.glob(pattern):
-                try:
-                    stat = file_path.stat()
-                    files.append((file_path, stat.st_mtime))
-                except OSError:
-                    continue
+                with contextlib.suppress(OSError):
+                    files.append((file_path, file_path.stat().st_mtime))
 
-        # Remove files older than max_age
-        for file_path, mtime in files[:]:
-            if current_time - mtime > max_age_seconds:
-                try:
-                    file_path.unlink()
-                    files.remove((file_path, mtime))
-                except OSError:
-                    pass
+        # Partition into old and recent (no mutation during iteration)
+        old_files = [f for f, mtime in files if current_time - mtime > max_age_seconds]
+        recent_files = [(f, mtime) for f, mtime in files if current_time - mtime <= max_age_seconds]
 
-        # If still too many files, remove oldest
-        if len(files) > max_files:
-            files.sort(key=lambda x: x[1])  # Sort by mtime
-            for file_path, _ in files[:-max_files]:
+        # Delete old files
+        for file_path in old_files:
+            with contextlib.suppress(OSError):
+                file_path.unlink()
+
+        # If still too many, delete oldest from recent
+        if len(recent_files) > max_files:
+            recent_files.sort(key=lambda x: x[1])  # Sort by mtime
+            for file_path, _ in recent_files[:-max_files]:
                 with contextlib.suppress(OSError):
                     file_path.unlink()
+
+    def run_scheduled_cleanup(self) -> None:
+        """Run file cleanup (public interface for scheduler)."""
+        http_root, _ = self._get_http_paths()
+        self._cleanup_old_files(http_root)

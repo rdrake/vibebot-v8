@@ -5,10 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Any
+from typing import Any
 
 
 class Role:
@@ -59,6 +56,15 @@ class ConversationContext:
         self._conversations: dict[tuple[str, str], Conversation] = {}
         # Key: channel -> Conversation (shared across all users)
         self._channel_contexts: dict[str, Conversation] = {}
+
+    def update_config(self, config: ContextConfig) -> None:
+        """Update configuration without losing conversation data.
+
+        Args:
+            config: New configuration to apply
+        """
+        with self._lock:
+            self.config = config
 
     def __repr__(self) -> str:
         """Return string representation for debugging."""

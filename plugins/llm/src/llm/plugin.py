@@ -19,7 +19,7 @@ from supybot.commands import wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext, Role
-from .service import LLMService
+from .service import CODE_PREVIEW_MAX_LEN, CODE_PREVIEW_TRUNCATE_LEN, LLMService
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
@@ -265,7 +265,7 @@ class LLM(callbacks.Plugin):
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
 
         # Initialize conversation context
-        self._update_context()
+        self._init_context()
 
         # Only register HTTP callback if using Limnoria's built-in web directory
         # (i.e., httpRoot is not configured). When httpRoot is set, an external
@@ -302,8 +302,7 @@ class LLM(callbacks.Plugin):
     def _run_file_cleanup(self) -> None:
         """Scheduled cleanup of old generated files."""
         try:
-            http_root, _ = self.llm_service._get_http_paths()
-            self.llm_service._cleanup_old_files(http_root)
+            self.llm_service.run_scheduled_cleanup()
             self.log.debug("Scheduled file cleanup completed")
         except Exception as e:
             self.log.error(f"Scheduled file cleanup failed: {e}")
@@ -348,8 +347,8 @@ class LLM(callbacks.Plugin):
         self.context.add_message(nick, channel, Role.USER, message_text)
         self.context.add_channel_message(channel, nick, Role.USER, message_text)
 
-    def _update_context(self) -> None:
-        """Update context manager from current config."""
+    def _init_context(self) -> None:
+        """Initialize context manager from current config (called once at startup)."""
         config = ContextConfig(
             max_messages=self.registryValue("contextMaxMessages"),
             timeout_minutes=self.registryValue("contextTimeoutMinutes"),
@@ -562,8 +561,8 @@ class LLM(callbacks.Plugin):
             else:
                 # Fallback to truncation if summarization fails
                 preview = response.replace("\n", " ").strip()
-                if len(preview) > 60:
-                    preview = preview[:57] + "..."
+                if len(preview) > CODE_PREVIEW_MAX_LEN:
+                    preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
                 preview = self.llm_service._sanitize_output(preview)
             irc.reply(f"{preview} — {url}", prefixNick=False)
         else:

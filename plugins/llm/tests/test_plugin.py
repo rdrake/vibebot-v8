@@ -1074,11 +1074,11 @@ class TestCommandFlows:
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
 
-class TestUpdateContext:
-    """Test _update_context method."""
+class TestInitContext:
+    """Test _init_context method."""
 
-    def test_update_context_creates_new_context(self) -> None:
-        """GIVEN plugin WHEN _update_context called THEN creates new context."""
+    def test_init_context_creates_new_context(self) -> None:
+        """GIVEN plugin WHEN _init_context called THEN creates new context."""
         from llm.context import ConversationContext
         from llm.plugin import LLM
 
@@ -1087,7 +1087,7 @@ class TestUpdateContext:
             # Returns: contextMaxMessages, contextTimeoutMinutes, contextEnabled, channelContextMaxMessages
             plugin.registryValue = MagicMock(side_effect=[20, 30, True, 10])
 
-            plugin._update_context()
+            plugin._init_context()
 
             assert isinstance(plugin.context, ConversationContext)
 
@@ -1187,12 +1187,11 @@ class TestRunFileCleanup:
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
             plugin.llm_service = MagicMock()
-            plugin.llm_service._get_http_paths.return_value = ("/path", "http://url")
             plugin.log = MagicMock()
 
             plugin._run_file_cleanup()
 
-            plugin.llm_service._cleanup_old_files.assert_called_once_with("/path")
+            plugin.llm_service.run_scheduled_cleanup.assert_called_once()
 
     def test_run_file_cleanup_handles_errors(self) -> None:
         """GIVEN cleanup error WHEN _run_file_cleanup called THEN logs error."""
@@ -1201,7 +1200,7 @@ class TestRunFileCleanup:
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
             plugin.llm_service = MagicMock()
-            plugin.llm_service._get_http_paths.side_effect = Exception("test error")
+            plugin.llm_service.run_scheduled_cleanup.side_effect = Exception("test error")
             plugin.log = MagicMock()
 
             # Should not raise
