@@ -579,6 +579,61 @@ class LLMService:
         except Exception as e:
             return self._handle_llm_error(e, "completion")
 
+    def summarize(self, content: str, channel: str | None = None) -> str | None:
+        """Generate a ~50 word summary using the ask model.
+
+        Lightweight method for creating brief summaries of longer content.
+        Uses the ask model/API key configuration for the summarization call.
+
+        Args:
+            content: The content to summarize
+            channel: Optional channel for config lookup
+
+        Returns:
+            Summary string or None on any error (graceful degradation)
+        """
+        try:
+            api_key = self.plugin.registryValue("askApiKey")
+            model = self.plugin.registryValue("askModel", channel)
+
+            if not api_key:
+                return None
+
+            system_prompt = (
+                "You are a summarization assistant. Generate a ~50 word summary "
+                "of the provided content. Output only the summary as a single paragraph. "
+                "No markdown, no bullet points, no introductory phrases like 'This is...' "
+                "or 'Here is...'. Just the summary itself."
+            )
+
+            messages = [
+                {"role": Role.SYSTEM, "content": system_prompt},
+                {"role": Role.USER, "content": content},
+            ]
+
+            timeout = self.plugin.registryValue("timeout")
+
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=timeout,
+                safety_settings=self._get_safety_settings() if "gemini" in model else None,
+            )
+
+            summary = response.choices[0].message.content
+            if summary:
+                # Clean up: remove any markdown formatting, collapse whitespace
+                summary = summary.strip()
+                summary = " ".join(summary.split())
+                return summary
+            return None
+
+        except Exception as e:
+            # Log but don't fail - graceful degradation
+            self.log.debug(f"Summarization failed: {self._sanitize(str(e))}")
+            return None
+
     def image_generation(
         self,
         prompt: str,

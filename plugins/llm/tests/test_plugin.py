@@ -735,6 +735,9 @@ class TestCommandFlows:
             plugin.llm_service.image_generation.return_value = "http://img.url/test.png"
             plugin.llm_service.save_code_to_http.return_value = "http://code.url/test.py"
             plugin.llm_service.safe_key_display.return_value = "tes***"
+            plugin.llm_service.summarize.return_value = (
+                None  # Default to None (fallback to truncation)
+            )
 
         return plugin, mock_irc, mock_msg
 
@@ -781,10 +784,15 @@ class TestCommandFlows:
 
         url = plugin.llm_service.save_code_to_http(response)
         if url:
-            # Show truncated preview (first ~60 chars, single line)
-            preview = response.replace("\n", " ").strip()
-            if len(preview) > 60:
-                preview = preview[:57] + "..."
+            # Try AI-generated summary first
+            summary = plugin.llm_service.summarize(response, channel)
+            if summary:
+                preview = summary
+            else:
+                # Fallback to truncation if summarization fails
+                preview = response.replace("\n", " ").strip()
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
             irc.reply(f"{preview} — {url}", prefixNick=False)
         else:
             irc.reply(response, prefixNick=False)
@@ -933,6 +941,60 @@ class TestCommandFlows:
         # Newlines should be replaced with spaces
         assert "\n" not in reply_text
         assert "def foo():     return 1 —" in reply_text
+
+    def test_code_uses_ai_summary_when_available(self, plugin_with_service: tuple) -> None:
+        """GIVEN summarize returns summary WHEN code called THEN uses AI summary as preview."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        plugin.llm_service.completion.return_value = "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)"
+        plugin.llm_service.summarize.return_value = "A recursive Fibonacci implementation"
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python fibonacci")
+
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        assert "A recursive Fibonacci implementation" in reply_text
+        assert "http://code.url/test.py" in reply_text
+
+    def test_code_falls_back_to_truncation_when_summarize_fails(
+        self, plugin_with_service: tuple
+    ) -> None:
+        """GIVEN summarize returns None WHEN code called THEN falls back to truncation."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        plugin.llm_service.completion.return_value = "short code"
+        plugin.llm_service.summarize.return_value = None
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python code")
+
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        assert "short code —" in reply_text
+
+    def test_code_calls_summarize_with_response_and_channel(
+        self, plugin_with_service: tuple
+    ) -> None:
+        """GIVEN code command WHEN called THEN passes response and channel to summarize."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        plugin.llm_service.completion.return_value = "test code"
+        plugin.llm_service.summarize.return_value = "summary"
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python code")
+
+        plugin.llm_service.summarize.assert_called_once_with("test code", "#channel")
+
+    def test_code_does_not_truncate_ai_summary(self, plugin_with_service: tuple) -> None:
+        """GIVEN long AI summary WHEN code called THEN uses full summary without truncation."""
+        plugin, mock_irc, mock_msg = plugin_with_service
+        long_summary = "This is a comprehensive explanation of the code that generates Fibonacci numbers using recursion with memoization for optimization"
+        plugin.llm_service.completion.return_value = "def fib(n): pass"
+        plugin.llm_service.summarize.return_value = long_summary
+
+        self._call_code(plugin, mock_irc, mock_msg, "Python code")
+
+        reply_call = mock_irc.reply.call_args
+        reply_text = reply_call[0][0]
+        # AI summary should not be truncated
+        assert long_summary in reply_text
+        assert "..." not in reply_text.split(" — ")[0]  # No truncation in preview
 
     def test_draw_calls_image_generation(self, plugin_with_service: tuple) -> None:
         """GIVEN draw request WHEN draw called THEN calls image_generation."""

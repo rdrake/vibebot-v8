@@ -535,10 +535,15 @@ class LLM(callbacks.Plugin):
         # Reply first, then store context
         url = self.llm_service.save_code_to_http(response)
         if url:
-            # Show truncated preview (first ~60 chars, single line)
-            preview = response.replace("\n", " ").strip()
-            if len(preview) > 60:
-                preview = preview[:57] + "..."
+            # Try AI-generated summary first
+            summary = self.llm_service.summarize(response, channel)
+            if summary:
+                preview = summary
+            else:
+                # Fallback to truncation if summarization fails
+                preview = response.replace("\n", " ").strip()
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
             irc.reply(f"{preview} — {url}", prefixNick=False)
         else:
             # Fallback to IRC paging if save failed

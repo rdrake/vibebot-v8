@@ -1219,3 +1219,198 @@ class TestBuildContextMessage:
 
         # Topic should be passed through raw - no filtering
         assert "Attention AI Agents" in result["content"]
+
+
+class TestSummarize:
+    """Tests for summarize() method."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "test-api-key",
+                "askModel": "gpt-4",
+                "timeout": 30,
+            }.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def test_summarize_returns_summary(self) -> None:
+        """GIVEN content WHEN summarize called THEN returns summary."""
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message = Mock()
+        mock_response.choices[0].message.content = "This is a summary of the code."
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            result = self.service.summarize("def foo(): pass")
+
+        assert result == "This is a summary of the code."
+
+    def test_summarize_cleans_whitespace(self) -> None:
+        """GIVEN summary with extra whitespace WHEN summarize THEN collapses whitespace."""
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message = Mock()
+        mock_response.choices[
+            0
+        ].message.content = "  Summary  with   extra   spaces  \n  and newlines  "
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            result = self.service.summarize("content")
+
+        assert result == "Summary with extra spaces and newlines"
+
+    def test_summarize_returns_none_on_missing_api_key(self) -> None:
+        """GIVEN no API key WHEN summarize called THEN returns None."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": None,
+                "askModel": "gpt-4",
+                "timeout": 30,
+            }.get(key)
+        )
+
+        result = self.service.summarize("content")
+
+        assert result is None
+
+    def test_summarize_returns_none_on_empty_api_key(self) -> None:
+        """GIVEN empty API key WHEN summarize called THEN returns None."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "",
+                "askModel": "gpt-4",
+                "timeout": 30,
+            }.get(key)
+        )
+
+        result = self.service.summarize("content")
+
+        assert result is None
+
+    def test_summarize_returns_none_on_exception(self) -> None:
+        """GIVEN API error WHEN summarize called THEN returns None gracefully."""
+        with patch("llm.service.litellm.completion", side_effect=Exception("API error")):
+            result = self.service.summarize("content")
+
+        assert result is None
+
+    def test_summarize_returns_none_on_empty_response(self) -> None:
+        """GIVEN empty response WHEN summarize called THEN returns None."""
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message = Mock()
+        mock_response.choices[0].message.content = ""
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            result = self.service.summarize("content")
+
+        assert result is None
+
+    def test_summarize_uses_ask_model_and_key(self) -> None:
+        """GIVEN summarize call WHEN API called THEN uses ask model and key."""
+        completion_kwargs = {}
+
+        def capture_kwargs(**kwargs):
+            completion_kwargs.update(kwargs)
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = "Summary"
+            return mock_response
+
+        with patch("llm.service.litellm.completion", side_effect=capture_kwargs):
+            self.service.summarize("content")
+
+        assert completion_kwargs["model"] == "gpt-4"
+        assert completion_kwargs["api_key"] == "test-api-key"
+
+    def test_summarize_uses_channel_for_model_lookup(self) -> None:
+        """GIVEN channel WHEN summarize called THEN passes channel for model config."""
+        registry_calls = []
+
+        def track_registry(key, channel=None):
+            registry_calls.append((key, channel))
+            return {"askApiKey": "key", "askModel": "gpt-4", "timeout": 30}.get(key)
+
+        self.mock_plugin.registryValue = Mock(side_effect=track_registry)
+
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message = Mock()
+        mock_response.choices[0].message.content = "Summary"
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            self.service.summarize("content", channel="#test")
+
+        # askModel should be called with channel
+        model_call = next(c for c in registry_calls if c[0] == "askModel")
+        assert model_call[1] == "#test"
+
+    def test_summarize_includes_system_prompt(self) -> None:
+        """GIVEN summarize call WHEN API called THEN includes summarization system prompt."""
+        messages_sent = []
+
+        def capture_messages(**kwargs):
+            messages_sent.extend(kwargs.get("messages", []))
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = "Summary"
+            return mock_response
+
+        with patch("llm.service.litellm.completion", side_effect=capture_messages):
+            self.service.summarize("test content")
+
+        assert len(messages_sent) == 2
+        assert messages_sent[0]["role"] == "system"
+        assert "50 word" in messages_sent[0]["content"]
+        assert "summary" in messages_sent[0]["content"].lower()
+        assert messages_sent[1]["role"] == "user"
+        assert messages_sent[1]["content"] == "test content"
+
+    def test_summarize_uses_gemini_safety_settings(self) -> None:
+        """GIVEN gemini model WHEN summarize called THEN includes safety settings."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "key",
+                "askModel": "gemini/gemini-2.0-flash",
+                "timeout": 30,
+            }.get(key)
+        )
+
+        completion_kwargs = {}
+
+        def capture_kwargs(**kwargs):
+            completion_kwargs.update(kwargs)
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = "Summary"
+            return mock_response
+
+        with patch("llm.service.litellm.completion", side_effect=capture_kwargs):
+            self.service.summarize("content")
+
+        assert completion_kwargs.get("safety_settings") is not None
+
+    def test_summarize_no_safety_settings_for_non_gemini(self) -> None:
+        """GIVEN non-gemini model WHEN summarize called THEN no safety settings."""
+        completion_kwargs = {}
+
+        def capture_kwargs(**kwargs):
+            completion_kwargs.update(kwargs)
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = "Summary"
+            return mock_response
+
+        with patch("llm.service.litellm.completion", side_effect=capture_kwargs):
+            self.service.summarize("content")
+
+        assert completion_kwargs.get("safety_settings") is None
