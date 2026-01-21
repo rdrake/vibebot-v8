@@ -37,12 +37,14 @@ class TestProviderSpecificErrors:
         """GIVEN timeout error WHEN completing THEN returns user-friendly message."""
         with patch(
             "llm.service.litellm.completion",
-            side_effect=litellm.Timeout("Request timed out"),
+            side_effect=litellm.Timeout(
+                message="Request timed out", model="gpt-4", llm_provider="openai"
+            ),
         ):
             result = service.completion("test", command="ask")
 
-        assert "timed out" in result.lower()
-        assert "Error" in result
+        assert "timed out" in result.content.lower()
+        assert "Error" in result.content
 
     def test_handles_rate_limit_error(self, service: LLMService) -> None:
         """GIVEN rate limit error WHEN completing THEN returns user-friendly message."""
@@ -56,8 +58,8 @@ class TestProviderSpecificErrors:
         ):
             result = service.completion("test", command="ask")
 
-        assert "rate limit" in result.lower()
-        assert "Error" in result
+        assert "rate limit" in result.content.lower()
+        assert "Error" in result.content
 
     def test_handles_authentication_error(self, service: LLMService) -> None:
         """GIVEN auth error WHEN completing THEN returns user-friendly message."""
@@ -71,8 +73,8 @@ class TestProviderSpecificErrors:
         ):
             result = service.completion("test", command="ask")
 
-        assert "api key" in result.lower() or "invalid" in result.lower()
-        assert "Error" in result
+        assert "api key" in result.content.lower() or "invalid" in result.content.lower()
+        assert "Error" in result.content
 
     def test_handles_content_policy_violation(self, service: LLMService) -> None:
         """GIVEN content policy error WHEN completing THEN returns user-friendly message."""
@@ -86,8 +88,8 @@ class TestProviderSpecificErrors:
         ):
             result = service.completion("test", command="ask")
 
-        assert "safety" in result.lower() or "policy" in result.lower()
-        assert "Error" in result
+        assert "safety" in result.content.lower() or "policy" in result.content.lower()
+        assert "Error" in result.content
 
     def test_handles_generic_api_error(self, service: LLMService) -> None:
         """GIVEN generic API error WHEN completing THEN returns sanitized message."""
@@ -97,13 +99,14 @@ class TestProviderSpecificErrors:
                 message="API error with key sk-secret123456789",
                 model="gpt-4",
                 llm_provider="openai",
+                status_code=500,
             ),
         ):
             result = service.completion("test", command="ask")
 
-        assert "Error" in result
+        assert "Error" in result.content
         # API key should be sanitized
-        assert "sk-secret123456789" not in result
+        assert "sk-secret123456789" not in result.content
 
     def test_handles_unknown_exception(self, service: LLMService) -> None:
         """GIVEN unknown exception WHEN completing THEN returns generic message."""
@@ -113,8 +116,8 @@ class TestProviderSpecificErrors:
         ):
             result = service.completion("test", command="ask")
 
-        assert "Error" in result
-        assert "Unexpected internal error" not in result  # Don't leak internals
+        assert "Error" in result.content
+        assert "Unexpected internal error" not in result.content  # Don't leak internals
 
 
 class TestImageGenerationErrors:
@@ -161,7 +164,9 @@ class TestImageGenerationErrors:
         """GIVEN timeout WHEN generating image THEN returns timeout message."""
         with patch(
             "llm.service.litellm.image_generation",
-            side_effect=litellm.Timeout("Generation timed out"),
+            side_effect=litellm.Timeout(
+                message="Generation timed out", model="dall-e-3", llm_provider="openai"
+            ),
         ):
             result = service.image_generation("test prompt")
 
@@ -216,12 +221,13 @@ class TestPartialResponseHandling:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message = Mock()
         mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.tool_calls = None
 
         with patch("llm.service.litellm.completion", return_value=mock_response):
             result = service.completion("test", command="ask")
 
         # Should return empty string, not crash
-        assert result == ""
+        assert result.content == ""
 
     def test_handles_none_content_response(self, service: LLMService) -> None:
         """GIVEN response with None content WHEN completing THEN handles gracefully."""
@@ -229,12 +235,13 @@ class TestPartialResponseHandling:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message = Mock()
         mock_response.choices[0].message.content = None
+        mock_response.choices[0].message.tool_calls = None
 
         with patch("llm.service.litellm.completion", return_value=mock_response):
             result = service.completion("test", command="ask")
 
         # Should handle None gracefully
-        assert result is None or result == ""
+        assert result.content is None or result.content == ""
 
     def test_handles_no_choices_response(self, service: LLMService) -> None:
         """GIVEN response with no choices WHEN completing THEN handles gracefully."""
@@ -245,7 +252,7 @@ class TestPartialResponseHandling:
             # Should raise IndexError which gets caught
             result = service.completion("test", command="ask")
 
-        assert "Error" in result
+        assert "Error" in result.content
 
     def test_handles_whitespace_only_content(self, service: LLMService) -> None:
         """GIVEN response with only whitespace WHEN completing THEN returns as-is."""
@@ -253,12 +260,13 @@ class TestPartialResponseHandling:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message = Mock()
         mock_response.choices[0].message.content = "   \n\t  "
+        mock_response.choices[0].message.tool_calls = None
 
         with patch("llm.service.litellm.completion", return_value=mock_response):
             result = service.completion("test", command="ask")
 
         # Should return the whitespace (sanitized)
-        assert result.strip() == ""
+        assert result.content.strip() == ""
 
 
 class TestGeminiSpecificBehaviors:
@@ -510,8 +518,8 @@ class TestAPIKeyHandling:
         service = LLMService(mock_plugin)
         result = service.completion("test", command="ask")
 
-        assert "Error" in result
-        assert "API key not configured" in result
+        assert "Error" in result.content
+        assert "API key not configured" in result.content
 
     def test_empty_ask_key_returns_error(self) -> None:
         """GIVEN empty ask API key WHEN completing THEN returns error."""
@@ -531,7 +539,7 @@ class TestAPIKeyHandling:
         service = LLMService(mock_plugin)
         result = service.completion("test", command="ask")
 
-        assert "Error" in result
+        assert "Error" in result.content
 
     def test_api_key_sanitized_in_errors(self) -> None:
         """GIVEN API error containing key WHEN handling THEN key sanitized."""
