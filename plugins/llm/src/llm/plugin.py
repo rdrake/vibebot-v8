@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 _ = PluginInternationalization("LLM")
 
+# Icon shown when Google grounding/search was used in the response
+GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
+
 
 HELP_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -477,7 +480,7 @@ class LLM(callbacks.Plugin):
                 clean_prompt = clean_prompt.replace(img, "").strip()
 
             irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
-            response = self.llm_service.completion(
+            result = self.llm_service.completion(
                 clean_prompt,
                 command="ask",
                 images=images,
@@ -487,7 +490,7 @@ class LLM(callbacks.Plugin):
                 msg=msg,
             )
         else:
-            response = self.llm_service.completion(
+            result = self.llm_service.completion(
                 text,
                 command="ask",
                 history=history,
@@ -496,12 +499,16 @@ class LLM(callbacks.Plugin):
                 msg=msg,
             )
 
+        # Format response with grounding icon if search was used
+        response = result.content
+        display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+
         # Reply first, then store context (so user gets response even if context fails)
-        irc.reply(response, prefixNick=False)
+        irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
         if self._get_context_enabled(channel):
-            # Store in personal context
+            # Store in personal context (without icon for clean history)
             self.context.add_message(nick, channel, Role.USER, text)
             self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
@@ -542,7 +549,7 @@ class LLM(callbacks.Plugin):
         else:
             history, channel_history = [], []
 
-        response = self.llm_service.completion(
+        result = self.llm_service.completion(
             text,
             command="code",
             history=history,
@@ -550,6 +557,9 @@ class LLM(callbacks.Plugin):
             irc=irc,
             msg=msg,
         )
+
+        response = result.content
+        grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
 
         # Reply first, then store context
         url = self.llm_service.save_code_to_http(response)
@@ -564,14 +574,15 @@ class LLM(callbacks.Plugin):
                 if len(preview) > CODE_PREVIEW_MAX_LEN:
                     preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
                 preview = self.llm_service._sanitize_output(preview)
-            irc.reply(f"{preview} — {url}", prefixNick=False)
+            irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
         else:
             # Fallback to IRC paging if save failed
-            irc.reply(response, prefixNick=False)
+            display_response = f"{grounding_prefix}{response}" if grounding_prefix else response
+            irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
         if self._get_context_enabled(channel):
-            # Store in personal context
+            # Store in personal context (without icon for clean history)
             self.context.add_message(nick, channel, Role.USER, text)
             self.context.add_message(nick, channel, Role.ASSISTANT, response)
 

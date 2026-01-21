@@ -394,6 +394,124 @@ class TestLLMService:
         assert len(tools) == 2
 
 
+class TestGroundingDetection:
+    """Tests for _check_grounding_used and CompletionResult."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "maxPromptLength": 10000,
+                "commandPrefixes": [".", "/"],
+                "askApiKey": "test-key",
+                "askModel": "gemini/gemini-2.0-flash",
+                "askSystemPrompt": "You are helpful.",
+                "timeout": 30,
+            }.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def test_check_grounding_used_returns_false_for_no_metadata(self) -> None:
+        """GIVEN response with no grounding metadata WHEN checking THEN returns False."""
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is False
+
+    def test_check_grounding_used_returns_true_for_grounding_metadata(self) -> None:
+        """GIVEN response with grounding_metadata WHEN checking THEN returns True."""
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message", "grounding_metadata"])
+        mock_choice.grounding_metadata = {"search_queries": ["test"]}
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is True
+
+    def test_check_grounding_used_returns_true_for_google_search_tool_call(self) -> None:
+        """GIVEN response with googleSearch tool call WHEN checking THEN returns True."""
+        mock_tool_call = Mock()
+        mock_tool_call.function = Mock()
+        mock_tool_call.function.name = "googleSearch"
+
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = [mock_tool_call]
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is True
+
+    def test_check_grounding_used_handles_missing_attributes(self) -> None:
+        """GIVEN response with missing attributes WHEN checking THEN handles gracefully."""
+        mock_response = Mock(spec=[])  # Empty spec means no attributes
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is False
+
+    def test_completion_returns_completion_result(self) -> None:
+        """GIVEN successful completion WHEN completing THEN returns CompletionResult."""
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["content", "tool_calls"])
+        mock_message.content = "Test response"
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            result = self.service.completion("test", command="ask")
+
+        from llm.service import CompletionResult
+
+        assert isinstance(result, CompletionResult)
+        assert result.content == "Test response"
+        assert result.grounding_used is False
+
+    def test_completion_returns_grounding_used_true_when_grounded(self) -> None:
+        """GIVEN completion with grounding WHEN completing THEN grounding_used is True."""
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message", "grounding_metadata"])
+        mock_choice.grounding_metadata = {"web_search_queries": ["test"]}
+        mock_message = Mock(spec=["content", "tool_calls"])
+        mock_message.content = "Grounded response"
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            result = self.service.completion("test", command="ask")
+
+        assert result.grounding_used is True
+
+    def test_completion_error_returns_completion_result_with_error(self) -> None:
+        """GIVEN completion error WHEN completing THEN returns CompletionResult with error."""
+        with patch(
+            "llm.service.litellm.completion",
+            side_effect=Exception("Test error"),
+        ):
+            result = self.service.completion("test", command="ask")
+
+        from llm.service import CompletionResult
+
+        assert isinstance(result, CompletionResult)
+        assert "Error" in result.content
+        assert result.grounding_used is False
+
+
 class TestBuildSystemPrompt:
     """Tests for _build_system_prompt with anti-injection preamble."""
 

@@ -43,6 +43,13 @@ class ValidationResult(NamedTuple):
     error: str = ""
 
 
+class CompletionResult(NamedTuple):
+    """Result of completion API call."""
+
+    content: str
+    grounding_used: bool = False
+
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -480,6 +487,60 @@ class LLMService:
         # Default: no tools
         return None
 
+    def _check_grounding_used(self, response: Any) -> bool:
+        """Check if Google grounding/search was used in the response.
+
+        Examines the LiteLLM response for evidence that the Google Search
+        grounding tool was invoked. This can be indicated by:
+        - grounding_metadata in the response
+        - search_entry_point in response metadata
+        - tool_calls containing googleSearch
+
+        Args:
+            response: LiteLLM completion response object
+
+        Returns:
+            True if grounding was used, False otherwise
+        """
+        try:
+            # Check for grounding metadata in response (Gemini-specific)
+            # LiteLLM may include this in _hidden_params or model_extra
+            if hasattr(response, "_hidden_params"):
+                hidden = response._hidden_params or {}
+                if "grounding_metadata" in hidden:
+                    return True
+
+            # Check choices for grounding chunks/metadata
+            if response.choices:
+                choice = response.choices[0]
+
+                # Check message for grounding metadata
+                if hasattr(choice, "message"):
+                    msg = choice.message
+
+                    # Check for tool calls (googleSearch invocation)
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tool_call in msg.tool_calls:
+                            func_name = getattr(getattr(tool_call, "function", None), "name", "")
+                            if "google" in func_name.lower() or "search" in func_name.lower():
+                                return True
+
+                # Check for grounding_metadata in choice (varies by LiteLLM version)
+                if hasattr(choice, "grounding_metadata") and choice.grounding_metadata:
+                    return True
+
+            # Check model_extra for grounding info (newer LiteLLM versions)
+            if hasattr(response, "model_extra"):
+                extra = response.model_extra or {}
+                if "grounding_metadata" in extra or "search_entry_point" in extra:
+                    return True
+
+        except (AttributeError, TypeError, KeyError):
+            # Graceful degradation if response structure is unexpected
+            pass
+
+        return False
+
     def _handle_llm_error(self, error: Exception, operation: str) -> str:
         """Handle LiteLLM errors with consistent messaging and logging.
 
@@ -524,7 +585,7 @@ class LLMService:
         channel_history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
-    ) -> str:
+    ) -> CompletionResult:
         """Generate text completion with optional vision and conversation history.
 
         This is the main method for text generation. It handles:
@@ -544,13 +605,13 @@ class LLMService:
             msg: IRC message object for context (optional)
 
         Returns:
-            Generated text response or error message
+            CompletionResult with content and grounding_used flag
         """
         try:
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
-                return _("Error: %s") % error_msg
+                return CompletionResult(content=_("Error: %s") % error_msg, grounding_used=False)
 
             # Validate and filter image URLs
             if images:
@@ -568,7 +629,10 @@ class LLMService:
             base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
 
             if not api_key:
-                return _("Error: API key not configured for %s command") % command
+                return CompletionResult(
+                    content=_("Error: API key not configured for %s command") % command,
+                    grounding_used=False,
+                )
 
             # Build system prompt (context now injected as user message in _build_messages)
             system_prompt = self._build_system_prompt(base_system_prompt)
@@ -592,10 +656,16 @@ class LLMService:
                 safety_settings=self._get_safety_settings() if "gemini" in model else None,
             )
 
-            return self._sanitize_output(response.choices[0].message.content)
+            content = self._sanitize_output(response.choices[0].message.content)
+            grounding_used = self._check_grounding_used(response)
+
+            return CompletionResult(content=content, grounding_used=grounding_used)
 
         except Exception as e:
-            return self._handle_llm_error(e, "completion")
+            return CompletionResult(
+                content=self._handle_llm_error(e, "completion"),
+                grounding_used=False,
+            )
 
     def summarize(self, content: str, channel: str | None = None) -> str | None:
         """Generate a ~50 word summary using the ask model.

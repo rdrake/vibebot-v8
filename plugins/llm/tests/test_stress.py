@@ -544,6 +544,7 @@ class TestNetworkFailureRecovery:
             response.choices = [Mock()]
             response.choices[0].message = Mock()
             response.choices[0].message.content = f"Response {current}"
+            response.choices[0].message.tool_calls = None
             return response
 
         mock_plugin = Mock()
@@ -565,7 +566,7 @@ class TestNetworkFailureRecovery:
         with patch("llm.service.litellm.completion", side_effect=flaky_completion):
             for i in range(9):
                 result = service.completion(f"Request {i}", command="ask")
-                results.append(result)
+                results.append(result.content)
 
         # Should have mix of successes and error messages
         successes = [r for r in results if "Response" in r]
