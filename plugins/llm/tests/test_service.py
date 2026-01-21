@@ -462,6 +462,21 @@ class TestGroundingDetection:
         result = self.service._check_grounding_used(mock_response)
         assert result is False
 
+    def test_check_grounding_used_returns_true_for_vertex_ai_grounding_metadata(self) -> None:
+        """GIVEN response with vertex_ai_grounding_metadata in _hidden_params WHEN checking THEN returns True."""
+        mock_response = Mock(spec=["choices", "_hidden_params"])
+        mock_response._hidden_params = {
+            "vertex_ai_grounding_metadata": {"web_search_queries": ["test"]}
+        }
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is True
+
     def test_completion_returns_completion_result(self) -> None:
         """GIVEN successful completion WHEN completing THEN returns CompletionResult."""
         mock_response = Mock(spec=["choices"])

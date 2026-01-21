@@ -492,7 +492,7 @@ class LLMService:
 
         Examines the LiteLLM response for evidence that the Google Search
         grounding tool was invoked. This can be indicated by:
-        - grounding_metadata in the response
+        - vertex_ai_grounding_metadata in _hidden_params (LiteLLM's key)
         - search_entry_point in response metadata
         - tool_calls containing googleSearch
 
@@ -504,10 +504,10 @@ class LLMService:
         """
         try:
             # Check for grounding metadata in response (Gemini-specific)
-            # LiteLLM may include this in _hidden_params or model_extra
+            # LiteLLM stores this in _hidden_params with the key "vertex_ai_grounding_metadata"
             if hasattr(response, "_hidden_params"):
                 hidden = response._hidden_params or {}
-                if "grounding_metadata" in hidden:
+                if "vertex_ai_grounding_metadata" in hidden:
                     return True
 
             # Check choices for grounding chunks/metadata
