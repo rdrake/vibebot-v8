@@ -7,12 +7,9 @@ proper structure.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-
 from llm.service import LLMService
 
 
@@ -56,8 +53,8 @@ class TestHtmlCodeOutputStructure:
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
-        assert 'viewport' in content
-        assert 'width=device-width' in content
+        assert "viewport" in content
+        assert "width=device-width" in content
 
     def test_html_has_title(self, service: LLMService, tmp_path) -> None:
         """GIVEN code content WHEN saved THEN HTML has title."""
@@ -255,7 +252,7 @@ class TestXssPrevention:
 
     def test_safe_links_preserved(self, service: LLMService, tmp_path) -> None:
         """GIVEN safe http link WHEN saved THEN link preserved."""
-        safe = '[Link](https://example.com)'
+        safe = "[Link](https://example.com)"
         url = service.save_code_to_http(safe)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()

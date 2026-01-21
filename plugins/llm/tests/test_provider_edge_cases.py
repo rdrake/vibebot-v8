@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 
 import litellm
 import pytest
-
 from llm.service import LLMService
 
 

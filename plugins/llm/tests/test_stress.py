@@ -6,15 +6,11 @@ and complex real-world usage patterns correctly.
 
 from __future__ import annotations
 
-import random
-import string
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
-
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
 
@@ -224,9 +220,7 @@ class TestRapidRequestHandling:
 
         # Verify consistency
         for text, count in results:
-            if "image1.jpg" in text:
-                assert count == 1
-            elif "photo.png" in text:
+            if "image1.jpg" in text or "photo.png" in text:
                 assert count == 1
             elif "No image" in text:
                 assert count == 0
@@ -283,7 +277,9 @@ class TestConcurrentAPIKeyIsolation:
             response = Mock()
             response.choices = [Mock()]
             response.choices[0].message = Mock()
-            response.choices[0].message.content = f"Response for key {kwargs.get('api_key', '')[:10]}"
+            response.choices[
+                0
+            ].message.content = f"Response for key {kwargs.get('api_key', '')[:10]}"
             return response
 
         def make_request(user_id: int) -> None:
@@ -379,9 +375,7 @@ class TestOverlappingContextScenarios:
             messages = ctx.get_messages(nick, channel)
             assert len(messages) == messages_per_channel * 2
 
-    def test_same_nick_different_cases(
-        self, multi_channel_context: ConversationContext
-    ) -> None:
+    def test_same_nick_different_cases(self, multi_channel_context: ConversationContext) -> None:
         """GIVEN nick with different cases WHEN accessing context THEN same context."""
         ctx = multi_channel_context
         channel = "#test"

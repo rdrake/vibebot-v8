@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -86,9 +86,7 @@ class TestPluginLifecycleIntegration:
             assert hasattr(plugin, "startup_time")
             assert plugin.startup_time > 0
 
-    def test_plugin_reload_handles_existing_scheduled_event(
-        self, mock_irc: MagicMock
-    ) -> None:
+    def test_plugin_reload_handles_existing_scheduled_event(self, mock_irc: MagicMock) -> None:
         """GIVEN plugin reloading WHEN existing event exists THEN no error."""
         from llm.plugin import LLM
 
@@ -284,7 +282,6 @@ class TestHTTPCallbackIntegration:
         self, http_callback_with_plugin: tuple, tmp_path
     ) -> None:
         """GIVEN various file types WHEN served THEN correct content types."""
-        import os
 
         callback, _ = http_callback_with_plugin
 
@@ -298,7 +295,7 @@ class TestHTTPCallbackIntegration:
             "test.js": (b"function() {}", "text/javascript"),
         }
 
-        for filename, (content, expected_type) in files.items():
+        for filename, (content, _expected_type) in files.items():
             filepath = tmp_path / filename
             filepath.write_bytes(content)
 
@@ -373,9 +370,7 @@ class TestServicePluginIntegration:
         service = LLMService(mock_plugin)
         return service, mock_plugin
 
-    def test_service_uses_plugin_config_for_validation(
-        self, service_with_plugin: tuple
-    ) -> None:
+    def test_service_uses_plugin_config_for_validation(self, service_with_plugin: tuple) -> None:
         """GIVEN service WHEN validating prompt THEN uses plugin config."""
         service, mock_plugin = service_with_plugin
 
@@ -391,9 +386,7 @@ class TestServicePluginIntegration:
         assert is_valid is False
         assert "too long" in error.lower()
 
-    def test_service_sanitize_output_uses_plugin_config(
-        self, service_with_plugin: tuple
-    ) -> None:
+    def test_service_sanitize_output_uses_plugin_config(self, service_with_plugin: tuple) -> None:
         """GIVEN service WHEN sanitizing output THEN uses plugin's prefix config."""
         service, _ = service_with_plugin
 
