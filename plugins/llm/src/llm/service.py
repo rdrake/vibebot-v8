@@ -655,6 +655,7 @@ class LLMService:
                 messages=messages,
                 api_key=api_key,
                 timeout=timeout,
+                reasoning_effort="high",
                 tools=self._get_gemini_tools(model),
                 safety_settings=self._get_safety_settings() if "gemini" in model else None,
             )
