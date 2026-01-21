@@ -505,9 +505,11 @@ class LLMService:
         try:
             # Check for grounding metadata in response (Gemini-specific)
             # LiteLLM stores this in _hidden_params with the key "vertex_ai_grounding_metadata"
+            # IMPORTANT: Check for truthy value, not just key existence - LiteLLM may set
+            # the key to None/empty when grounding is available but wasn't actually used
             if hasattr(response, "_hidden_params"):
                 hidden = response._hidden_params or {}
-                if "vertex_ai_grounding_metadata" in hidden:
+                if hidden.get("vertex_ai_grounding_metadata"):
                     return True
 
             # Check choices for grounding chunks/metadata
@@ -530,9 +532,10 @@ class LLMService:
                     return True
 
             # Check model_extra for grounding info (newer LiteLLM versions)
+            # Same truthy check - key existence alone doesn't mean grounding was used
             if hasattr(response, "model_extra"):
                 extra = response.model_extra or {}
-                if "grounding_metadata" in extra or "search_entry_point" in extra:
+                if extra.get("grounding_metadata") or extra.get("search_entry_point"):
                     return True
 
         except (AttributeError, TypeError, KeyError):

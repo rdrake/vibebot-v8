@@ -477,6 +477,38 @@ class TestGroundingDetection:
         result = self.service._check_grounding_used(mock_response)
         assert result is True
 
+    def test_check_grounding_used_returns_false_for_empty_grounding_metadata(self) -> None:
+        """GIVEN response with empty vertex_ai_grounding_metadata WHEN checking THEN returns False.
+
+        LiteLLM may set the grounding metadata key to None or empty dict when
+        grounding tools are available but weren't actually used.
+        """
+        mock_response = Mock(spec=["choices", "_hidden_params"])
+        # Key exists but value is None - grounding available but not used
+        mock_response._hidden_params = {"vertex_ai_grounding_metadata": None}
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is False
+
+    def test_check_grounding_used_returns_false_for_empty_dict_metadata(self) -> None:
+        """GIVEN response with empty dict grounding_metadata WHEN checking THEN returns False."""
+        mock_response = Mock(spec=["choices", "_hidden_params"])
+        # Key exists but value is empty dict
+        mock_response._hidden_params = {"vertex_ai_grounding_metadata": {}}
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["tool_calls"])
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        result = self.service._check_grounding_used(mock_response)
+        assert result is False
+
     def test_completion_returns_completion_result(self) -> None:
         """GIVEN successful completion WHEN completing THEN returns CompletionResult."""
         mock_response = Mock(spec=["choices"])
