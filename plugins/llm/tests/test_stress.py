@@ -1,0 +1,685 @@
+"""Stress tests for multi-user scenarios.
+
+These tests verify the bot handles concurrent users, rapid requests,
+and complex real-world usage patterns correctly.
+"""
+
+from __future__ import annotations
+
+import random
+import string
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
+from llm.context import ContextConfig, ConversationContext
+from llm.service import LLMService
+
+
+class TestMultiUserContextIsolation:
+    """Test context isolation under concurrent multi-user access."""
+
+    @pytest.fixture
+    def high_capacity_context(self) -> ConversationContext:
+        """Create context with high capacity for stress testing."""
+        config = ContextConfig(
+            max_messages=100,
+            timeout_minutes=60,
+            enabled=True,
+            channel_max_messages=200,
+        )
+        return ConversationContext(config)
+
+    def test_many_users_simultaneous_add(self, high_capacity_context: ConversationContext) -> None:
+        """GIVEN 50 users WHEN all add messages simultaneously THEN no data corruption."""
+        ctx = high_capacity_context
+        num_users = 50
+        messages_per_user = 20
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def user_activity(user_id: int) -> None:
+            try:
+                nick = f"user{user_id}"
+                channel = "#stress"
+
+                for i in range(messages_per_user):
+                    # Add user message
+                    ctx.add_message(nick, channel, "user", f"User {user_id} message {i}")
+                    # Add assistant response
+                    ctx.add_message(nick, channel, "assistant", f"Response to {user_id}:{i}")
+
+                    # Occasionally read to create read/write contention
+                    if i % 5 == 0:
+                        messages = ctx.get_messages(nick, channel)
+                        # Verify messages belong to this user
+                        for msg in messages:
+                            if "User" in msg["content"] and f"User {user_id}" not in msg["content"]:
+                                with lock:
+                                    errors.append(
+                                        ValueError(f"User {user_id} saw foreign message: {msg}")
+                                    )
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        # Run all users concurrently
+        threads = []
+        for i in range(num_users):
+            t = threading.Thread(target=user_activity, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors during concurrent access: {errors}"
+
+        # Verify final state
+        stats = ctx.get_stats()
+        assert stats["active_conversations"] == num_users
+
+    def test_channel_context_concurrent_multi_user(
+        self, high_capacity_context: ConversationContext
+    ) -> None:
+        """GIVEN busy channel WHEN multiple users write simultaneously THEN correct ordering."""
+        ctx = high_capacity_context
+        num_users = 30
+        messages_per_user = 10
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def user_channel_activity(user_id: int) -> None:
+            try:
+                nick = f"user{user_id}"
+                channel = "#busy"
+
+                for i in range(messages_per_user):
+                    content = f"[{user_id}:{i}] Message from user {user_id}"
+                    ctx.add_channel_message(channel, nick, "user", content)
+
+                    # Small delay to interleave with other users
+                    time.sleep(0.001)
+
+                    # Read channel history
+                    messages = ctx.get_channel_messages(channel)
+
+                    # Verify we can read messages
+                    if len(messages) == 0:
+                        with lock:
+                            errors.append(ValueError(f"User {user_id} got empty channel history"))
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for i in range(num_users):
+            t = threading.Thread(target=user_channel_activity, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+        # Final channel should have messages (capped by max)
+        messages = ctx.get_channel_messages("#busy")
+        assert len(messages) > 0
+        assert len(messages) <= 200  # channel_max_messages
+
+    def test_rapid_context_clear_during_writes(
+        self, high_capacity_context: ConversationContext
+    ) -> None:
+        """GIVEN ongoing writes WHEN context cleared THEN no race conditions."""
+        ctx = high_capacity_context
+        errors: list[Exception] = []
+        lock = threading.Lock()
+        stop_event = threading.Event()
+
+        def writer(user_id: int) -> None:
+            try:
+                nick = f"user{user_id}"
+                i = 0
+                while not stop_event.is_set():
+                    ctx.add_message(nick, "#test", "user", f"Message {i}")
+                    i += 1
+                    time.sleep(0.001)
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        def clearer() -> None:
+            try:
+                for _ in range(20):
+                    time.sleep(0.01)
+                    ctx.clear_all()
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        # Start writers
+        writers = []
+        for i in range(10):
+            t = threading.Thread(target=writer, args=(i,))
+            writers.append(t)
+            t.start()
+
+        # Start clearer
+        clearer_thread = threading.Thread(target=clearer)
+        clearer_thread.start()
+
+        # Let it run
+        clearer_thread.join()
+        stop_event.set()
+
+        for t in writers:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+
+class TestRapidRequestHandling:
+    """Test handling of rapid sequential requests from same user."""
+
+    @pytest.fixture
+    def mock_service(self) -> LLMService:
+        """Create service with mock plugin."""
+        mock_plugin = Mock()
+        mock_plugin.log = Mock()
+        mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "maxPromptLength": 10000,
+                "commandPrefixes": [".", "/"],
+                "askApiKey": "test-key",
+                "askModel": "gpt-4",
+                "askSystemPrompt": "You are helpful.",
+                "timeout": 30,
+                "httpRoot": "/tmp/test",
+                "httpUrlBase": "http://localhost/llm",
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+        return LLMService(mock_plugin)
+
+    def test_rapid_image_detection(self, mock_service: LLMService) -> None:
+        """GIVEN rapid requests with images WHEN detecting THEN no missed detections."""
+        service = mock_service
+        test_texts = [
+            "Check https://example.com/image1.jpg please",
+            "Look at https://example.com/photo.png",
+            "No image here",
+            "Multiple https://a.com/1.jpg and https://b.com/2.png",
+        ]
+
+        results = []
+        for _ in range(100):
+            for text in test_texts:
+                images = service.detect_images(text)
+                results.append((text, len(images)))
+
+        # Verify consistency
+        for text, count in results:
+            if "image1.jpg" in text:
+                assert count == 1
+            elif "photo.png" in text:
+                assert count == 1
+            elif "No image" in text:
+                assert count == 0
+            elif "Multiple" in text:
+                assert count == 2
+
+    def test_rapid_prompt_validation(self, mock_service: LLMService) -> None:
+        """GIVEN rapid validation requests WHEN validating THEN consistent results."""
+        service = mock_service
+
+        valid_prompts = ["Hello", "What is Python?", "Write code" * 100]
+        invalid_prompts = ["", "   ", None]
+
+        errors = []
+
+        def validate_batch(batch_id: int) -> None:
+            for _ in range(50):
+                for prompt in valid_prompts:
+                    is_valid, _ = service.validate_prompt(prompt)
+                    if not is_valid and prompt and prompt.strip():
+                        errors.append(f"Batch {batch_id}: Valid prompt rejected")
+
+                for prompt in invalid_prompts:
+                    if prompt is not None:
+                        is_valid, _ = service.validate_prompt(prompt)
+                        if is_valid:
+                            errors.append(f"Batch {batch_id}: Invalid prompt accepted")
+
+        threads = []
+        for i in range(10):
+            t = threading.Thread(target=validate_batch, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Validation errors: {errors}"
+
+
+class TestConcurrentAPIKeyIsolation:
+    """Test that API keys are isolated in concurrent requests."""
+
+    def test_completion_api_key_isolation(self) -> None:
+        """GIVEN concurrent completion requests WHEN different keys THEN proper isolation."""
+        api_keys_used: list[str] = []
+        lock = threading.Lock()
+
+        def mock_completion(**kwargs) -> Mock:
+            with lock:
+                api_keys_used.append(kwargs.get("api_key", "MISSING"))
+            time.sleep(0.01)  # Simulate latency
+
+            response = Mock()
+            response.choices = [Mock()]
+            response.choices[0].message = Mock()
+            response.choices[0].message.content = f"Response for key {kwargs.get('api_key', '')[:10]}"
+            return response
+
+        def make_request(user_id: int) -> None:
+            mock_plugin = Mock()
+            mock_plugin.log = Mock()
+            unique_key = f"key_{user_id}_{'x' * 30}"
+
+            mock_plugin.registryValue = Mock(
+                side_effect=lambda key, channel=None: {
+                    "maxPromptLength": 10000,
+                    "commandPrefixes": [".", "/"],
+                    "askApiKey": unique_key,
+                    "askModel": "gpt-4",
+                    "askSystemPrompt": "You are helpful.",
+                    "timeout": 30,
+                }.get(key)
+            )
+
+            service = LLMService(mock_plugin)
+            service.completion(f"Request from user {user_id}", command="ask")
+
+        with patch("llm.service.litellm.completion", side_effect=mock_completion):
+            threads = []
+            for i in range(20):
+                t = threading.Thread(target=make_request, args=(i,))
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+        # All keys should be unique
+        assert len(api_keys_used) == 20
+        unique_keys = set(api_keys_used)
+        assert len(unique_keys) == 20, "API key contamination detected!"
+
+
+class TestOverlappingContextScenarios:
+    """Test complex overlapping context scenarios."""
+
+    @pytest.fixture
+    def multi_channel_context(self) -> ConversationContext:
+        """Create context for multi-channel testing."""
+        config = ContextConfig(
+            max_messages=50,
+            timeout_minutes=30,
+            enabled=True,
+            channel_max_messages=100,
+        )
+        return ConversationContext(config)
+
+    def test_user_active_in_multiple_channels(
+        self, multi_channel_context: ConversationContext
+    ) -> None:
+        """GIVEN user in multiple channels WHEN chatting in all THEN proper isolation."""
+        ctx = multi_channel_context
+        nick = "activeuser"
+        channels = ["#python", "#rust", "#general", "#help", "#offtopic"]
+        messages_per_channel = 20
+
+        errors = []
+        lock = threading.Lock()
+
+        def channel_activity(channel: str) -> None:
+            try:
+                for i in range(messages_per_channel):
+                    ctx.add_message(nick, channel, "user", f"{channel} message {i}")
+                    ctx.add_message(nick, channel, "assistant", f"Reply in {channel}")
+
+                    # Read and verify
+                    messages = ctx.get_messages(nick, channel)
+                    for msg in messages:
+                        if channel not in msg["content"] and "Reply" not in msg["content"]:
+                            with lock:
+                                errors.append(f"Wrong channel content in {channel}: {msg}")
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for channel in channels:
+            t = threading.Thread(target=channel_activity, args=(channel,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+        # Verify each channel has correct messages
+        for channel in channels:
+            messages = ctx.get_messages(nick, channel)
+            assert len(messages) == messages_per_channel * 2
+
+    def test_same_nick_different_cases(
+        self, multi_channel_context: ConversationContext
+    ) -> None:
+        """GIVEN nick with different cases WHEN accessing context THEN same context."""
+        ctx = multi_channel_context
+        channel = "#test"
+
+        # Add messages with different nick cases
+        ctx.add_message("TestUser", channel, "user", "Message 1")
+        ctx.add_message("testuser", channel, "user", "Message 2")
+        ctx.add_message("TESTUSER", channel, "user", "Message 3")
+        ctx.add_message("TeStUsEr", channel, "user", "Message 4")
+
+        # All should be in same context
+        messages = ctx.get_messages("testuser", channel)
+        assert len(messages) == 4
+
+    def test_channel_history_exclude_with_concurrent_access(
+        self, multi_channel_context: ConversationContext
+    ) -> None:
+        """GIVEN busy channel WHEN users read with exclude_nick THEN correct filtering."""
+        ctx = multi_channel_context
+        channel = "#busy"
+        users = ["alice", "bob", "charlie", "dave", "eve"]
+        errors = []
+        lock = threading.Lock()
+
+        # First, populate channel with messages
+        for i in range(100):
+            nick = users[i % len(users)]
+            ctx.add_channel_message(channel, nick, "user", f"Message from {nick}: {i}")
+
+        def read_with_exclude(user: str) -> None:
+            try:
+                for _ in range(50):
+                    messages = ctx.get_channel_messages(channel, exclude_nick=user)
+                    for msg in messages:
+                        if msg["nick"].lower() == user.lower():
+                            with lock:
+                                errors.append(f"User {user} saw own message: {msg}")
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for user in users:
+            t = threading.Thread(target=read_with_exclude, args=(user,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+
+class TestLongRunningSessionScenarios:
+    """Test scenarios involving long-running sessions and state management."""
+
+    def test_context_expiry_under_load(self) -> None:
+        """GIVEN very short timeout WHEN many users active THEN expiry works correctly."""
+        config = ContextConfig(
+            max_messages=100,
+            timeout_minutes=0,  # Immediate expiry
+            enabled=True,
+        )
+        ctx = ConversationContext(config)
+        errors = []
+        lock = threading.Lock()
+
+        def user_with_expiry_check(user_id: int) -> None:
+            try:
+                nick = f"user{user_id}"
+                channel = "#expiry"
+
+                # Add messages
+                for i in range(5):
+                    ctx.add_message(nick, channel, "user", f"Message {i}")
+
+                # Wait for expiry
+                time.sleep(0.1)
+
+                # Should be expired
+                messages = ctx.get_messages(nick, channel)
+                if len(messages) > 0:
+                    with lock:
+                        errors.append(f"User {user_id}: Messages didn't expire")
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for i in range(30):
+            t = threading.Thread(target=user_with_expiry_check, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+    def test_max_messages_eviction_under_load(self) -> None:
+        """GIVEN low max_messages WHEN many messages added THEN proper FIFO eviction."""
+        config = ContextConfig(
+            max_messages=10,
+            timeout_minutes=60,
+            enabled=True,
+        )
+        ctx = ConversationContext(config)
+        errors = []
+        lock = threading.Lock()
+
+        def user_with_eviction(user_id: int) -> None:
+            try:
+                nick = f"user{user_id}"
+                channel = "#eviction"
+
+                # Add more than max_messages
+                for i in range(50):
+                    ctx.add_message(nick, channel, "user", f"[{i}] Message")
+
+                # Should only have last 10
+                messages = ctx.get_messages(nick, channel)
+                if len(messages) != 10:
+                    with lock:
+                        errors.append(f"User {user_id}: Expected 10, got {len(messages)}")
+
+                # First message should be [40] (50 - 10)
+                if "[40]" not in messages[0]["content"]:
+                    with lock:
+                        errors.append(
+                            f"User {user_id}: Wrong first message: {messages[0]['content']}"
+                        )
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for i in range(20):
+            t = threading.Thread(target=user_with_eviction, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+
+
+class TestNetworkFailureRecovery:
+    """Test handling of network failures and retries."""
+
+    def test_completion_handles_intermittent_failures(self) -> None:
+        """GIVEN intermittent API failures WHEN completing THEN proper error handling."""
+        call_count = [0]
+        lock = threading.Lock()
+
+        def flaky_completion(**kwargs) -> Mock:
+            with lock:
+                call_count[0] += 1
+                current = call_count[0]
+
+            # Fail every third call
+            if current % 3 == 0:
+                raise Exception("Intermittent network error")
+
+            response = Mock()
+            response.choices = [Mock()]
+            response.choices[0].message = Mock()
+            response.choices[0].message.content = f"Response {current}"
+            return response
+
+        mock_plugin = Mock()
+        mock_plugin.log = Mock()
+        mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "maxPromptLength": 10000,
+                "commandPrefixes": [".", "/"],
+                "askApiKey": "test-key",
+                "askModel": "gpt-4",
+                "askSystemPrompt": "You are helpful.",
+                "timeout": 30,
+            }.get(key)
+        )
+
+        service = LLMService(mock_plugin)
+        results = []
+
+        with patch("llm.service.litellm.completion", side_effect=flaky_completion):
+            for i in range(9):
+                result = service.completion(f"Request {i}", command="ask")
+                results.append(result)
+
+        # Should have mix of successes and error messages
+        successes = [r for r in results if "Response" in r]
+        errors = [r for r in results if "Error" in r]
+
+        assert len(successes) == 6  # 6 out of 9 succeed
+        assert len(errors) == 3  # 3 out of 9 fail
+
+
+class TestHighVolumeFileOperations:
+    """Test file operations under high volume."""
+
+    def test_concurrent_code_saving(self, tmp_path) -> None:
+        """GIVEN many concurrent saves WHEN saving code THEN all files created."""
+        mock_plugin = Mock()
+        mock_plugin.log = Mock()
+        mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "http://localhost/llm",
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+
+        service = LLMService(mock_plugin)
+        urls = []
+        lock = threading.Lock()
+        errors = []
+
+        def save_code(content_id: int) -> None:
+            try:
+                content = f"# Code file {content_id}\nprint('Hello from {content_id}')"
+                url = service.save_code_to_http(content)
+                if url:
+                    with lock:
+                        urls.append(url)
+                else:
+                    with lock:
+                        errors.append(f"Failed to save code {content_id}")
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for i in range(50):
+            t = threading.Thread(target=save_code, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+        assert len(urls) == 50
+
+        # Verify all files exist
+        files = list(tmp_path.glob("*.html"))
+        assert len(files) == 50
+
+    def test_concurrent_image_saving(self, tmp_path) -> None:
+        """GIVEN many concurrent image saves WHEN saving THEN all files created."""
+        import base64
+
+        mock_plugin = Mock()
+        mock_plugin.log = Mock()
+        mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "http://localhost/llm",
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+
+        service = LLMService(mock_plugin)
+        urls = []
+        lock = threading.Lock()
+        errors = []
+
+        def save_image(image_id: int) -> None:
+            try:
+                # Create unique "image" data
+                data = f"FAKE_IMAGE_DATA_{image_id}".encode()
+                b64_data = base64.b64encode(data).decode()
+                url = service.save_image_to_http(b64_data)
+                if url:
+                    with lock:
+                        urls.append(url)
+                else:
+                    with lock:
+                        errors.append(f"Failed to save image {image_id}")
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = []
+        for i in range(50):
+            t = threading.Thread(target=save_image, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+        assert len(urls) == 50
+
+        # Verify all files exist
+        files = list(tmp_path.glob("*.png"))
+        assert len(files) == 50
