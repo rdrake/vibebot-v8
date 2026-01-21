@@ -826,12 +826,13 @@ class LLMService:
         code = code.strip()
 
         # Check for markdown fence with language (```python)
-        fence_match = re.match(r"^```(\w+)\n(.*)\n```$", code, re.DOTALL)
+        # The \n? before ``` makes the trailing newline optional for empty blocks
+        fence_match = re.match(r"^```(\w+)\n(.*?)\n?```$", code, re.DOTALL)
         if fence_match:
             return fence_match.group(2), fence_match.group(1)
 
         # Check for fence without language (```)
-        fence_match = re.match(r"^```\n(.*)\n```$", code, re.DOTALL)
+        fence_match = re.match(r"^```\n(.*?)\n?```$", code, re.DOTALL)
         if fence_match:
             return fence_match.group(1), None
 

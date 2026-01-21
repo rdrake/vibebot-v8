@@ -16,37 +16,48 @@ import pytest
 class TestPluginCommandRouting:
     """Test that commands are properly wired up and route correctly."""
 
-    def test_ask_command_has_capability_requirement(self) -> None:
-        """GIVEN ask command WHEN inspecting wrapper THEN requires llm.ask capability."""
+    def test_ask_command_exists_and_callable(self) -> None:
+        """GIVEN ask command WHEN inspecting plugin THEN command exists and is callable."""
         from llm.plugin import LLM
 
-        # The wrapped function stores info about requirements
-        assert hasattr(LLM.ask, "commands")
-        # The wrap decorator sets up capability checking
+        assert hasattr(LLM, "ask")
+        assert callable(LLM.ask)
+        # Docstring should indicate it takes a question argument
+        assert "<question>" in (LLM.ask.__doc__ or "")
 
-    def test_code_command_has_capability_requirement(self) -> None:
-        """GIVEN code command WHEN inspecting wrapper THEN requires llm.code capability."""
+    def test_code_command_exists_and_callable(self) -> None:
+        """GIVEN code command WHEN inspecting plugin THEN command exists and is callable."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM.code, "commands")
+        assert hasattr(LLM, "code")
+        assert callable(LLM.code)
+        assert "<request>" in (LLM.code.__doc__ or "")
 
-    def test_draw_command_has_capability_requirement(self) -> None:
-        """GIVEN draw command WHEN inspecting wrapper THEN requires llm.draw capability."""
+    def test_draw_command_exists_and_callable(self) -> None:
+        """GIVEN draw command WHEN inspecting plugin THEN command exists and is callable."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM.draw, "commands")
+        assert hasattr(LLM, "draw")
+        assert callable(LLM.draw)
+        assert "<prompt>" in (LLM.draw.__doc__ or "")
 
-    def test_forget_command_requires_channel_argument(self) -> None:
-        """GIVEN forget command WHEN inspecting wrapper THEN requires channel."""
+    def test_forget_command_exists_and_callable(self) -> None:
+        """GIVEN forget command WHEN inspecting plugin THEN command exists and is callable."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM.forget, "commands")
+        assert hasattr(LLM, "forget")
+        assert callable(LLM.forget)
+        # Docstring should indicate optional channel argument
+        assert "[<channel>]" in (LLM.forget.__doc__ or "")
 
-    def test_llmkeys_command_requires_admin(self) -> None:
-        """GIVEN llmkeys command WHEN inspecting wrapper THEN requires admin."""
+    def test_llmkeys_command_exists_and_callable(self) -> None:
+        """GIVEN llmkeys command WHEN inspecting plugin THEN command exists and is callable."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM.llmkeys, "commands")
+        assert hasattr(LLM, "llmkeys")
+        assert callable(LLM.llmkeys)
+        # Docstring should mention admin only
+        assert "admin" in (LLM.llmkeys.__doc__ or "").lower()
 
 
 class TestPluginLifecycleIntegration:

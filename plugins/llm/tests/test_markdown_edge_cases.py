@@ -236,8 +236,11 @@ print(greeting)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
-        # Should contain the line (possibly with horizontal scroll)
-        assert "x =" in content
+        # Syntax highlighting wraps tokens in span tags, so check for individual tokens
+        # The variable 'x' and repeated 'a' tokens should be present
+        assert ">x<" in content  # Variable name in a span
+        assert ">a<" in content  # The repeated 'a' variable
+        assert ">b<" in content  # The final 'b' variable
 
     def test_deeply_nested_lists(self, service: LLMService, tmp_path) -> None:
         """GIVEN deeply nested lists WHEN saved THEN rendered."""
