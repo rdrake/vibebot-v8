@@ -484,6 +484,7 @@ class LLMService:
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-3-flash",
+            "gemini-3-flash-preview",
             "gemini-flash-latest",  # Alias for latest flash model
         ]
 
