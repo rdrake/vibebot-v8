@@ -667,14 +667,6 @@ class LLMService:
             if "gemini" in model.lower():
                 optional_kwargs["safety_settings"] = self._get_safety_settings()
 
-            # Debug logging for diagnosis
-            msg_summary = [(m.get("role"), len(str(m.get("content", "")))) for m in messages]
-            self.log.debug(
-                f"LiteLLM call: model={model}, timeout={timeout}, "
-                f"messages={msg_summary}, kwargs={list(optional_kwargs.keys())}, "
-                f"api_key={api_key[:8] + '...' if api_key else 'NONE'}"
-            )
-
             response = litellm.completion(
                 model=model,
                 messages=messages,
@@ -682,7 +674,6 @@ class LLMService:
                 timeout=timeout,
                 **optional_kwargs,
             )
-            self.log.debug(f"LiteLLM response: choices={len(response.choices)}")
 
             content = self._sanitize_output(response.choices[0].message.content)
             grounding_used = self._check_grounding_used(response)
