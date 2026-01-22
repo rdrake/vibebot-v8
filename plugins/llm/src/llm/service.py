@@ -664,6 +664,7 @@ class LLMService:
             if "gemini" in model.lower():
                 optional_kwargs["safety_settings"] = self._get_safety_settings()
 
+            self.log.debug(f"Calling LiteLLM: model={model}, timeout={timeout}")
             response = litellm.completion(
                 model=model,
                 messages=messages,
@@ -671,13 +672,25 @@ class LLMService:
                 timeout=timeout,
                 **optional_kwargs,
             )
+            self.log.debug(f"LiteLLM response received: {type(response)}")
 
-            content = self._sanitize_output(response.choices[0].message.content)
+            raw_content = response.choices[0].message.content
+            self.log.debug(f"Raw content: {raw_content!r}")
+
+            if raw_content is None:
+                self.log.warning("LLM returned None content")
+                return CompletionResult(
+                    content=_("Error: Model returned empty response"),
+                    grounding_used=False,
+                )
+
+            content = self._sanitize_output(raw_content)
             grounding_used = self._check_grounding_used(response)
 
             return CompletionResult(content=content, grounding_used=grounding_used)
 
         except Exception as e:
+            self.log.exception(f"Completion failed: {self._sanitize(str(e))}")
             return CompletionResult(
                 content=self._handle_llm_error(e, "completion"),
                 grounding_used=False,
