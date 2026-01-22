@@ -49,3 +49,7 @@ coverage.xml
 
 # Ruff
 .ruff_cache/
+
+# Vale linter
+.vale.ini
+styles/
