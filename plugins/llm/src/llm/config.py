@@ -69,7 +69,8 @@ conf.registerChannelValue(
     "codeSystemPrompt",
     registry.String(
         "You are a helpful code assistant. Explain your code and provide context. "
-        "Use markdown formatting for code blocks.",
+        "Use markdown formatting for code blocks. "
+        "For math equations, use $...$ for inline math and $$...$$ for display math.",
         _("""System prompt for code command"""),
     ),
 )
