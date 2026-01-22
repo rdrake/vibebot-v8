@@ -909,6 +909,13 @@ class LLMService:
         filename = f"code_{hash_str}.html"
         filepath = os.path.join(http_root, filename)
 
+        # Protect LaTeX delimiters from markdown escaping
+        # Markdown treats \[ as escaped [, stripping the backslash
+        protected = content.replace("\\[", "\x00DISPLAY_OPEN\x00")
+        protected = protected.replace("\\]", "\x00DISPLAY_CLOSE\x00")
+        protected = protected.replace("\\(", "\x00INLINE_OPEN\x00")
+        protected = protected.replace("\\)", "\x00INLINE_CLOSE\x00")
+
         # Convert markdown to HTML with syntax highlighting
         md = markdown.Markdown(
             extensions=[
@@ -923,7 +930,13 @@ class LLMService:
                 }
             },
         )
-        rendered = md.convert(content)
+        rendered = md.convert(protected)
+
+        # Restore LaTeX delimiters
+        rendered = rendered.replace("\x00DISPLAY_OPEN\x00", "\\[")
+        rendered = rendered.replace("\x00DISPLAY_CLOSE\x00", "\\]")
+        rendered = rendered.replace("\x00INLINE_OPEN\x00", "\\(")
+        rendered = rendered.replace("\x00INLINE_CLOSE\x00", "\\)")
 
         # Sanitize HTML to prevent XSS attacks
         rendered = self._sanitize_html(rendered)
