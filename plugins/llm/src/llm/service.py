@@ -650,41 +650,18 @@ class LLMService:
 
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
-            # Build optional kwargs based on model capabilities
-            optional_kwargs: dict[str, Any] = {}
-
-            # reasoning_effort is only supported by Anthropic Claude models
-            if "claude" in model.lower() or "anthropic" in model.lower():
-                optional_kwargs["reasoning_effort"] = "high"
-
-            # Gemini-specific tools and safety settings
-            gemini_tools = self._get_gemini_tools(model)
-            if gemini_tools:
-                optional_kwargs["tools"] = gemini_tools
-            if "gemini" in model.lower():
-                optional_kwargs["safety_settings"] = self._get_safety_settings()
-
             self.log.debug(f"Calling LiteLLM: model={model}, timeout={timeout}")
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 api_key=api_key,
                 timeout=timeout,
-                **optional_kwargs,
+                tools=self._get_gemini_tools(model),
+                safety_settings=self._get_safety_settings() if "gemini" in model.lower() else None,
             )
-            self.log.debug(f"LiteLLM response received: {type(response)}")
+            self.log.debug("LiteLLM response received")
 
-            raw_content = response.choices[0].message.content
-            self.log.debug(f"Raw content: {raw_content!r}")
-
-            if raw_content is None:
-                self.log.warning("LLM returned None content")
-                return CompletionResult(
-                    content=_("Error: Model returned empty response"),
-                    grounding_used=False,
-                )
-
-            content = self._sanitize_output(raw_content)
+            content = self._sanitize_output(response.choices[0].message.content)
             grounding_used = self._check_grounding_used(response)
 
             return CompletionResult(content=content, grounding_used=grounding_used)
