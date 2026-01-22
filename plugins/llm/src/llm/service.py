@@ -13,17 +13,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 import litellm
-import markdown
-import nh3
-import supybot.conf as conf
-import supybot.ircmsgs as ircmsgs
-import supybot.ircutils as ircutils
-import supybot.log as log
-from pygments.formatters import HtmlFormatter
-from supybot.i18n import PluginInternationalization
-from supybot.utils.file import AtomicFile
 
-from .context import Role
+# MUST be set immediately after import, before any LiteLLM calls create HTTPHandler
+# Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
+# See: https://github.com/BerriAI/litellm/issues/14635
+litellm.request_timeout = 120  # 2 minutes
+
+import markdown  # noqa: E402
+import nh3  # noqa: E402
+import supybot.conf as conf  # noqa: E402
+import supybot.ircmsgs as ircmsgs  # noqa: E402
+import supybot.ircutils as ircutils  # noqa: E402
+import supybot.log as log  # noqa: E402
+from pygments.formatters import HtmlFormatter  # noqa: E402
+from supybot.i18n import PluginInternationalization  # noqa: E402
+from supybot.utils.file import AtomicFile  # noqa: E402
+
+from .context import Role  # noqa: E402
 
 _ = PluginInternationalization("LLM")
 
@@ -649,11 +655,6 @@ class LLMService:
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
 
-            # Workaround for LiteLLM bug #14635: timeout param not passed to HTTP handler
-            # Setting global request_timeout ensures it's applied for Gemini models
-            # See: https://github.com/BerriAI/litellm/issues/14635
-            litellm.request_timeout = timeout
-
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
 
@@ -728,7 +729,6 @@ class LLMService:
             ]
 
             timeout = self.plugin.registryValue("timeout")
-            litellm.request_timeout = timeout  # Workaround for LiteLLM bug #14635
 
             response = litellm.completion(
                 model=model,
@@ -797,7 +797,6 @@ class LLMService:
 
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
-            litellm.request_timeout = timeout  # Workaround for LiteLLM bug #14635
 
             # Build contextual prompt if history available
             if history:
