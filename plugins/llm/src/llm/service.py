@@ -649,6 +649,11 @@ class LLMService:
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
 
+            # Workaround for LiteLLM bug #14635: timeout param not passed to HTTP handler
+            # Setting global request_timeout ensures it's applied for Gemini models
+            # See: https://github.com/BerriAI/litellm/issues/14635
+            litellm.request_timeout = timeout
+
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
 
@@ -723,6 +728,7 @@ class LLMService:
             ]
 
             timeout = self.plugin.registryValue("timeout")
+            litellm.request_timeout = timeout  # Workaround for LiteLLM bug #14635
 
             response = litellm.completion(
                 model=model,
@@ -791,6 +797,7 @@ class LLMService:
 
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
+            litellm.request_timeout = timeout  # Workaround for LiteLLM bug #14635
 
             # Build contextual prompt if history available
             if history:
