@@ -479,12 +479,12 @@ class LLMService:
         model_lower = model.lower()
 
         # Supported Gemini text models for grounding tools (explicit opt-in)
-        # NOTE: gemini-3-flash excluded - tool calls cause timeout via LiteLLM
-        # See: https://github.com/google/adk-python/issues/3627
         supported_models = [
             "gemini-2.0-flash",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
+            "gemini-3-flash",
+            "gemini-3-flash-preview",
             "gemini-flash-latest",  # Alias for latest flash model
         ]
 
