@@ -652,13 +652,22 @@ class LLMService:
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
             self.log.debug(f"Calling LiteLLM: model={model}, timeout={timeout}")
+
+            # Build optional kwargs - only include if not None
+            # (passing tools=None explicitly can cause issues with some providers)
+            optional_kwargs: dict[str, Any] = {}
+            gemini_tools = self._get_gemini_tools(model)
+            if gemini_tools:
+                optional_kwargs["tools"] = gemini_tools
+            if "gemini" in model.lower():
+                optional_kwargs["safety_settings"] = self._get_safety_settings()
+
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 api_key=api_key,
                 timeout=timeout,
-                tools=self._get_gemini_tools(model),
-                safety_settings=self._get_safety_settings() if "gemini" in model.lower() else None,
+                **optional_kwargs,
             )
             self.log.debug("LiteLLM response received")
 
