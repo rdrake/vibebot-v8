@@ -666,9 +666,6 @@ class LLMService:
                 optional_kwargs["tools"] = gemini_tools
             if "gemini" in model.lower():
                 optional_kwargs["safety_settings"] = self._get_safety_settings()
-                # Disable thinking for gemini-3 models - causes hangs via LiteLLM
-                if "gemini-3" in model.lower():
-                    optional_kwargs["thinking"] = {"type": "disabled"}
 
             # Debug logging for diagnosis
             msg_summary = [(m.get("role"), len(str(m.get("content", "")))) for m in messages]
