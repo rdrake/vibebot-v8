@@ -15,7 +15,7 @@ import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.schedule as schedule
-from supybot.commands import wrap
+from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext, Role
@@ -622,7 +622,7 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
-        channel: str,
+        channel: str | None,
     ) -> None:
         """[<channel>]
 
@@ -630,6 +630,9 @@ class LLM(callbacks.Plugin):
         Use this to start fresh.
         """
         nick = self._get_nick(msg)
+        # Default to current channel if not specified
+        if channel is None:
+            channel = self._get_channel(msg)
         cleared = self.context.clear(nick, channel)
 
         if cleared:
@@ -637,7 +640,7 @@ class LLM(callbacks.Plugin):
         else:
             irc.reply(_("No conversation context to clear."), prefixNick=False)
 
-    forget = wrap(forget, ["channel"])
+    forget = wrap(forget, [optional("channel")])
 
     def llmkeys(
         self,
