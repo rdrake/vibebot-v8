@@ -269,6 +269,25 @@ make install-service   # Install user service
 make install-timer     # Enable auto-updates (15-min interval)
 ```
 
+## Production Debugging
+
+### Checking Logs
+```bash
+# Tail recent log entries from production server
+ssh vibebot@rdrake.org "tail -100 ~/vibebot-v8/logs/messages.log"
+
+# Follow logs in real-time
+ssh vibebot@rdrake.org "tail -f ~/vibebot-v8/logs/messages.log"
+
+# Search for specific errors
+ssh vibebot@rdrake.org "grep -i error ~/vibebot-v8/logs/messages.log | tail -50"
+```
+
+### Restarting the Bot
+```bash
+ssh vibebot@rdrake.org "cd ~/vibebot-v8 && git pull && systemctl --user restart vibebot"
+```
+
 ## Resources
 
 - [Limnoria Documentation](https://limnoria.readthedocs.io/)
