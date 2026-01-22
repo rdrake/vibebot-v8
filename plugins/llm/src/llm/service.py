@@ -650,14 +650,26 @@ class LLMService:
 
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
+            # Build optional kwargs based on model capabilities
+            optional_kwargs: dict[str, Any] = {}
+
+            # reasoning_effort is only supported by Anthropic Claude models
+            if "claude" in model.lower() or "anthropic" in model.lower():
+                optional_kwargs["reasoning_effort"] = "high"
+
+            # Gemini-specific tools and safety settings
+            gemini_tools = self._get_gemini_tools(model)
+            if gemini_tools:
+                optional_kwargs["tools"] = gemini_tools
+            if "gemini" in model.lower():
+                optional_kwargs["safety_settings"] = self._get_safety_settings()
+
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 api_key=api_key,
                 timeout=timeout,
-                reasoning_effort="high",
-                tools=self._get_gemini_tools(model),
-                safety_settings=self._get_safety_settings() if "gemini" in model else None,
+                **optional_kwargs,
             )
 
             content = self._sanitize_output(response.choices[0].message.content)
