@@ -1115,7 +1115,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         lines = []
         for msg in channel_history:
             nick = msg.get("nick", "Unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             # Truncate long messages
             if len(content) > CHANNEL_MSG_TRUNCATE_LEN:
                 content = content[: CHANNEL_MSG_TRUNCATE_LEN - 3] + "..."
