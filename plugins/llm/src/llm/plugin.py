@@ -23,8 +23,6 @@ from .service import (
     CODE_PREVIEW_MAX_LEN,
     CODE_PREVIEW_TRUNCATE_LEN,
     LLMService,
-    format_duration,
-    parse_duration,
 )
 
 if TYPE_CHECKING:
@@ -694,27 +692,6 @@ class LLM(callbacks.Plugin):
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
-    def _validate_remind_duration(self, duration_str: str) -> tuple[int | None, str]:
-        """Validate reminder duration string.
-
-        Args:
-            duration_str: Duration string like "30m", "2h", etc.
-
-        Returns:
-            Tuple of (seconds, error_message). On success, error is empty.
-            On failure, seconds is None.
-        """
-        seconds = parse_duration(duration_str)
-        if seconds is None:
-            return None, _("Invalid duration. Use: 30s, 5m, 2h, 1d")
-
-        if seconds < 10:
-            return None, _("Minimum reminder time is 10 seconds.")
-        if seconds > 604800:  # 7 days
-            return None, _("Maximum reminder time is 7 days.")
-
-        return seconds, ""
-
     def _get_user_reminders(self, nick: str) -> list[tuple[str, tuple[str, str, str]]]:
         """Get reminders belonging to a specific user.
 
@@ -759,46 +736,73 @@ class LLM(callbacks.Plugin):
                 return name
         return None
 
-    def remind(
+    def remindme(
         self,
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
-        duration_str: str,
         text: str,
     ) -> None:
-        """<duration> <message>
+        """<natural language reminder>
 
-        Set a reminder. Duration: 30s, 5m, 2h, 1d
+        Set a reminder using natural language.
 
         Examples:
-          %remind 30m check the build
-          %remind 2h meeting starts
+          %remindme in 30 minutes check the build
+          %remindme tomorrow at 3pm call Bob
+          %remindme in 2 hours meeting starts
+          %remindme next Tuesday morning dentist appointment
         """
-        seconds, error = self._validate_remind_duration(duration_str)
-        if seconds is None:
-            irc.error(error)
-            return
-
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Create unique event name
-        event_name = f"llm_remind_{int(time.time())}_{hash(text) % 10000}"
+        # Parse reminder using LLM
+        result = self.llm_service.parse_reminder(text, channel)
+
+        # Handle clarification requests
+        if result.action == "clarify":
+            irc.reply(result.confirmation)
+            return
+
+        # Validate duration limits
+        if result.seconds is None:
+            irc.reply(_("I couldn't determine when to remind you. Please try again."))
+            return
+
+        if result.seconds < 10:
+            irc.error(_("Reminder must be at least 10 seconds from now."))
+            return
+
+        if result.seconds > 604800:  # 7 days
+            irc.error(_("Reminder can't be more than 7 days out."))
+            return
+
+        if result.seconds < 0:
+            irc.error(_("That time has already passed."))
+            return
+
+        # Schedule the reminder
+        reminder_message = result.message or text
+        event_name = f"llm_remind_{int(time.time())}_{hash(reminder_message) % 10000}"
 
         def deliver() -> None:
-            irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {text}"))
+            irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
             self._reminders.pop(event_name, None)
 
         try:
-            schedule.addEvent(deliver, time.time() + seconds, name=event_name)
-            self._reminders[event_name] = (nick, channel, text)
-            irc.reply(_("Reminder set for %s from now.") % format_duration(seconds))
+            schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
+            self._reminders[event_name] = (nick, channel, reminder_message)
+
+            # Build reply with optional note
+            reply = result.confirmation
+            if result.note:
+                reply = f"{reply} ({result.note})"
+            irc.reply(reply)
         except Exception as e:
             self.log.error(f"Failed to schedule reminder: {e}")
             irc.error(_("Failed to set reminder."))
 
-    remind = wrap(remind, ["somethingWithoutSpaces", "text"])
+    remindme = wrap(remindme, ["text"])
 
     def reminders(
         self,

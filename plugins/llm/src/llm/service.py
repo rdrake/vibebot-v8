@@ -56,6 +56,16 @@ class CompletionResult(NamedTuple):
     grounding_used: bool = False
 
 
+class ReminderParseResult(NamedTuple):
+    """Result of parsing a natural language reminder request."""
+
+    action: str  # "schedule" or "clarify"
+    seconds: int | None = None  # seconds until reminder fires
+    message: str | None = None  # reminder message
+    confirmation: str = ""  # message to show user
+    note: str | None = None  # optional note (e.g., timezone assumption)
+
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -685,6 +695,126 @@ class LLMService:
             return CompletionResult(
                 content=self._handle_llm_error(e, "completion"),
                 grounding_used=False,
+            )
+
+    def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
+        """Parse a natural language reminder request using LLM.
+
+        Uses the ask model (with Google Search grounding for time awareness) to
+        parse natural language like "in 30 minutes check the build" or
+        "tomorrow at 3pm call Bob" into structured reminder data.
+
+        Args:
+            text: Natural language reminder request
+            channel: Optional channel for config lookup
+
+        Returns:
+            ReminderParseResult with action, seconds, message, confirmation, note
+        """
+        import json
+        from datetime import UTC, datetime
+
+        # Get configuration
+        api_key = self.plugin.registryValue("askApiKey")
+        model = self.plugin.registryValue("askModel", channel)
+        timeout = self.plugin.registryValue("timeout")
+
+        if not api_key:
+            return ReminderParseResult(
+                action="clarify",
+                confirmation=_("Error: API key not configured."),
+            )
+
+        # Current UTC time for context
+        current_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        system_prompt = f"""You parse reminder requests. Return JSON only, no markdown fences.
+
+Current time: {current_time}
+
+Response format (choose one):
+{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>"}}
+or
+{{"action": "clarify", "confirmation": "<question to ask user>"}}
+
+Rules:
+- "seconds" = seconds from now until reminder fires (must be positive)
+- If timezone not specified, assume UTC and set note suggesting they specify next time
+- If request is too vague (missing time or message), use "clarify"
+- Keep confirmation concise (under 100 chars)
+- Extract just the reminder message, not the time part
+- For relative times ("in 30 minutes"), calculate seconds directly
+- For absolute times ("at 3pm"), calculate seconds until that time"""
+
+        try:
+            # Build optional kwargs for Gemini
+            optional_kwargs: dict[str, Any] = {}
+            gemini_tools = self._get_gemini_tools(model)
+            if gemini_tools:
+                optional_kwargs["tools"] = gemini_tools
+            if "gemini" in model.lower():
+                optional_kwargs["safety_settings"] = self._get_safety_settings()
+
+            response = litellm.completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                api_key=api_key,
+                timeout=timeout,
+                **optional_kwargs,
+            )
+
+            raw_content = response.choices[0].message.content.strip()
+
+            # Strip markdown fences if present
+            if raw_content.startswith("```"):
+                raw_content = raw_content.split("\n", 1)[-1]  # Remove first line
+                if raw_content.endswith("```"):
+                    raw_content = raw_content[:-3].strip()
+
+            # Parse JSON response
+            data = json.loads(raw_content)
+
+            action = data.get("action", "clarify")
+            if action == "schedule":
+                seconds = data.get("seconds")
+                if not isinstance(seconds, int) or seconds <= 0:
+                    return ReminderParseResult(
+                        action="clarify",
+                        confirmation=_(
+                            "I couldn't determine when to remind you. Please try again."
+                        ),
+                    )
+                return ReminderParseResult(
+                    action="schedule",
+                    seconds=seconds,
+                    message=data.get("message", text),
+                    confirmation=data.get("confirmation", f"Reminder set for {seconds}s from now."),
+                    note=data.get("note"),
+                )
+            else:
+                return ReminderParseResult(
+                    action="clarify",
+                    confirmation=data.get(
+                        "confirmation", _("When should I remind you, and about what?")
+                    ),
+                )
+
+        except json.JSONDecodeError as e:
+            self.log.warning(f"Failed to parse reminder JSON: {e}")
+            return ReminderParseResult(
+                action="clarify",
+                confirmation=_("Sorry, I couldn't understand that. Try: 'in 30m check the build'"),
+            )
+        except Exception as e:
+            self.log.exception(f"Reminder parse failed: {self._sanitize(str(e))}")
+            return ReminderParseResult(
+                action="clarify",
+                confirmation=_(
+                    "Sorry, couldn't parse that reminder. Try: 'in 30m check the build'"
+                ),
             )
 
     def summarize(self, content: str, channel: str | None = None) -> str | None:

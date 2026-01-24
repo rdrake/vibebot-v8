@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from llm.service import format_duration, parse_duration
+from llm.service import ReminderParseResult, format_duration, parse_duration
 
 
 class TestParseDuration:
@@ -76,14 +76,14 @@ class TestFormatDuration:
 
 
 class TestReminderCommands:
-    """Tests for remind, reminders, and unremind commands."""
+    """Tests for remindme, reminders, and unremind commands."""
 
-    def test_remind_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for remind THEN method exists."""
+    def test_remindme_command_exists(self) -> None:
+        """GIVEN LLM plugin WHEN checking for remindme THEN method exists."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM, "remind")
-        assert callable(LLM.remind)
+        assert hasattr(LLM, "remindme")
+        assert callable(LLM.remindme)
 
     def test_reminders_command_exists(self) -> None:
         """GIVEN LLM plugin WHEN checking for reminders THEN method exists."""
@@ -99,13 +99,50 @@ class TestReminderCommands:
         assert hasattr(LLM, "unremind")
         assert callable(LLM.unremind)
 
-    def test_remind_docstring_shows_duration_examples(self) -> None:
-        """GIVEN remind command WHEN checking docstring THEN shows duration format."""
+    def test_remindme_docstring_shows_natural_language_examples(self) -> None:
+        """GIVEN remindme command WHEN checking docstring THEN shows examples."""
         from llm.plugin import LLM
 
-        doc = LLM.remind.__doc__ or ""
-        assert "<duration>" in doc
-        assert "30s" in doc or "5m" in doc or "2h" in doc
+        doc = LLM.remindme.__doc__ or ""
+        assert "natural language" in doc.lower() or "in 30 minutes" in doc
+
+
+class TestReminderParseResult:
+    """Tests for ReminderParseResult NamedTuple."""
+
+    def test_schedule_result(self) -> None:
+        """GIVEN schedule action WHEN creating result THEN stores all fields."""
+        result = ReminderParseResult(
+            action="schedule",
+            seconds=1800,
+            message="check the build",
+            confirmation="Reminder set for 30 minutes from now.",
+            note="Assuming UTC timezone.",
+        )
+        assert result.action == "schedule"
+        assert result.seconds == 1800
+        assert result.message == "check the build"
+        assert result.confirmation == "Reminder set for 30 minutes from now."
+        assert result.note == "Assuming UTC timezone."
+
+    def test_clarify_result(self) -> None:
+        """GIVEN clarify action WHEN creating result THEN stores confirmation."""
+        result = ReminderParseResult(
+            action="clarify",
+            confirmation="When should I remind you?",
+        )
+        assert result.action == "clarify"
+        assert result.seconds is None
+        assert result.message is None
+        assert result.confirmation == "When should I remind you?"
+
+    def test_default_values(self) -> None:
+        """GIVEN minimal args WHEN creating result THEN defaults are correct."""
+        result = ReminderParseResult(action="clarify")
+        assert result.seconds is None
+        assert result.message is None
+        assert result.confirmation == ""
+        assert result.note is None
 
 
 class TestReminderHelperMethods:
@@ -153,38 +190,6 @@ class TestReminderHelperMethods:
         assert hasattr(plugin, "_reminders")
         assert isinstance(plugin._reminders, dict)
         assert len(plugin._reminders) == 0
-
-    # Tests for _validate_remind_duration
-
-    def test_validate_duration_valid_minutes(self, plugin: MagicMock) -> None:
-        """GIVEN valid minutes WHEN validated THEN returns seconds."""
-        seconds, error = plugin._validate_remind_duration("30m")
-        assert seconds == 1800
-        assert error == ""
-
-    def test_validate_duration_valid_hours(self, plugin: MagicMock) -> None:
-        """GIVEN valid hours WHEN validated THEN returns seconds."""
-        seconds, error = plugin._validate_remind_duration("2h")
-        assert seconds == 7200
-        assert error == ""
-
-    def test_validate_duration_invalid_format(self, plugin: MagicMock) -> None:
-        """GIVEN invalid format WHEN validated THEN returns error."""
-        seconds, error = plugin._validate_remind_duration("invalid")
-        assert seconds is None
-        assert "Invalid" in error
-
-    def test_validate_duration_too_short(self, plugin: MagicMock) -> None:
-        """GIVEN duration under 10s WHEN validated THEN returns error."""
-        seconds, error = plugin._validate_remind_duration("5s")
-        assert seconds is None
-        assert "10 seconds" in error
-
-    def test_validate_duration_too_long(self, plugin: MagicMock) -> None:
-        """GIVEN duration over 7 days WHEN validated THEN returns error."""
-        seconds, error = plugin._validate_remind_duration("8d")
-        assert seconds is None
-        assert "7 days" in error
 
     # Tests for _get_user_reminders
 
@@ -273,3 +278,254 @@ class TestReminderHelperMethods:
         # Should have removed both reminder events
         assert mock_remove_event.call_count >= 2
         assert len(plugin._reminders) == 0
+
+
+class TestParseReminderService:
+    """Tests for parse_reminder method in LLMService."""
+
+    @pytest.fixture
+    def mock_plugin(self) -> MagicMock:
+        """Create a mock plugin for service tests."""
+        plugin = MagicMock()
+        plugin.registryValue.side_effect = lambda key, *args: {
+            "askApiKey": "test-api-key",
+            "askModel": "gemini/gemini-2.0-flash",
+            "timeout": 30,
+        }.get(key, "")
+        return plugin
+
+    @pytest.fixture
+    def service(self, mock_plugin: MagicMock) -> MagicMock:
+        """Create an LLMService instance."""
+        from llm.service import LLMService
+
+        with patch("llm.service.log"):
+            return LLMService(mock_plugin)
+
+    def test_parse_reminder_no_api_key(self, mock_plugin: MagicMock) -> None:
+        """GIVEN no API key WHEN parsing THEN returns clarify with error."""
+        from llm.service import LLMService
+
+        mock_plugin.registryValue.side_effect = lambda key, *args: ""
+        with patch("llm.service.log"):
+            service = LLMService(mock_plugin)
+
+        result = service.parse_reminder("in 30 minutes test")
+        assert result.action == "clarify"
+        assert "API key" in result.confirmation
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_schedule_success(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN valid LLM response WHEN parsing THEN returns schedule result."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"action": "schedule", "seconds": 1800, '
+            '"message": "check build", "confirmation": "Reminder set for 30m."}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 30 minutes check build")
+
+        assert result.action == "schedule"
+        assert result.seconds == 1800
+        assert result.message == "check build"
+        assert "30m" in result.confirmation
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_clarify_response(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN clarify LLM response WHEN parsing THEN returns clarify result."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = '{"action": "clarify", "confirmation": "When should I remind you?"}'
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("remind me")
+
+        assert result.action == "clarify"
+        assert "When" in result.confirmation
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_invalid_json(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN invalid JSON WHEN parsing THEN returns clarify with error."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "not valid json"
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 30 minutes test")
+
+        assert result.action == "clarify"
+        assert "couldn't understand" in result.confirmation.lower()
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_strips_markdown_fences(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN JSON with markdown fences WHEN parsing THEN strips them."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            '```json\n{"action": "schedule", "seconds": 60, '
+            '"message": "test", "confirmation": "Set!"}\n```'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 1 minute test")
+
+        assert result.action == "schedule"
+        assert result.seconds == 60
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_with_note(self, mock_completion: MagicMock, service: MagicMock) -> None:
+        """GIVEN response with note WHEN parsing THEN includes note."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"action": "schedule", "seconds": 3600, "message": "meeting", '
+            '"confirmation": "Reminder set for 3pm.", "note": "Assuming EST"}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("at 3pm meeting")
+
+        assert result.action == "schedule"
+        assert result.note == "Assuming EST"
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_negative_seconds_rejected(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN negative seconds WHEN parsing THEN returns clarify."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = (
+            '{"action": "schedule", "seconds": -100, "message": "test", "confirmation": "Set!"}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("yesterday test")
+
+        assert result.action == "clarify"
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_api_error(self, mock_completion: MagicMock, service: MagicMock) -> None:
+        """GIVEN API error WHEN parsing THEN returns clarify with error."""
+        mock_completion.side_effect = Exception("API error")
+
+        result = service.parse_reminder("in 30 minutes test")
+
+        assert result.action == "clarify"
+        assert "couldn't parse" in result.confirmation.lower()
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_zero_seconds_rejected(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN zero seconds WHEN parsing THEN returns clarify."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = (
+            '{"action": "schedule", "seconds": 0, "message": "test", "confirmation": "Set!"}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("now test")
+
+        assert result.action == "clarify"
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_missing_seconds(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN missing seconds field WHEN parsing THEN returns clarify."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = '{"action": "schedule", "message": "test", "confirmation": "Set!"}'
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("sometime test")
+
+        assert result.action == "clarify"
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_uses_text_as_fallback_message(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN no message in response WHEN parsing THEN uses input text."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = '{"action": "schedule", "seconds": 60, "confirmation": "Set!"}'
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 1 minute original text")
+
+        assert result.action == "schedule"
+        assert result.message == "in 1 minute original text"
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_with_non_gemini_model(self, mock_completion: MagicMock) -> None:
+        """GIVEN non-Gemini model WHEN parsing THEN works without Gemini tools."""
+        from llm.service import LLMService
+
+        mock_plugin = MagicMock()
+        mock_plugin.registryValue.side_effect = lambda key, *args: {
+            "askApiKey": "test-api-key",
+            "askModel": "openai/gpt-4",  # Non-Gemini model
+            "timeout": 30,
+        }.get(key, "")
+
+        with patch("llm.service.log"):
+            service = LLMService(mock_plugin)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = (
+            '{"action": "schedule", "seconds": 300, "message": "test", "confirmation": "Set!"}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 5 minutes test")
+
+        assert result.action == "schedule"
+        assert result.seconds == 300
+        # Verify no Gemini-specific kwargs were passed
+        call_kwargs = mock_completion.call_args.kwargs
+        assert "tools" not in call_kwargs
+        assert "safety_settings" not in call_kwargs
+
+    @patch("llm.service.litellm.completion")
+    def test_parse_reminder_strips_fences_without_trailing_backticks(
+        self, mock_completion: MagicMock, service: MagicMock
+    ) -> None:
+        """GIVEN markdown fence without closing WHEN parsing THEN handles gracefully."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        # Fence without proper closing
+        mock_response.choices[
+            0
+        ].message.content = '```json\n{"action": "schedule", "seconds": 120, "message": "test", "confirmation": "Set!"}'
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 2 minutes test")
+
+        assert result.action == "schedule"
+        assert result.seconds == 120
