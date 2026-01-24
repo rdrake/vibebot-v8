@@ -60,10 +60,10 @@ This creates:
 
 ### Configure
 
-Copy your existing bot.conf:
+Copy your existing bot.conf to the conf directory (must be writable for backups):
 
 ```bash
-cp /path/to/your/bot.conf ~/.config/vibebot/bot.conf
+cp /path/to/your/bot.conf ~/.local/share/vibebot/conf/bot.conf
 ```
 
 Edit the environment file with your API keys:
