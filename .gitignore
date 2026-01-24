@@ -23,6 +23,7 @@ data/
 logs/
 backup/
 tmp/
+*.log
 
 # Bot config (contains API keys)
 bot.conf
