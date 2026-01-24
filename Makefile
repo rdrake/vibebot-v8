@@ -110,8 +110,12 @@ install-service:
 	mkdir -p ~/.local/share/vibebot/{conf,data,logs}
 	@echo "Installing systemd unit..."
 	cp vibebot.service ~/.config/systemd/user/
-	@echo "Copying example config..."
-	cp .env.example ~/.config/vibebot/env
+	@if [ ! -f ~/.config/vibebot/env ]; then \
+		echo "Copying example config..."; \
+		cp .env.example ~/.config/vibebot/env; \
+	else \
+		echo "Keeping existing env file..."; \
+	fi
 	@if [ ! -f ~/.config/vibebot/bot.conf ]; then \
 		echo "NOTE: Copy your bot.conf to ~/.config/vibebot/bot.conf"; \
 	fi
