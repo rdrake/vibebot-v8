@@ -116,14 +116,14 @@ install-service:
 	else \
 		echo "Keeping existing env file..."; \
 	fi
-	@if [ ! -f ~/.local/share/vibebot/conf/bot.conf ]; then \
-		echo "NOTE: Copy your bot.conf to ~/.local/share/vibebot/conf/bot.conf"; \
+	@if [ ! -f ~/.config/vibebot/bot.conf ]; then \
+		echo "NOTE: Copy your bot.conf to ~/.config/vibebot/bot.conf"; \
 	fi
 	@echo "Reloading systemd..."
 	systemctl --user daemon-reload
 	@echo ""
 	@echo "Installation complete. Next steps:"
-	@echo "  1. Copy bot.conf to ~/.local/share/vibebot/conf/bot.conf"
+	@echo "  1. Copy bot.conf to ~/.config/vibebot/bot.conf"
 	@echo "  2. Edit ~/.config/vibebot/env with your API keys"
 	@echo "  3. systemctl --user enable vibebot"
 	@echo "  4. systemctl --user start vibebot"
