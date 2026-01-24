@@ -19,7 +19,13 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext, Role
-from .service import CODE_PREVIEW_MAX_LEN, CODE_PREVIEW_TRUNCATE_LEN, LLMService
+from .service import (
+    CODE_PREVIEW_MAX_LEN,
+    CODE_PREVIEW_TRUNCATE_LEN,
+    LLMService,
+    format_duration,
+    parse_duration,
+)
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
@@ -270,6 +276,9 @@ class LLM(callbacks.Plugin):
         # Initialize conversation context
         self._init_context()
 
+        # Reminder storage: event_name -> (nick, channel, message)
+        self._reminders: dict[str, tuple[str, str, str]] = {}
+
         # Only register HTTP callback if using Limnoria's built-in web directory
         # (i.e., httpRoot is not configured). When httpRoot is set, an external
         # web server (e.g., nginx) is expected to serve files from that path.
@@ -296,6 +305,13 @@ class LLM(callbacks.Plugin):
         # Remove scheduled cleanup event
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_file_cleanup")
+
+        # Remove all reminder events (guard for tests that mock __init__)
+        if hasattr(self, "_reminders"):
+            for event_name in list(self._reminders.keys()):
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent(event_name)
+            self._reminders.clear()
 
         # Only unhook HTTP callback if we registered
         if self._http_callback is not None:
@@ -675,6 +691,160 @@ class LLM(callbacks.Plugin):
         irc.reply(response, private=True)
 
     llmkeys = wrap(llmkeys, ["admin"])
+
+    # Reminder helper methods (testable without Limnoria wrap decorator)
+
+    def _validate_remind_duration(self, duration_str: str) -> tuple[int | None, str]:
+        """Validate reminder duration string.
+
+        Args:
+            duration_str: Duration string like "30m", "2h", etc.
+
+        Returns:
+            Tuple of (seconds, error_message). On success, error is empty.
+            On failure, seconds is None.
+        """
+        seconds = parse_duration(duration_str)
+        if seconds is None:
+            return None, _("Invalid duration. Use: 30s, 5m, 2h, 1d")
+
+        if seconds < 10:
+            return None, _("Minimum reminder time is 10 seconds.")
+        if seconds > 604800:  # 7 days
+            return None, _("Maximum reminder time is 7 days.")
+
+        return seconds, ""
+
+    def _get_user_reminders(self, nick: str) -> list[tuple[str, tuple[str, str, str]]]:
+        """Get reminders belonging to a specific user.
+
+        Args:
+            nick: User's nick
+
+        Returns:
+            List of (event_name, (nick, channel, message)) tuples
+        """
+        return [(name, data) for name, data in self._reminders.items() if data[0] == nick]
+
+    def _format_reminders(self, reminders: list[tuple[str, tuple[str, str, str]]]) -> str:
+        """Format reminders list for display.
+
+        Args:
+            reminders: List of (event_name, (nick, channel, message)) tuples
+
+        Returns:
+            Formatted string for IRC display
+        """
+        parts = []
+        for name, (_, _, message) in reminders:
+            # Truncate long messages
+            preview = message[:40] + "..." if len(message) > 40 else message
+            # Extract ID from event name
+            reminder_id = name.split("_")[-1]
+            parts.append(f"#{reminder_id}: {preview}")
+        return " | ".join(parts)
+
+    def _find_user_reminder(self, nick: str, reminder_id: str) -> str | None:
+        """Find a reminder event name by ID for a specific user.
+
+        Args:
+            nick: User's nick
+            reminder_id: Reminder ID (last part of event name)
+
+        Returns:
+            Event name if found and owned by user, None otherwise
+        """
+        for name, (owner, _, _) in self._reminders.items():
+            if name.endswith(f"_{reminder_id}") and owner == nick:
+                return name
+        return None
+
+    def remind(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        duration_str: str,
+        text: str,
+    ) -> None:
+        """<duration> <message>
+
+        Set a reminder. Duration: 30s, 5m, 2h, 1d
+
+        Examples:
+          %remind 30m check the build
+          %remind 2h meeting starts
+        """
+        seconds, error = self._validate_remind_duration(duration_str)
+        if seconds is None:
+            irc.error(error)
+            return
+
+        nick = self._get_nick(msg)
+        channel = self._get_channel(msg)
+
+        # Create unique event name
+        event_name = f"llm_remind_{int(time.time())}_{hash(text) % 10000}"
+
+        def deliver() -> None:
+            irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {text}"))
+            self._reminders.pop(event_name, None)
+
+        try:
+            schedule.addEvent(deliver, time.time() + seconds, name=event_name)
+            self._reminders[event_name] = (nick, channel, text)
+            irc.reply(_("Reminder set for %s from now.") % format_duration(seconds))
+        except Exception as e:
+            self.log.error(f"Failed to schedule reminder: {e}")
+            irc.error(_("Failed to set reminder."))
+
+    remind = wrap(remind, ["somethingWithoutSpaces", "text"])
+
+    def reminders(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """(takes no arguments)
+
+        List your pending reminders.
+        """
+        nick = self._get_nick(msg)
+        user_reminders = self._get_user_reminders(nick)
+
+        if not user_reminders:
+            irc.reply(_("You have no pending reminders."))
+            return
+
+        irc.reply(self._format_reminders(user_reminders))
+
+    reminders = wrap(reminders, [])
+
+    def unremind(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        reminder_id: str,
+    ) -> None:
+        """<id>
+
+        Cancel a reminder by ID (shown in %reminders).
+        """
+        nick = self._get_nick(msg)
+        target = self._find_user_reminder(nick, reminder_id)
+
+        if not target:
+            irc.error(_("Reminder not found or not yours."))
+            return
+
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(target)
+        self._reminders.pop(target, None)
+        irc.reply(_("Reminder cancelled."))
+
+    unremind = wrap(unremind, ["somethingWithoutSpaces"])
 
 
 Class = LLM

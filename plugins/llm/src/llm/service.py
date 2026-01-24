@@ -1229,3 +1229,43 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         """Run file cleanup (public interface for scheduler)."""
         http_root, _ = self._get_http_paths()
         self._cleanup_old_files(http_root)
+
+
+# Duration parsing for reminders (module-level functions)
+DURATION_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
+DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_duration(text: str) -> int | None:
+    """Parse duration string like '30m' to seconds.
+
+    Args:
+        text: Duration string (e.g., "30s", "5m", "2h", "1d")
+
+    Returns:
+        Seconds as int, or None if invalid format
+    """
+    match = DURATION_PATTERN.match(text.strip())
+    if not match:
+        return None
+    value, unit = int(match.group(1)), match.group(2).lower()
+    return value * DURATION_UNITS[unit]
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds as human-readable duration.
+
+    Args:
+        seconds: Duration in seconds
+
+    Returns:
+        Human-readable string (e.g., "2h 30m")
+    """
+    if seconds <= 0:
+        return "0s"
+    parts = []
+    for unit, divisor in [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]:
+        if seconds >= divisor:
+            count, seconds = divmod(seconds, divisor)
+            parts.append(f"{count}{unit}")
+    return " ".join(parts)
