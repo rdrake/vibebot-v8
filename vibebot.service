@@ -20,7 +20,7 @@ ExecStart=/usr/bin/docker run --rm --name vibebot \
     -v %h/.local/share/vibebot/conf:/app/conf \
     -v %h/.local/share/vibebot/data:/app/data \
     -v %h/.local/share/vibebot/logs:/app/logs \
-    -v /var/www/llm:/var/www/llm \
+    -v /var/www:/var/www \
     -w /app/config \
     ${IMAGE}
 
