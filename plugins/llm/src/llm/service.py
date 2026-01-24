@@ -644,15 +644,14 @@ class LLMService:
 
             # Get configuration (channel-specific for model/prompt, global for api key)
             channel = msg.args[0] if msg and msg.args else None
-            api_key = self.plugin.registryValue(f"{command}ApiKey")  # API keys are global
-            model = self.plugin.registryValue(f"{command}Model", channel)
-            base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
-
-            if not api_key:
+            # Validate API key exists (don't store in local var to avoid logging in traces)
+            if not self.plugin.registryValue(f"{command}ApiKey"):
                 return CompletionResult(
                     content=_("Error: API key not configured for %s command") % command,
                     grounding_used=False,
                 )
+            model = self.plugin.registryValue(f"{command}Model", channel)
+            base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
 
             # Build system prompt (context now injected as user message in _build_messages)
             system_prompt = self._build_system_prompt(base_system_prompt)
@@ -680,7 +679,7 @@ class LLMService:
             response = litellm.completion(
                 model=model,
                 messages=messages,
-                api_key=api_key,
+                api_key=self.plugin.registryValue(f"{command}ApiKey"),
                 timeout=timeout,
                 **optional_kwargs,
             )
@@ -714,16 +713,14 @@ class LLMService:
         import json
         from datetime import UTC, datetime
 
-        # Get configuration
-        api_key = self.plugin.registryValue("askApiKey")
-        model = self.plugin.registryValue("askModel", channel)
-        timeout = self.plugin.registryValue("timeout")
-
-        if not api_key:
+        # Get configuration (don't store API key in local var to avoid logging in traces)
+        if not self.plugin.registryValue("askApiKey"):
             return ReminderParseResult(
                 action="clarify",
                 confirmation=_("Error: API key not configured."),
             )
+        model = self.plugin.registryValue("askModel", channel)
+        timeout = self.plugin.registryValue("timeout")
 
         # Current UTC time for context
         current_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -761,7 +758,7 @@ Rules:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                api_key=api_key,
+                api_key=self.plugin.registryValue("askApiKey"),
                 timeout=timeout,
                 **optional_kwargs,
             )
@@ -831,11 +828,10 @@ Rules:
             Summary string or None on any error (graceful degradation)
         """
         try:
-            api_key = self.plugin.registryValue("askApiKey")
-            model = self.plugin.registryValue("askModel", channel)
-
-            if not api_key:
+            # Don't store API key in local var to avoid logging in traces
+            if not self.plugin.registryValue("askApiKey"):
                 return None
+            model = self.plugin.registryValue("askModel", channel)
 
             system_prompt = (
                 "You are a summarization assistant. Generate a ~50 word summary "
@@ -854,7 +850,7 @@ Rules:
             response = litellm.completion(
                 model=model,
                 messages=messages,
-                api_key=api_key,
+                api_key=self.plugin.registryValue("askApiKey"),
                 timeout=timeout,
                 safety_settings=self._get_safety_settings() if "gemini" in model else None,
             )
@@ -909,12 +905,11 @@ Rules:
                 return _("Error: %s") % error_msg
 
             # Get configuration (channel-specific for model, global for api key)
+            # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
-            api_key = self.plugin.registryValue("drawApiKey")  # API keys are global
-            model = self.plugin.registryValue("drawModel", channel)
-
-            if not api_key:
+            if not self.plugin.registryValue("drawApiKey"):
                 return _("Error: API key not configured for draw command")
+            model = self.plugin.registryValue("drawModel", channel)
 
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
@@ -929,7 +924,7 @@ Rules:
             response = litellm.image_generation(
                 prompt=prompt,
                 model=model,
-                api_key=api_key,
+                api_key=self.plugin.registryValue("drawApiKey"),
                 n=1,
                 timeout=timeout,
             )
