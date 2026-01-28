@@ -1536,6 +1536,80 @@ class TestBuildContextMessageWithRoles:
         assert "Channel role: op" in result["content"]
 
 
+class TestGetUptimeInfo:
+    """Tests for _get_uptime_info() method."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(return_value="test-value")
+        self.service = LLMService(self.mock_plugin)
+
+    def test_get_uptime_info_seconds(self) -> None:
+        """GIVEN bot started 45 seconds ago WHEN getting uptime THEN returns seconds."""
+        with (
+            patch("llm.service.world") as mock_world,
+            patch("llm.service.time.time") as mock_time,
+        ):
+            mock_world.startedAt = 1000.0
+            mock_time.return_value = 1045.0
+            result = self.service._get_uptime_info()
+        assert result == "45s"
+
+    def test_get_uptime_info_minutes(self) -> None:
+        """GIVEN bot started 5 minutes ago WHEN getting uptime THEN returns minutes."""
+        with (
+            patch("llm.service.world") as mock_world,
+            patch("llm.service.time.time") as mock_time,
+        ):
+            mock_world.startedAt = 1000.0
+            mock_time.return_value = 1000.0 + 5 * 60 + 30
+            result = self.service._get_uptime_info()
+        assert result == "5m 30s"
+
+    def test_get_uptime_info_hours(self) -> None:
+        """GIVEN bot started 2 hours ago WHEN getting uptime THEN returns hours."""
+        with (
+            patch("llm.service.world") as mock_world,
+            patch("llm.service.time.time") as mock_time,
+        ):
+            mock_world.startedAt = 1000.0
+            mock_time.return_value = 1000.0 + 2 * 3600 + 15 * 60
+            result = self.service._get_uptime_info()
+        assert result == "2h 15m"
+
+    def test_get_uptime_info_days(self) -> None:
+        """GIVEN bot started 3 days ago WHEN getting uptime THEN returns days."""
+        with (
+            patch("llm.service.world") as mock_world,
+            patch("llm.service.time.time") as mock_time,
+        ):
+            mock_world.startedAt = 1000.0
+            mock_time.return_value = 1000.0 + 3 * 86400 + 5 * 3600
+            result = self.service._get_uptime_info()
+        assert result == "3d 5h"
+
+    def test_get_uptime_info_no_started_at(self) -> None:
+        """GIVEN no startedAt WHEN getting uptime THEN returns None."""
+        with patch("llm.service.world") as mock_world:
+            mock_world.startedAt = None
+            result = self.service._get_uptime_info()
+        assert result is None
+
+    def test_get_uptime_info_error(self) -> None:
+        """GIVEN error accessing world WHEN getting uptime THEN returns None."""
+        with (
+            patch("llm.service.world") as mock_world,
+            patch("llm.service.time.time") as mock_time,
+        ):
+            mock_world.startedAt = "invalid"
+            mock_time.side_effect = TypeError("invalid")
+            result = self.service._get_uptime_info()
+        assert result is None
+
+
 class TestSummarize:
     """Tests for summarize() method."""
 

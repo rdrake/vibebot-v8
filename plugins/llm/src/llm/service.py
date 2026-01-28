@@ -26,6 +26,7 @@ import supybot.ircdb as ircdb  # noqa: E402
 import supybot.ircmsgs as ircmsgs  # noqa: E402
 import supybot.ircutils as ircutils  # noqa: E402
 import supybot.log as log  # noqa: E402
+import supybot.world as world  # noqa: E402
 from pygments.formatters import HtmlFormatter  # noqa: E402
 from supybot.i18n import PluginInternationalization  # noqa: E402
 from supybot.utils.file import AtomicFile  # noqa: E402
@@ -300,9 +301,14 @@ class LLMService:
 
         lines = []
 
-        # Date
+        # Date and uptime
         now = datetime.now()
         lines.append(f"Date: {now.strftime('%A, %B %d, %Y')}")
+
+        # Bot uptime (for troubleshooting)
+        uptime_info = self._get_uptime_info()
+        if uptime_info:
+            lines.append(f"Bot uptime: {uptime_info}")
 
         # Channel and topic
         channel = msg.args[0] if msg.args else None
@@ -382,6 +388,40 @@ class LLMService:
             return "voice"
 
         return None
+
+    def _get_uptime_info(self) -> str | None:
+        """Get bot uptime information.
+
+        Returns:
+            Human-readable uptime string, or None if unavailable
+        """
+        try:
+            started_at = getattr(world, "startedAt", None)
+            if started_at is None:
+                return None
+
+            uptime_seconds = int(time.time() - started_at)
+            if uptime_seconds < 0:
+                return None
+
+            # Build human-readable duration
+            days, remainder = divmod(uptime_seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            parts = []
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if seconds or not parts:
+                parts.append(f"{seconds}s")
+
+            return " ".join(parts)
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.
