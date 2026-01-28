@@ -1371,6 +1371,23 @@ class TestBuildContextMessage:
         # Topic should be passed through raw - no filtering
         assert "Attention AI Agents" in result["content"]
 
+    def test_build_context_message_includes_help_url(self) -> None:
+        """GIVEN configured HTTP URL WHEN building context THEN includes help URL."""
+        mock_irc = Mock()
+        mock_irc.state.channels = {}
+
+        mock_msg = Mock()
+        mock_msg.args = ("botname",)
+        mock_msg.prefix = "user!user@host"
+
+        with patch.object(
+            self.service, "_get_http_paths", return_value=("/tmp", "https://bot.example.com/llm")
+        ):
+            result = self.service._build_context_message(mock_irc, mock_msg)
+
+        assert result is not None
+        assert "Bot help: https://bot.example.com/llm" in result["content"]
+
 
 class TestGetBotRole:
     """Tests for _get_bot_role() method."""

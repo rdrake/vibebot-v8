@@ -310,6 +310,11 @@ class LLMService:
         if uptime_info:
             lines.append(f"Bot uptime: {uptime_info}")
 
+        # Bot help URL
+        _, help_url = self._get_http_paths()
+        if help_url:
+            lines.append(f"Bot help: {help_url}")
+
         # Channel and topic
         channel = msg.args[0] if msg.args else None
         if channel and ircutils.isChannel(channel):
