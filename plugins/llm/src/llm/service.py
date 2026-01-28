@@ -375,15 +375,16 @@ class LLMService:
             return None
 
         # Check in order of highest privilege
-        ops = getattr(ch_state, "ops", set())
+        # Use `or set()` to handle case where attribute exists but is None
+        ops = getattr(ch_state, "ops", None) or set()
         if nick in ops:
             return "op"
 
-        halfops = getattr(ch_state, "halfops", set())
+        halfops = getattr(ch_state, "halfops", None) or set()
         if nick in halfops:
             return "halfop"
 
-        voices = getattr(ch_state, "voices", set())
+        voices = getattr(ch_state, "voices", None) or set()
         if nick in voices:
             return "voice"
 
@@ -395,33 +396,30 @@ class LLMService:
         Returns:
             Human-readable uptime string, or None if unavailable
         """
-        try:
-            started_at = getattr(world, "startedAt", None)
-            if started_at is None:
-                return None
-
-            uptime_seconds = int(time.time() - started_at)
-            if uptime_seconds < 0:
-                return None
-
-            # Build human-readable duration
-            days, remainder = divmod(uptime_seconds, 86400)
-            hours, remainder = divmod(remainder, 3600)
-            minutes, seconds = divmod(remainder, 60)
-
-            parts = []
-            if days:
-                parts.append(f"{days}d")
-            if hours:
-                parts.append(f"{hours}h")
-            if minutes:
-                parts.append(f"{minutes}m")
-            if seconds or not parts:
-                parts.append(f"{seconds}s")
-
-            return " ".join(parts)
-        except (AttributeError, TypeError, ValueError):
+        started_at = getattr(world, "startedAt", None)
+        if not isinstance(started_at, (int, float)):
             return None
+
+        uptime_seconds = int(time.time() - started_at)
+        if uptime_seconds < 0:
+            return None
+
+        # Build human-readable duration
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if seconds or not parts:
+            parts.append(f"{seconds}s")
+
+        return " ".join(parts)
 
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.

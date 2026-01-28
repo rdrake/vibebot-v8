@@ -1474,6 +1474,15 @@ class TestGetChannelRole:
         result = self.service._get_channel_role(mock_irc, "#unknown", "user")
         assert result is None
 
+    def test_get_channel_role_none_ops(self) -> None:
+        """GIVEN ops attribute is None WHEN checking role THEN returns None without error."""
+        mock_irc = Mock()
+        ch_state = Mock(ops=None, halfops=None, voices=None)
+        mock_irc.state.channels = {"#test": ch_state}
+
+        result = self.service._get_channel_role(mock_irc, "#test", "someuser")
+        assert result is None
+
 
 class TestBuildContextMessageWithRoles:
     """Tests for _build_context_message() including bot and channel roles."""
@@ -1598,14 +1607,10 @@ class TestGetUptimeInfo:
             result = self.service._get_uptime_info()
         assert result is None
 
-    def test_get_uptime_info_error(self) -> None:
-        """GIVEN error accessing world WHEN getting uptime THEN returns None."""
-        with (
-            patch("llm.service.world") as mock_world,
-            patch("llm.service.time.time") as mock_time,
-        ):
+    def test_get_uptime_info_invalid_type(self) -> None:
+        """GIVEN startedAt is invalid type WHEN getting uptime THEN returns None."""
+        with patch("llm.service.world") as mock_world:
             mock_world.startedAt = "invalid"
-            mock_time.side_effect = TypeError("invalid")
             result = self.service._get_uptime_info()
         assert result is None
 
