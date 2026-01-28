@@ -22,6 +22,7 @@ litellm.request_timeout = 120  # 2 minutes
 import markdown  # noqa: E402
 import nh3  # noqa: E402
 import supybot.conf as conf  # noqa: E402
+import supybot.ircdb as ircdb  # noqa: E402
 import supybot.ircmsgs as ircmsgs  # noqa: E402
 import supybot.ircutils as ircutils  # noqa: E402
 import supybot.log as log  # noqa: E402
@@ -311,12 +312,76 @@ class LLMService:
             if topic:
                 lines.append(f"Topic: {topic}")  # Raw, no filtering
 
-        # Caller nick
+        # Caller nick and access level
         if msg.prefix:
             nick = ircutils.nickFromHostmask(msg.prefix)
             lines.append(f"Speaking with: {nick}")
 
+            # Bot-level access (owner/admin)
+            bot_role = self._get_bot_role(msg.prefix)
+            if bot_role:
+                lines.append(f"Bot role: {bot_role}")
+
+            # Channel-level access (op/halfop/voice)
+            if channel and ircutils.isChannel(channel):
+                channel_role = self._get_channel_role(irc, channel, nick)
+                if channel_role:
+                    lines.append(f"Channel role: {channel_role}")
+
         return {"role": Role.USER, "content": "Context:\n" + "\n".join(lines)}
+
+    def _get_bot_role(self, hostmask: str) -> str | None:
+        """Get user's bot-level role (owner or admin).
+
+        Args:
+            hostmask: User's hostmask
+
+        Returns:
+            'owner', 'admin', or None for regular users
+        """
+        try:
+            if ircdb.checkCapability(hostmask, "owner"):
+                return "owner"
+            if ircdb.checkCapability(hostmask, "admin"):
+                return "admin"
+        except (KeyError, RuntimeError):
+            pass  # User not in database or error checking
+        return None
+
+    def _get_channel_role(self, irc: Irc, channel: str, nick: str) -> str | None:
+        """Get user's channel-level role (op, halfop, or voice).
+
+        Args:
+            irc: IRC connection object
+            channel: Channel name
+            nick: User's nickname
+
+        Returns:
+            'op', 'halfop', 'voice', or None for regular users
+        """
+        state = getattr(irc, "state", None)
+        if not state:
+            return None
+
+        channels = getattr(state, "channels", {})
+        ch_state = channels.get(channel)
+        if not ch_state:
+            return None
+
+        # Check in order of highest privilege
+        ops = getattr(ch_state, "ops", set())
+        if nick in ops:
+            return "op"
+
+        halfops = getattr(ch_state, "halfops", set())
+        if nick in halfops:
+            return "halfop"
+
+        voices = getattr(ch_state, "voices", set())
+        if nick in voices:
+            return "voice"
+
+        return None
 
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.

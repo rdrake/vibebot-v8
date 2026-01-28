@@ -411,12 +411,18 @@ class TestResponseAppropriateness:
         self,
         users: set | None = None,
         topic: str | None = None,
+        ops: set | None = None,
+        halfops: set | None = None,
+        voices: set | None = None,
     ) -> Mock:
         """Create a mock channel state object."""
         ch_state = Mock()
         ch_state.users = users or {"user1", "user2", "testbot"}
         ch_state.modes = {"n": None, "t": None}
         ch_state.topic = topic
+        ch_state.ops = ops or set()
+        ch_state.halfops = halfops or set()
+        ch_state.voices = voices or set()
         ch_state.isOp = Mock(return_value=False)
         ch_state.isHalfop = Mock(return_value=False)
         ch_state.isVoice = Mock(return_value=False)
