@@ -16,12 +16,12 @@ ExecStartPre=-/usr/bin/docker rm -f vibebot
 ExecStart=/usr/bin/docker run --rm --name vibebot \
     --user %U:%G \
     --env-file %h/.config/vibebot/env \
-    -v %h/.config/vibebot:/app/config \
+    -v %h/.config/vibebot/bot.conf:/app/bot.conf \
     -v %h/.local/share/vibebot/conf:/app/conf \
     -v %h/.local/share/vibebot/data:/app/data \
     -v %h/.local/share/vibebot/logs:/app/logs \
     -v /var/www:/var/www \
-    -w /app/config \
+    -w /app \
     ${IMAGE}
 
 ExecStop=/usr/bin/docker stop vibebot
