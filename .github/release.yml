@@ -1,0 +1,21 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: "🚀 Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "🧹 Maintenance"
+      labels:
+        - chore
+        - dependencies
+        - documentation
+    - title: "Other Changes"
+      labels:
+        - "*"
