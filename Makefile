@@ -6,11 +6,11 @@ install:
 	uv sync
 
 install-hooks:
-	uv run pre-commit install
+	uv run prek install
 	@echo "Git hooks installed"
 
 pre-commit:
-	uv run pre-commit run --all-files
+	uv run prek run --all-files
 
 run:
 	uv run limnoria bot.conf
@@ -34,7 +34,7 @@ check: lint format-check typecheck test
 
 ci:
 	uv sync --locked
-	uv run pre-commit run --all-files
+	uv run prek run --all-files
 	$(MAKE) test
 
 clean:
