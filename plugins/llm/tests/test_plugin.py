@@ -1207,3 +1207,223 @@ class TestRunFileCleanup:
             plugin._run_file_cleanup()
 
             plugin.log.error.assert_called_once()
+
+
+class TestStartupNotification:
+    """Test startup notification to bot owner."""
+
+    @pytest.fixture
+    def plugin_with_mocks(self) -> tuple:
+        """Create plugin with mocked dependencies for startup tests."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_irc.nick = "VibeBot"
+        mock_irc.state.channels = {"#channel1": MagicMock(), "#channel2": MagicMock()}
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin._pending_channels = set()
+            plugin._startup_notified = False
+            plugin.log = MagicMock()
+
+        return plugin, mock_irc
+
+    def test_dojoin_tracks_bot_joins(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN bot joining channel WHEN doJoin called THEN adds to pending."""
+        plugin, mock_irc = plugin_with_mocks
+
+        mock_msg = MagicMock()
+        mock_msg.nick = "VibeBot"
+        mock_msg.args = ["#channel1"]
+
+        with patch("supybot.ircutils.strEqual", return_value=True):
+            plugin.doJoin(mock_irc, mock_msg)
+
+        assert "#channel1" in plugin._pending_channels
+
+    def test_dojoin_ignores_other_users(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN other user joining WHEN doJoin called THEN does not track."""
+        plugin, mock_irc = plugin_with_mocks
+
+        mock_msg = MagicMock()
+        mock_msg.nick = "someuser"
+        mock_msg.args = ["#channel1"]
+
+        with patch("supybot.ircutils.strEqual", return_value=False):
+            plugin.doJoin(mock_irc, mock_msg)
+
+        assert "#channel1" not in plugin._pending_channels
+
+    def test_do315_removes_synced_channel(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN pending channel WHEN do315 received THEN removes from pending."""
+        plugin, mock_irc = plugin_with_mocks
+        plugin._pending_channels.add("#channel1")
+
+        mock_msg = MagicMock()
+        mock_msg.args = ["VibeBot", "#channel1"]
+
+        with patch.object(plugin, "_send_startup_notification"):
+            plugin.do315(mock_irc, mock_msg)
+
+        assert "#channel1" not in plugin._pending_channels
+
+    def test_do315_sends_notification_when_all_synced(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN last channel synced WHEN do315 received THEN sends notification."""
+        plugin, mock_irc = plugin_with_mocks
+        plugin._pending_channels.add("#channel1")
+
+        mock_msg = MagicMock()
+        mock_msg.args = ["VibeBot", "#channel1"]
+
+        with patch.object(plugin, "_send_startup_notification") as mock_notify:
+            plugin.do315(mock_irc, mock_msg)
+
+        mock_notify.assert_called_once_with(mock_irc)
+        assert plugin._startup_notified is True
+
+    def test_do315_does_not_send_notification_if_channels_pending(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN other channels pending WHEN do315 received THEN no notification."""
+        plugin, mock_irc = plugin_with_mocks
+        plugin._pending_channels.add("#channel1")
+        plugin._pending_channels.add("#channel2")
+
+        mock_msg = MagicMock()
+        mock_msg.args = ["VibeBot", "#channel1"]
+
+        with patch.object(plugin, "_send_startup_notification") as mock_notify:
+            plugin.do315(mock_irc, mock_msg)
+
+        mock_notify.assert_not_called()
+        assert plugin._startup_notified is False
+
+    def test_do315_does_not_send_duplicate_notification(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN already notified WHEN do315 received THEN no duplicate."""
+        plugin, mock_irc = plugin_with_mocks
+        plugin._pending_channels.add("#channel1")
+        plugin._startup_notified = True
+
+        mock_msg = MagicMock()
+        mock_msg.args = ["VibeBot", "#channel1"]
+
+        with patch.object(plugin, "_send_startup_notification") as mock_notify:
+            plugin.do315(mock_irc, mock_msg)
+
+        mock_notify.assert_not_called()
+
+    def test_do376_resets_tracking_state(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN plugin WHEN do376 received THEN resets tracking state."""
+        plugin, mock_irc = plugin_with_mocks
+        plugin._pending_channels.add("#oldchannel")
+        plugin._startup_notified = True
+
+        mock_msg = MagicMock()
+
+        with patch("supybot.schedule.addEvent"):
+            plugin.do376(mock_irc, mock_msg)
+
+        assert len(plugin._pending_channels) == 0
+        assert plugin._startup_notified is False
+
+    def test_do376_schedules_no_channels_check(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN MOTD end WHEN do376 received THEN schedules check for no channels."""
+        plugin, mock_irc = plugin_with_mocks
+
+        mock_msg = MagicMock()
+
+        with patch("supybot.schedule.addEvent") as mock_add_event:
+            plugin.do376(mock_irc, mock_msg)
+
+        mock_add_event.assert_called_once()
+        call_args = mock_add_event.call_args
+        assert call_args.kwargs.get("name") == "llm_startup_check"
+
+    def test_send_startup_notification_sends_pm(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN owner configured WHEN notification sent THEN PMs owner."""
+        from llm import plugin as plugin_module
+
+        plugin, mock_irc = plugin_with_mocks
+
+        # Mock conf.supybot.capabilities.default.owner()
+        mock_conf = MagicMock()
+        mock_conf.supybot.capabilities.default.owner.return_value = ["owner_nick"]
+
+        original_conf = plugin_module.conf
+        plugin_module.conf = mock_conf
+        try:
+            with patch("supybot.schedule.removeEvent"):
+                plugin._send_startup_notification(mock_irc)
+        finally:
+            plugin_module.conf = original_conf
+
+        mock_irc.queueMsg.assert_called_once()
+        queued_msg = mock_irc.queueMsg.call_args[0][0]
+        assert queued_msg.args[0] == "owner_nick"
+        assert "VibeBot started" in queued_msg.args[1]
+        assert "2 channels" in queued_msg.args[1]
+        assert "UTC" in queued_msg.args[1]
+
+    def test_send_startup_notification_handles_no_owner(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN no owner configured WHEN notification sent THEN logs warning."""
+        from llm import plugin as plugin_module
+
+        plugin, mock_irc = plugin_with_mocks
+
+        # Mock conf with empty owner list
+        mock_conf = MagicMock()
+        mock_conf.supybot.capabilities.default.owner.return_value = []
+
+        original_conf = plugin_module.conf
+        plugin_module.conf = mock_conf
+        try:
+            with patch("supybot.schedule.removeEvent"):
+                plugin._send_startup_notification(mock_irc)
+        finally:
+            plugin_module.conf = original_conf
+
+        mock_irc.queueMsg.assert_not_called()
+        plugin.log.warning.assert_called_once()
+
+    def test_send_startup_notification_singular_channel(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN single channel WHEN notification sent THEN uses singular."""
+        from llm import plugin as plugin_module
+
+        plugin, mock_irc = plugin_with_mocks
+        mock_irc.state.channels = {"#channel1": MagicMock()}
+
+        mock_conf = MagicMock()
+        mock_conf.supybot.capabilities.default.owner.return_value = ["owner"]
+
+        original_conf = plugin_module.conf
+        plugin_module.conf = mock_conf
+        try:
+            with patch("supybot.schedule.removeEvent"):
+                plugin._send_startup_notification(mock_irc)
+        finally:
+            plugin_module.conf = original_conf
+
+        queued_msg = mock_irc.queueMsg.call_args[0][0]
+        assert "1 channel |" in queued_msg.args[1]
+
+    def test_send_startup_notification_removes_scheduled_check(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN scheduled check exists WHEN notification sent THEN removes it."""
+        from llm import plugin as plugin_module
+
+        plugin, mock_irc = plugin_with_mocks
+
+        mock_conf = MagicMock()
+        mock_conf.supybot.capabilities.default.owner.return_value = ["owner"]
+
+        original_conf = plugin_module.conf
+        plugin_module.conf = mock_conf
+        try:
+            with patch("supybot.schedule.removeEvent") as mock_remove:
+                plugin._send_startup_notification(mock_irc)
+        finally:
+            plugin_module.conf = original_conf
+
+        mock_remove.assert_called_once_with("llm_startup_check")

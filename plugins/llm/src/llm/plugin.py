@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import mimetypes
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -277,6 +278,10 @@ class LLM(callbacks.Plugin):
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
 
+        # Startup notification tracking
+        self._pending_channels: set[str] = set()
+        self._startup_notified: bool = False
+
         # Only register HTTP callback if using Limnoria's built-in web directory
         # (i.e., httpRoot is not configured). When httpRoot is set, an external
         # web server (e.g., nginx) is expected to serve files from that path.
@@ -363,6 +368,73 @@ class LLM(callbacks.Plugin):
         # Store in conversation context for richer follow-up questions
         self.context.add_message(nick, channel, Role.USER, message_text)
         self.context.add_channel_message(channel, nick, Role.USER, message_text)
+
+    def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """Track channels the bot is joining for startup notification.
+
+        When the bot joins a channel, we add it to _pending_channels.
+        The channel is removed when we receive do315 (end of WHO).
+        """
+        if ircutils.strEqual(irc.nick, msg.nick):
+            channel = msg.args[0]
+            self._pending_channels.add(channel)
+
+    def do315(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """Handle end of WHO reply (channel sync complete).
+
+        When a channel finishes syncing (WHO complete), remove it from
+        pending channels. When all channels are synced and we haven't
+        notified yet, send the startup notification.
+        """
+        channel = msg.args[1]
+        self._pending_channels.discard(channel)
+
+        if not self._pending_channels and not self._startup_notified:
+            self._send_startup_notification(irc)
+            self._startup_notified = True
+
+    def do376(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """Handle end of MOTD (connection established).
+
+        Reset startup tracking state on reconnection so we send a fresh
+        notification. Also handles case where bot has no channels configured.
+        """
+        self._pending_channels.clear()
+        self._startup_notified = False
+
+        # If no channels are configured, send notification immediately
+        # (we need to check after a short delay to allow channel joins to start)
+        def check_no_channels() -> None:
+            if not self._pending_channels and not self._startup_notified:
+                self._send_startup_notification(irc)
+                self._startup_notified = True
+
+        # Schedule check after 2 seconds to allow join commands to be processed
+        schedule.addEvent(check_no_channels, time.time() + 2, name="llm_startup_check")
+
+    def _send_startup_notification(self, irc: callbacks.Irc) -> None:
+        """Send startup notification PM to bot owner.
+
+        Message format: VibeBot started | v8 | N channel(s) | YYYY-MM-DD HH:MM:SS UTC
+        """
+        # Remove the scheduled check event if it exists
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_startup_check")
+
+        # Get owner from Limnoria's global config
+        owners = list(conf.supybot.capabilities.default.owner())
+        if not owners:
+            self.log.warning("No bot owner configured, skipping startup notification")
+            return
+
+        owner = owners[0]
+        channel_count = len(irc.state.channels)
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        plural = "s" if channel_count != 1 else ""
+        message = f"VibeBot started | v8 | {channel_count} channel{plural} | {timestamp}"
+
+        irc.queueMsg(ircmsgs.privmsg(owner, message))
+        self.log.info(f"Startup notification sent to {owner}")
 
     def _init_context(self) -> None:
         """Initialize context manager from current config (called once at startup)."""
