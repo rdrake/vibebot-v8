@@ -10,12 +10,15 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen
 - **Abuse protection**: Uses Limnoria's built-in flood protection
-- **Modern Python**: Python 3.14 with full type hints
+- **Modern Python**: Python 3.12+ with full type hints
 - **Quality tools**: Ruff for linting/formatting, ty for type checking
 
 ## Quick Start
 
 ```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 make install
 make run
 ```
@@ -155,7 +158,9 @@ make check       # Run all checks
 
 This project uses:
 - **uv**: Fast Python package manager
+- **prek**: Fast Rust-based pre-commit hooks
 - **Ruff**: Fast Python linter and formatter
+- **deptry**: Dependency issue detection
 - **ty**: Astral's static type checker
 - **pytest**: Testing framework with 80% coverage threshold
 - **Dependabot**: Automated dependency updates (weekly)
@@ -190,7 +195,7 @@ vibebot-v8/
    - `context.py`: Conversation history management
 
 3. **Modern Python**
-   - Python 3.14 type hints throughout
+   - Python 3.12+ type hints throughout
    - Type checking with ty
    - Modern patterns (dataclasses, context managers)
 
