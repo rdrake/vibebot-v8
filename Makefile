@@ -34,7 +34,7 @@ check: lint format-check typecheck test
 
 ci:
 	uv sync --locked
-	uv run prek run --all-files
+	uv run pre-commit run --all-files
 	$(MAKE) test
 
 clean:

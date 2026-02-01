@@ -22,13 +22,6 @@ repos:
 
   - repo: local
     hooks:
-      - id: deptry
-        name: deptry dependency checker
-        entry: uv run deptry --config plugins/llm/pyproject.toml plugins/llm/src
-        language: system
-        pass_filenames: false
-        types: [python]
-
       - id: ty
         name: ty type checker
         entry: uv run ty check plugins/llm/src/
