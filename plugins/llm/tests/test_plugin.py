@@ -1340,23 +1340,30 @@ class TestStartupNotification:
         call_args = mock_add_event.call_args
         assert call_args.kwargs.get("name") == "llm_startup_check"
 
+    def _mock_owner_user(self, name: str) -> MagicMock:
+        """Create a mock user with owner capability."""
+        mock_user = MagicMock()
+        mock_user.name = name
+        mock_user.capabilities = ["owner"]
+        return mock_user
+
     def test_send_startup_notification_sends_pm(self, plugin_with_mocks: tuple) -> None:
         """GIVEN owner configured WHEN notification sent THEN PMs owner."""
         from llm import plugin as plugin_module
 
         plugin, mock_irc = plugin_with_mocks
 
-        # Mock conf.supybot.capabilities.default.owner()
-        mock_conf = MagicMock()
-        mock_conf.supybot.capabilities.default.owner.return_value = ["owner_nick"]
+        # Mock ircdb.users.users with an owner user
+        mock_ircdb = MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner_nick")]
 
-        original_conf = plugin_module.conf
-        plugin_module.conf = mock_conf
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
         try:
             with patch("supybot.schedule.removeEvent"):
                 plugin._send_startup_notification(mock_irc)
         finally:
-            plugin_module.conf = original_conf
+            plugin_module.ircdb = original_ircdb
 
         mock_irc.queueMsg.assert_called_once()
         queued_msg = mock_irc.queueMsg.call_args[0][0]
@@ -1371,17 +1378,17 @@ class TestStartupNotification:
 
         plugin, mock_irc = plugin_with_mocks
 
-        # Mock conf with empty owner list
-        mock_conf = MagicMock()
-        mock_conf.supybot.capabilities.default.owner.return_value = []
+        # Mock ircdb.users.users with no owner users
+        mock_ircdb = MagicMock()
+        mock_ircdb.users.users.values.return_value = []
 
-        original_conf = plugin_module.conf
-        plugin_module.conf = mock_conf
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
         try:
             with patch("supybot.schedule.removeEvent"):
                 plugin._send_startup_notification(mock_irc)
         finally:
-            plugin_module.conf = original_conf
+            plugin_module.ircdb = original_ircdb
 
         mock_irc.queueMsg.assert_not_called()
         plugin.log.warning.assert_called_once()
@@ -1393,16 +1400,16 @@ class TestStartupNotification:
         plugin, mock_irc = plugin_with_mocks
         mock_irc.state.channels = {"#channel1": MagicMock()}
 
-        mock_conf = MagicMock()
-        mock_conf.supybot.capabilities.default.owner.return_value = ["owner"]
+        mock_ircdb = MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner")]
 
-        original_conf = plugin_module.conf
-        plugin_module.conf = mock_conf
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
         try:
             with patch("supybot.schedule.removeEvent"):
                 plugin._send_startup_notification(mock_irc)
         finally:
-            plugin_module.conf = original_conf
+            plugin_module.ircdb = original_ircdb
 
         queued_msg = mock_irc.queueMsg.call_args[0][0]
         assert "1 channel |" in queued_msg.args[1]
@@ -1415,15 +1422,15 @@ class TestStartupNotification:
 
         plugin, mock_irc = plugin_with_mocks
 
-        mock_conf = MagicMock()
-        mock_conf.supybot.capabilities.default.owner.return_value = ["owner"]
+        mock_ircdb = MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner")]
 
-        original_conf = plugin_module.conf
-        plugin_module.conf = mock_conf
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
         try:
             with patch("supybot.schedule.removeEvent") as mock_remove:
                 plugin._send_startup_notification(mock_irc)
         finally:
-            plugin_module.conf = original_conf
+            plugin_module.ircdb = original_ircdb
 
         mock_remove.assert_called_once_with("llm_startup_check")

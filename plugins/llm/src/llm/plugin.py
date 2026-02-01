@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import supybot.callbacks as callbacks
 import supybot.conf as conf
 import supybot.httpserver as httpserver
+import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
@@ -421,8 +422,8 @@ class LLM(callbacks.Plugin):
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
 
-        # Get owner from Limnoria's global config
-        owners = list(conf.supybot.capabilities.default.owner())
+        # Find users with owner capability
+        owners = [user.name for user in ircdb.users.users.values() if "owner" in user.capabilities]
         if not owners:
             self.log.warning("No bot owner configured, skipping startup notification")
             return
