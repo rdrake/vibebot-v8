@@ -482,6 +482,32 @@ class LLM(callbacks.Plugin):
             % url
         )
 
+    def invalidCommand(  # noqa: N802
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        tokens: list[str],
+    ) -> None:
+        """Handle unrecognized commands as 'ask' by default.
+
+        When someone says "vibebot hello there" without a command,
+        treat it as "%ask hello there".
+        """
+        if not tokens:
+            return
+
+        # Check if user has ask capability
+        if not ircdb.checkCapability(msg.prefix, "llm.ask"):
+            return
+
+        # Skip ZNC playback messages
+        if self._is_old_message(msg):
+            return
+
+        # Reconstruct the prompt from tokens and call ask
+        text = " ".join(tokens)
+        self.ask(irc, msg, [], text)
+
     def _get_nick(self, msg: IrcMsg) -> str:
         """Extract nick from IRC message.
 
