@@ -442,6 +442,30 @@ class LLM(callbacks.Plugin):
         )
         self.context = ConversationContext(config)
 
+    @contextlib.contextmanager
+    def _allow_concurrent(self):
+        """Temporarily release the MetaSynchronized RLock for concurrent commands.
+
+        Limnoria's Commands base class wraps callCommand() with an RLock,
+        which serializes all command execution per-plugin. This releases the
+        lock around blocking I/O (LLM API calls) so multiple commands can
+        run concurrently.
+
+        Uses RLock._release_save()/_acquire_restore() — the same mechanism
+        threading.Condition uses internally.
+        """
+        lock = self._MetaSynchronized_rlock
+        try:
+            saved = lock._release_save()
+        except RuntimeError:
+            # Lock not held (e.g., direct call in tests) — just proceed
+            yield
+            return
+        try:
+            yield
+        finally:
+            lock._acquire_restore(saved)
+
     def _get_help_url(self) -> str:
         """Get the URL to the web help documentation.
 
@@ -574,38 +598,39 @@ class LLM(callbacks.Plugin):
         else:
             history, channel_history = [], []
 
-        if images:
-            # Clean prompt by removing image URLs
-            clean_prompt = text
-            for img in images:
-                clean_prompt = clean_prompt.replace(img, "").strip()
+        with self._allow_concurrent():
+            if images:
+                # Clean prompt by removing image URLs
+                clean_prompt = text
+                for img in images:
+                    clean_prompt = clean_prompt.replace(img, "").strip()
 
-            irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
-            result = self.llm_service.completion(
-                clean_prompt,
-                command="ask",
-                images=images,
-                history=history,
-                channel_history=channel_history,
-                irc=irc,
-                msg=msg,
-            )
-        else:
-            result = self.llm_service.completion(
-                text,
-                command="ask",
-                history=history,
-                channel_history=channel_history,
-                irc=irc,
-                msg=msg,
-            )
+                irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
+                result = self.llm_service.completion(
+                    clean_prompt,
+                    command="ask",
+                    images=images,
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                )
+            else:
+                result = self.llm_service.completion(
+                    text,
+                    command="ask",
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                )
 
-        # Format response with grounding icon if search was used
-        response = result.content
-        display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+            # Format response with grounding icon if search was used
+            response = result.content
+            display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
 
-        # Reply first, then store context (so user gets response even if context fails)
-        irc.reply(display_response, prefixNick=False)
+            # Reply first, then store context (so user gets response even if context fails)
+            irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
         if self._get_context_enabled(channel):
@@ -650,36 +675,37 @@ class LLM(callbacks.Plugin):
         else:
             history, channel_history = [], []
 
-        result = self.llm_service.completion(
-            text,
-            command="code",
-            history=history,
-            channel_history=channel_history,
-            irc=irc,
-            msg=msg,
-        )
+        with self._allow_concurrent():
+            result = self.llm_service.completion(
+                text,
+                command="code",
+                history=history,
+                channel_history=channel_history,
+                irc=irc,
+                msg=msg,
+            )
 
-        response = result.content
-        grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
+            response = result.content
+            grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
 
-        # Reply first, then store context
-        url = self.llm_service.save_code_to_http(response)
-        if url:
-            # Try AI-generated summary first
-            summary = self.llm_service.summarize(response, channel)
-            if summary:
-                preview = self.llm_service.sanitize_output(summary)
+            # Reply first, then store context
+            url = self.llm_service.save_code_to_http(response)
+            if url:
+                # Try AI-generated summary first
+                summary = self.llm_service.summarize(response, channel)
+                if summary:
+                    preview = self.llm_service.sanitize_output(summary)
+                else:
+                    # Fallback to truncation if summarization fails
+                    preview = response.replace("\n", " ").strip()
+                    if len(preview) > CODE_PREVIEW_MAX_LEN:
+                        preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
+                    preview = self.llm_service.sanitize_output(preview)
+                irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
             else:
-                # Fallback to truncation if summarization fails
-                preview = response.replace("\n", " ").strip()
-                if len(preview) > CODE_PREVIEW_MAX_LEN:
-                    preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
-                preview = self.llm_service.sanitize_output(preview)
-            irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
-        else:
-            # Fallback to IRC paging if save failed
-            display_response = f"{grounding_prefix}{response}" if grounding_prefix else response
-            irc.reply(display_response, prefixNick=False)
+                # Fallback to IRC paging if save failed
+                display_response = f"{grounding_prefix}{response}" if grounding_prefix else response
+                irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
         if self._get_context_enabled(channel):
@@ -713,8 +739,9 @@ class LLM(callbacks.Plugin):
             return
 
         # Typing indicator sent by service - no "Generating..." message needed
-        result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-        irc.reply(result, prefixNick=False)
+        with self._allow_concurrent():
+            result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+            irc.reply(result, prefixNick=False)
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
@@ -843,8 +870,9 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Parse reminder using LLM
-        result = self.llm_service.parse_reminder(text, channel)
+        # Parse reminder using LLM (release lock during blocking API call)
+        with self._allow_concurrent():
+            result = self.llm_service.parse_reminder(text, channel)
 
         # Handle clarification requests
         if result.action == "clarify":

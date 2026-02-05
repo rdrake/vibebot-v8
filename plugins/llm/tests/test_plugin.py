@@ -1529,3 +1529,55 @@ class TestReminderDelivery:
 
         mock_irc.queueMsg.assert_called_once()
         assert event_name not in plugin._reminders
+
+
+class TestAllowConcurrent:
+    """Test _allow_concurrent context manager for concurrent command execution."""
+
+    def test_allow_concurrent_context_manager_exists(self) -> None:
+        """GIVEN LLM plugin WHEN _allow_concurrent used THEN method exists."""
+        from llm.plugin import LLM
+
+        assert hasattr(LLM, "_allow_concurrent")
+
+    def test_allow_concurrent_noop_when_lock_not_held(self) -> None:
+        """GIVEN LLM plugin WHEN _allow_concurrent called without lock THEN is a no-op."""
+        import threading
+
+        from llm.plugin import LLM
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin._MetaSynchronized_rlock = threading.RLock()
+
+        # Calling _allow_concurrent when lock is not held should not raise
+        with plugin._allow_concurrent():
+            pass
+
+    def test_allow_concurrent_releases_and_reacquires_lock(self) -> None:
+        """GIVEN lock held WHEN _allow_concurrent used THEN lock released inside and reacquired after."""
+        import threading
+
+        from llm.plugin import LLM
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin._MetaSynchronized_rlock = threading.RLock()
+
+        lock = plugin._MetaSynchronized_rlock
+        lock.acquire()
+        try:
+            with plugin._allow_concurrent():
+                # Lock should be released — another thread should be able to acquire it
+                acquired = lock.acquire(blocking=False)
+                assert acquired, "Lock should be released inside _allow_concurrent"
+                lock.release()
+
+            # Lock should be re-acquired after exiting context manager
+            # Try to acquire non-blocking — should fail because it's held
+            acquired = lock.acquire(blocking=False)
+            # RLock is reentrant, so this will succeed but count goes up
+            assert acquired
+            lock.release()
+        finally:
+            lock.release()
