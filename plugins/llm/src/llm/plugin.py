@@ -186,7 +186,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             pass  # Client disconnected
 
     def doGet(self, handler: httpserver.RequestHandler, path: str) -> None:  # noqa: N802
@@ -218,7 +218,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 handler.send_response(403)
                 handler.end_headers()
                 return
-        except (OSError, ValueError):
+        except OSError, ValueError:
             handler.send_response(403)
             handler.end_headers()
             return
@@ -243,14 +243,14 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             # Client disconnected - this is normal, ignore silently
             pass
         except OSError:
             try:
                 handler.send_response(500)
                 handler.end_headers()
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 pass
 
 
@@ -491,8 +491,8 @@ class LLM(callbacks.Plugin):
             return
 
         # Reconstruct the prompt from tokens and call ask
-        text = " ".join(tokens)
-        self.ask(irc, msg, [], text)
+        # wrap() replaces ask's signature at runtime; ty sees the pre-wrap params
+        self.ask(irc, msg, tokens[:])  # ty: ignore[missing-argument]
 
     def _get_nick(self, msg: IrcMsg) -> str:
         """Extract nick from IRC message.

@@ -250,7 +250,7 @@ class LLMService:
                 }
                 lang_name = language_names.get(language, language)
                 result += f"\n\nRespond in {lang_name}."
-        except (AttributeError, KeyError, RuntimeError):
+        except AttributeError, KeyError, RuntimeError:
             pass  # Config not available (e.g., in test environment)
 
         return result
@@ -354,7 +354,7 @@ class LLMService:
                 return "owner"
             if ircdb.checkCapability(hostmask, "admin"):
                 return "admin"
-        except (KeyError, RuntimeError):
+        except KeyError, RuntimeError:
             pass  # User not in database or error checking
         return None
 
@@ -527,7 +527,7 @@ class LLMService:
                 or ip_obj.is_link_local
                 or ip_obj.is_reserved
             )
-        except (socket.gaierror, ValueError):
+        except socket.gaierror, ValueError:
             return True  # Fail closed
 
     def validate_image_url(self, url: str) -> bool:
@@ -666,7 +666,7 @@ class LLMService:
                 if extra.get("grounding_metadata") or extra.get("search_entry_point"):
                     return True
 
-        except (AttributeError, TypeError, KeyError):
+        except AttributeError, TypeError, KeyError:
             # Graceful degradation if response structure is unexpected
             pass
 

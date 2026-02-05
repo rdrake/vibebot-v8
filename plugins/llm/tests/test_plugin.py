@@ -1493,7 +1493,7 @@ class TestInvalidCommand:
         with patch("llm.plugin.ircdb.checkCapability", return_value=True):
             plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
-        plugin.ask.assert_called_once_with(mock_irc, mock_msg, [], "hello there")
+        plugin.ask.assert_called_once_with(mock_irc, mock_msg, ["hello", "there"])
 
 
 class TestReminderDelivery:
