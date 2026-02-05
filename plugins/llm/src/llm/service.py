@@ -13,25 +13,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 import litellm
+import markdown
+import nh3
+import supybot.conf as conf
+import supybot.ircdb as ircdb
+import supybot.ircmsgs as ircmsgs
+import supybot.ircutils as ircutils
+import supybot.log as log
+import supybot.world as world
+from pygments.formatters import HtmlFormatter
+from supybot.i18n import PluginInternationalization
+from supybot.utils.file import AtomicFile
 
-# MUST be set immediately after import, before any LiteLLM calls create HTTPHandler
+from .context import Role
+
+# MUST be set before any LiteLLM calls create HTTPHandler
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
 # See: https://github.com/BerriAI/litellm/issues/14635
 litellm.request_timeout = 120  # 2 minutes
-
-import markdown  # noqa: E402
-import nh3  # noqa: E402
-import supybot.conf as conf  # noqa: E402
-import supybot.ircdb as ircdb  # noqa: E402
-import supybot.ircmsgs as ircmsgs  # noqa: E402
-import supybot.ircutils as ircutils  # noqa: E402
-import supybot.log as log  # noqa: E402
-import supybot.world as world  # noqa: E402
-from pygments.formatters import HtmlFormatter  # noqa: E402
-from supybot.i18n import PluginInternationalization  # noqa: E402
-from supybot.utils.file import AtomicFile  # noqa: E402
-
-from .context import Role  # noqa: E402
 
 _ = PluginInternationalization("LLM")
 
@@ -108,7 +107,7 @@ class LLMService:
         # Pattern to detect API keys for sanitization
         # Matches common formats: sk-*, AIza*, long alphanumeric strings
         self.api_key_pattern = re.compile(
-            r"(?:sk-[a-zA-Z0-9_-]{10,}|AIza[a-zA-Z0-9_-]{30,}|[a-zA-Z0-9_-]{32,})",
+            r"(?:sk-[a-zA-Z0-9_-]{10,}|AIza[a-zA-Z0-9_-]{30,}|\b[a-zA-Z0-9_-]{32,}\b)",
             re.IGNORECASE,
         )
 
@@ -125,7 +124,7 @@ class LLMService:
             return text
         return self.api_key_pattern.sub("[REDACTED]", str(text))
 
-    def _sanitize_output(self, text: str) -> str:
+    def sanitize_output(self, text: str) -> str:
         """Sanitize output to prevent IRC command injection.
 
         Neutralizes lines starting with configured prefixes to prevent
@@ -311,7 +310,7 @@ class LLMService:
             lines.append(f"Bot uptime: {uptime_info}")
 
         # Bot help URL
-        _, help_url = self._get_http_paths()
+        _, help_url = self.get_http_paths()
         if help_url:
             lines.append(f"Bot help: {help_url}")
 
@@ -506,6 +505,10 @@ class LLMService:
 
         Fails closed — returns True (blocked) on any resolution error.
 
+        Note: This is a TOCTOU check — DNS may resolve differently when LiteLLM
+        later fetches the URL. DNS rebinding attacks could bypass this, but the
+        fail-closed design and the low value of the target (IRC bot) limit risk.
+
         Args:
             hostname: Hostname to check
 
@@ -692,13 +695,13 @@ class LLMService:
             return _("Error: Content violates AI safety policies. Please rephrase your request.")
         if isinstance(error, litellm.APIError):
             sanitized = self._sanitize(str(error))[:150]
-            self.log.error(f"LLM API error ({operation}): {sanitized}")
+            self.log.error("LLM API error (%s): %s", operation, sanitized)
             return _("Error: API returned an error. Check logs for details.")
 
         # Generic exception - sanitize and log with type for debugging
         error_type = type(error).__name__
         sanitized = self._sanitize(str(error))
-        self.log.error(f"LLM {operation} error ({error_type}): {sanitized}")
+        self.log.error("LLM %s error (%s): %s", operation, error_type, sanitized)
         return (
             _("Error: Unable to complete %s. Check your configuration or try again later.")
             % operation
@@ -735,7 +738,14 @@ class LLMService:
         Returns:
             CompletionResult with content and grounding_used flag
         """
+        target = None
+        if irc and msg and msg.args:
+            target = msg.args[0]
+
         try:
+            if irc and target:
+                self.send_typing_indicator(irc, target, "active")
+
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
@@ -792,17 +802,20 @@ class LLMService:
                 **optional_kwargs,
             )
 
-            content = self._sanitize_output(response.choices[0].message.content)
+            content = self.sanitize_output(response.choices[0].message.content)
             grounding_used = self._check_grounding_used(response)
 
             return CompletionResult(content=content, grounding_used=grounding_used)
 
         except Exception as e:
-            self.log.exception(f"Completion failed: {self._sanitize(str(e))}")
+            self.log.exception("Completion failed: %s", self._sanitize(str(e)))
             return CompletionResult(
                 content=self._handle_llm_error(e, "completion"),
                 grounding_used=False,
             )
+        finally:
+            if irc and target:
+                self.send_typing_indicator(irc, target, "done")
 
     def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
         """Parse a natural language reminder request using LLM.
@@ -908,13 +921,13 @@ Rules:
                 )
 
         except json.JSONDecodeError as e:
-            self.log.warning(f"Failed to parse reminder JSON: {e}")
+            self.log.warning("Failed to parse reminder JSON: %s", e)
             return ReminderParseResult(
                 action="clarify",
                 confirmation=_("Sorry, I couldn't understand that. Try: 'in 30m check the build'"),
             )
         except Exception as e:
-            self.log.exception(f"Reminder parse failed: {self._sanitize(str(e))}")
+            self.log.exception("Reminder parse failed: %s", self._sanitize(str(e)))
             return ReminderParseResult(
                 action="clarify",
                 confirmation=_(
@@ -955,12 +968,16 @@ Rules:
 
             timeout = self.plugin.registryValue("timeout")
 
+            optional_kwargs: dict[str, Any] = {}
+            if "gemini" in model.lower():
+                optional_kwargs["safety_settings"] = self._get_safety_settings()
+
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 api_key=self.plugin.registryValue("askApiKey"),
                 timeout=timeout,
-                safety_settings=self._get_safety_settings() if "gemini" in model else None,
+                **optional_kwargs,
             )
 
             summary = response.choices[0].message.content
@@ -973,7 +990,7 @@ Rules:
 
         except Exception as e:
             # Log but don't fail - graceful degradation
-            self.log.debug(f"Summarization failed: {self._sanitize(str(e))}")
+            self.log.debug("Summarization failed: %s", self._sanitize(str(e)))
             return None
 
     def image_generation(
@@ -1054,7 +1071,7 @@ Rules:
 
             # No image data - check for blocked content reasons
             # Google Imagen returns empty data when content is blocked
-            self.log.warning(f"Image generation returned no data. Response: {response}")
+            self.log.warning("Image generation returned no data. Response: %s", response)
             return _(
                 "Error: No image generated. The prompt may have been blocked by "
                 "content safety filters. Try rephrasing your request."
@@ -1092,7 +1109,7 @@ Rules:
         # No fences
         return code, None
 
-    def _get_http_paths(self) -> tuple[str, str]:
+    def get_http_paths(self) -> tuple[str, str]:
         """Get HTTP root directory and URL base for file storage.
 
         Uses plugin config if set, otherwise falls back to Limnoria's
@@ -1134,7 +1151,7 @@ Rules:
         Returns:
             Public URL to saved file or None on error
         """
-        http_root, url_base = self._get_http_paths()
+        http_root, url_base = self.get_http_paths()
 
         # Create unique filename
         hash_input = f"{content}{time.time()}".encode()
@@ -1224,7 +1241,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 f.write(html)
             return f"{url_base}/{filename}"
         except OSError as e:
-            self.log.error(f"Failed to save code file: {e}")
+            self.log.error("Failed to save code file: %s", e)
             return None
 
     def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
@@ -1240,13 +1257,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Returns:
             Public URL to saved image or None on error
         """
-        http_root, url_base = self._get_http_paths()
+        http_root, url_base = self.get_http_paths()
 
         # Decode base64
         try:
             image_bytes = base64.b64decode(b64_data)
         except base64.binascii.Error as e:
-            self.log.error(f"Invalid base64 image data: {e}")
+            self.log.error("Invalid base64 image data: %s", e)
             return None
 
         # Generate unique filename
@@ -1262,7 +1279,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 f.write(image_bytes)
             return f"{url_base}/{filename}"
         except OSError as e:
-            self.log.error(f"Failed to save image file: {e}")
+            self.log.error("Failed to save image file: %s", e)
             return None
 
     def _build_messages(
@@ -1460,7 +1477,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
     def run_scheduled_cleanup(self) -> None:
         """Run file cleanup (public interface for scheduler)."""
-        http_root, _ = self._get_http_paths()
+        http_root, _ = self.get_http_paths()
         self._cleanup_old_files(http_root)
 
 
