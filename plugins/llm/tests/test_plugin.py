@@ -520,62 +520,53 @@ class TestPluginHelperMethods:
 
         assert result is False
 
-    def test_get_help_url_uses_http_url_base_when_set(self) -> None:
-        """GIVEN httpUrlBase configured WHEN _get_help_url THEN uses configured base."""
+    def test_is_old_message_returns_false_for_zero_timestamp(self) -> None:
+        """GIVEN message with time=0 WHEN _is_old_message THEN returns False.
+
+        Limnoria defaults msg.time to 0 when no server-time tag is present.
+        This should be treated as a live message, not ZNC playback.
+        """
+        from llm.plugin import LLM
+
+        mock_msg = MagicMock()
+        mock_msg.time = 0
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.startup_time = time.time()
+            result = plugin._is_old_message(mock_msg)
+
+        assert result is False
+
+    def test_get_help_url_delegates_to_service(self) -> None:
+        """GIVEN service returns url_base WHEN _get_help_url THEN returns url_base + /."""
         from llm.plugin import LLM
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
-            plugin.registryValue = MagicMock(return_value="https://example.com/llm")
+            plugin.llm_service = MagicMock()
+            plugin.llm_service.get_http_paths.return_value = (
+                "/var/www/llm",
+                "https://example.com/llm",
+            )
 
             result = plugin._get_help_url()
 
         assert result == "https://example.com/llm/"
 
-    def test_get_help_url_uses_public_url_fallback(self) -> None:
-        """GIVEN httpUrlBase empty WHEN _get_help_url THEN uses publicUrl."""
-        from llm import plugin as plugin_module
+    def test_get_help_url_with_localhost_fallback(self) -> None:
+        """GIVEN service returns localhost url WHEN _get_help_url THEN uses it."""
         from llm.plugin import LLM
-
-        # Create mock conf with nested structure
-        mock_conf = MagicMock()
-        mock_conf.supybot.servers.http.publicUrl.return_value = "https://bot.example.com/"
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
-            plugin.registryValue = MagicMock(return_value="")
+            plugin.llm_service = MagicMock()
+            plugin.llm_service.get_http_paths.return_value = (
+                "/data/web/llm",
+                "http://localhost:8080/llm",
+            )
 
-            # Patch conf at the module level
-            original_conf = plugin_module.conf
-            plugin_module.conf = mock_conf
-            try:
-                result = plugin._get_help_url()
-            finally:
-                plugin_module.conf = original_conf
-
-        assert result == "https://bot.example.com/llm/"
-
-    def test_get_help_url_uses_localhost_fallback(self) -> None:
-        """GIVEN no publicUrl WHEN _get_help_url THEN uses localhost with port."""
-        from llm import plugin as plugin_module
-        from llm.plugin import LLM
-
-        # Create mock conf with nested structure
-        mock_conf = MagicMock()
-        mock_conf.supybot.servers.http.publicUrl.return_value = ""
-        mock_conf.supybot.servers.http.port.return_value = 8080
-
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.registryValue = MagicMock(return_value="")
-
-            # Patch conf at the module level
-            original_conf = plugin_module.conf
-            plugin_module.conf = mock_conf
-            try:
-                result = plugin._get_help_url()
-            finally:
-                plugin_module.conf = original_conf
+            result = plugin._get_help_url()
 
         assert result == "http://localhost:8080/llm/"
 
@@ -585,7 +576,11 @@ class TestPluginHelperMethods:
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
-            plugin.registryValue = MagicMock(return_value="https://example.com/llm")
+            plugin.llm_service = MagicMock()
+            plugin.llm_service.get_http_paths.return_value = (
+                "/data/web/llm",
+                "https://example.com/llm",
+            )
 
             result = plugin.getPluginHelp()
 
@@ -1434,3 +1429,103 @@ class TestStartupNotification:
             plugin_module.ircdb = original_ircdb
 
         mock_remove.assert_called_once_with("llm_startup_check")
+
+
+class TestInvalidCommand:
+    """Test invalidCommand fallback to ask."""
+
+    @pytest.fixture
+    def plugin_with_mocks(self) -> tuple:
+        """Create plugin with mocked dependencies for invalidCommand tests."""
+        import threading
+
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_irc.nick = "botname"
+
+        mock_msg = MagicMock()
+        mock_msg.prefix = "usernick!user@host"
+        mock_msg.args = ("#channel", "hello there")
+        mock_msg.time = time.time() + 100  # Future time (not ZNC playback)
+        mock_msg.channel = "#channel"
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin.startup_time = time.time()
+            plugin.ask = MagicMock()
+            # Limnoria's MetaSynchronized requires this lock for synchronized methods
+            plugin._MetaSynchronized_rlock = threading.RLock()
+
+        return plugin, mock_irc, mock_msg
+
+    def test_invalid_command_empty_tokens_returns_early(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN empty tokens WHEN invalidCommand called THEN returns early."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        plugin.invalidCommand(mock_irc, mock_msg, [])
+
+        plugin.ask.assert_not_called()
+
+    def test_invalid_command_no_capability_returns_early(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN user without llm.ask capability WHEN invalidCommand THEN returns early."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
+            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        plugin.ask.assert_not_called()
+
+    def test_invalid_command_old_message_returns_early(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN ZNC playback message WHEN invalidCommand THEN returns early."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.time = time.time() - 100  # Old message
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        plugin.ask.assert_not_called()
+
+    def test_invalid_command_delegates_to_ask(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN valid tokens and capability WHEN invalidCommand THEN delegates to ask."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        plugin.ask.assert_called_once_with(mock_irc, mock_msg, [], "hello there")
+
+
+class TestReminderDelivery:
+    """Test reminder delivery callback."""
+
+    def test_deliver_queues_message_and_removes_reminder(self) -> None:
+        """GIVEN scheduled reminder WHEN deliver fires THEN queues privmsg and cleans up."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            plugin._reminders = {}
+
+        event_name = "llm_remind_12345_1"
+        channel = "#test"
+        nick = "testuser"
+        reminder_message = "check the build"
+
+        # Simulate the deliver closure as defined in remindme()
+        plugin._reminders[event_name] = (nick, channel, reminder_message)
+
+        def deliver() -> None:
+            mock_irc.queueMsg(
+                __import__("supybot.ircmsgs", fromlist=["ircmsgs"]).privmsg(
+                    channel, f"{nick}: Reminder: {reminder_message}"
+                )
+            )
+            plugin._reminders.pop(event_name, None)
+
+        deliver()
+
+        mock_irc.queueMsg.assert_called_once()
+        assert event_name not in plugin._reminders

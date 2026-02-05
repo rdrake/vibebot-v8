@@ -558,6 +558,55 @@ class TestGroundingDetection:
         assert "Error" in result.content
         assert result.grounding_used is False
 
+    def test_completion_sends_typing_indicators(self) -> None:
+        """GIVEN irc context WHEN completion called THEN sends typing indicators."""
+        mock_response = Mock(spec=["choices"])
+        mock_choice = Mock(spec=["message"])
+        mock_message = Mock(spec=["content", "tool_calls"])
+        mock_message.content = "Response"
+        mock_message.tool_calls = None
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        irc = Mock()
+        irc.state = Mock()
+        irc.state.capabilities_ack = {"message-tags"}
+        irc.queueMsg = Mock()
+
+        msg = Mock()
+        msg.args = ("#test",)
+        msg.prefix = "user!user@host"
+
+        with patch("llm.service.litellm.completion", return_value=mock_response):
+            self.service.completion("test", command="ask", irc=irc, msg=msg)
+
+        # Should have called queueMsg twice - active and done
+        assert irc.queueMsg.call_count == 2
+        first_msg = irc.queueMsg.call_args_list[0][0][0]
+        assert first_msg.server_tags == {"+typing": "active"}
+        second_msg = irc.queueMsg.call_args_list[1][0][0]
+        assert second_msg.server_tags == {"+typing": "done"}
+
+    def test_completion_sends_done_on_error(self) -> None:
+        """GIVEN error during completion WHEN irc context THEN still sends done indicator."""
+        irc = Mock()
+        irc.state = Mock()
+        irc.state.capabilities_ack = {"message-tags"}
+        irc.queueMsg = Mock()
+
+        msg = Mock()
+        msg.args = ("#test",)
+        msg.prefix = "user!user@host"
+
+        with patch("llm.service.litellm.completion", side_effect=Exception("API error")):
+            result = self.service.completion("test", command="ask", irc=irc, msg=msg)
+
+        assert "Error" in result.content
+        # Should still send typing=done in finally block
+        assert irc.queueMsg.call_count == 2
+        second_msg = irc.queueMsg.call_args_list[1][0][0]
+        assert second_msg.server_tags == {"+typing": "done"}
+
 
 class TestBuildSystemPrompt:
     """Tests for _build_system_prompt with anti-injection preamble."""
@@ -1193,7 +1242,7 @@ class TestXssSanitization:
 
 
 class TestSanitizeOutput:
-    """Tests for _sanitize_output IRC command injection prevention."""
+    """Tests for sanitize_output IRC command injection prevention."""
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
@@ -1211,53 +1260,53 @@ class TestSanitizeOutput:
 
     def test_sanitize_output_empty(self) -> None:
         """GIVEN empty/None input WHEN sanitizing THEN returns unchanged."""
-        assert self.service._sanitize_output("") == ""
-        assert self.service._sanitize_output(None) is None
+        assert self.service.sanitize_output("") == ""
+        assert self.service.sanitize_output(None) is None
 
     def test_sanitize_output_normal_text(self) -> None:
         """GIVEN normal text WHEN sanitizing THEN returns unchanged."""
         text = "Hello, this is a normal response."
-        assert self.service._sanitize_output(text) == text
+        assert self.service.sanitize_output(text) == text
 
     def test_sanitize_output_dot_prefix(self) -> None:
         """GIVEN text starting with dot WHEN sanitizing THEN adds space prefix."""
         text = ".part #channel"
-        result = self.service._sanitize_output(text)
+        result = self.service.sanitize_output(text)
         assert result == " .part #channel"
 
     def test_sanitize_output_slash_prefix(self) -> None:
         """GIVEN text starting with slash WHEN sanitizing THEN adds space prefix."""
         text = "/msg someone hello"
-        result = self.service._sanitize_output(text)
+        result = self.service.sanitize_output(text)
         assert result == " /msg someone hello"
 
     def test_sanitize_output_multiline_dot(self) -> None:
         """GIVEN multiline text with dot lines WHEN sanitizing THEN fixes all."""
         text = "Line 1\n.ban user\nLine 3\n.part"
-        result = self.service._sanitize_output(text)
+        result = self.service.sanitize_output(text)
         assert result == "Line 1\n .ban user\nLine 3\n .part"
 
     def test_sanitize_output_multiline_slash(self) -> None:
         """GIVEN multiline text with slash lines WHEN sanitizing THEN fixes all."""
         text = "Line 1\n/quit message\nLine 3"
-        result = self.service._sanitize_output(text)
+        result = self.service.sanitize_output(text)
         assert result == "Line 1\n /quit message\nLine 3"
 
     def test_sanitize_output_mixed_prefixes(self) -> None:
         """GIVEN multiline text with both dots and slashes WHEN sanitizing THEN fixes all."""
         text = ".dot command\n/slash command\nNormal line"
-        result = self.service._sanitize_output(text)
+        result = self.service.sanitize_output(text)
         assert result == " .dot command\n /slash command\nNormal line"
 
     def test_sanitize_output_preserves_internal_dots(self) -> None:
         """GIVEN text with dots not at start WHEN sanitizing THEN preserves them."""
         text = "A sentence with a . period and https://example.com URL"
-        assert self.service._sanitize_output(text) == text
+        assert self.service.sanitize_output(text) == text
 
     def test_sanitize_output_preserves_internal_slashes(self) -> None:
         """GIVEN text with slashes not at start WHEN sanitizing THEN preserves them."""
         text = "Visit https://example.com/path for more info"
-        assert self.service._sanitize_output(text) == text
+        assert self.service.sanitize_output(text) == text
 
     def test_sanitize_output_custom_prefixes(self) -> None:
         """GIVEN custom prefix config WHEN sanitizing THEN uses those prefixes."""
@@ -1268,11 +1317,11 @@ class TestSanitizeOutput:
         service = LLMService(self.mock_plugin)
 
         # Should sanitize ! and @ now
-        assert service._sanitize_output("!ban user") == " !ban user"
-        assert service._sanitize_output("@command") == " @command"
+        assert service.sanitize_output("!ban user") == " !ban user"
+        assert service.sanitize_output("@command") == " @command"
         # But not . or / anymore
-        assert service._sanitize_output(".dot") == ".dot"
-        assert service._sanitize_output("/slash") == "/slash"
+        assert service.sanitize_output(".dot") == ".dot"
+        assert service.sanitize_output("/slash") == "/slash"
 
     def test_sanitize_output_empty_prefixes(self) -> None:
         """GIVEN empty prefix list WHEN sanitizing THEN no changes made."""
@@ -1282,8 +1331,8 @@ class TestSanitizeOutput:
         service = LLMService(self.mock_plugin)
 
         # No prefixes configured, so nothing gets sanitized
-        assert service._sanitize_output(".dot") == ".dot"
-        assert service._sanitize_output("/slash") == "/slash"
+        assert service.sanitize_output(".dot") == ".dot"
+        assert service.sanitize_output("/slash") == "/slash"
 
 
 class TestBuildContextMessage:
@@ -1381,7 +1430,7 @@ class TestBuildContextMessage:
         mock_msg.prefix = "user!user@host"
 
         with patch.object(
-            self.service, "_get_http_paths", return_value=("/tmp", "https://bot.example.com/llm")
+            self.service, "get_http_paths", return_value=("/tmp", "https://bot.example.com/llm")
         ):
             result = self.service._build_context_message(mock_irc, mock_msg)
 
@@ -1905,3 +1954,41 @@ class TestHtmlSanitizationSecurity:
         assert "<style>" not in result
         assert "background" not in result
         assert "<p>" in result
+
+
+class TestFormatChannelHistory(TestLLMService):
+    """Tests for _format_channel_history edge cases."""
+
+    def test_empty_list_returns_empty_string(self) -> None:
+        """GIVEN empty list WHEN formatted THEN returns empty string."""
+        result = self.service._format_channel_history([])
+        assert result == ""
+
+    def test_missing_nick_defaults_to_unknown(self) -> None:
+        """GIVEN message without nick WHEN formatted THEN defaults to 'Unknown'."""
+        history = [{"content": "hello"}]
+        result = self.service._format_channel_history(history)
+        assert result == "Unknown: hello"
+
+    def test_missing_content_produces_empty_content(self) -> None:
+        """GIVEN message without content WHEN formatted THEN shows nick with empty content."""
+        history = [{"nick": "Alice"}]
+        result = self.service._format_channel_history(history)
+        assert result == "Alice: "
+
+    def test_long_content_is_truncated(self) -> None:
+        """GIVEN content over 150 chars WHEN formatted THEN truncated with ellipsis."""
+        long_content = "x" * 200
+        history = [{"nick": "Alice", "content": long_content}]
+        result = self.service._format_channel_history(history)
+        assert result == f"Alice: {'x' * 147}..."
+        assert len(result) == len("Alice: ") + 150
+
+    def test_normal_formatting(self) -> None:
+        """GIVEN multiple messages WHEN formatted THEN returns nick: content lines."""
+        history = [
+            {"nick": "Alice", "content": "hello"},
+            {"nick": "Bob", "content": "hi there"},
+        ]
+        result = self.service._format_channel_history(history)
+        assert result == "Alice: hello\nBob: hi there"

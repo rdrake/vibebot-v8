@@ -278,6 +278,7 @@ class LLM(callbacks.Plugin):
 
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
+        self._reminder_counter: int = 0
 
         # Startup notification tracking
         self._pending_channels: set[str] = set()
@@ -328,7 +329,7 @@ class LLM(callbacks.Plugin):
             self.llm_service.run_scheduled_cleanup()
             self.log.debug("Scheduled file cleanup completed")
         except Exception as e:
-            self.log.error(f"Scheduled file cleanup failed: {e}")
+            self.log.error("Scheduled file cleanup failed: %s", e)
 
     def doPrivmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Monitor channel messages for enhanced context (opt-in feature).
@@ -339,28 +340,22 @@ class LLM(callbacks.Plugin):
         Note: Disabled by default for privacy since messages are sent to
         third-party LLM providers.
         """
-        # Only track if enabled (disabled by default for privacy)
         channel = msg.channel
         if not channel:
             return  # Skip private messages
 
-        # Skip ZNC playback messages
-        if self._is_old_message(msg):
+        # Check config first (cheapest checks)
+        if not self.registryValue("contextEnabled", channel):
             return
-
         if not self.registryValue("contextTrackAllMessages", channel):
             return
 
-        # Skip CTCP messages (except ACTION)
+        # Then message checks
+        if self._is_old_message(msg):
+            return
         if ircmsgs.isCtcp(msg) and not ircmsgs.isAction(msg):
             return
-
-        # Skip bot's own messages
         if ircutils.strEqual(irc.nick, msg.nick):
-            return
-
-        # Skip if context is disabled
-        if not self.registryValue("contextEnabled", channel):
             return
 
         nick = self._get_nick(msg)
@@ -450,21 +445,12 @@ class LLM(callbacks.Plugin):
     def _get_help_url(self) -> str:
         """Get the URL to the web help documentation.
 
-        Uses same URL construction pattern as service._get_http_paths().
+        Delegates to service.get_http_paths() for consistent URL construction.
 
         Returns:
             Full URL to help page (e.g., http://localhost:8080/llm/)
         """
-        url_base = self.registryValue("httpUrlBase")
-
-        if not url_base:
-            public_url = conf.supybot.servers.http.publicUrl()
-            if public_url:
-                url_base = public_url.rstrip("/") + "/llm"
-            else:
-                port = conf.supybot.servers.http.port()
-                url_base = f"http://localhost:{port}/llm"
-
+        _, url_base = self.llm_service.get_http_paths()
         return f"{url_base}/"
 
     def getPluginHelp(self) -> str:  # noqa: N802
@@ -539,6 +525,8 @@ class LLM(callbacks.Plugin):
         Returns:
             True if message is older than bot startup time
         """
+        if msg.time == 0:
+            return False  # No timestamp = live message (not ZNC playback)
         return msg.time < self.startup_time
 
     def _get_context_enabled(self, channel: str) -> bool:
@@ -680,13 +668,13 @@ class LLM(callbacks.Plugin):
             # Try AI-generated summary first
             summary = self.llm_service.summarize(response, channel)
             if summary:
-                preview = self.llm_service._sanitize_output(summary)
+                preview = self.llm_service.sanitize_output(summary)
             else:
                 # Fallback to truncation if summarization fails
                 preview = response.replace("\n", " ").strip()
                 if len(preview) > CODE_PREVIEW_MAX_LEN:
                     preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
-                preview = self.llm_service._sanitize_output(preview)
+                preview = self.llm_service.sanitize_output(preview)
             irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
         else:
             # Fallback to IRC paging if save failed
@@ -882,7 +870,8 @@ class LLM(callbacks.Plugin):
 
         # Schedule the reminder
         reminder_message = result.message or text
-        event_name = f"llm_remind_{int(time.time())}_{hash(reminder_message) % 10000}"
+        self._reminder_counter += 1
+        event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
 
         def deliver() -> None:
             irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
@@ -898,7 +887,7 @@ class LLM(callbacks.Plugin):
                 reply = f"{reply} ({result.note})"
             irc.reply(reply)
         except Exception as e:
-            self.log.error(f"Failed to schedule reminder: {e}")
+            self.log.error("Failed to schedule reminder: %s", e)
             irc.error(_("Failed to set reminder."))
 
     remindme = wrap(remindme, ["text"])

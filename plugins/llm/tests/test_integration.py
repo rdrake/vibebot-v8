@@ -402,10 +402,10 @@ class TestServicePluginIntegration:
         service, _ = service_with_plugin
 
         # Should sanitize based on configured prefixes
-        result = service._sanitize_output(".kick user")
+        result = service.sanitize_output(".kick user")
         assert result == " .kick user"
 
-        result = service._sanitize_output("/msg user hello")
+        result = service.sanitize_output("/msg user hello")
         assert result == " /msg user hello"
 
 

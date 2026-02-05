@@ -57,3 +57,6 @@ styles/
 
 # Review docs (local only)
 docs/reviews/
+
+# Git worktrees
+.worktrees/
