@@ -256,6 +256,12 @@ class TestReminderHelperMethods:
         result = plugin._find_user_reminder("testnick", "456")
         assert result is None
 
+    # Test database attribute
+
+    def test_plugin_has_db_attribute(self, plugin: MagicMock) -> None:
+        """GIVEN plugin WHEN initialized THEN db attribute exists."""
+        assert hasattr(plugin, "db")
+
     # Test plugin cleanup
 
     @patch("llm.plugin.schedule.removeEvent")

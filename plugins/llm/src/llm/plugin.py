@@ -960,10 +960,20 @@ class LLM(callbacks.Plugin):
         def deliver() -> None:
             irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
             self._reminders.pop(event_name, None)
+            self.db.delete_reminder(event_name)
 
         try:
             schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
             self._reminders[event_name] = (nick, channel, reminder_message)
+
+            # Persist to database
+            self.db.save_reminder(
+                event_name,
+                nick,
+                channel,
+                reminder_message,
+                time.time() + result.seconds,
+            )
 
             # Build reply with optional note
             reply = result.confirmation
@@ -1018,6 +1028,7 @@ class LLM(callbacks.Plugin):
         with contextlib.suppress(KeyError):
             schedule.removeEvent(target)
         self._reminders.pop(target, None)
+        self.db.delete_reminder(target)
         irc.reply(_("Reminder cancelled."))
 
     unremind = wrap(unremind, ["somethingWithoutSpaces"])
