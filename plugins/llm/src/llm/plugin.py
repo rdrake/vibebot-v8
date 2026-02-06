@@ -850,8 +850,11 @@ class LLM(callbacks.Plugin):
         with self._allow_concurrent():
             result = self.llm_service.image_generation(text, irc=irc, msg=msg)
             if result.rewritten_prompt:
+                prompt_preview = result.rewritten_prompt
+                if len(prompt_preview) > 200:
+                    prompt_preview = prompt_preview[:197] + "..."
                 irc.reply(
-                    _("[Rewritten: %s] %s") % (result.rewritten_prompt, result.content),
+                    _("[Rewritten: %s] %s") % (prompt_preview, result.content),
                     prefixNick=False,
                 )
             else:
