@@ -849,7 +849,13 @@ class LLM(callbacks.Plugin):
         # Typing indicator sent by service - no "Generating..." message needed
         with self._allow_concurrent():
             result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-            irc.reply(result.content, prefixNick=False)
+            if result.rewritten_prompt:
+                irc.reply(
+                    _("[Rewritten: %s] %s") % (result.rewritten_prompt, result.content),
+                    prefixNick=False,
+                )
+            else:
+                irc.reply(result.content, prefixNick=False)
 
         # Log usage
         if result.cost > 0 or result.prompt_tokens > 0:

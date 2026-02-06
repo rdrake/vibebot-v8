@@ -106,6 +106,17 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "drawAutoRewriteMax",
+    registry.NonNegativeInteger(
+        3,
+        _("""Maximum number of automatic prompt rewrites when image generation
+        is blocked by content safety filters. Set to 0 to disable. Each retry
+        uses the ask model to rewrite the prompt."""),
+    ),
+)
+
 # ============================================================================
 # HTTP Server Settings (for code/image output)
 # ============================================================================

@@ -173,9 +173,9 @@ class TestLLMService:
         assert "[REDACTED]" in sanitized
 
     def test_api_key_sanitization_empty_text(self) -> None:
-        """GIVEN empty text WHEN sanitized THEN returns empty."""
+        """GIVEN empty/None text WHEN sanitized THEN returns empty string."""
         assert self.service._sanitize("") == ""
-        assert self.service._sanitize(None) is None  # type: ignore
+        assert self.service._sanitize(None) == ""
 
     def test_strip_markdown_fences_with_language(self) -> None:
         """Strip markdown fences and extract language."""
@@ -896,6 +896,7 @@ class TestImageGenerationWithBase64:
                 "httpUrlBase": "https://example.com/llm",
                 "fileCleanupAge": 24,
                 "fileCleanupMax": 1000,
+                "drawAutoRewriteMax": 0,
             }.get(key)
         )
         self.service = LLMService(self.mock_plugin)
@@ -1066,6 +1067,7 @@ class TestDrawContext:
                 "drawModel": "gemini/imagen",
                 "timeout": 30,
                 "maxPromptLength": 10000,
+                "drawAutoRewriteMax": 0,
             }.get(key)
         )
         self.service = LLMService(self.mock_plugin)
@@ -2089,3 +2091,274 @@ class TestUsageExtraction:
         assert prompt == 0
         assert completion == 0
         assert cost == 0.0
+
+
+class TestDrawAutoRewrite:
+    """Tests for automatic prompt rewriting on content safety failures."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.config_values = {
+            "drawApiKey": "test-draw-key",
+            "drawModel": "vertex_ai/imagen-4.0-generate-001",
+            "askApiKey": "test-ask-key",
+            "askModel": "gemini/gemini-flash-latest",
+            "timeout": 30,
+            "maxPromptLength": 10000,
+            "httpRoot": "/tmp/test",
+            "httpUrlBase": "https://example.com/llm",
+            "drawAutoRewriteMax": 3,
+        }
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: self.config_values.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def _make_success_response(self, url: str = "https://example.com/img.png") -> Mock:
+        """Create a mock successful image generation response."""
+        response = Mock()
+        response.data = [Mock(url=url, b64_json=None)]
+        response.usage = Mock(prompt_tokens=5, completion_tokens=0)
+        return response
+
+    def _make_empty_response(self) -> Mock:
+        """Create a mock empty (content-blocked) image generation response."""
+        response = Mock()
+        response.data = []
+        response.usage = Mock(prompt_tokens=5, completion_tokens=0)
+        return response
+
+    def _make_rewrite_response(self, rewritten: str = "a safe cat") -> Mock:
+        """Create a mock completion response for prompt rewriting."""
+        response = Mock()
+        response.choices = [Mock(message=Mock(content=rewritten))]
+        response.usage = Mock(prompt_tokens=20, completion_tokens=10)
+        return response
+
+    def test_auto_rewrite_on_empty_data_succeeds(self) -> None:
+        """GIVEN empty response data WHEN auto-rewrite enabled THEN retries with rewritten prompt."""
+        empty_resp = self._make_empty_response()
+        success_resp = self._make_success_response()
+        rewrite_resp = self._make_rewrite_response("a friendly cat")
+
+        with (
+            patch("llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]),
+            patch("llm.service.litellm.completion", return_value=rewrite_resp),
+            patch("llm.service.litellm.completion_cost", return_value=0.01),
+        ):
+            result = self.service.image_generation("a dangerous cat")
+
+        assert result.content == "https://example.com/img.png"
+        assert result.rewritten_prompt == "a friendly cat"
+
+    def test_auto_rewrite_on_content_policy_error_succeeds(self) -> None:
+        """GIVEN ContentPolicyViolationError WHEN auto-rewrite enabled THEN retries."""
+        import litellm as litellm_module
+
+        rewrite_resp = self._make_rewrite_response("a safe prompt")
+        success_resp = self._make_success_response()
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=[
+                    litellm_module.ContentPolicyViolationError(
+                        message="blocked", model="imagen", llm_provider="vertex_ai"
+                    ),
+                    success_resp,
+                ],
+            ),
+            patch("llm.service.litellm.completion", return_value=rewrite_resp),
+            patch("llm.service.litellm.completion_cost", return_value=0.01),
+        ):
+            result = self.service.image_generation("bad prompt")
+
+        assert result.content == "https://example.com/img.png"
+        assert result.rewritten_prompt == "a safe prompt"
+
+    def test_auto_rewrite_multiple_retries_succeeds_on_third(self) -> None:
+        """GIVEN multiple blocks WHEN retrying THEN succeeds on later attempt."""
+        empty_resp = self._make_empty_response()
+        success_resp = self._make_success_response()
+        rewrite1 = self._make_rewrite_response("rewrite v1")
+        rewrite2 = self._make_rewrite_response("rewrite v2")
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=[empty_resp, empty_resp, success_resp],
+            ),
+            patch(
+                "llm.service.litellm.completion",
+                side_effect=[rewrite1, rewrite2],
+            ),
+            patch("llm.service.litellm.completion_cost", return_value=0.001),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert result.content == "https://example.com/img.png"
+        assert result.rewritten_prompt == "rewrite v2"
+
+    def test_auto_rewrite_exhausts_all_retries(self) -> None:
+        """GIVEN all retries fail WHEN max reached THEN returns error with attempt count."""
+        empty_resp = self._make_empty_response()
+        rewrite1 = self._make_rewrite_response("rewrite v1")
+        rewrite2 = self._make_rewrite_response("rewrite v2")
+        rewrite3 = self._make_rewrite_response("rewrite v3")
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=[empty_resp, empty_resp, empty_resp, empty_resp],
+            ),
+            patch(
+                "llm.service.litellm.completion",
+                side_effect=[rewrite1, rewrite2, rewrite3],
+            ),
+            patch("llm.service.litellm.completion_cost", return_value=0.001),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "Error" in result.content
+        assert "3 rewrite attempt" in result.content
+
+    def test_auto_rewrite_disabled_when_max_zero(self) -> None:
+        """GIVEN drawAutoRewriteMax=0 WHEN content blocked THEN no rewrite attempted."""
+        self.config_values["drawAutoRewriteMax"] = 0
+        empty_resp = self._make_empty_response()
+
+        with (
+            patch("llm.service.litellm.image_generation", return_value=empty_resp),
+            patch("llm.service.litellm.completion") as mock_completion,
+            patch("llm.service.litellm.completion_cost", return_value=0.0),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "content safety filters" in result.content
+        mock_completion.assert_not_called()
+
+    def test_auto_rewrite_llm_failure_falls_back(self) -> None:
+        """GIVEN rewrite LLM fails WHEN retrying THEN falls back to error message."""
+        empty_resp = self._make_empty_response()
+
+        with (
+            patch("llm.service.litellm.image_generation", return_value=empty_resp),
+            patch(
+                "llm.service.litellm.completion",
+                side_effect=Exception("LLM unavailable"),
+            ),
+            patch("llm.service.litellm.completion_cost", return_value=0.0),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "Error" in result.content
+
+    def test_auto_rewrite_skipped_when_ask_key_missing(self) -> None:
+        """GIVEN askApiKey not configured WHEN content blocked THEN skips rewrite."""
+        self.config_values["askApiKey"] = ""
+        empty_resp = self._make_empty_response()
+
+        with (
+            patch("llm.service.litellm.image_generation", return_value=empty_resp),
+            patch("llm.service.litellm.completion") as mock_completion,
+            patch("llm.service.litellm.completion_cost", return_value=0.0),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "Error" in result.content
+        mock_completion.assert_not_called()
+
+    def test_auto_rewrite_aggregates_costs(self) -> None:
+        """GIVEN successful rewrite WHEN costs tracked THEN aggregated in result."""
+        empty_resp = self._make_empty_response()
+        success_resp = self._make_success_response()
+        rewrite_resp = self._make_rewrite_response("safe prompt")
+
+        with (
+            patch("llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]),
+            patch("llm.service.litellm.completion", return_value=rewrite_resp),
+            patch("llm.service.litellm.completion_cost", return_value=0.005),
+        ):
+            result = self.service.image_generation("test prompt")
+
+        # Should include both rewrite and generation costs
+        assert result.prompt_tokens > 0
+        assert result.cost > 0
+
+    def test_non_content_error_does_not_trigger_rewrite(self) -> None:
+        """GIVEN timeout error WHEN generating THEN no rewrite attempted."""
+        import litellm as litellm_module
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=litellm_module.Timeout(
+                    message="timed out", model="imagen", llm_provider="vertex_ai"
+                ),
+            ),
+            patch("llm.service.litellm.completion") as mock_completion,
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "timed out" in result.content
+        mock_completion.assert_not_called()
+
+    def test_auth_error_does_not_trigger_rewrite(self) -> None:
+        """GIVEN authentication error WHEN generating THEN no rewrite attempted."""
+        import litellm as litellm_module
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=litellm_module.AuthenticationError(
+                    message="invalid key", model="imagen", llm_provider="vertex_ai"
+                ),
+            ),
+            patch("llm.service.litellm.completion") as mock_completion,
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "Invalid API key" in result.content
+        mock_completion.assert_not_called()
+
+    def test_prior_rewrites_passed_to_subsequent_attempts(self) -> None:
+        """GIVEN multiple rewrite attempts WHEN calling rewriter THEN prior history passed."""
+        self.config_values["drawAutoRewriteMax"] = 2
+        empty_resp = self._make_empty_response()
+        rewrite1 = self._make_rewrite_response("rewrite v1")
+        rewrite2 = self._make_rewrite_response("rewrite v2")
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=[empty_resp, empty_resp, empty_resp],
+            ),
+            patch(
+                "llm.service.litellm.completion",
+                side_effect=[rewrite1, rewrite2],
+            ) as mock_completion,
+            patch("llm.service.litellm.completion_cost", return_value=0.001),
+        ):
+            self.service.image_generation("test prompt")
+
+        # Second rewrite call should include prior_rewrites in the user message
+        assert mock_completion.call_count == 2
+        second_call_messages = mock_completion.call_args_list[1][1]["messages"]
+        user_msg = second_call_messages[1]["content"]
+        assert "rewrite v1" in user_msg
+        assert "Previous rewrite attempts" in user_msg
+
+    def test_rewritten_prompt_not_set_on_first_success(self) -> None:
+        """GIVEN first attempt succeeds WHEN no rewrite needed THEN rewritten_prompt is None."""
+        success_resp = self._make_success_response()
+
+        with (
+            patch("llm.service.litellm.image_generation", return_value=success_resp),
+            patch("llm.service.litellm.completion_cost", return_value=0.01),
+        ):
+            result = self.service.image_generation("a cat")
+
+        assert result.rewritten_prompt is None

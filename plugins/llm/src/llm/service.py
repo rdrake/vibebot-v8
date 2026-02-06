@@ -69,6 +69,7 @@ class ImageResult(NamedTuple):
     completion_tokens: int = 0
     cost: float = 0.0
     model: str = ""
+    rewritten_prompt: str | None = None
 
 
 class ReminderParseResult(NamedTuple):
@@ -125,7 +126,7 @@ class LLMService:
             re.IGNORECASE,
         )
 
-    def _sanitize(self, text: str) -> str:
+    def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
 
         Args:
@@ -135,7 +136,7 @@ class LLMService:
             Text with API keys replaced by [REDACTED]
         """
         if not text:
-            return text
+            return ""
         return self.api_key_pattern.sub("[REDACTED]", str(text))
 
     def sanitize_output(self, text: str | None) -> str:
@@ -1049,6 +1050,132 @@ Rules:
             self.log.debug("Summarization failed: %s", self._sanitize(str(e)))
             return None
 
+    def _rewrite_prompt_for_safety(
+        self,
+        original_prompt: str,
+        error_context: str,
+        prior_rewrites: list[tuple[str, str]],
+        channel: str | None = None,
+    ) -> tuple[str | None, int, int, float]:
+        """Rewrite an image prompt to avoid content safety filters.
+
+        Uses the ask model to generate a safer version of the prompt while
+        preserving the original intent.
+
+        Args:
+            original_prompt: The original user prompt
+            error_context: Description of why the prompt was blocked
+            prior_rewrites: List of (rewritten_prompt, rejection_reason) tuples
+            channel: Optional channel for config lookup
+
+        Returns:
+            Tuple of (rewritten_prompt, prompt_tokens, completion_tokens, cost).
+            rewritten_prompt is None on any failure.
+        """
+        try:
+            if not self.plugin.registryValue("askApiKey"):
+                return None, 0, 0, 0.0
+
+            model = self.plugin.registryValue("askModel", channel)
+            timeout = self.plugin.registryValue("timeout")
+
+            system_prompt = (
+                "You are an image prompt rewriter. Your task is to rewrite image generation "
+                "prompts that were rejected by content safety filters. Preserve the original "
+                "creative intent while making the prompt safe. Output ONLY the rewritten "
+                "prompt, nothing else. No explanations, no quotes, no prefixes."
+            )
+
+            user_parts = [
+                f"Original prompt: {original_prompt}",
+                f"Rejected because: {error_context}",
+            ]
+
+            if prior_rewrites:
+                user_parts.append("\nPrevious rewrite attempts that also failed:")
+                for i, (rewrite, reason) in enumerate(prior_rewrites, 1):
+                    user_parts.append(f'  Attempt {i}: "{rewrite}" — rejected: {reason}')
+                user_parts.append("\nPlease try a different approach from the above attempts.")
+
+            user_parts.append("\nRewrite the prompt to avoid safety filters:")
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "\n".join(user_parts)},
+            ]
+
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=self.plugin.registryValue("askApiKey"),
+                timeout=timeout,
+            )
+
+            rewritten = response.choices[0].message.content
+            if not rewritten or not rewritten.strip():
+                return None, 0, 0, 0.0
+
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+            return rewritten.strip(), prompt_tokens, completion_tokens, cost
+
+        except Exception as e:
+            self.log.warning("Prompt rewrite failed: %s", self._sanitize(str(e)))
+            return None, 0, 0, 0.0
+
+    def _attempt_image_generation(
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+    ) -> ImageResult | None:
+        """Attempt a single image generation call.
+
+        Args:
+            prompt: Text prompt for image generation
+            model: Model identifier string
+            timeout: Timeout in seconds
+
+        Returns:
+            ImageResult on success, None if data is empty (content blocked).
+            Raises exceptions for other errors.
+        """
+        response = litellm.image_generation(
+            prompt=prompt,
+            model=model,
+            api_key=self.plugin.registryValue("drawApiKey"),
+            n=1,
+            timeout=timeout,
+        )
+
+        prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+
+        if response.data and len(response.data) > 0:
+            image_data = response.data[0]
+
+            if hasattr(image_data, "url") and image_data.url:
+                return ImageResult(
+                    content=image_data.url,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost=cost,
+                    model=model,
+                )
+
+            if hasattr(image_data, "b64_json") and image_data.b64_json:
+                url = self.save_image_to_http(image_data.b64_json)
+                if url:
+                    return ImageResult(
+                        content=url,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        cost=cost,
+                        model=model,
+                    )
+                return ImageResult(content=_("Error: Failed to save generated image"))
+
+        # No image data — content was blocked
+        return None
+
     def image_generation(
         self,
         prompt: str,
@@ -1056,11 +1183,14 @@ Rules:
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
     ) -> ImageResult:
-        """Generate image from text prompt.
+        """Generate image from text prompt with automatic safety rewrite.
 
         Generates an image using the configured model, saves it to HTTP server,
         and returns the URL. Sends IRCv3 typing indicators during generation.
         If conversation history is provided, context is prepended to the prompt.
+
+        When content safety filters block generation, automatically rewrites
+        the prompt using the ask model and retries, up to drawAutoRewriteMax times.
 
         Args:
             prompt: Text description of image to generate
@@ -1091,63 +1221,113 @@ Rules:
             if not self.plugin.registryValue("drawApiKey"):
                 return ImageResult(content=_("Error: API key not configured for draw command"))
             model = self.plugin.registryValue("drawModel", channel)
-
-            # Get timeout
             timeout = self.plugin.registryValue("timeout")
+            max_rewrites = self.plugin.registryValue("drawAutoRewriteMax", channel)
+
+            # Keep original prompt for rewriter (before context augmentation)
+            original_prompt = prompt
 
             # Build contextual prompt if history available
             if history:
                 context_summary = self._build_context_summary(history)
                 if context_summary:
-                    prompt = f"Context from our conversation: {context_summary}\n\nNow generate an image: {prompt}"
-
-            # Generate image with API key passed directly (thread-safe)
-            response = litellm.image_generation(
-                prompt=prompt,
-                model=model,
-                api_key=self.plugin.registryValue("drawApiKey"),
-                n=1,
-                timeout=timeout,
-            )
-
-            # Extract usage data from the response
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-
-            # Handle response - check both URL and base64
-            if response.data and len(response.data) > 0:
-                image_data = response.data[0]
-
-                # Check for URL first (some providers return URLs)
-                if hasattr(image_data, "url") and image_data.url:
-                    return ImageResult(
-                        content=image_data.url,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        cost=cost,
-                        model=model,
+                    prompt = (
+                        f"Context from our conversation: {context_summary}\n\n"
+                        f"Now generate an image: {prompt}"
                     )
 
-                # Handle base64 response (Google AI Studio Imagen)
-                if hasattr(image_data, "b64_json") and image_data.b64_json:
-                    url = self.save_image_to_http(image_data.b64_json)
-                    if url:
-                        return ImageResult(
-                            content=url,
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=completion_tokens,
-                            cost=cost,
-                            model=model,
-                        )
-                    return ImageResult(content=_("Error: Failed to save generated image"))
+            # Track aggregate costs across all attempts
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            total_cost = 0.0
 
-            # No image data - check for blocked content reasons
-            # Google Imagen returns empty data when content is blocked
-            self.log.warning("Image generation returned no data. Response: %s", response)
+            # --- First attempt ---
+            content_blocked = False
+            block_reason = ""
+
+            try:
+                result = self._attempt_image_generation(prompt, model, timeout)
+                if result is not None:
+                    return result
+                # Empty data = content blocked (Google Imagen)
+                content_blocked = True
+                block_reason = "Content blocked by safety filters (empty response)"
+            except litellm.ContentPolicyViolationError as e:
+                content_blocked = True
+                block_reason = self._sanitize(str(e))[:200]
+            except Exception as e:
+                # Non-content errors: no retry
+                return ImageResult(content=self._handle_llm_error(e, "image generation"))
+
+            # --- Auto-rewrite loop ---
+            if not content_blocked or max_rewrites <= 0:
+                self.log.warning("Image generation returned no data. Prompt: %s", prompt[:100])
+                return ImageResult(
+                    content=_(
+                        "Error: No image generated. The prompt may have been blocked by "
+                        "content safety filters. Try rephrasing your request."
+                    )
+                )
+
+            self.log.info(
+                "Image generation blocked, attempting auto-rewrite (max %d)", max_rewrites
+            )
+            prior_rewrites: list[tuple[str, str]] = []
+            current_prompt = original_prompt
+
+            for attempt in range(max_rewrites):
+                # Rewrite the prompt
+                rewritten, rw_pt, rw_ct, rw_cost = self._rewrite_prompt_for_safety(
+                    original_prompt, block_reason, prior_rewrites, channel
+                )
+                total_prompt_tokens += rw_pt
+                total_completion_tokens += rw_ct
+                total_cost += rw_cost
+
+                if rewritten is None:
+                    self.log.warning("Prompt rewrite failed on attempt %d", attempt + 1)
+                    break
+
+                current_prompt = rewritten
+                self.log.info("Rewrite attempt %d: %s", attempt + 1, rewritten[:100])
+
+                # Retry image generation with rewritten prompt
+                try:
+                    result = self._attempt_image_generation(current_prompt, model, timeout)
+                    if result is not None:
+                        # Success! Aggregate costs and set rewritten_prompt
+                        return ImageResult(
+                            content=result.content,
+                            prompt_tokens=total_prompt_tokens + result.prompt_tokens,
+                            completion_tokens=total_completion_tokens + result.completion_tokens,
+                            cost=total_cost + result.cost,
+                            model=result.model,
+                            rewritten_prompt=current_prompt,
+                        )
+                    # Still blocked
+                    block_reason = "Content blocked by safety filters (empty response)"
+                    prior_rewrites.append((current_prompt, block_reason))
+                except litellm.ContentPolicyViolationError as e:
+                    block_reason = self._sanitize(str(e))[:200]
+                    prior_rewrites.append((current_prompt, block_reason))
+                except Exception as e:
+                    # Non-content error during retry — stop
+                    return ImageResult(content=self._handle_llm_error(e, "image generation"))
+
+            # Exhausted all retries
+            self.log.warning(
+                "Image generation blocked after %d rewrite attempts", len(prior_rewrites)
+            )
             return ImageResult(
                 content=_(
-                    "Error: No image generated. The prompt may have been blocked by "
-                    "content safety filters. Try rephrasing your request."
+                    "Error: No image generated. The prompt was blocked by content safety "
+                    "filters even after %d rewrite attempt(s). Try a different subject."
                 )
+                % len(prior_rewrites),
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                cost=total_cost,
+                model=model,
             )
 
         except Exception as e:

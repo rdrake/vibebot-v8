@@ -135,6 +135,7 @@ class TestImageGenerationErrors:
                 "drawApiKey": "test-key",
                 "drawModel": "dall-e-3",
                 "timeout": 30,
+                "drawAutoRewriteMax": 0,
             }.get(key)
         )
         return LLMService(mock_plugin)
