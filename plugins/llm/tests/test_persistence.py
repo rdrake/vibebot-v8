@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -257,3 +258,62 @@ class TestUsageTracking:
         assert breakdown[0].name == "user9"
         assert breakdown[1].name == "user8"
         assert breakdown[2].name == "user7"
+
+
+class TestRoundTrip:
+    """Integration tests for full persistence round-trips."""
+
+    def test_reminder_survives_simulated_restart(self, tmp_path: Path) -> None:
+        """GIVEN saved reminder WHEN DB reopened THEN reminder loadable."""
+        db_path = str(tmp_path / "test.db")
+
+        # First "session" — save a reminder
+        db1 = LLMDatabase(db_path)
+        fire_at = time.time() + 3600
+        db1.save_reminder("llm_remind_1_1", "alice", "#test", "check build", fire_at)
+        db1.close()
+
+        # Second "session" — reload
+        db2 = LLMDatabase(db_path)
+        reminders = db2.load_pending_reminders()
+        assert len(reminders) == 1
+        assert reminders[0].nick == "alice"
+        assert reminders[0].message == "check build"
+        db2.close()
+
+    def test_usage_persists_across_sessions(self, tmp_path: Path) -> None:
+        """GIVEN logged usage WHEN DB reopened THEN usage queryable."""
+        db_path = str(tmp_path / "test.db")
+
+        db1 = LLMDatabase(db_path)
+        db1.log_usage("alice", "#test", "ask", "gemini/flash", 100, 50, 0.001)
+        db1.close()
+
+        db2 = LLMDatabase(db_path)
+        summary = db2.get_usage_summary()
+        assert summary.total_requests == 1
+        assert summary.total_cost == pytest.approx(0.001)
+        db2.close()
+
+    def test_concurrent_writes_thread_safety(self, tmp_path: Path) -> None:
+        """GIVEN multiple threads WHEN writing concurrently THEN no corruption."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        errors: list[Exception] = []
+
+        def write_usage(n: int) -> None:
+            try:
+                for _i in range(20):
+                    db.log_usage(f"user{n}", "#test", "ask", "model", 10, 5, 0.001)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=write_usage, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        summary = db.get_usage_summary()
+        assert summary.total_requests == 100  # 5 threads * 20 writes
+        db.close()
