@@ -59,6 +59,14 @@ vibebot-v8/
 | Testing | pytest with pytest-cov |
 | HTML Sanitization | nh3 |
 
+## Quality Gates
+
+- After editing Python files, run `make lint` and `make typecheck` to catch issues immediately (automated via Claude Code hooks in `.claude/settings.json`)
+- Before claiming any task is complete, run `make preflight` (auto-format + lint + typecheck + tests)
+- Fix type checker warnings properly rather than adding inline suppression comments, unless the warning is a confirmed false positive from Limnoria's dynamic attributes (e.g., `supybot.ircdb.users`)
+- Complete the full cycle for every task: implement → verify (`make preflight`) → commit
+- If a task is too large for one session, commit progress at logical boundaries rather than leaving work half-done
+
 ## Development Commands
 
 All development is done through the Makefile:
@@ -75,10 +83,19 @@ make lint                 # Check code with ruff
 make format               # Auto-format with ruff
 make typecheck            # Check types with ty
 make check                # Run lint + format-check + typecheck + test
+make preflight            # Auto-format then run all checks (use this before committing)
 
 # CI/Quality
 make ci                   # Full CI pipeline (sync --locked, pre-commit, test)
 make pre-commit           # Run all pre-commit hooks
+
+# Worktree workflow
+make worktree-create BRANCH=fix/my-fix   # Create isolated worktree with deps installed
+make worktree-remove BRANCH=fix/my-fix   # Remove worktree and delete branch
+
+# GitHub helpers
+make wait-ci              # Watch current GitHub Actions run until completion
+make rebase-pr PR=42      # Ask dependabot to rebase a PR
 
 # Cleanup
 make clean                # Remove cache files
@@ -87,12 +104,17 @@ make deep-clean           # Remove venv and uv cache
 
 ## Code Quality Requirements
 
-### Pre-commit Hooks (enforced)
+### Git Hooks (enforced)
+
+**Pre-commit (on every commit):**
 1. **gitleaks** - Blocks commits containing secrets/API keys
 2. **ruff** - Linting with auto-fix
 3. **ruff-format** - Code formatting
 4. **ty** - Type checking on `plugins/llm/src/`
 5. **Standard hooks** - Merge conflicts, large files, trailing whitespace
+
+**Pre-push (on every push):**
+6. **full-check** - Runs `make check` (lint + format-check + typecheck + test)
 
 ### Ruff Configuration
 - Target: Python 3.14
@@ -187,22 +209,7 @@ class ValidationResult(NamedTuple):
 
 ## Configuration
 
-### Bot Configuration (bot.conf)
-```
-supybot.plugins.LLM.askModel: gemini/gemini-1.5-flash
-supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
-supybot.plugins.LLM.drawModel: vertex_ai/imagen-4.0-generate-001
-supybot.plugins.LLM.contextEnabled: True
-supybot.plugins.LLM.contextMaxMessages: 20
-supybot.plugins.LLM.contextTimeoutMinutes: 30
-```
-
-### API Keys (set at runtime via IRC)
-```
-%config plugins.LLM.askApiKey YOUR_KEY
-%config plugins.LLM.codeApiKey YOUR_KEY
-%config plugins.LLM.drawApiKey YOUR_KEY
-```
+Bot config lives in `bot.conf`. Models are set via `supybot.plugins.LLM.{ask,code,draw}Model` and API keys via `supybot.plugins.LLM.{ask,code,draw}ApiKey` (set at runtime with `%config`).
 
 ## Common Tasks
 
@@ -226,6 +233,41 @@ make install-hooks
 make run
 ```
 
+## Standard Workflows
+
+### Pre-commit Quality Check
+Always use `make preflight` instead of running `make format` and `make check` separately. It auto-formats first, then runs all checks in one pass:
+```bash
+make preflight            # format + lint + format-check + typecheck + test
+```
+
+### Branch PR Workflow (with worktrees)
+Use worktrees to isolate branch work from your main checkout:
+```bash
+make worktree-create BRANCH=fix/my-fix
+cd .worktrees/fix/my-fix
+# ... make changes, run make preflight, commit, push ...
+gh pr create --title "Fix: description" --body "..."
+# After merge:
+cd ../..
+make worktree-remove BRANCH=fix/my-fix
+git pull
+```
+
+### Waiting for CI
+Instead of polling with `sleep` and `gh pr view`, use:
+```bash
+make wait-ci              # blocks until the current run completes or fails
+```
+
+### Managing Dependabot PRs
+To trigger a rebase on a dependabot PR:
+```bash
+make rebase-pr PR=42
+make wait-ci              # wait for CI to pass after rebase
+gh pr merge 42 --merge    # merge once green
+```
+
 ## Important Files to Know
 
 | File | Purpose |
@@ -239,7 +281,7 @@ make run
 ## Do's and Don'ts
 
 ### Do
-- Run `make check` before committing
+- Run `make preflight` before committing (auto-formats, then runs all checks)
 - Add tests for new functionality (maintain 80%+ coverage)
 - Use type hints for all function signatures
 - Follow existing patterns in `service.py` and `plugin.py`
@@ -257,40 +299,12 @@ make run
 
 ## Deployment
 
-### Docker
-```bash
-make docker-build
-make docker-run
-```
-
-### Systemd
-```bash
-make install-service   # Install user service
-make install-timer     # Enable auto-updates (15-min interval)
-```
+See `Makefile` targets: `make docker-build`, `make docker-run`, `make install-service`, `make install-timer`.
 
 ## Production Debugging
 
-### Checking Logs
 ```bash
-# Tail recent log entries from production server
-ssh vibebot@rdrake.org "tail -100 ~/vibebot-v8/logs/messages.log"
-
-# Follow logs in real-time
-ssh vibebot@rdrake.org "tail -f ~/vibebot-v8/logs/messages.log"
-
-# Search for specific errors
-ssh vibebot@rdrake.org "grep -i error ~/vibebot-v8/logs/messages.log | tail -50"
+ssh vibebot@rdrake.org "tail -100 ~/vibebot-v8/logs/messages.log"   # recent logs
+ssh vibebot@rdrake.org "tail -f ~/vibebot-v8/logs/messages.log"     # follow logs
+ssh vibebot@rdrake.org "cd ~/vibebot-v8 && git pull && systemctl --user restart vibebot"  # restart
 ```
-
-### Restarting the Bot
-```bash
-ssh vibebot@rdrake.org "cd ~/vibebot-v8 && git pull && systemctl --user restart vibebot"
-```
-
-## Resources
-
-- [Limnoria Documentation](https://limnoria.readthedocs.io/)
-- [LiteLLM Documentation](https://docs.litellm.ai/)
-- [Ruff Documentation](https://docs.astral.sh/ruff/)
-- [uv Documentation](https://docs.astral.sh/uv/)

@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "make lint && make typecheck",
+            "timeout": 30,
+            "statusMessage": "Running lint + typecheck..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
-.PHONY: install run test lint format format-check typecheck check ci clean deep-clean setup-http help \
+.PHONY: install run test lint format format-check typecheck check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
-       install-deploy
+       install-deploy worktree-create worktree-remove wait-ci rebase-pr
 
 install:
 	uv sync
@@ -32,10 +32,42 @@ typecheck:
 
 check: lint format-check typecheck test
 
+preflight: format check
+
 ci:
 	uv sync --locked
 	uv run pre-commit run --all-files
 	$(MAKE) test
+
+# Worktree workflow
+WORKTREE_DIR ?= .worktrees
+
+worktree-create:
+ifndef BRANCH
+	$(error BRANCH is required: make worktree-create BRANCH=fix/my-fix)
+endif
+	@mkdir -p $(WORKTREE_DIR)
+	git worktree add $(WORKTREE_DIR)/$(BRANCH) -b $(BRANCH)
+	cd $(WORKTREE_DIR)/$(BRANCH) && uv sync
+	@echo "Worktree ready at $(WORKTREE_DIR)/$(BRANCH)"
+
+worktree-remove:
+ifndef BRANCH
+	$(error BRANCH is required: make worktree-remove BRANCH=fix/my-fix)
+endif
+	git worktree remove $(WORKTREE_DIR)/$(BRANCH)
+	-git branch -d $(BRANCH)
+	@echo "Worktree and branch $(BRANCH) removed"
+
+# GitHub helpers
+wait-ci:
+	gh run watch --exit-status
+
+rebase-pr:
+ifndef PR
+	$(error PR is required: make rebase-pr PR=42)
+endif
+	gh pr comment $(PR) --body "@dependabot rebase"
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
@@ -74,7 +106,12 @@ help:
 	@echo "  format-check    - Check formatting without changes"
 	@echo "  typecheck       - Run ty type checker"
 	@echo "  check           - Run all checks (lint, format-check, typecheck, test)"
+	@echo "  preflight       - Auto-format then run all checks"
 	@echo "  ci              - Run CI checks (sync --locked, pre-commit, test with coverage)"
+	@echo "  worktree-create - Create isolated worktree (BRANCH=name required)"
+	@echo "  worktree-remove - Remove worktree and branch (BRANCH=name required)"
+	@echo "  wait-ci         - Watch current GitHub Actions run until completion"
+	@echo "  rebase-pr       - Ask dependabot to rebase a PR (PR=number required)"
 	@echo "  clean           - Remove cache files"
 	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
 	@echo "  setup-http      - Create HTTP directory for code/image output"

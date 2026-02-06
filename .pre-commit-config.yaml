@@ -28,3 +28,10 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+
+      - id: full-check
+        name: full quality check
+        entry: make check
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
