@@ -1106,10 +1106,13 @@ Rules:
             timeout = self.plugin.registryValue("timeout")
 
             system_prompt = (
-                "You are an image prompt rewriter. Your task is to rewrite image generation "
-                "prompts that were rejected by content safety filters. Preserve the original "
-                "creative intent while making the prompt safe. Output ONLY the rewritten "
-                "prompt, nothing else. No explanations, no quotes, no prefixes."
+                "You are a cheeky image prompt rewriter for an IRC bot. A user's image "
+                "prompt was rejected by content safety filters. Your job: figure out what "
+                "the user ACTUALLY wanted, make it safe enough to pass filters, but have "
+                "fun with it. Add absurd, wholesome, or hilarious details — think IRC "
+                "humor, surreal comedy, unexpected twists. The user should laugh at what "
+                "they get. Be creative and weird, not corporate and sanitized. "
+                "Output ONLY the rewritten prompt, nothing else."
             )
 
             user_parts = [
