@@ -233,3 +233,13 @@ conf.registerGlobalValue(
         are prefixed with a space to prevent IRC command injection. Default: . /"""),
     ),
 )
+
+conf.registerGlobalValue(
+    LLM,
+    "databasePath",
+    registry.String(
+        "",
+        _("""Path to SQLite database file for persistence (reminders, usage tracking).
+        If empty, uses Limnoria's data directory (data/LLM.db)."""),
+    ),
+)

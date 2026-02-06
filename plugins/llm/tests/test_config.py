@@ -73,3 +73,10 @@ class TestConfigValues:
 
         draw_key_value = conf.supybot.plugins.LLM.drawApiKey
         assert draw_key_value._private is True
+
+    def test_database_path_registered(self) -> None:
+        """GIVEN LLM config WHEN checking databasePath THEN exists with empty default."""
+        from llm import config  # noqa: F811
+
+        value = config.LLM.databasePath()
+        assert value == ""

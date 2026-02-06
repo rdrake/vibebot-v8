@@ -156,7 +156,7 @@ class LLMDatabase:
                 (event_name, nick, channel, message, fire_at, time.time()),
             )
             conn.commit()
-            return cursor.lastrowid  # type: ignore[return-value]
+            return cursor.lastrowid or 0
         finally:
             conn.close()
 
@@ -291,7 +291,13 @@ class LLMDatabase:
                     "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
                     "FROM usage",
                 ).fetchone()
-            assert row is not None
+            if row is None:
+                return UsageSummary(
+                    total_requests=0,
+                    total_prompt_tokens=0,
+                    total_completion_tokens=0,
+                    total_cost=0.0,
+                )
             return UsageSummary(
                 total_requests=row[0],
                 total_prompt_tokens=row[1],
