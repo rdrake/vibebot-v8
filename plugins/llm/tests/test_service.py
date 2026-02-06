@@ -2362,3 +2362,53 @@ class TestDrawAutoRewrite:
             result = self.service.image_generation("a cat")
 
         assert result.rewritten_prompt is None
+
+    def test_auto_rewrite_on_bad_request_moderation_blocked(self) -> None:
+        """GIVEN BadRequestError with moderation_blocked WHEN auto-rewrite enabled THEN retries."""
+        import litellm as litellm_module
+
+        rewrite_resp = self._make_rewrite_response("a safe prompt")
+        success_resp = self._make_success_response()
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=[
+                    litellm_module.BadRequestError(
+                        message=(
+                            "OpenAIException - Error code: 400 - {'error': {'code': "
+                            "'moderation_blocked'}}"
+                        ),
+                        model="imagen",
+                        llm_provider="vertex_ai",
+                    ),
+                    success_resp,
+                ],
+            ),
+            patch("llm.service.litellm.completion", return_value=rewrite_resp),
+            patch("llm.service.litellm.completion_cost", return_value=0.01),
+        ):
+            result = self.service.image_generation("bad prompt")
+
+        assert result.content == "https://example.com/img.png"
+        assert result.rewritten_prompt == "a safe prompt"
+
+    def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:
+        """GIVEN BadRequestError without moderation keywords WHEN generating THEN no rewrite."""
+        import litellm as litellm_module
+
+        with (
+            patch(
+                "llm.service.litellm.image_generation",
+                side_effect=litellm_module.BadRequestError(
+                    message="Invalid image size parameter",
+                    model="imagen",
+                    llm_provider="vertex_ai",
+                ),
+            ),
+            patch("llm.service.litellm.completion") as mock_completion,
+        ):
+            result = self.service.image_generation("test prompt")
+
+        assert "Error" in result.content
+        mock_completion.assert_not_called()

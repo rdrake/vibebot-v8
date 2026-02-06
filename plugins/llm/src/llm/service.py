@@ -1050,6 +1050,32 @@ Rules:
             self.log.debug("Summarization failed: %s", self._sanitize(str(e)))
             return None
 
+    @staticmethod
+    def _is_content_safety_error(error: Exception) -> bool:
+        """Check if a BadRequestError is actually a content safety rejection.
+
+        Some providers (e.g. OpenAI) return moderation blocks as BadRequestError
+        rather than ContentPolicyViolationError.
+
+        Args:
+            error: The exception to check
+
+        Returns:
+            True if this is a content safety/moderation block
+        """
+        if not isinstance(error, litellm.BadRequestError):
+            return False
+        msg = str(error).lower()
+        return any(
+            keyword in msg
+            for keyword in (
+                "moderation_blocked",
+                "safety system",
+                "content policy",
+                "safety filter",
+            )
+        )
+
     def _rewrite_prompt_for_safety(
         self,
         original_prompt: str,
@@ -1256,8 +1282,12 @@ Rules:
                 content_blocked = True
                 block_reason = self._sanitize(str(e))[:200]
             except Exception as e:
-                # Non-content errors: no retry
-                return ImageResult(content=self._handle_llm_error(e, "image generation"))
+                if self._is_content_safety_error(e):
+                    content_blocked = True
+                    block_reason = self._sanitize(str(e))[:200]
+                else:
+                    # Non-content errors: no retry
+                    return ImageResult(content=self._handle_llm_error(e, "image generation"))
 
             # --- Auto-rewrite loop ---
             if not content_blocked or max_rewrites <= 0:
@@ -1311,8 +1341,12 @@ Rules:
                     block_reason = self._sanitize(str(e))[:200]
                     prior_rewrites.append((current_prompt, block_reason))
                 except Exception as e:
-                    # Non-content error during retry — stop
-                    return ImageResult(content=self._handle_llm_error(e, "image generation"))
+                    if self._is_content_safety_error(e):
+                        block_reason = self._sanitize(str(e))[:200]
+                        prior_rewrites.append((current_prompt, block_reason))
+                    else:
+                        # Non-content error during retry — stop
+                        return ImageResult(content=self._handle_llm_error(e, "image generation"))
 
             # Exhausted all retries
             self.log.warning(
