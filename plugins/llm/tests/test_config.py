@@ -14,6 +14,10 @@ from llm.config import ValidatedModelName
 class TestValidatedModelName:
     """Test model name validation with litellm."""
 
+    def setup_method(self) -> None:
+        """Clear warned-models cache between tests."""
+        ValidatedModelName._warned.clear()
+
     @staticmethod
     def _make(default: str = "") -> ValidatedModelName:
         """Create a ValidatedModelName instance for testing."""
@@ -100,6 +104,15 @@ class TestValidatedModelName:
         suggestions = ValidatedModelName._suggest_models("gemini/gemni-2.0-flash")
         assert len(suggestions) > 0
         assert any("gemini" in s for s in suggestions)
+
+    def test_warning_only_fires_once_per_model(self, caplog: pytest.LogCaptureFixture) -> None:
+        """GIVEN unknown model warned once WHEN setValue again THEN no duplicate warning."""
+        v = self._make()
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            v.setValue("openai/my-dedup-test-model")
+            caplog.clear()
+            v.setValue("openai/my-dedup-test-model")
+        assert caplog.text == ""
 
 
 class TestConfigure:

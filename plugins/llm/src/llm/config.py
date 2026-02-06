@@ -20,9 +20,11 @@ class ValidatedModelName(registry.String):
 
     - Empty strings are accepted (means "not configured").
     - Models that litellm can parse (provider recognized) are accepted.
-      If the specific model isn't in litellm.model_list, a warning is logged.
+      If the specific model isn't in litellm.model_list, a warning is logged once.
     - Models that litellm cannot parse at all are rejected with suggestions.
     """
+
+    _warned: set[str] = set()
 
     def setValue(self, v: str) -> None:  # noqa: N802
         v = v.strip()
@@ -43,8 +45,9 @@ class ValidatedModelName(registry.String):
                 msg += " See https://docs.litellm.ai/docs/providers for supported models."
             raise registry.InvalidRegistryValue(msg)  # noqa: B904
 
-        # Provider recognized — check if model is in the known list
-        if model not in litellm.model_list:
+        # Provider recognized — warn once if model is not in the known list
+        if model not in litellm.model_list and model not in ValidatedModelName._warned:
+            ValidatedModelName._warned.add(model)
             suggestions = self._suggest_models(model)
             hint = ""
             if suggestions:
