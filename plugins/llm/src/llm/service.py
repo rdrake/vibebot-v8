@@ -1247,7 +1247,9 @@ Rules:
             if not self.plugin.registryValue("drawApiKey"):
                 return ImageResult(content=_("Error: API key not configured for draw command"))
             model = self.plugin.registryValue("drawModel", channel)
-            timeout = self.plugin.registryValue("timeout")
+            timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue(
+                "timeout"
+            )
             max_rewrites = self.plugin.registryValue("drawAutoRewriteMax", channel)
 
             # Keep original prompt for rewriter (before context augmentation)

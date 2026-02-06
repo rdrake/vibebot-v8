@@ -106,6 +106,17 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "drawTimeout",
+    registry.PositiveInteger(
+        120,
+        _("""Timeout for image generation API calls in seconds. Image generation
+        is slower than text completion, especially with auto-rewrite retries.
+        Set to 0 to use the global timeout setting instead."""),
+    ),
+)
+
 conf.registerChannelValue(
     LLM,
     "drawAutoRewriteMax",
