@@ -158,7 +158,7 @@ conf.registerChannelValue(
     LLM,
     "contextTimeoutMinutes",
     registry.PositiveInteger(
-        30,
+        5,
         _("""Clear context after this many minutes of inactivity"""),
     ),
 )
