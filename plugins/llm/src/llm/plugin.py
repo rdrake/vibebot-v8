@@ -711,6 +711,7 @@ class LLM(callbacks.Plugin):
             display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
 
             # Reply first, then store context (so user gets response even if context fails)
+            self.log.info("ask replying to %s/%s", channel, nick)
             irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
@@ -794,10 +795,12 @@ class LLM(callbacks.Plugin):
                     if len(preview) > CODE_PREVIEW_MAX_LEN:
                         preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
                     preview = self.llm_service.sanitize_output(preview)
+                self.log.info("code replying to %s/%s", channel, nick)
                 irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
             else:
                 # Fallback to IRC paging if save failed
                 display_response = f"{grounding_prefix}{response}" if grounding_prefix else response
+                self.log.info("code replying to %s/%s", channel, nick)
                 irc.reply(display_response, prefixNick=False)
 
         # Store conversation context if enabled for this channel
@@ -849,6 +852,7 @@ class LLM(callbacks.Plugin):
         # Typing indicator sent by service - no "Generating..." message needed
         with self._allow_concurrent():
             result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+            self.log.info("draw replying to %s/%s", channel, nick)
             if result.rewritten_prompt:
                 prompt_preview = result.rewritten_prompt
                 if len(prompt_preview) > 200:
