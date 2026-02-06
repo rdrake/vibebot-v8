@@ -899,6 +899,49 @@ class LLM(callbacks.Plugin):
 
     llmkeys = wrap(llmkeys, ["admin"])
 
+    def usage(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """(takes no arguments)
+
+        Show API usage statistics (admin only).
+        Displays today's and this month's cost, top users, and top channels.
+        """
+        # Today: midnight UTC
+        today_midnight = (
+            datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
+        # This month: first of month midnight UTC
+        month_start = (
+            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
+        today = self.db.get_usage_summary(since=today_midnight)
+        month = self.db.get_usage_summary(since=month_start)
+        top_users = self.db.get_usage_by_nick(since=month_start, limit=5)
+        top_channels = self.db.get_usage_by_channel(since=month_start, limit=5)
+
+        # Format response
+        parts = []
+        parts.append(f"Today: ${today.total_cost:.4f} ({today.total_requests} requests)")
+        parts.append(f"This month: ${month.total_cost:.4f} ({month.total_requests} requests)")
+
+        if top_users:
+            user_parts = [f"{u.name} ${u.total_cost:.4f}" for u in top_users]
+            parts.append(f"Top users: {', '.join(user_parts)}")
+
+        if top_channels:
+            chan_parts = [f"{c.name} ${c.total_cost:.4f}" for c in top_channels]
+            parts.append(f"Top channels: {', '.join(chan_parts)}")
+
+        irc.reply(" | ".join(parts), private=True)
+
+    usage = wrap(usage, ["admin"])
+
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
     def _get_user_reminders(self, nick: str) -> list[tuple[str, tuple[str, str, str]]]:

@@ -77,6 +77,13 @@ class TestCommandExistence:
         assert hasattr(LLM, "llmkeys")
         assert callable(LLM.llmkeys)
 
+    def test_usage_command_exists(self) -> None:
+        """GIVEN LLM plugin WHEN checking for usage THEN method exists."""
+        from llm.plugin import LLM
+
+        assert hasattr(LLM, "usage")
+        assert callable(LLM.usage)
+
 
 class TestPluginConfiguration:
     """Test plugin configuration and service dependencies."""
