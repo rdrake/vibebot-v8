@@ -521,7 +521,7 @@ class LLM(callbacks.Plugin):
                     self.db.delete_reminder(event_name)
 
         if pending:
-            self.log.info("Reloaded %d reminder(s) from database", len(pending))
+            self.log.info("Reloaded %s reminder(s) from database", len(pending))
 
     @contextlib.contextmanager
     def _allow_concurrent(self):

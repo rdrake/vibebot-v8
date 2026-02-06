@@ -1300,7 +1300,7 @@ Rules:
                 )
 
             self.log.info(
-                "Image generation blocked, attempting auto-rewrite (max %d)", max_rewrites
+                "Image generation blocked, attempting auto-rewrite (max %s)", max_rewrites
             )
             prior_rewrites: list[tuple[str, str]] = []
             current_prompt = original_prompt
@@ -1315,11 +1315,11 @@ Rules:
                 total_cost += rw_cost
 
                 if rewritten is None:
-                    self.log.warning("Prompt rewrite failed on attempt %d", attempt + 1)
+                    self.log.warning("Prompt rewrite failed on attempt %s", attempt + 1)
                     break
 
                 current_prompt = rewritten
-                self.log.info("Rewrite attempt %d: %s", attempt + 1, rewritten[:100])
+                self.log.info("Rewrite attempt %s: %s", attempt + 1, rewritten[:100])
 
                 # Retry image generation with rewritten prompt
                 try:
@@ -1350,7 +1350,7 @@ Rules:
 
             # Exhausted all retries
             self.log.warning(
-                "Image generation blocked after %d rewrite attempts", len(prior_rewrites)
+                "Image generation blocked after %s rewrite attempts", len(prior_rewrites)
             )
             return ImageResult(
                 content=_(
