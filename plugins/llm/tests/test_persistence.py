@@ -1,0 +1,259 @@
+"""Tests for SQLite persistence layer."""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+from llm.persistence import LLMDatabase, ReminderRow
+
+
+class TestDatabaseInit:
+    """Test database initialization and schema creation."""
+
+    def test_creates_database_file(self, tmp_path: Path) -> None:
+        """GIVEN a path WHEN LLMDatabase is created THEN database file exists."""
+        db_path = str(tmp_path / "test.db")
+        LLMDatabase(db_path)
+        assert Path(db_path).exists()
+
+    def test_creates_reminders_table(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN reminders table exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='reminders'"
+            )
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_creates_usage_table(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN usage table exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='usage'"
+            )
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_wal_mode_enabled(self, tmp_path: Path) -> None:
+        """GIVEN a database WHEN connected THEN WAL journal mode is active."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+            assert row is not None
+            assert row[0] == "wal"
+        finally:
+            conn.close()
+
+    def test_idempotent_init(self, tmp_path: Path) -> None:
+        """GIVEN an existing database WHEN opened again THEN no error."""
+        db_path = str(tmp_path / "test.db")
+        db1 = LLMDatabase(db_path)
+        db1.save_reminder("evt1", "nick", "#chan", "msg", time.time() + 60)
+
+        # Open the same database again — should not raise or lose data
+        db2 = LLMDatabase(db_path)
+        reminders = db2.load_pending_reminders()
+        assert len(reminders) == 1
+        assert reminders[0].event_name == "evt1"
+
+
+class TestReminderPersistence:
+    """Test reminder CRUD operations."""
+
+    def test_save_and_load_reminder(self, tmp_path: Path) -> None:
+        """GIVEN a database WHEN a reminder is saved THEN it can be loaded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        fire_at = time.time() + 300
+        row_id = db.save_reminder("test_event", "alice", "#general", "Check build", fire_at)
+
+        assert isinstance(row_id, int)
+        assert row_id > 0
+
+        reminders = db.load_pending_reminders()
+        assert len(reminders) == 1
+
+        r = reminders[0]
+        assert isinstance(r, ReminderRow)
+        assert r.event_name == "test_event"
+        assert r.nick == "alice"
+        assert r.channel == "#general"
+        assert r.message == "Check build"
+        assert r.fire_at == fire_at
+
+    def test_delete_reminder_returns_true(self, tmp_path: Path) -> None:
+        """GIVEN a saved reminder WHEN deleted THEN returns True."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_reminder("evt1", "alice", "#chan", "msg", time.time() + 60)
+
+        assert db.delete_reminder("evt1") is True
+
+    def test_delete_nonexistent_reminder_returns_false(self, tmp_path: Path) -> None:
+        """GIVEN no reminders WHEN deleting nonexistent event THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.delete_reminder("no_such_event") is False
+
+    def test_load_excludes_reminders_older_than_24h(self, tmp_path: Path) -> None:
+        """GIVEN a reminder >24h overdue WHEN loading pending THEN it is excluded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        # fire_at was 25 hours ago — should be excluded
+        old_fire_at = time.time() - (25 * 3600)
+        db.save_reminder("old_event", "alice", "#chan", "old msg", old_fire_at)
+
+        reminders = db.load_pending_reminders()
+        assert len(reminders) == 0
+
+    def test_load_includes_reminders_less_than_24h_overdue(self, tmp_path: Path) -> None:
+        """GIVEN a reminder <24h overdue WHEN loading pending THEN it is included."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        # fire_at was 23 hours ago — should still be included for delivery on restart
+        recent_fire_at = time.time() - (23 * 3600)
+        db.save_reminder("recent_event", "alice", "#chan", "recent msg", recent_fire_at)
+
+        reminders = db.load_pending_reminders()
+        assert len(reminders) == 1
+        assert reminders[0].event_name == "recent_event"
+
+    def test_load_orders_by_fire_at_ascending(self, tmp_path: Path) -> None:
+        """GIVEN multiple reminders WHEN loading THEN ordered by fire_at ascending."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        db.save_reminder("later", "alice", "#chan", "later", now + 600)
+        db.save_reminder("sooner", "alice", "#chan", "sooner", now + 60)
+        db.save_reminder("middle", "alice", "#chan", "middle", now + 300)
+
+        reminders = db.load_pending_reminders()
+        assert len(reminders) == 3
+        assert reminders[0].event_name == "sooner"
+        assert reminders[1].event_name == "middle"
+        assert reminders[2].event_name == "later"
+
+    def test_delete_expired_reminders_only_removes_old(self, tmp_path: Path) -> None:
+        """GIVEN old and new reminders WHEN deleting expired THEN only old ones removed."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        # Old reminder: fire_at was 25 hours ago
+        db.save_reminder("old", "alice", "#chan", "old", now - (25 * 3600))
+        # Recent reminder: fire_at is in the future
+        db.save_reminder("new", "alice", "#chan", "new", now + 300)
+
+        deleted = db.delete_expired_reminders()
+        assert deleted == 1
+
+        # Only the new reminder should remain
+        reminders = db.load_pending_reminders()
+        assert len(reminders) == 1
+        assert reminders[0].event_name == "new"
+
+    def test_unique_event_name_constraint(self, tmp_path: Path) -> None:
+        """GIVEN a saved reminder WHEN saving with same event_name THEN IntegrityError."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_reminder("dup_event", "alice", "#chan", "first", time.time() + 60)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.save_reminder("dup_event", "bob", "#other", "second", time.time() + 120)
+
+
+class TestUsageTracking:
+    """Test usage logging and aggregation."""
+
+    def test_log_usage_and_summarize(self, tmp_path: Path) -> None:
+        """GIVEN logged usage WHEN summarizing THEN totals are correct."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#chan", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#chan", "ask", "gpt-4", 200, 100, 0.02)
+
+        summary = db.get_usage_summary()
+        assert summary.total_requests == 2
+        assert summary.total_prompt_tokens == 300
+        assert summary.total_completion_tokens == 150
+        assert summary.total_cost == pytest.approx(0.03)
+
+    def test_summary_with_since_filter(self, tmp_path: Path) -> None:
+        """GIVEN old and new usage WHEN summarizing with since THEN only counts recent."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        # Insert an "old" record by manipulating time
+        conn = db._connect()
+        try:
+            old_time = time.time() - 7200  # 2 hours ago
+            conn.execute(
+                "INSERT INTO usage "
+                "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_time, "alice", "#chan", "ask", "gpt-4", 100, 50, 0.01),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Insert a recent record
+        db.log_usage("bob", "#chan", "ask", "gpt-4", 200, 100, 0.02)
+
+        # Filter to only the last hour
+        since = time.time() - 3600
+        summary = db.get_usage_summary(since=since)
+        assert summary.total_requests == 1
+        assert summary.total_prompt_tokens == 200
+        assert summary.total_completion_tokens == 100
+        assert summary.total_cost == pytest.approx(0.02)
+
+    def test_empty_summary_returns_zeros(self, tmp_path: Path) -> None:
+        """GIVEN no usage records WHEN summarizing THEN returns zeros."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        summary = db.get_usage_summary()
+        assert summary.total_requests == 0
+        assert summary.total_prompt_tokens == 0
+        assert summary.total_completion_tokens == 0
+        assert summary.total_cost == pytest.approx(0.0)
+
+    def test_usage_by_nick_sorted_by_cost(self, tmp_path: Path) -> None:
+        """GIVEN usage from multiple nicks WHEN querying by nick THEN sorted by cost desc."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#chan", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#chan", "ask", "gpt-4", 200, 100, 0.05)
+        db.log_usage("charlie", "#chan", "ask", "gpt-4", 50, 25, 0.03)
+
+        breakdown = db.get_usage_by_nick()
+        assert len(breakdown) == 3
+        assert breakdown[0].name == "bob"
+        assert breakdown[0].total_cost == pytest.approx(0.05)
+        assert breakdown[1].name == "charlie"
+        assert breakdown[1].total_cost == pytest.approx(0.03)
+        assert breakdown[2].name == "alice"
+        assert breakdown[2].total_cost == pytest.approx(0.01)
+
+    def test_usage_by_channel_sorted_by_cost(self, tmp_path: Path) -> None:
+        """GIVEN usage in multiple channels WHEN querying by channel THEN sorted by cost desc."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#general", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("alice", "#dev", "ask", "gpt-4", 200, 100, 0.05)
+        db.log_usage("bob", "#general", "code", "gpt-4", 50, 25, 0.02)
+
+        breakdown = db.get_usage_by_channel()
+        assert len(breakdown) == 2
+        assert breakdown[0].name == "#dev"
+        assert breakdown[0].total_cost == pytest.approx(0.05)
+        assert breakdown[1].name == "#general"
+        assert breakdown[1].total_cost == pytest.approx(0.03)
+
+    def test_usage_by_nick_respects_limit(self, tmp_path: Path) -> None:
+        """GIVEN many nicks WHEN querying with limit THEN only top N returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        for i in range(10):
+            db.log_usage(f"user{i}", "#chan", "ask", "gpt-4", 100, 50, 0.01 * (i + 1))
+
+        breakdown = db.get_usage_by_nick(limit=3)
+        assert len(breakdown) == 3
+        # Should be the top 3 by cost (user9, user8, user7)
+        assert breakdown[0].name == "user9"
+        assert breakdown[1].name == "user8"
+        assert breakdown[2].name == "user7"
