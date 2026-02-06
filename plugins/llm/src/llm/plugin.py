@@ -818,14 +818,14 @@ class LLM(callbacks.Plugin):
                             preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
                         preview = self.llm_service.sanitize_output(preview)
                     self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
+                    irc.reply(f"{grounding_prefix}{preview} — {url}")
                 else:
                     # Fallback to IRC paging if save failed
                     display_response = (
                         f"{grounding_prefix}{response}" if grounding_prefix else response
                     )
                     self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(display_response, prefixNick=False)
+                    irc.reply(display_response)
 
             # Store conversation context if enabled for this channel
             if self._get_context_enabled(channel):
@@ -884,10 +884,9 @@ class LLM(callbacks.Plugin):
                         prompt_preview = prompt_preview[:197] + "..."
                     irc.reply(
                         _("[Rewritten: %s] %s") % (prompt_preview, result.content),
-                        prefixNick=False,
                     )
                 else:
-                    irc.reply(result.content, prefixNick=False)
+                    irc.reply(result.content)
 
             # Log usage
             if result.cost > 0 or result.prompt_tokens > 0:

@@ -2,11 +2,79 @@
 
 from __future__ import annotations
 
+import difflib
+import logging
+
+import litellm
 import supybot.conf as conf
 import supybot.registry as registry
 from supybot.i18n import PluginInternationalization
 
 _ = PluginInternationalization("LLM")
+
+_log = logging.getLogger("supybot.plugins.LLM.config")
+
+
+class ValidatedModelName(registry.String):
+    """A model name validated against litellm's known models.
+
+    - Empty strings are accepted (means "not configured").
+    - Models that litellm can parse (provider recognized) are accepted.
+      If the specific model isn't in litellm.model_list, a warning is logged.
+    - Models that litellm cannot parse at all are rejected with suggestions.
+    """
+
+    def setValue(self, v: str) -> None:  # noqa: N802
+        v = v.strip()
+        if v:
+            self._validate_model(v)
+        super().setValue(v)
+
+    def _validate_model(self, model: str) -> None:
+        """Validate a model name against litellm's known models."""
+        try:
+            litellm.get_llm_provider(model)
+        except litellm.exceptions.BadRequestError:
+            suggestions = self._suggest_models(model)
+            msg = f"Unknown model: {model!r}."
+            if suggestions:
+                msg += f" Did you mean: {', '.join(suggestions)}?"
+            else:
+                msg += " See https://docs.litellm.ai/docs/providers for supported models."
+            raise registry.InvalidRegistryValue(msg)  # noqa: B904
+
+        # Provider recognized — check if model is in the known list
+        if model not in litellm.model_list:
+            suggestions = self._suggest_models(model)
+            hint = ""
+            if suggestions:
+                hint = f" Similar known models: {', '.join(suggestions)}."
+            _log.warning(
+                "Model %r not in litellm's known model list (may be a custom "
+                "deployment or newer model).%s",
+                model,
+                hint,
+            )
+
+    @staticmethod
+    def _suggest_models(model: str, n: int = 3, cutoff: float = 0.6) -> list[str]:
+        """Suggest similar model names using fuzzy matching."""
+        # Try matching against full model list first
+        matches = difflib.get_close_matches(model, litellm.model_list, n=n, cutoff=cutoff)
+        if matches:
+            return matches
+
+        # If provider-prefixed, also try matching within that provider's models
+        if "/" in model:
+            provider, model_name = model.split("/", 1)
+            provider_models = litellm.models_by_provider.get(provider, set())
+            if provider_models:
+                sub_matches = difflib.get_close_matches(
+                    model_name, list(provider_models), n=n, cutoff=cutoff
+                )
+                return [f"{provider}/{m}" for m in sub_matches]
+
+        return []
 
 
 def configure(advanced: bool) -> None:
@@ -82,7 +150,7 @@ conf.registerChannelValue(
 conf.registerChannelValue(
     LLM,
     "askModel",
-    registry.String(
+    ValidatedModelName(
         "gemini/gemini-flash-latest",
         _("""Model for ask command (supports vision)"""),
     ),
@@ -91,7 +159,7 @@ conf.registerChannelValue(
 conf.registerChannelValue(
     LLM,
     "codeModel",
-    registry.String(
+    ValidatedModelName(
         "gemini/gemini-1.5-flash",
         _("""Model for code generation"""),
     ),
@@ -100,7 +168,7 @@ conf.registerChannelValue(
 conf.registerChannelValue(
     LLM,
     "drawModel",
-    registry.String(
+    ValidatedModelName(
         "vertex_ai/imagen-4.0-generate-001",
         _("""Model for image generation"""),
     ),

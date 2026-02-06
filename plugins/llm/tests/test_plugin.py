@@ -797,9 +797,9 @@ class TestCommandFlows:
                 preview = response.replace("\n", " ").strip()
                 if len(preview) > 60:
                     preview = preview[:57] + "..."
-            irc.reply(f"{preview} — {url}", prefixNick=False)
+            irc.reply(f"{preview} — {url}")
         else:
-            irc.reply(response, prefixNick=False)
+            irc.reply(response)
 
         plugin.context.add_message(nick, channel, "user", text)
         plugin.context.add_message(nick, channel, "assistant", response)
@@ -816,7 +816,7 @@ class TestCommandFlows:
         history = plugin.context.get_messages(nick, channel)
 
         result = plugin.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
-        irc.reply(result.content, prefixNick=False)
+        irc.reply(result.content)
 
         # Store in context for follow-up references
         plugin.context.add_message(nick, channel, "user", text)
@@ -902,7 +902,7 @@ class TestCommandFlows:
 
         self._call_code(plugin, mock_irc, mock_msg, "Python print hello")
 
-        mock_irc.reply.assert_called_with("print('hello')", prefixNick=False)
+        mock_irc.reply.assert_called_with("print('hello')")
 
     def test_code_shows_truncated_preview(self, plugin_with_service: tuple) -> None:
         """GIVEN long code response WHEN code called THEN shows truncated preview."""
@@ -1013,7 +1013,7 @@ class TestCommandFlows:
         assert call_args[0][0] == "a sunset"  # First positional arg is prompt
         assert call_args.kwargs.get("irc") == mock_irc
         assert call_args.kwargs.get("msg") == mock_msg
-        mock_irc.reply.assert_called_with("http://img.url/test.png", prefixNick=False)
+        mock_irc.reply.assert_called_with("http://img.url/test.png")
 
     def test_draw_skips_old_messages(self, plugin_with_service: tuple) -> None:
         """GIVEN ZNC playback message WHEN draw called THEN skips processing."""
