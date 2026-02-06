@@ -28,6 +28,7 @@ from .service import (
     CODE_PREVIEW_TRUNCATE_LEN,
     LLMService,
 )
+from .tracing import TraceFilter, generate_request_id, request_id
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
@@ -273,6 +274,7 @@ class LLM(callbacks.Plugin):
         super().__init__(irc)
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
+        self.log.addFilter(TraceFilter())
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
         self.build_info = self._get_build_info()
 
@@ -547,6 +549,22 @@ class LLM(callbacks.Plugin):
         finally:
             lock._acquire_restore(saved)
 
+    @contextlib.contextmanager
+    def _trace_request(self, command: str, nick: str, channel: str):
+        """Set a unique trace ID for the duration of a command invocation.
+
+        All log messages emitted while the context manager is active
+        will be prefixed with [trace_id] by TraceFilter.
+        """
+        rid = generate_request_id()
+        token = request_id.set(rid)
+        self.log.info("%s from %s/%s", command, channel, nick)
+        try:
+            yield rid
+        finally:
+            self.log.info("%s complete: %s/%s", command, channel, nick)
+            request_id.reset(token)
+
     def _get_help_url(self) -> str:
         """Get the URL to the web help documentation.
 
@@ -669,72 +687,75 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Detect images for vision
-        images = self.llm_service.detect_images(text)
+        with self._trace_request("ask", nick, channel):
+            # Detect images for vision
+            images = self.llm_service.detect_images(text)
 
-        # Get conversation history (personal + shared channel) if context enabled
-        if self._get_context_enabled(channel):
-            history = self.context.get_messages(nick, channel)
-            channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
-        else:
-            history, channel_history = [], []
-
-        with self._allow_concurrent():
-            if images:
-                # Clean prompt by removing image URLs
-                clean_prompt = text
-                for img in images:
-                    clean_prompt = clean_prompt.replace(img, "").strip()
-
-                irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
-                result = self.llm_service.completion(
-                    clean_prompt,
-                    command="ask",
-                    images=images,
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                )
+            # Get conversation history (personal + shared channel) if context enabled
+            if self._get_context_enabled(channel):
+                history = self.context.get_messages(nick, channel)
+                channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
             else:
-                result = self.llm_service.completion(
-                    text,
-                    command="ask",
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
+                history, channel_history = [], []
+
+            with self._allow_concurrent():
+                if images:
+                    # Clean prompt by removing image URLs
+                    clean_prompt = text
+                    for img in images:
+                        clean_prompt = clean_prompt.replace(img, "").strip()
+
+                    irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
+                    result = self.llm_service.completion(
+                        clean_prompt,
+                        command="ask",
+                        images=images,
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                    )
+                else:
+                    result = self.llm_service.completion(
+                        text,
+                        command="ask",
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                    )
+
+                # Format response with grounding icon if search was used
+                response = result.content
+                display_response = (
+                    f"{GROUNDING_ICON} {response}" if result.grounding_used else response
                 )
 
-            # Format response with grounding icon if search was used
-            response = result.content
-            display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                # Reply first, then store context (so user gets response even if context fails)
+                self.log.info("replying to %s/%s", channel, nick)
+                irc.reply(display_response, prefixNick=False)
 
-            # Reply first, then store context (so user gets response even if context fails)
-            self.log.info("ask replying to %s/%s", channel, nick)
-            irc.reply(display_response, prefixNick=False)
+            # Store conversation context if enabled for this channel
+            if self._get_context_enabled(channel):
+                # Store in personal context (without icon for clean history)
+                self.context.add_message(nick, channel, Role.USER, text)
+                self.context.add_message(nick, channel, Role.ASSISTANT, response)
 
-        # Store conversation context if enabled for this channel
-        if self._get_context_enabled(channel):
-            # Store in personal context (without icon for clean history)
-            self.context.add_message(nick, channel, Role.USER, text)
-            self.context.add_message(nick, channel, Role.ASSISTANT, response)
+                # Store in shared channel context (allows group conversation flow)
+                self.context.add_channel_message(channel, nick, Role.USER, text)
+                self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
-            # Store in shared channel context (allows group conversation flow)
-            self.context.add_channel_message(channel, nick, Role.USER, text)
-            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
-
-        # Log usage
-        if result.cost > 0 or result.prompt_tokens > 0:
-            self.db.log_usage(
-                nick,
-                channel,
-                "ask",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-            )
+            # Log usage
+            if result.cost > 0 or result.prompt_tokens > 0:
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    "ask",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -762,68 +783,71 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Get conversation history (personal + shared channel) if context enabled
-        if self._get_context_enabled(channel):
-            history = self.context.get_messages(nick, channel)
-            channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
-        else:
-            history, channel_history = [], []
-
-        with self._allow_concurrent():
-            result = self.llm_service.completion(
-                text,
-                command="code",
-                history=history,
-                channel_history=channel_history,
-                irc=irc,
-                msg=msg,
-            )
-
-            response = result.content
-            grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
-
-            # Reply first, then store context
-            url = self.llm_service.save_code_to_http(response)
-            if url:
-                # Try AI-generated summary first
-                summary = self.llm_service.summarize(response, channel)
-                if summary:
-                    preview = self.llm_service.sanitize_output(summary)
-                else:
-                    # Fallback to truncation if summarization fails
-                    preview = response.replace("\n", " ").strip()
-                    if len(preview) > CODE_PREVIEW_MAX_LEN:
-                        preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
-                    preview = self.llm_service.sanitize_output(preview)
-                self.log.info("code replying to %s/%s", channel, nick)
-                irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
+        with self._trace_request("code", nick, channel):
+            # Get conversation history (personal + shared channel) if context enabled
+            if self._get_context_enabled(channel):
+                history = self.context.get_messages(nick, channel)
+                channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
             else:
-                # Fallback to IRC paging if save failed
-                display_response = f"{grounding_prefix}{response}" if grounding_prefix else response
-                self.log.info("code replying to %s/%s", channel, nick)
-                irc.reply(display_response, prefixNick=False)
+                history, channel_history = [], []
 
-        # Store conversation context if enabled for this channel
-        if self._get_context_enabled(channel):
-            # Store in personal context (without icon for clean history)
-            self.context.add_message(nick, channel, Role.USER, text)
-            self.context.add_message(nick, channel, Role.ASSISTANT, response)
+            with self._allow_concurrent():
+                result = self.llm_service.completion(
+                    text,
+                    command="code",
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                )
 
-            # Store in shared channel context (allows group conversation flow)
-            self.context.add_channel_message(channel, nick, Role.USER, text)
-            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+                response = result.content
+                grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
 
-        # Log usage
-        if result.cost > 0 or result.prompt_tokens > 0:
-            self.db.log_usage(
-                nick,
-                channel,
-                "code",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-            )
+                # Reply first, then store context
+                url = self.llm_service.save_code_to_http(response)
+                if url:
+                    # Try AI-generated summary first
+                    summary = self.llm_service.summarize(response, channel)
+                    if summary:
+                        preview = self.llm_service.sanitize_output(summary)
+                    else:
+                        # Fallback to truncation if summarization fails
+                        preview = response.replace("\n", " ").strip()
+                        if len(preview) > CODE_PREVIEW_MAX_LEN:
+                            preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
+                        preview = self.llm_service.sanitize_output(preview)
+                    self.log.info("replying to %s/%s", channel, nick)
+                    irc.reply(f"{grounding_prefix}{preview} — {url}", prefixNick=False)
+                else:
+                    # Fallback to IRC paging if save failed
+                    display_response = (
+                        f"{grounding_prefix}{response}" if grounding_prefix else response
+                    )
+                    self.log.info("replying to %s/%s", channel, nick)
+                    irc.reply(display_response, prefixNick=False)
+
+            # Store conversation context if enabled for this channel
+            if self._get_context_enabled(channel):
+                # Store in personal context (without icon for clean history)
+                self.context.add_message(nick, channel, Role.USER, text)
+                self.context.add_message(nick, channel, Role.ASSISTANT, response)
+
+                # Store in shared channel context (allows group conversation flow)
+                self.context.add_channel_message(channel, nick, Role.USER, text)
+                self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+
+            # Log usage
+            if result.cost > 0 or result.prompt_tokens > 0:
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    "code",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
@@ -849,32 +873,33 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Typing indicator sent by service - no "Generating..." message needed
-        with self._allow_concurrent():
-            result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-            self.log.info("draw replying to %s/%s", channel, nick)
-            if result.rewritten_prompt:
-                prompt_preview = result.rewritten_prompt
-                if len(prompt_preview) > 200:
-                    prompt_preview = prompt_preview[:197] + "..."
-                irc.reply(
-                    _("[Rewritten: %s] %s") % (prompt_preview, result.content),
-                    prefixNick=False,
-                )
-            else:
-                irc.reply(result.content, prefixNick=False)
+        with self._trace_request("draw", nick, channel):
+            # Typing indicator sent by service - no "Generating..." message needed
+            with self._allow_concurrent():
+                result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+                self.log.info("replying to %s/%s", channel, nick)
+                if result.rewritten_prompt:
+                    prompt_preview = result.rewritten_prompt
+                    if len(prompt_preview) > 200:
+                        prompt_preview = prompt_preview[:197] + "..."
+                    irc.reply(
+                        _("[Rewritten: %s] %s") % (prompt_preview, result.content),
+                        prefixNick=False,
+                    )
+                else:
+                    irc.reply(result.content, prefixNick=False)
 
-        # Log usage
-        if result.cost > 0 or result.prompt_tokens > 0:
-            self.db.log_usage(
-                nick,
-                channel,
-                "draw",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-            )
+            # Log usage
+            if result.cost > 0 or result.prompt_tokens > 0:
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    "draw",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
@@ -1046,63 +1071,64 @@ class LLM(callbacks.Plugin):
         nick = self._get_nick(msg)
         channel = self._get_channel(msg)
 
-        # Parse reminder using LLM (release lock during blocking API call)
-        with self._allow_concurrent():
-            result = self.llm_service.parse_reminder(text, channel)
+        with self._trace_request("remindme", nick, channel):
+            # Parse reminder using LLM (release lock during blocking API call)
+            with self._allow_concurrent():
+                result = self.llm_service.parse_reminder(text, channel)
 
-        # Handle clarification requests
-        if result.action == "clarify":
-            irc.reply(result.confirmation)
-            return
+            # Handle clarification requests
+            if result.action == "clarify":
+                irc.reply(result.confirmation)
+                return
 
-        # Validate duration limits
-        if result.seconds is None:
-            irc.reply(_("I couldn't determine when to remind you. Please try again."))
-            return
+            # Validate duration limits
+            if result.seconds is None:
+                irc.reply(_("I couldn't determine when to remind you. Please try again."))
+                return
 
-        if result.seconds < 10:
-            irc.error(_("Reminder must be at least 10 seconds from now."))
-            return
+            if result.seconds < 10:
+                irc.error(_("Reminder must be at least 10 seconds from now."))
+                return
 
-        if result.seconds > 604800:  # 7 days
-            irc.error(_("Reminder can't be more than 7 days out."))
-            return
+            if result.seconds > 604800:  # 7 days
+                irc.error(_("Reminder can't be more than 7 days out."))
+                return
 
-        if result.seconds < 0:
-            irc.error(_("That time has already passed."))
-            return
+            if result.seconds < 0:
+                irc.error(_("That time has already passed."))
+                return
 
-        # Schedule the reminder
-        reminder_message = result.message or text
-        self._reminder_counter += 1
-        event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
+            # Schedule the reminder
+            reminder_message = result.message or text
+            self._reminder_counter += 1
+            event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
 
-        def deliver() -> None:
-            irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
-            self._reminders.pop(event_name, None)
-            self.db.delete_reminder(event_name)
+            def deliver() -> None:
+                irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
+                self._reminders.pop(event_name, None)
+                self.db.delete_reminder(event_name)
 
-        try:
-            schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
-            self._reminders[event_name] = (nick, channel, reminder_message)
+            try:
+                schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
+                self._reminders[event_name] = (nick, channel, reminder_message)
 
-            # Persist to database
-            self.db.save_reminder(
-                event_name,
-                nick,
-                channel,
-                reminder_message,
-                time.time() + result.seconds,
-            )
+                # Persist to database
+                self.db.save_reminder(
+                    event_name,
+                    nick,
+                    channel,
+                    reminder_message,
+                    time.time() + result.seconds,
+                )
 
-            # Build reply with optional note
-            reply = result.confirmation
-            if result.note:
-                reply = f"{reply} ({result.note})"
-            irc.reply(reply)
-        except Exception as e:
-            self.log.error("Failed to schedule reminder: %s", e)
-            irc.error(_("Failed to set reminder."))
+                # Build reply with optional note
+                reply = result.confirmation
+                if result.note:
+                    reply = f"{reply} ({result.note})"
+                irc.reply(reply)
+            except Exception as e:
+                self.log.error("Failed to schedule reminder: %s", e)
+                irc.error(_("Failed to set reminder."))
 
     remindme = wrap(remindme, ["text"])
 

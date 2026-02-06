@@ -534,6 +534,29 @@ class TestGroundingDetection:
         assert result.content == "Test response"
         assert result.grounding_used is False
 
+    def test_completion_passes_trace_metadata_to_litellm(self) -> None:
+        """GIVEN request_id set WHEN completion THEN litellm receives metadata with trace_id."""
+        from llm.tracing import request_id
+
+        captured_kwargs: dict = {}
+
+        def mock_completion(**kwargs: dict) -> Mock:
+            captured_kwargs.update(kwargs)
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = "Response"
+            return mock_response
+
+        token = request_id.set("test1234")
+        try:
+            with patch("llm.service.litellm.completion", side_effect=mock_completion):
+                self.service.completion("Hello", command="ask")
+        finally:
+            request_id.reset(token)
+
+        assert captured_kwargs.get("metadata") == {"trace_id": "test1234"}
+
     def test_completion_returns_grounding_used_true_when_grounded(self) -> None:
         """GIVEN completion with grounding WHEN completing THEN grounding_used is True."""
         mock_response = Mock(spec=["choices"])

@@ -26,6 +26,7 @@ from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
 from .context import Role
+from .tracing import TraceFilter, request_id
 
 # MUST be set before any LiteLLM calls create HTTPHandler
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
@@ -112,6 +113,7 @@ class LLMService:
         """
         self.plugin = plugin_instance
         self.log = log.getPluginLogger("LLM.service")
+        self.log.addFilter(TraceFilter())
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -125,6 +127,11 @@ class LLMService:
             r"(?:sk-[a-zA-Z0-9_-]{10,}|AIza[a-zA-Z0-9_-]{30,}|\b[a-zA-Z0-9_-]{32,}\b)",
             re.IGNORECASE,
         )
+
+    def _get_litellm_metadata(self) -> dict[str, str]:
+        """Get metadata dict to pass to LiteLLM calls for request tracing."""
+        rid = request_id.get()
+        return {"trace_id": rid} if rid else {}
 
     def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
@@ -888,6 +895,7 @@ class LLMService:
             # Build optional kwargs - only include if not None
             # (passing tools=None explicitly can cause issues with some providers)
             optional_kwargs: dict[str, Any] = {}
+            optional_kwargs["metadata"] = self._get_litellm_metadata()
             gemini_tools = self._get_gemini_tools(model)
             if gemini_tools:
                 optional_kwargs["tools"] = gemini_tools
@@ -910,6 +918,7 @@ class LLMService:
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
             )
+            self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
 
             raw_content = response.choices[0].message.content
             content = self.sanitize_output(raw_content)
@@ -985,6 +994,7 @@ Rules:
         try:
             # Build optional kwargs for Gemini
             optional_kwargs: dict[str, Any] = {}
+            optional_kwargs["metadata"] = self._get_litellm_metadata()
             gemini_tools = self._get_gemini_tools(model)
             if gemini_tools:
                 optional_kwargs["tools"] = gemini_tools
@@ -1087,6 +1097,7 @@ Rules:
             timeout = self.plugin.registryValue("timeout")
 
             optional_kwargs: dict[str, Any] = {}
+            optional_kwargs["metadata"] = self._get_litellm_metadata()
             if "gemini" in model.lower():
                 optional_kwargs["safety_settings"] = self._get_safety_settings()
 
@@ -1197,6 +1208,7 @@ Rules:
                 messages=messages,
                 api_key=self.plugin.registryValue("askApiKey"),
                 timeout=timeout,
+                metadata=self._get_litellm_metadata(),
             )
 
             rewritten = response.choices[0].message.content
@@ -1233,7 +1245,9 @@ Rules:
             api_key=self.plugin.registryValue("drawApiKey"),
             n=1,
             timeout=timeout,
+            metadata=self._get_litellm_metadata(),
         )
+        self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
 
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
 
