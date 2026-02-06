@@ -586,6 +586,58 @@ class LLMService:
         valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
         return any(parsed.path.lower().endswith(ext) for ext in valid_extensions)
 
+    def _completion_with_tool_fallback(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        api_key: str,
+        timeout: int,
+        optional_kwargs: dict[str, Any],
+    ) -> Any:
+        """Call litellm.completion with automatic fallback on tool errors.
+
+        Gemini preview models can fail with INVALID_ARGUMENT when using
+        tools (googleSearch, urlContext). If we detect this, retry without
+        tools so the user still gets a response.
+
+        Args:
+            model: Model identifier
+            messages: Messages array
+            api_key: API key
+            timeout: Timeout in seconds
+            optional_kwargs: Additional kwargs (tools, safety_settings, etc.)
+
+        Returns:
+            LiteLLM completion response
+
+        Raises:
+            Exception: If completion fails even without tools
+        """
+        try:
+            return litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=timeout,
+                **optional_kwargs,
+            )
+        except litellm.BadRequestError as e:
+            # If we have tools and got INVALID_ARGUMENT, retry without tools
+            if "tools" in optional_kwargs and "invalid" in str(e).lower():
+                self.log.warning(
+                    "Completion failed with tools, retrying without: %s",
+                    self._sanitize(str(e)),
+                )
+                fallback_kwargs = {k: v for k, v in optional_kwargs.items() if k != "tools"}
+                return litellm.completion(
+                    model=model,
+                    messages=messages,
+                    api_key=api_key,
+                    timeout=timeout,
+                    **fallback_kwargs,
+                )
+            raise
+
     def _get_safety_settings(self) -> list[dict[str, str]]:
         """Get Gemini safety settings (all categories set to BLOCK_NONE).
 
@@ -842,12 +894,21 @@ class LLMService:
             if "gemini" in model.lower():
                 optional_kwargs["safety_settings"] = self._get_safety_settings()
 
-            response = litellm.completion(
+            # Log request details for debugging
+            tool_names = [list(t.keys())[0] for t in gemini_tools] if gemini_tools else []
+            self.log.info(
+                "completion request: model=%s messages=%s tools=%s",
+                model,
+                len(messages),
+                tool_names or "none",
+            )
+
+            response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
                 api_key=self.plugin.registryValue(f"{command}ApiKey"),
                 timeout=timeout,
-                **optional_kwargs,
+                optional_kwargs=optional_kwargs,
             )
 
             raw_content = response.choices[0].message.content
