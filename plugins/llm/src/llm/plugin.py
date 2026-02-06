@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import mimetypes
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -273,6 +274,7 @@ class LLM(callbacks.Plugin):
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
+        self.build_info = self._get_build_info()
 
         # Initialize conversation context
         self._init_context()
@@ -445,6 +447,25 @@ class LLM(callbacks.Plugin):
 
         irc.queueMsg(ircmsgs.privmsg(owner, message))
         self.log.info(f"Startup notification sent to {owner}")
+
+    @staticmethod
+    def _get_build_info() -> str:
+        """Get version and git commit SHA for context prompt.
+
+        Returns:
+            Build string like "v0.1.0 (abc1234)" or just "v0.1.0" if git unavailable.
+        """
+        from . import __version__
+
+        try:
+            sha = subprocess.check_output(  # noqa: S603
+                ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+            return f"v{__version__} ({sha})"
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return f"v{__version__}"
 
     def _init_context(self) -> None:
         """Initialize context manager from current config (called once at startup)."""

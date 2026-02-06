@@ -323,6 +323,11 @@ class LLMService:
         if uptime_info:
             lines.append(f"Bot uptime: {uptime_info}")
 
+        # Build info (version + git SHA)
+        build_info = getattr(self.plugin, "build_info", None)
+        if build_info:
+            lines.append(f"Build: {build_info}")
+
         # Bot help URL
         _, help_url = self.get_http_paths()
         if help_url:
