@@ -39,8 +39,8 @@ preflight: format check
 
 ci:
 	uv sync --locked
-	$(MAKE) syntax-check
 	uv run pre-commit run --all-files
+	$(MAKE) syntax-check
 	$(MAKE) test
 
 # Worktree workflow
@@ -65,7 +65,7 @@ endif
 
 # GitHub helpers
 wait-ci:
-	gh run watch --exit-status
+	gh run watch $$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
 
 rebase-pr:
 ifndef PR
