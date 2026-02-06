@@ -705,7 +705,7 @@ class LLMService:
             if usage:
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        except (AttributeError, TypeError):
+        except AttributeError, TypeError:
             pass
 
         # completion_cost can fail for unsupported models — graceful degradation

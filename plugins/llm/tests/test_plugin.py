@@ -1737,3 +1737,40 @@ class TestPluginDatabaseWiring:
             plugin.die()
 
         mock_db.delete_expired_reminders.assert_called_once()
+
+
+class TestCompletionResultUsageData:
+    """Test that result NamedTuples carry usage data for logging."""
+
+    def test_completion_result_carries_usage_data(self) -> None:
+        """GIVEN CompletionResult with usage WHEN accessed THEN data available for logging."""
+        from llm.service import CompletionResult
+
+        result = CompletionResult(
+            content="response",
+            grounding_used=False,
+            prompt_tokens=150,
+            completion_tokens=75,
+            cost=0.002,
+            model="gemini/flash",
+        )
+        assert result.prompt_tokens == 150
+        assert result.completion_tokens == 75
+        assert result.cost == 0.002
+        assert result.model == "gemini/flash"
+
+    def test_image_result_carries_usage_data(self) -> None:
+        """GIVEN ImageResult with usage WHEN accessed THEN data available for logging."""
+        from llm.service import ImageResult
+
+        result = ImageResult(
+            content="http://example.com/image.png",
+            prompt_tokens=50,
+            completion_tokens=0,
+            cost=0.04,
+            model="vertex/imagen-3",
+        )
+        assert result.prompt_tokens == 50
+        assert result.completion_tokens == 0
+        assert result.cost == 0.04
+        assert result.model == "vertex/imagen-3"

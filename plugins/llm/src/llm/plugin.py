@@ -698,6 +698,18 @@ class LLM(callbacks.Plugin):
             self.context.add_channel_message(channel, nick, Role.USER, text)
             self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
+        # Log usage
+        if result.cost > 0 or result.prompt_tokens > 0:
+            self.db.log_usage(
+                nick,
+                channel,
+                "ask",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+            )
+
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
     def code(
@@ -773,6 +785,18 @@ class LLM(callbacks.Plugin):
             self.context.add_channel_message(channel, nick, Role.USER, text)
             self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
 
+        # Log usage
+        if result.cost > 0 or result.prompt_tokens > 0:
+            self.db.log_usage(
+                nick,
+                channel,
+                "code",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+            )
+
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
     def draw(
@@ -794,10 +818,25 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
+        nick = self._get_nick(msg)
+        channel = self._get_channel(msg)
+
         # Typing indicator sent by service - no "Generating..." message needed
         with self._allow_concurrent():
             result = self.llm_service.image_generation(text, irc=irc, msg=msg)
             irc.reply(result.content, prefixNick=False)
+
+        # Log usage
+        if result.cost > 0 or result.prompt_tokens > 0:
+            self.db.log_usage(
+                nick,
+                channel,
+                "draw",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+            )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
