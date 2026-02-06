@@ -147,8 +147,8 @@ class TestImageGenerationErrors:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = service.image_generation("test prompt")
 
-        assert "No image generated" in result
-        assert "content safety" in result.lower()
+        assert "No image generated" in result.content
+        assert "content safety" in result.content.lower()
 
     def test_handles_none_url_and_b64(self, service: LLMService) -> None:
         """GIVEN response with neither URL nor base64 WHEN generating THEN returns error."""
@@ -158,7 +158,7 @@ class TestImageGenerationErrors:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = service.image_generation("test prompt")
 
-        assert "No image generated" in result
+        assert "No image generated" in result.content
 
     def test_handles_timeout_during_generation(self, service: LLMService) -> None:
         """GIVEN timeout WHEN generating image THEN returns timeout message."""
@@ -170,7 +170,7 @@ class TestImageGenerationErrors:
         ):
             result = service.image_generation("test prompt")
 
-        assert "timed out" in result.lower()
+        assert "timed out" in result.content.lower()
 
     def test_sends_typing_done_on_error(self, service: LLMService) -> None:
         """GIVEN error during generation WHEN with irc context THEN sends done indicator."""

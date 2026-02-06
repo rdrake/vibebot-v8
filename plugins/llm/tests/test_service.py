@@ -916,7 +916,7 @@ class TestImageGenerationWithBase64:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert result == "https://provider.com/image.png"
+        assert result.content == "https://provider.com/image.png"
 
     def test_image_generation_with_base64_response(self, tmp_path: object) -> None:
         """GIVEN provider returns base64 WHEN generating THEN saves and returns URL."""
@@ -944,8 +944,8 @@ class TestImageGenerationWithBase64:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert result.startswith("https://example.com/llm/img_")
-        assert result.endswith(".png")
+        assert result.content.startswith("https://example.com/llm/img_")
+        assert result.content.endswith(".png")
 
     def test_image_generation_sends_typing_indicator(self) -> None:
         """GIVEN irc context WHEN generating THEN sends typing indicators."""
@@ -977,7 +977,7 @@ class TestImageGenerationWithBase64:
         with patch("llm.service.litellm.image_generation", side_effect=Exception("API error")):
             result = self.service.image_generation("a cat", irc=irc, msg=msg)
 
-        assert "Error" in result
+        assert "Error" in result.content
 
         # Should still send typing=done in finally block
         assert irc.queueMsg.call_count == 2
@@ -992,8 +992,8 @@ class TestImageGenerationWithBase64:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert "No image generated" in result
-        assert "content safety filters" in result
+        assert "No image generated" in result.content
+        assert "content safety filters" in result.content
 
     def test_image_generation_without_irc_context(self) -> None:
         """GIVEN no irc context WHEN generating THEN works without typing indicators."""
@@ -1003,7 +1003,7 @@ class TestImageGenerationWithBase64:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert result == "https://example.com/image.png"
+        assert result.content == "https://example.com/image.png"
 
 
 class TestCleanupWithImages:
@@ -1992,3 +1992,89 @@ class TestFormatChannelHistory(TestLLMService):
         ]
         result = self.service._format_channel_history(history)
         assert result == "Alice: hello\nBob: hi there"
+
+
+class TestUsageExtraction:
+    """Tests for extracting usage data from LiteLLM responses."""
+
+    @pytest.fixture()
+    def service(self) -> LLMService:
+        """Create an LLMService with mock plugin."""
+        mock_plugin = Mock()
+        mock_plugin.registryValue.return_value = ""
+        with patch("llm.service.log"):
+            return LLMService(mock_plugin)
+
+    def test_completion_result_has_usage_fields(self) -> None:
+        """GIVEN CompletionResult WHEN created with usage THEN fields accessible."""
+        from llm.service import CompletionResult
+
+        result = CompletionResult(
+            content="hello",
+            grounding_used=False,
+            prompt_tokens=100,
+            completion_tokens=50,
+            cost=0.001,
+            model="gemini/flash",
+        )
+        assert result.prompt_tokens == 100
+        assert result.completion_tokens == 50
+        assert result.cost == 0.001
+        assert result.model == "gemini/flash"
+
+    def test_completion_result_usage_defaults(self) -> None:
+        """GIVEN CompletionResult WHEN created without usage THEN defaults to zero."""
+        from llm.service import CompletionResult
+
+        result = CompletionResult(content="hello")
+        assert result.prompt_tokens == 0
+        assert result.completion_tokens == 0
+        assert result.cost == 0.0
+        assert result.model == ""
+
+    def test_image_result_has_usage_fields(self) -> None:
+        """GIVEN ImageResult WHEN created with usage THEN fields accessible."""
+        from llm.service import ImageResult
+
+        result = ImageResult(
+            content="http://example.com/img.png",
+            prompt_tokens=10,
+            completion_tokens=0,
+            cost=0.02,
+            model="vertex_ai/imagen",
+        )
+        assert result.content == "http://example.com/img.png"
+        assert result.cost == 0.02
+
+    def test_image_result_defaults(self) -> None:
+        """GIVEN ImageResult WHEN created with just content THEN defaults to zero."""
+        from llm.service import ImageResult
+
+        result = ImageResult(content="error message")
+        assert result.prompt_tokens == 0
+        assert result.cost == 0.0
+        assert result.model == ""
+
+    def test_extract_usage_from_response(self, service: LLMService) -> None:
+        """GIVEN response with usage WHEN extracted THEN returns tokens and cost."""
+        response = Mock()
+        response.usage.prompt_tokens = 100
+        response.usage.completion_tokens = 50
+
+        with patch("llm.service.litellm.completion_cost", return_value=0.003):
+            prompt, completion, cost = service._extract_usage(response, "model")
+
+        assert prompt == 100
+        assert completion == 50
+        assert cost == 0.003
+
+    def test_extract_usage_handles_missing_usage(self, service: LLMService) -> None:
+        """GIVEN response without usage WHEN extracted THEN returns zeros."""
+        response = Mock(spec=[])  # No attributes
+
+        with patch("llm.service.litellm.completion_cost", side_effect=Exception("no cost")):
+            prompt, completion, cost = service._extract_usage(response, "model")
+
+        assert prompt == 0
+        assert completion == 0
+        assert cost == 0.0

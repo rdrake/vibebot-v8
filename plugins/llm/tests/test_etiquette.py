@@ -274,8 +274,8 @@ class TestResponseLengthHandling:
         with patch("llm.service.litellm.image_generation", return_value=mock_response):
             result = self.service.image_generation("a cat")
 
-        assert result.startswith("http")
-        assert "base64" not in result.lower()
+        assert result.content.startswith("http")
+        assert "base64" not in result.content.lower()
 
 
 class TestResponseFormatValidation:

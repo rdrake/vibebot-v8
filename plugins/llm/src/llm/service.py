@@ -55,6 +55,20 @@ class CompletionResult(NamedTuple):
 
     content: str
     grounding_used: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    model: str = ""
+
+
+class ImageResult(NamedTuple):
+    """Result of image generation API call."""
+
+    content: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    model: str = ""
 
 
 class ReminderParseResult(NamedTuple):
@@ -672,6 +686,34 @@ class LLMService:
 
         return False
 
+    def _extract_usage(self, response: Any, model: str) -> tuple[int, int, float]:
+        """Extract token usage and cost from a LiteLLM response.
+
+        Args:
+            response: LiteLLM completion response
+            model: Model identifier string
+
+        Returns:
+            Tuple of (prompt_tokens, completion_tokens, cost)
+        """
+        prompt_tokens = 0
+        completion_tokens = 0
+        cost = 0.0
+
+        try:
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        except (AttributeError, TypeError):
+            pass
+
+        # completion_cost can fail for unsupported models — graceful degradation
+        with contextlib.suppress(Exception):
+            cost = litellm.completion_cost(completion_response=response) or 0.0
+
+        return prompt_tokens, completion_tokens, cost
+
     def _handle_llm_error(self, error: Exception, operation: str) -> str:
         """Handle LiteLLM errors with consistent messaging and logging.
 
@@ -804,8 +846,16 @@ class LLMService:
 
             content = self.sanitize_output(response.choices[0].message.content)
             grounding_used = self._check_grounding_used(response)
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
 
-            return CompletionResult(content=content, grounding_used=grounding_used)
+            return CompletionResult(
+                content=content,
+                grounding_used=grounding_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=cost,
+                model=model,
+            )
 
         except Exception as e:
             self.log.exception("Completion failed: %s", self._sanitize(str(e)))
@@ -999,7 +1049,7 @@ Rules:
         history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
-    ) -> str:
+    ) -> ImageResult:
         """Generate image from text prompt.
 
         Generates an image using the configured model, saves it to HTTP server,
@@ -1013,7 +1063,7 @@ Rules:
             msg: IRC message for context (optional)
 
         Returns:
-            URL to generated image or error message
+            ImageResult with URL to generated image or error message
         """
         target = None
         if irc and msg and msg.args:
@@ -1027,13 +1077,13 @@ Rules:
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
-                return _("Error: %s") % error_msg
+                return ImageResult(content=_("Error: %s") % error_msg)
 
             # Get configuration (channel-specific for model, global for api key)
             # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
             if not self.plugin.registryValue("drawApiKey"):
-                return _("Error: API key not configured for draw command")
+                return ImageResult(content=_("Error: API key not configured for draw command"))
             model = self.plugin.registryValue("drawModel", channel)
 
             # Get timeout
@@ -1054,31 +1104,48 @@ Rules:
                 timeout=timeout,
             )
 
+            # Extract usage data from the response
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+
             # Handle response - check both URL and base64
             if response.data and len(response.data) > 0:
                 image_data = response.data[0]
 
                 # Check for URL first (some providers return URLs)
                 if hasattr(image_data, "url") and image_data.url:
-                    return image_data.url
+                    return ImageResult(
+                        content=image_data.url,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        cost=cost,
+                        model=model,
+                    )
 
                 # Handle base64 response (Google AI Studio Imagen)
                 if hasattr(image_data, "b64_json") and image_data.b64_json:
                     url = self.save_image_to_http(image_data.b64_json)
                     if url:
-                        return url
-                    return _("Error: Failed to save generated image")
+                        return ImageResult(
+                            content=url,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            cost=cost,
+                            model=model,
+                        )
+                    return ImageResult(content=_("Error: Failed to save generated image"))
 
             # No image data - check for blocked content reasons
             # Google Imagen returns empty data when content is blocked
             self.log.warning("Image generation returned no data. Response: %s", response)
-            return _(
-                "Error: No image generated. The prompt may have been blocked by "
-                "content safety filters. Try rephrasing your request."
+            return ImageResult(
+                content=_(
+                    "Error: No image generated. The prompt may have been blocked by "
+                    "content safety filters. Try rephrasing your request."
+                )
             )
 
         except Exception as e:
-            return self._handle_llm_error(e, "image generation")
+            return ImageResult(content=self._handle_llm_error(e, "image generation"))
         finally:
             # Send typing done indicator
             if irc and target:

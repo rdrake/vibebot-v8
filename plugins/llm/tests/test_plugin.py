@@ -727,7 +727,9 @@ class TestCommandFlows:
             plugin.llm_service = MagicMock()
             plugin.llm_service.detect_images.return_value = []
             plugin.llm_service.completion.return_value = "AI response"
-            plugin.llm_service.image_generation.return_value = "http://img.url/test.png"
+            plugin.llm_service.image_generation.return_value = MagicMock(
+                content="http://img.url/test.png"
+            )
             plugin.llm_service.save_code_to_http.return_value = "http://code.url/test.py"
             plugin.llm_service.safe_key_display.return_value = "tes***"
             plugin.llm_service.summarize.return_value = (
@@ -807,11 +809,13 @@ class TestCommandFlows:
         history = plugin.context.get_messages(nick, channel)
 
         result = plugin.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
-        irc.reply(result, prefixNick=False)
+        irc.reply(result.content, prefixNick=False)
 
         # Store in context for follow-up references
         plugin.context.add_message(nick, channel, "user", text)
-        plugin.context.add_message(nick, channel, "assistant", f"[Generated image: {result}]")
+        plugin.context.add_message(
+            nick, channel, "assistant", f"[Generated image: {result.content}]"
+        )
 
     def _call_forget(self, plugin: MagicMock, irc: MagicMock, msg: MagicMock, channel: str) -> None:
         """Call the forget command implementation directly."""

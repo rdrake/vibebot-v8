@@ -741,7 +741,7 @@ class LLM(callbacks.Plugin):
         # Typing indicator sent by service - no "Generating..." message needed
         with self._allow_concurrent():
             result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-            irc.reply(result, prefixNick=False)
+            irc.reply(result.content, prefixNick=False)
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
