@@ -212,6 +212,7 @@ class TestDoPrivmsgIntegration:
         def registry_side_effect(key, *args):
             return {
                 "httpRoot": "",
+                "databasePath": "",
                 "contextMaxMessages": 20,
                 "contextTimeoutMinutes": 30,
                 "contextEnabled": True,
@@ -222,6 +223,7 @@ class TestDoPrivmsgIntegration:
         with (
             patch.object(LLM, "registryValue", side_effect=registry_side_effect),
             patch("llm.plugin.LLMService"),
+            patch("llm.plugin.LLMDatabase"),
             patch("llm.plugin.log"),
             patch("llm.plugin.httpserver.hook"),
             patch("llm.plugin.schedule.addPeriodicEvent"),

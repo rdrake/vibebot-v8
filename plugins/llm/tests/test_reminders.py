@@ -169,6 +169,7 @@ class TestReminderHelperMethods:
                 "registryValue",
                 side_effect=lambda key, *args: {
                     "httpRoot": "",
+                    "databasePath": "",
                     "contextMaxMessages": 20,
                     "contextTimeoutMinutes": 30,
                     "contextEnabled": True,
@@ -176,6 +177,7 @@ class TestReminderHelperMethods:
                 }.get(key, ""),
             ),
             patch("llm.plugin.LLMService"),
+            patch("llm.plugin.LLMDatabase"),
             patch("llm.plugin.log"),
             patch("llm.plugin.httpserver.hook"),
             patch("llm.plugin.schedule.addPeriodicEvent"),

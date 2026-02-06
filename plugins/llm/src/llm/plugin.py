@@ -21,6 +21,7 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext, Role
+from .persistence import LLMDatabase
 from .service import (
     CODE_PREVIEW_MAX_LEN,
     CODE_PREVIEW_TRUNCATE_LEN,
@@ -276,9 +277,18 @@ class LLM(callbacks.Plugin):
         # Initialize conversation context
         self._init_context()
 
+        # Initialize database for persistence
+        db_path = self.registryValue("databasePath")
+        if not db_path:
+            db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
+        self.db = LLMDatabase(db_path)
+
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
         self._reminder_counter: int = 0
+
+        # Reload persisted reminders from database
+        self._reload_reminders(irc)
 
         # Startup notification tracking
         self._pending_channels: set[str] = set()
@@ -307,6 +317,10 @@ class LLM(callbacks.Plugin):
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
+        # Clean up expired reminders from database
+        if hasattr(self, "db"):
+            self.db.delete_expired_reminders()
+
         # Remove scheduled cleanup event
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_file_cleanup")
@@ -441,6 +455,48 @@ class LLM(callbacks.Plugin):
             channel_max_messages=self.registryValue("channelContextMaxMessages"),
         )
         self.context = ConversationContext(config)
+
+    def _reload_reminders(self, irc: callbacks.Irc) -> None:
+        """Reload persisted reminders from database on startup.
+
+        Reschedules future reminders and delivers overdue ones immediately.
+        Reminders more than 24h overdue are cleaned up by the database layer.
+        """
+        pending = self.db.load_pending_reminders()
+        now = time.time()
+
+        for reminder in pending:
+            nick = reminder.nick
+            channel = reminder.channel
+            message = reminder.message
+            event_name = reminder.event_name
+
+            def make_deliver(n: str, ch: str, msg: str, ev: str):
+                """Create delivery closure (avoid late binding in loop)."""
+
+                def _deliver() -> None:
+                    irc.queueMsg(ircmsgs.privmsg(ch, f"{n}: Reminder: {msg}"))
+                    self._reminders.pop(ev, None)
+                    self.db.delete_reminder(ev)
+
+                return _deliver
+
+            deliver = make_deliver(nick, channel, message, event_name)
+
+            if reminder.fire_at <= now:
+                # Overdue — deliver immediately
+                deliver()
+            else:
+                # Future — reschedule
+                try:
+                    schedule.addEvent(deliver, reminder.fire_at, name=event_name)
+                    self._reminders[event_name] = (nick, channel, message)
+                except Exception as e:
+                    self.log.error("Failed to reload reminder %s: %s", event_name, e)
+                    self.db.delete_reminder(event_name)
+
+        if pending:
+            self.log.info("Reloaded %d reminder(s) from database", len(pending))
 
     @contextlib.contextmanager
     def _allow_concurrent(self):
