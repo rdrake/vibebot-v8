@@ -1167,7 +1167,8 @@ class TestPluginLifecycle:
                 with patch.object(LLM.__bases__[0], "die", return_value=None):
                     plugin.die()
 
-                mock_remove.assert_called_with("llm_file_cleanup")
+                mock_remove.assert_any_call("llm_file_cleanup")
+                mock_remove.assert_any_call("llm_startup_check")
 
     def test_plugin_die_unhooks_http_callback(self) -> None:
         """GIVEN plugin with HTTP callback WHEN die called THEN unhooks."""
@@ -1343,10 +1344,14 @@ class TestStartupNotification:
 
         mock_msg = MagicMock()
 
-        with patch("supybot.schedule.addEvent") as mock_add_event:
+        with (
+            patch("supybot.schedule.removeEvent") as mock_remove_event,
+            patch("supybot.schedule.addEvent") as mock_add_event,
+        ):
             plugin.do376(mock_irc, mock_msg)
 
         mock_add_event.assert_called_once()
+        mock_remove_event.assert_called_once_with("llm_startup_check")
         call_args = mock_add_event.call_args
         assert call_args.kwargs.get("name") == "llm_startup_check"
 

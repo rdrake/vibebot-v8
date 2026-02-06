@@ -188,7 +188,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
-        except BrokenPipeError, ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError):
             pass  # Client disconnected
 
     def doGet(self, handler: httpserver.RequestHandler, path: str) -> None:  # noqa: N802
@@ -220,7 +220,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 handler.send_response(403)
                 handler.end_headers()
                 return
-        except OSError, ValueError:
+        except (OSError, ValueError):
             handler.send_response(403)
             handler.end_headers()
             return
@@ -245,14 +245,14 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
-        except BrokenPipeError, ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError):
             # Client disconnected - this is normal, ignore silently
             pass
         except OSError:
             try:
                 handler.send_response(500)
                 handler.end_headers()
-            except BrokenPipeError, ConnectionResetError:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
 
 
@@ -326,6 +326,8 @@ class LLM(callbacks.Plugin):
         # Remove scheduled cleanup event
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_file_cleanup")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_startup_check")
 
         # Remove all reminder events (guard for tests that mock __init__)
         if hasattr(self, "_reminders"):
@@ -422,6 +424,8 @@ class LLM(callbacks.Plugin):
                 self._startup_notified = True
 
         # Schedule check after 2 seconds to allow join commands to be processed
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_startup_check")
         schedule.addEvent(check_no_channels, time.time() + 2, name="llm_startup_check")
 
     def _send_startup_notification(self, irc: callbacks.Irc) -> None:

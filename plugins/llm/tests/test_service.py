@@ -55,6 +55,12 @@ class TestLLMService:
         images = self.service.detect_images(text)
         assert len(images) == 6
 
+    def test_detect_images_preserves_query_string(self) -> None:
+        """Image detection keeps query strings for signed URLs."""
+        text = "Check https://cdn.example.com/image.jpg?token=abc123&expires=123"
+        images = self.service.detect_images(text)
+        assert images == ["https://cdn.example.com/image.jpg?token=abc123&expires=123"]
+
     def test_validate_prompt_rejects_empty(self) -> None:
         """Prompt validation rejects empty prompts."""
         is_valid, error = self.service.validate_prompt("")
@@ -1240,6 +1246,11 @@ class TestXssSanitization:
         assert "alert('xss')" not in html_content
         assert "<h1>Hello</h1>" in html_content  # Heading preserved
 
+    def test_save_code_to_http_returns_none_for_empty_or_none(self) -> None:
+        """GIVEN empty content WHEN saving THEN returns None without error."""
+        assert self.service.save_code_to_http("") is None
+        assert self.service.save_code_to_http(None) is None
+
 
 class TestSanitizeOutput:
     """Tests for sanitize_output IRC command injection prevention."""
@@ -1259,9 +1270,9 @@ class TestSanitizeOutput:
         self.service = LLMService(self.mock_plugin)
 
     def test_sanitize_output_empty(self) -> None:
-        """GIVEN empty/None input WHEN sanitizing THEN returns unchanged."""
+        """GIVEN empty/None input WHEN sanitizing THEN returns empty string."""
         assert self.service.sanitize_output("") == ""
-        assert self.service.sanitize_output(None) is None
+        assert self.service.sanitize_output(None) == ""
 
     def test_sanitize_output_normal_text(self) -> None:
         """GIVEN normal text WHEN sanitizing THEN returns unchanged."""

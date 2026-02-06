@@ -1,4 +1,4 @@
-.PHONY: install run test lint format format-check typecheck check preflight ci clean deep-clean setup-http help \
+.PHONY: install run test lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
        install-deploy worktree-create worktree-remove wait-ci rebase-pr
 
@@ -30,12 +30,16 @@ format-check:
 typecheck:
 	uv run ty check plugins/llm/src/
 
-check: lint format-check typecheck test
+syntax-check:
+	uv run python scripts/check_python_syntax_compat.py --versions 3.12 3.13 3.14
+
+check: lint format-check typecheck syntax-check test
 
 preflight: format check
 
 ci:
 	uv sync --locked
+	$(MAKE) syntax-check
 	uv run pre-commit run --all-files
 	$(MAKE) test
 
@@ -105,7 +109,8 @@ help:
 	@echo "  format          - Format code with ruff"
 	@echo "  format-check    - Check formatting without changes"
 	@echo "  typecheck       - Run ty type checker"
-	@echo "  check           - Run all checks (lint, format-check, typecheck, test)"
+	@echo "  syntax-check    - Validate Python grammar compatibility (3.12-3.14)"
+	@echo "  check           - Run all checks (lint, format-check, typecheck, syntax-check, test)"
 	@echo "  preflight       - Auto-format then run all checks"
 	@echo "  ci              - Run CI checks (sync --locked, pre-commit, test with coverage)"
 	@echo "  worktree-create - Create isolated worktree (BRANCH=name required)"

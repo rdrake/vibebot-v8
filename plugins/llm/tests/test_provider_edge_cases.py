@@ -240,8 +240,8 @@ class TestPartialResponseHandling:
         with patch("llm.service.litellm.completion", return_value=mock_response):
             result = service.completion("test", command="ask")
 
-        # Should handle None gracefully
-        assert result.content is None or result.content == ""
+        # Should normalize None to empty string
+        assert result.content == ""
 
     def test_handles_no_choices_response(self, service: LLMService) -> None:
         """GIVEN response with no choices WHEN completing THEN handles gracefully."""

@@ -114,7 +114,7 @@ class LLMService:
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
-            r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)",
+            r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:[?#][^\s]*)?",
             re.IGNORECASE,
         )
 
@@ -138,7 +138,7 @@ class LLMService:
             return text
         return self.api_key_pattern.sub("[REDACTED]", str(text))
 
-    def sanitize_output(self, text: str) -> str:
+    def sanitize_output(self, text: str | None) -> str:
         """Sanitize output to prevent IRC command injection.
 
         Neutralizes lines starting with configured prefixes to prevent
@@ -151,7 +151,7 @@ class LLMService:
             Sanitized text with command prefixes neutralized
         """
         if not text:
-            return text
+            return ""
 
         # Get configurable prefixes (default: . and /)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))
@@ -264,7 +264,7 @@ class LLMService:
                 }
                 lang_name = language_names.get(language, language)
                 result += f"\n\nRespond in {lang_name}."
-        except AttributeError, KeyError, RuntimeError:
+        except (AttributeError, KeyError, RuntimeError):
             pass  # Config not available (e.g., in test environment)
 
         return result
@@ -373,7 +373,7 @@ class LLMService:
                 return "owner"
             if ircdb.checkCapability(hostmask, "admin"):
                 return "admin"
-        except KeyError, RuntimeError:
+        except (KeyError, RuntimeError):
             pass  # User not in database or error checking
         return None
 
@@ -546,7 +546,7 @@ class LLMService:
                 or ip_obj.is_link_local
                 or ip_obj.is_reserved
             )
-        except socket.gaierror, ValueError:
+        except (socket.gaierror, ValueError):
             return True  # Fail closed
 
     def validate_image_url(self, url: str) -> bool:
@@ -685,7 +685,7 @@ class LLMService:
                 if extra.get("grounding_metadata") or extra.get("search_entry_point"):
                     return True
 
-        except AttributeError, TypeError, KeyError:
+        except (AttributeError, TypeError, KeyError):
             # Graceful degradation if response structure is unexpected
             pass
 
@@ -710,7 +710,7 @@ class LLMService:
             if usage:
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        except AttributeError, TypeError:
+        except (AttributeError, TypeError):
             pass
 
         # completion_cost can fail for unsupported models — graceful degradation
@@ -849,7 +849,8 @@ class LLMService:
                 **optional_kwargs,
             )
 
-            content = self.sanitize_output(response.choices[0].message.content)
+            raw_content = response.choices[0].message.content
+            content = self.sanitize_output(raw_content)
             grounding_used = self._check_grounding_used(response)
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
 
@@ -1212,7 +1213,7 @@ Rules:
 
         return http_root, url_base
 
-    def save_code_to_http(self, content: str) -> str | None:
+    def save_code_to_http(self, content: str | None) -> str | None:
         """Save content to HTTP server as HTML and return URL.
 
         Converts markdown to HTML for a pastebin-style page.
@@ -1223,6 +1224,9 @@ Rules:
         Returns:
             Public URL to saved file or None on error
         """
+        if not content:
+            return None
+
         http_root, url_base = self.get_http_paths()
 
         # Create unique filename

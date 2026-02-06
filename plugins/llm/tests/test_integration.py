@@ -137,8 +137,9 @@ class TestPluginLifecycleIntegration:
             with patch.object(LLM.__bases__[0], "die", return_value=None):
                 plugin.die()
 
-            # Should remove scheduled event
-            mock_remove.assert_called_with("llm_file_cleanup")
+            # Should remove scheduled events
+            mock_remove.assert_any_call("llm_file_cleanup")
+            mock_remove.assert_any_call("llm_startup_check")
 
             # Should unhook HTTP callback
             mock_unhook.assert_called_with("llm")

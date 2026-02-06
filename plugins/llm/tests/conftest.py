@@ -33,7 +33,7 @@ def cleanup_limnoria_logging() -> None:
             for handler in supybot.log.log.handlers[:]:
                 if isinstance(handler, logging.StreamHandler):
                     supybot.log.log.removeHandler(handler)
-    except ImportError, AttributeError:
+    except (ImportError, AttributeError):
         pass
 
     # Unregister supybot's atexit handlers that cause the logging errors
@@ -43,5 +43,5 @@ def cleanup_limnoria_logging() -> None:
         # Clear the atexit callbacks that supybot registers
         if hasattr(supybot.world, "dying"):
             supybot.world.dying = True  # Prevent further shutdown logging
-    except ImportError, AttributeError:
+    except (ImportError, AttributeError):
         pass
