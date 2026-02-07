@@ -1030,20 +1030,6 @@ class TestCommandFlows:
 
         mock_irc.reply.assert_not_called()
 
-    def test_draw_uses_context(self, plugin_with_service: tuple) -> None:
-        """GIVEN draw request WHEN called THEN passes history to image_generation."""
-        plugin, mock_irc, mock_msg = plugin_with_service
-        plugin.context.get_messages.return_value = [
-            {"role": "user", "content": "Tell me about space"}
-        ]
-
-        self._call_draw(plugin, mock_irc, mock_msg, "a rocket")
-
-        # Should pass history to image_generation
-        plugin.llm_service.image_generation.assert_called_once()
-        call_kwargs = plugin.llm_service.image_generation.call_args
-        assert call_kwargs.kwargs.get("history") is not None
-
     def test_draw_stores_context(self, plugin_with_service: tuple) -> None:
         """GIVEN draw command WHEN executed THEN stores personal and channel context."""
         plugin, mock_irc, mock_msg = plugin_with_service

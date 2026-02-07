@@ -288,59 +288,6 @@ print("code")
         assert 'href="https://example.com"' in content
 
 
-class TestEdgeCasesInContextSummary:
-    """Test edge cases in context summary building for draw command."""
-
-    @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(return_value=10000)
-        return LLMService(mock_plugin)
-
-    def test_empty_history(self, service: LLMService) -> None:
-        """GIVEN empty history WHEN building summary THEN returns empty."""
-        assert service._build_context_summary(None) == ""
-        assert service._build_context_summary([]) == ""
-
-    def test_very_long_messages_truncated(self, service: LLMService) -> None:
-        """GIVEN very long messages WHEN building summary THEN truncated."""
-        history = [{"role": "user", "content": "x" * 500}]
-        result = service._build_context_summary(history)
-
-        assert len(result) < 500
-        assert "..." in result
-
-    def test_many_messages_limited(self, service: LLMService) -> None:
-        """GIVEN many messages WHEN building summary THEN limited."""
-        history = [{"role": "user", "content": f"Message {i}"} for i in range(20)]
-        result = service._build_context_summary(history, max_chars=200)
-
-        assert len(result) <= 200
-
-    def test_preserves_conversation_flow(self, service: LLMService) -> None:
-        """GIVEN conversation history WHEN building summary THEN preserves flow."""
-        history = [
-            {"role": "user", "content": "Tell me about cats"},
-            {"role": "assistant", "content": "Cats are wonderful pets"},
-            {"role": "user", "content": "What about dogs?"},
-            {"role": "assistant", "content": "Dogs are loyal companions"},
-        ]
-        result = service._build_context_summary(history)
-
-        assert "User:" in result
-        assert "Assistant:" in result
-
-    def test_handles_missing_role(self, service: LLMService) -> None:
-        """GIVEN message without role WHEN building summary THEN handles."""
-        history = [{"content": "No role here"}]
-        result = service._build_context_summary(history)
-
-        # Should not crash, may skip the message
-        assert result is not None
-
-
 class TestChannelHistoryFormatting:
     """Test channel history formatting edge cases."""
 

@@ -39,8 +39,6 @@ _ = PluginInternationalization("LLM")
 # Constants
 CLEANUP_INTERVAL_SECONDS = 3600
 CHANNEL_MSG_TRUNCATE_LEN = 150
-CONTEXT_SUMMARY_MAX_CHARS = 500
-CONTEXT_SUMMARY_MAX_MESSAGES = 8
 CODE_PREVIEW_MAX_LEN = 60
 CODE_PREVIEW_TRUNCATE_LEN = 57  # 60 - len("...")
 
@@ -1327,7 +1325,6 @@ Rules:
     def image_generation(
         self,
         prompt: str,
-        history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
     ) -> ImageResult:
@@ -1335,14 +1332,12 @@ Rules:
 
         Generates an image using the configured model, saves it to HTTP server,
         and returns the URL. Sends IRCv3 typing indicators during generation.
-        If conversation history is provided, context is prepended to the prompt.
 
         When content safety filters block generation, automatically rewrites
         the prompt using the ask model and retries, up to drawAutoRewriteMax times.
 
         Args:
             prompt: Text description of image to generate
-            history: Conversation history for context (optional)
             irc: IRC connection for typing indicators (optional)
             msg: IRC message for context (optional)
 
@@ -1376,17 +1371,8 @@ Rules:
             )
             max_rewrites = self.plugin.registryValue("drawAutoRewriteMax", channel)
 
-            # Keep original prompt for rewriter (before context augmentation)
+            # Keep original prompt for rewriter (before any augmentation)
             original_prompt = prompt
-
-            # Build contextual prompt if history available
-            if history:
-                context_summary = self._build_context_summary(history)
-                if context_summary:
-                    prompt = (
-                        f"Context from our conversation: {context_summary}\n\n"
-                        f"Now generate an image: {prompt}"
-                    )
 
             # Track aggregate costs across all attempts
             total_prompt_tokens = 0
@@ -1791,60 +1777,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             lines.append(f"{nick}: {content}")
 
         return "\n".join(lines)
-
-    def _build_context_summary(
-        self,
-        history: list[dict[str, str]] | None,
-        max_chars: int = CONTEXT_SUMMARY_MAX_CHARS,
-    ) -> str:
-        """Build a brief context summary from conversation history.
-
-        Creates a condensed summary of recent conversation for use in
-        image generation prompts where the API doesn't support message arrays.
-
-        Args:
-            history: Conversation history messages
-            max_chars: Maximum characters for the summary
-
-        Returns:
-            Summary string or empty string if no history
-        """
-        if not history:
-            return ""
-
-        # Take last few messages (up to 4 exchanges)
-        recent = (
-            history[-CONTEXT_SUMMARY_MAX_MESSAGES:]
-            if len(history) > CONTEXT_SUMMARY_MAX_MESSAGES
-            else history
-        )
-
-        # Build summary from recent exchanges
-        parts = []
-        for msg in recent:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                # Truncate long user messages
-                if len(content) > 100:
-                    content = content[:97] + "..."
-                parts.append(f"User: {content}")
-            elif role == "assistant":
-                # For assistant, just note the topic
-                if len(content) > 80:
-                    content = content[:77] + "..."
-                parts.append(f"Assistant: {content}")
-
-        if not parts:
-            return ""
-
-        summary = " | ".join(parts)
-
-        # Truncate if too long
-        if len(summary) > max_chars:
-            summary = summary[: max_chars - 3] + "..."
-
-        return summary
 
     def _cleanup_old_files(
         self,

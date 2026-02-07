@@ -1212,68 +1212,8 @@ class TestDrawContext:
         )
         self.service = LLMService(self.mock_plugin)
 
-    def test_build_context_summary_empty_history(self) -> None:
-        """GIVEN no history WHEN building summary THEN returns empty string."""
-        result = self.service._build_context_summary(None)
-        assert result == ""
-
-        result = self.service._build_context_summary([])
-        assert result == ""
-
-    def test_build_context_summary_with_history(self) -> None:
-        """GIVEN conversation history WHEN building summary THEN includes recent messages."""
-        history = [
-            {"role": "user", "content": "Tell me about cats"},
-            {"role": "assistant", "content": "Cats are wonderful pets..."},
-        ]
-        result = self.service._build_context_summary(history)
-
-        assert "cats" in result.lower()
-        assert "User:" in result
-        assert "Assistant:" in result
-
-    def test_build_context_summary_truncates_long_messages(self) -> None:
-        """GIVEN long messages WHEN building summary THEN truncates appropriately."""
-        history = [
-            {"role": "user", "content": "x" * 200},
-            {"role": "assistant", "content": "y" * 200},
-        ]
-        result = self.service._build_context_summary(history)
-
-        assert len(result) < 500
-        assert "..." in result
-
-    def test_build_context_summary_limits_total_length(self) -> None:
-        """GIVEN many messages WHEN building summary THEN respects max_chars."""
-        history = [{"role": "user", "content": f"Message {i}"} for i in range(20)]
-        result = self.service._build_context_summary(history, max_chars=100)
-
-        assert len(result) <= 100
-
-    def test_image_generation_with_context(self) -> None:
-        """GIVEN history WHEN generating image THEN context included in prompt."""
-        prompt_used = []
-
-        def capture_prompt(**kwargs):
-            prompt_used.append(kwargs.get("prompt", ""))
-            mock_response = Mock()
-            mock_response.data = [Mock(url="https://example.com/img.png", b64_json=None)]
-            return mock_response
-
-        history = [
-            {"role": "user", "content": "Let's talk about space"},
-            {"role": "assistant", "content": "Space is fascinating!"},
-        ]
-
-        with patch("llm.service.litellm.image_generation", side_effect=capture_prompt):
-            self.service.image_generation("a rocket ship", history=history)
-
-        assert len(prompt_used) == 1
-        assert "space" in prompt_used[0].lower()
-        assert "rocket ship" in prompt_used[0]
-
-    def test_image_generation_without_context(self) -> None:
-        """GIVEN no history WHEN generating image THEN uses original prompt."""
+    def test_image_generation_uses_raw_prompt(self) -> None:
+        """GIVEN a prompt WHEN generating image THEN uses prompt as-is."""
         prompt_used = []
 
         def capture_prompt(**kwargs):
@@ -1283,7 +1223,7 @@ class TestDrawContext:
             return mock_response
 
         with patch("llm.service.litellm.image_generation", side_effect=capture_prompt):
-            self.service.image_generation("a sunset", history=None)
+            self.service.image_generation("a sunset")
 
         assert prompt_used[0] == "a sunset"
 

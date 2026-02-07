@@ -564,28 +564,6 @@ class TestDrawCommand:
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
-    def test_draw_passes_history_to_image_generation(self, plugin_env):
-        """GIVEN user has context WHEN draw called THEN history passed to image_generation."""
-        plugin, mock_irc, mock_msg = plugin_env
-        # Pre-populate context
-        plugin.context.add_message("testnick", "#test", "user", "Tell me about cats")
-        plugin.context.add_message("testnick", "#test", "assistant", "Cats are great!")
-
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-        )
-
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["a", "cute", "kitten"])
-
-        call_kwargs = plugin.llm_service.image_generation.call_args.kwargs
-        assert call_kwargs.get("history") is not None
-        assert len(call_kwargs["history"]) == 2
-
 
 # ---------------------------------------------------------------------------
 # forget

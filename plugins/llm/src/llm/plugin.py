@@ -942,16 +942,9 @@ class LLM(callbacks.Plugin):
         channel = self._get_channel(msg)
 
         with self._trace_request("draw", nick, channel):
-            # Get conversation history if context enabled
-            if self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                history = self.context.get_messages(nick, channel, config=ctx_cfg)
-            else:
-                history = []
-
             # Typing indicator sent by service - no "Generating..." message needed
             with self._allow_concurrent():
-                result = self.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
+                result = self.llm_service.image_generation(text, irc=irc, msg=msg)
                 self.log.info("replying to %s/%s", channel, nick)
                 if result.rewritten_prompt:
                     prompt_preview = result.rewritten_prompt
