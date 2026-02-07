@@ -1711,7 +1711,9 @@ class TestPluginDatabaseWiring:
             patch("llm.plugin.httpserver.hook"),
             patch("llm.plugin.schedule.addPeriodicEvent"),
             patch("llm.plugin.schedule.removeEvent"),
+            patch("llm.plugin.world") as mock_world,
         ):
+            mock_world.ircs = [mock_irc]
             LLM(mock_irc)
 
         # Overdue reminder should be delivered immediately via irc.queueMsg

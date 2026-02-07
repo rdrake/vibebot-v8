@@ -121,10 +121,10 @@ class ConversationContext:
             role: Message role ("user" or "assistant")
             content: Message content
         """
-        if not self.config.enabled:
-            return
-
         with self._lock:
+            if not self.config.enabled:
+                return
+
             self._prune_expired()
 
             key = self._get_key(nick, channel)
@@ -150,10 +150,10 @@ class ConversationContext:
         Returns:
             List of message dicts for LiteLLM
         """
-        if not self.config.enabled:
-            return []
-
         with self._lock:
+            if not self.config.enabled:
+                return []
+
             self._prune_expired()
 
             key = self._get_key(nick, channel)
@@ -177,10 +177,10 @@ class ConversationContext:
             role: Message role ("user" or "assistant")
             content: Message content
         """
-        if not self.config.enabled:
-            return
-
         with self._lock:
+            if not self.config.enabled:
+                return
+
             self._prune_expired()
 
             ch_key = channel.lower()
@@ -208,10 +208,10 @@ class ConversationContext:
         Returns:
             List of channel messages with nick, role, and content
         """
-        if not self.config.enabled:
-            return []
-
         with self._lock:
+            if not self.config.enabled:
+                return []
+
             self._prune_expired()
 
             ch_key = channel.lower()

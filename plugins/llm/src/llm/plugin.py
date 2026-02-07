@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import mimetypes
 import subprocess
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.schedule as schedule
+from supybot import world
 from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
@@ -26,6 +28,7 @@ from .persistence import LLMDatabase
 from .service import (
     CODE_PREVIEW_MAX_LEN,
     CODE_PREVIEW_TRUNCATE_LEN,
+    CompletionResult,
     LLMService,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
@@ -290,6 +293,7 @@ class LLM(callbacks.Plugin):
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
         self._reminder_counter: int = 0
+        self._reminders_lock = threading.Lock()
 
         # Reload persisted reminders from database
         self._reload_reminders(irc)
@@ -333,10 +337,11 @@ class LLM(callbacks.Plugin):
 
         # Remove all reminder events (guard for tests that mock __init__)
         if hasattr(self, "_reminders"):
-            for event_name in list(self._reminders.keys()):
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent(event_name)
-            self._reminders.clear()
+            with self._reminders_lock:
+                for event_name in list(self._reminders.keys()):
+                    with contextlib.suppress(KeyError):
+                        schedule.removeEvent(event_name)
+                self._reminders.clear()
 
         # Only unhook HTTP callback if we registered
         if self._http_callback is not None:
@@ -492,6 +497,9 @@ class LLM(callbacks.Plugin):
         pending = self.db.load_pending_reminders()
         now = time.time()
 
+        # Capture lock ref for use in delivery closures (scheduler thread)
+        lock = self._reminders_lock
+
         for reminder in pending:
             nick = reminder.nick
             channel = reminder.channel
@@ -502,8 +510,11 @@ class LLM(callbacks.Plugin):
                 """Create delivery closure (avoid late binding in loop)."""
 
                 def _deliver() -> None:
-                    irc.queueMsg(ircmsgs.privmsg(ch, f"{n}: Reminder: {msg}"))
-                    self._reminders.pop(ev, None)
+                    for active_irc in world.ircs:
+                        active_irc.queueMsg(ircmsgs.privmsg(ch, f"{n}: Reminder: {msg}"))
+                        break
+                    with lock:
+                        self._reminders.pop(ev, None)
                     self.db.delete_reminder(ev)
 
                 return _deliver
@@ -517,7 +528,8 @@ class LLM(callbacks.Plugin):
                 # Future — reschedule
                 try:
                     schedule.addEvent(deliver, reminder.fire_at, name=event_name)
-                    self._reminders[event_name] = (nick, channel, message)
+                    with self._reminders_lock:
+                        self._reminders[event_name] = (nick, channel, message)
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
                     self.db.delete_reminder(event_name)
@@ -663,6 +675,53 @@ class LLM(callbacks.Plugin):
         """
         return self.registryValue("contextEnabled", channel)
 
+    def _store_context_and_log_usage(
+        self,
+        nick: str,
+        channel: str,
+        command: str,
+        text: str,
+        response: str,
+        result: CompletionResult,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+    ) -> None:
+        """Store conversation context and log API usage for a command.
+
+        Shared between ask and code commands to avoid duplication.
+
+        Args:
+            nick: User's nick
+            channel: Channel name
+            command: Command name ("ask" or "code")
+            text: Original user input
+            response: LLM response content (without display decorations)
+            result: Full completion result with usage metadata
+            irc: IRC connection instance
+            msg: IRC message
+        """
+        # Store conversation context if enabled and no error occurred
+        if result.error is None and self._get_context_enabled(channel):
+            # Store in personal context (without icon for clean history)
+            self.context.add_message(nick, channel, Role.USER, text)
+            self.context.add_message(nick, channel, Role.ASSISTANT, response)
+
+            # Store in shared channel context (allows group conversation flow)
+            self.context.add_channel_message(channel, nick, Role.USER, text)
+            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+
+        # Log usage
+        if result.cost > 0 or result.prompt_tokens > 0:
+            self.db.log_usage(
+                nick,
+                channel,
+                command,
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+            )
+
     def ask(
         self,
         irc: callbacks.Irc,
@@ -735,27 +794,9 @@ class LLM(callbacks.Plugin):
                 self.log.info("replying to %s/%s", channel, nick)
                 irc.reply(display_response, prefixNick=False)
 
-            # Store conversation context if enabled and no error occurred
-            if result.error is None and self._get_context_enabled(channel):
-                # Store in personal context (without icon for clean history)
-                self.context.add_message(nick, channel, Role.USER, text)
-                self.context.add_message(nick, channel, Role.ASSISTANT, response)
-
-                # Store in shared channel context (allows group conversation flow)
-                self.context.add_channel_message(channel, nick, Role.USER, text)
-                self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
-
-            # Log usage
-            if result.cost > 0 or result.prompt_tokens > 0:
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    "ask",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
+            self._store_context_and_log_usage(
+                nick, channel, "ask", text, response, result, irc, msg
+            )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -827,27 +868,9 @@ class LLM(callbacks.Plugin):
                     self.log.info("replying to %s/%s", channel, nick)
                     irc.reply(display_response)
 
-            # Store conversation context if enabled and no error occurred
-            if result.error is None and self._get_context_enabled(channel):
-                # Store in personal context (without icon for clean history)
-                self.context.add_message(nick, channel, Role.USER, text)
-                self.context.add_message(nick, channel, Role.ASSISTANT, response)
-
-                # Store in shared channel context (allows group conversation flow)
-                self.context.add_channel_message(channel, nick, Role.USER, text)
-                self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
-
-            # Log usage
-            if result.cost > 0 or result.prompt_tokens > 0:
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    "code",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
+            self._store_context_and_log_usage(
+                nick, channel, "code", text, response, result, irc, msg
+            )
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
@@ -1015,11 +1038,12 @@ class LLM(callbacks.Plugin):
         Returns:
             List of (event_name, (nick, channel, message)) tuples
         """
-        return [
-            (name, data)
-            for name, data in self._reminders.items()
-            if data[0].lower() == nick.lower()
-        ]
+        with self._reminders_lock:
+            return [
+                (name, data)
+                for name, data in self._reminders.items()
+                if data[0].lower() == nick.lower()
+            ]
 
     def _format_reminders(self, reminders: list[tuple[str, tuple[str, str, str]]]) -> str:
         """Format reminders list for display.
@@ -1049,10 +1073,11 @@ class LLM(callbacks.Plugin):
         Returns:
             Event name if found and owned by user, None otherwise
         """
-        for name, (owner, _, _) in self._reminders.items():
-            if name.endswith(f"_{reminder_id}") and owner.lower() == nick.lower():
-                return name
-        return None
+        with self._reminders_lock:
+            for name, (owner, _, _) in self._reminders.items():
+                if name.endswith(f"_{reminder_id}") and owner.lower() == nick.lower():
+                    return name
+            return None
 
     def remindme(
         self,
@@ -1103,17 +1128,26 @@ class LLM(callbacks.Plugin):
 
             # Schedule the reminder
             reminder_message = result.message or text
-            self._reminder_counter += 1
-            event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
+            # Capture lock ref for use in delivery closure (scheduler thread)
+            lock = self._reminders_lock
+            with self._reminders_lock:
+                self._reminder_counter += 1
+                event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
 
             def deliver() -> None:
-                irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}"))
-                self._reminders.pop(event_name, None)
+                for active_irc in world.ircs:
+                    active_irc.queueMsg(
+                        ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}")
+                    )
+                    break
+                with lock:
+                    self._reminders.pop(event_name, None)
                 self.db.delete_reminder(event_name)
 
             try:
                 schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
-                self._reminders[event_name] = (nick, channel, reminder_message)
+                with self._reminders_lock:
+                    self._reminders[event_name] = (nick, channel, reminder_message)
 
                 # Persist to database
                 self.db.save_reminder(
@@ -1176,7 +1210,8 @@ class LLM(callbacks.Plugin):
 
         with contextlib.suppress(KeyError):
             schedule.removeEvent(target)
-        self._reminders.pop(target, None)
+        with self._reminders_lock:
+            self._reminders.pop(target, None)
         self.db.delete_reminder(target)
         irc.reply(_("Reminder cancelled."))
 

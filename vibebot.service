@@ -17,7 +17,7 @@ ExecStart=/usr/bin/docker run --rm --name vibebot \
     --user %U:%G \
     --env-file %h/.config/vibebot/env \
     -v %h/.config/vibebot:/config \
-    -v /var/www:/var/www \
+    -v /var/www/llm:/var/www/llm \
     -w /config \
     ${IMAGE}
 
