@@ -927,9 +927,16 @@ class LLM(callbacks.Plugin):
         channel = self._get_channel(msg)
 
         with self._trace_request("draw", nick, channel):
+            # Get conversation history if context enabled
+            if self._get_context_enabled(channel):
+                ctx_cfg = self._get_context_config(channel)
+                history = self.context.get_messages(nick, channel, config=ctx_cfg)
+            else:
+                history = []
+
             # Typing indicator sent by service - no "Generating..." message needed
             with self._allow_concurrent():
-                result = self.llm_service.image_generation(text, irc=irc, msg=msg)
+                result = self.llm_service.image_generation(text, history=history, irc=irc, msg=msg)
                 self.log.info("replying to %s/%s", channel, nick)
                 if result.rewritten_prompt:
                     prompt_preview = result.rewritten_prompt
@@ -940,6 +947,26 @@ class LLM(callbacks.Plugin):
                     )
                 else:
                     irc.reply(result.content)
+
+            # Store conversation context if enabled and no error
+            if result.error is None and self._get_context_enabled(channel):
+                ctx_cfg = self._get_context_config(channel)
+                self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
+                self.context.add_message(
+                    nick,
+                    channel,
+                    Role.ASSISTANT,
+                    f"[Generated image: {result.content}]",
+                    config=ctx_cfg,
+                )
+                self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
+                self.context.add_channel_message(
+                    channel,
+                    irc.nick,
+                    Role.ASSISTANT,
+                    f"[Generated image: {result.content}]",
+                    config=ctx_cfg,
+                )
 
             # Log usage
             if result.cost > 0 or result.prompt_tokens > 0:

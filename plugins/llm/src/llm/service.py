@@ -1162,6 +1162,8 @@ Rules:
         error_context: str,
         prior_rewrites: list[tuple[str, str]],
         channel: str | None = None,
+        irc: Irc | None = None,
+        msg: IrcMsg | None = None,
     ) -> tuple[str | None, int, int, float]:
         """Rewrite an image prompt to avoid content safety filters.
 
@@ -1173,6 +1175,8 @@ Rules:
             error_context: Description of why the prompt was blocked
             prior_rewrites: List of (rewritten_prompt, rejection_reason) tuples
             channel: Optional channel for config lookup
+            irc: IRC connection for caller context (optional)
+            msg: IRC message for caller context (optional)
 
         Returns:
             Tuple of (rewritten_prompt, prompt_tokens, completion_tokens, cost).
@@ -1197,6 +1201,11 @@ Rules:
                 f"Original prompt: {original_prompt}",
                 f"Rejected because: {error_context}",
             ]
+
+            # Include caller context so rewriter knows channel/nick
+            caller_context = self._build_draw_context(irc, msg)
+            if caller_context:
+                user_parts.append(f"Context: {caller_context}")
 
             if prior_rewrites:
                 user_parts.append("\nPrevious rewrite attempts that also failed:")
@@ -1351,6 +1360,11 @@ Rules:
                         f"Now generate an image: {prompt}"
                     )
 
+            # Build caller context (nick, channel, topic)
+            caller_context = self._build_draw_context(irc, msg)
+            if caller_context:
+                prompt = f"[{caller_context}] {prompt}"
+
             # Track aggregate costs across all attempts
             total_prompt_tokens = 0
             total_completion_tokens = 0
@@ -1397,7 +1411,7 @@ Rules:
             for attempt in range(max_rewrites):
                 # Rewrite the prompt
                 rewritten, rw_pt, rw_ct, rw_cost = self._rewrite_prompt_for_safety(
-                    original_prompt, block_reason, prior_rewrites, channel
+                    original_prompt, block_reason, prior_rewrites, channel, irc=irc, msg=msg
                 )
                 total_prompt_tokens += rw_pt
                 total_completion_tokens += rw_ct
@@ -1754,6 +1768,37 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             lines.append(f"{nick}: {content}")
 
         return "\n".join(lines)
+
+    def _build_draw_context(self, irc: Irc | None, msg: IrcMsg | None) -> str:
+        """Build plain-text caller context for image generation prompts.
+
+        Since image APIs take text (not message arrays), this builds a
+        compact one-line context string with nick, channel, and topic.
+
+        Args:
+            irc: IRC connection object
+            msg: IRC message object
+
+        Returns:
+            Context string like "Requested by: nick | Channel: #linux | Topic: ..."
+            or empty string if no context available.
+        """
+        if not msg:
+            return ""
+
+        parts: list[str] = []
+        if msg.prefix:
+            nick = ircutils.nickFromHostmask(msg.prefix)
+            parts.append(f"Requested by: {nick}")
+
+        channel = msg.args[0] if msg.args else None
+        if channel and irc and ircutils.isChannel(channel):
+            parts.append(f"Channel: {channel}")
+            topic = self._get_channel_topic(irc, channel)
+            if topic:
+                parts.append(f"Topic: {topic}")
+
+        return " | ".join(parts) if parts else ""
 
     def _build_context_summary(
         self,

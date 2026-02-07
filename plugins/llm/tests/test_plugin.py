@@ -736,7 +736,7 @@ class TestCommandFlows:
             plugin.llm_service.detect_images.return_value = []
             plugin.llm_service.completion.return_value = "AI response"
             plugin.llm_service.image_generation.return_value = MagicMock(
-                content="http://img.url/test.png"
+                content="http://img.url/test.png", error=None
             )
             plugin.llm_service.save_code_to_http.return_value = "http://code.url/test.py"
             plugin.llm_service.safe_key_display.return_value = "tes***"
@@ -820,10 +820,15 @@ class TestCommandFlows:
         irc.reply(result.content)
 
         # Store in context for follow-up references
-        plugin.context.add_message(nick, channel, "user", text)
-        plugin.context.add_message(
-            nick, channel, "assistant", f"[Generated image: {result.content}]"
-        )
+        if result.error is None:
+            plugin.context.add_message(nick, channel, "user", text)
+            plugin.context.add_message(
+                nick, channel, "assistant", f"[Generated image: {result.content}]"
+            )
+            plugin.context.add_channel_message(channel, nick, "user", text)
+            plugin.context.add_channel_message(
+                channel, irc.nick, "assistant", f"[Generated image: {result.content}]"
+            )
 
     def _call_forget(self, plugin: MagicMock, irc: MagicMock, msg: MagicMock, channel: str) -> None:
         """Call the forget command implementation directly."""
@@ -1040,13 +1045,15 @@ class TestCommandFlows:
         assert call_kwargs.kwargs.get("history") is not None
 
     def test_draw_stores_context(self, plugin_with_service: tuple) -> None:
-        """GIVEN draw command WHEN executed THEN stores context."""
+        """GIVEN draw command WHEN executed THEN stores personal and channel context."""
         plugin, mock_irc, mock_msg = plugin_with_service
 
         self._call_draw(plugin, mock_irc, mock_msg, "a sunset")
 
-        # Should add user message and assistant response
+        # Should add user + assistant for personal context
         assert plugin.context.add_message.call_count == 2
+        # Should add user + assistant for channel context
+        assert plugin.context.add_channel_message.call_count == 2
 
     def test_forget_clears_context(self, plugin_with_service: tuple) -> None:
         """GIVEN forget command WHEN called THEN clears user context."""

@@ -505,6 +505,87 @@ class TestDrawCommand:
 
         mock_irc.reply.assert_not_called()
 
+    def test_draw_stores_context_on_success(self, plugin_env):
+        """GIVEN draw succeeds WHEN executed THEN personal and channel context stored."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 2
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "a sunset"
+        assert messages[1]["role"] == "assistant"
+        assert "[Generated image:" in messages[1]["content"]
+
+    def test_draw_does_not_store_context_on_error(self, plugin_env):
+        """GIVEN draw returns error WHEN executed THEN no context stored."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: something went wrong",
+            error="Error: something went wrong",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 0
+
+    def test_draw_skips_context_when_disabled(self, plugin_env):
+        """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        def disabled_registry(key, *args):
+            if key == "contextEnabled":
+                return False
+            return _registry(key, *args)
+
+        plugin.registryValue = MagicMock(side_effect=disabled_registry)
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["sunset"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 0
+
+    def test_draw_passes_history_to_image_generation(self, plugin_env):
+        """GIVEN user has context WHEN draw called THEN history passed to image_generation."""
+        plugin, mock_irc, mock_msg = plugin_env
+        # Pre-populate context
+        plugin.context.add_message("testnick", "#test", "user", "Tell me about cats")
+        plugin.context.add_message("testnick", "#test", "assistant", "Cats are great!")
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["a", "cute", "kitten"])
+
+        call_kwargs = plugin.llm_service.image_generation.call_args.kwargs
+        assert call_kwargs.get("history") is not None
+        assert len(call_kwargs["history"]) == 2
+
 
 # ---------------------------------------------------------------------------
 # forget
