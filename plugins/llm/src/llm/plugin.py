@@ -976,8 +976,9 @@ class LLM(callbacks.Plugin):
                     config=ctx_cfg,
                 )
 
-            # Log usage
-            if result.cost > 0 or result.prompt_tokens > 0:
+            # Log usage — always log draw requests even when the image API
+            # returns no token/cost data so the request count stays accurate.
+            if result.error is None:
                 self.db.log_usage(
                     nick,
                     channel,

@@ -479,8 +479,8 @@ class TestDrawCommand:
             "testnick", "#test", "draw", "dall-e-3", 10, 0, 0.04
         )
 
-    def test_draw_skips_usage_logging_when_zero_cost(self, plugin_env):
-        """GIVEN draw with zero cost and tokens WHEN draw completes THEN no usage logged."""
+    def test_draw_logs_usage_even_with_zero_cost(self, plugin_env):
+        """GIVEN draw with zero cost/tokens WHEN draw succeeds THEN usage is still logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
@@ -488,6 +488,25 @@ class TestDrawCommand:
             completion_tokens=0,
             cost=0.0,
             model="dall-e-3",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["test"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "testnick", "#test", "draw", "dall-e-3", 0, 0, 0.0
+        )
+
+    def test_draw_skips_usage_logging_on_error(self, plugin_env):
+        """GIVEN draw that errors WHEN draw completes THEN no usage logged."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: content blocked",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            model="dall-e-3",
+            error="Error: content blocked",
         )
 
         with patch("llm.plugin.ircdb.checkCapability", return_value=True):
