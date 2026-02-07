@@ -91,6 +91,36 @@ class TestProviderSpecificErrors:
         assert "safety" in result.content.lower() or "policy" in result.content.lower()
         assert "Error" in result.content
 
+    def test_handles_bad_request_moderation_blocked(self, service: LLMService) -> None:
+        """GIVEN BadRequestError with moderation_blocked WHEN completing THEN returns safety message."""
+        with patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm.BadRequestError(
+                message="moderation_blocked: content was flagged",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        ):
+            result = service.completion("test", command="ask")
+
+        assert "safety" in result.content.lower() or "policy" in result.content.lower()
+        assert "Error" in result.content
+
+    def test_handles_bad_request_safety_system(self, service: LLMService) -> None:
+        """GIVEN BadRequestError with safety system WHEN completing THEN returns safety message."""
+        with patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm.BadRequestError(
+                message="Blocked by safety system filters",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        ):
+            result = service.completion("test", command="ask")
+
+        assert "safety" in result.content.lower() or "policy" in result.content.lower()
+        assert "Error" in result.content
+
     def test_handles_generic_api_error(self, service: LLMService) -> None:
         """GIVEN generic API error WHEN completing THEN returns sanitized message."""
         with patch(

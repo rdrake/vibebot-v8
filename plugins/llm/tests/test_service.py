@@ -159,23 +159,69 @@ class TestLLMService:
         assert self.service.safe_key_display("ab") == "Invalid (too short)"
 
     def test_api_key_sanitization_sk_format(self) -> None:
-        """GIVEN text with sk-* API key WHEN sanitized THEN key redacted."""
-        text_with_key = "Error: Invalid API key sk-proj-1234567890abcdefgh"
+        """GIVEN text with configured sk-* API key WHEN sanitized THEN key redacted."""
+        api_key = "sk-test-fake"  # noqa: S105
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": api_key,
+                "codeApiKey": "",
+                "drawApiKey": "",
+            }.get(key, "")
+        )
+        text_with_key = f"Error: Invalid API key {api_key}"
         sanitized = self.service._sanitize(text_with_key)
-        assert "sk-proj-1234567890abcdefgh" not in sanitized
+        assert api_key not in sanitized
         assert "[REDACTED]" in sanitized
 
     def test_api_key_sanitization_aiza_format(self) -> None:
-        """GIVEN text with AIza* API key WHEN sanitized THEN key redacted."""
-        text_with_key = "Error with key AIzaSyFAKE_TEST_KEY_FOR_SANITIZE_TEST"
+        """GIVEN text with configured AIza* API key WHEN sanitized THEN key redacted."""
+        api_key = "AIzaSyFAKE_TEST_KEY_FOR_SANITIZE_TEST"
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "",
+                "codeApiKey": "",
+                "drawApiKey": api_key,
+            }.get(key, "")
+        )
+        text_with_key = f"Error with key {api_key}"
         sanitized = self.service._sanitize(text_with_key)
-        assert "AIzaSyFAKE_TEST_KEY_FOR_SANITIZE_TEST" not in sanitized
+        assert api_key not in sanitized
         assert "[REDACTED]" in sanitized
 
     def test_api_key_sanitization_empty_text(self) -> None:
         """GIVEN empty/None text WHEN sanitized THEN returns empty string."""
         assert self.service._sanitize("") == ""
         assert self.service._sanitize(None) == ""
+
+    def test_api_key_sanitization_multiple_keys(self) -> None:
+        """GIVEN text with multiple configured keys WHEN sanitized THEN all redacted."""
+        ask_key = "sk-ask-key-12345"
+        code_key = "sk-code-key-67890"
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": ask_key,
+                "codeApiKey": code_key,
+                "drawApiKey": "",
+            }.get(key, "")
+        )
+        text = f"Error with {ask_key} and also {code_key}"
+        sanitized = self.service._sanitize(text)
+        assert ask_key not in sanitized
+        assert code_key not in sanitized
+        assert sanitized.count("[REDACTED]") == 2
+
+    def test_api_key_sanitization_no_keys_configured(self) -> None:
+        """GIVEN no API keys configured WHEN sanitized THEN text unchanged."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "",
+                "codeApiKey": "",
+                "drawApiKey": "",
+            }.get(key, "")
+        )
+        text = "Error: some random text with no keys"
+        sanitized = self.service._sanitize(text)
+        assert sanitized == text
 
     def test_strip_markdown_fences_with_language(self) -> None:
         """Strip markdown fences and extract language."""
@@ -398,6 +444,33 @@ class TestLLMService:
         tools = self.service._get_gemini_tools("GEMINI/GEMINI-2.5-FLASH")
         assert tools is not None
         assert len(tools) == 2
+
+    def test_get_gemini_tools_vertex_ai_provider(self) -> None:
+        """GIVEN vertex_ai provider with supported model WHEN _get_gemini_tools THEN returns tools."""
+        tools = self.service._get_gemini_tools("vertex_ai/gemini-2.5-flash")
+        assert tools is not None
+        assert len(tools) == 2
+
+    def test_get_gemini_tools_vertex_ai_beta_provider(self) -> None:
+        """GIVEN vertex_ai_beta provider WHEN _get_gemini_tools THEN returns tools."""
+        tools = self.service._get_gemini_tools("vertex_ai_beta/gemini-2.5-pro")
+        assert tools is not None
+        assert len(tools) == 2
+
+    def test_get_gemini_tools_rejects_non_gemini_provider(self) -> None:
+        """GIVEN non-Gemini provider WHEN _get_gemini_tools THEN returns None."""
+        assert self.service._get_gemini_tools("openai/gemini-2.5-flash") is None
+        assert self.service._get_gemini_tools("anthropic/gemini-2.5-pro") is None
+
+    def test_get_gemini_tools_prefix_match_not_substring(self) -> None:
+        """GIVEN model that contains supported name as substring WHEN _get_gemini_tools THEN no false positive."""
+        # "not-gemini-2.5-flash" shouldn't match because it doesn't start with the family
+        assert self.service._get_gemini_tools("gemini/not-gemini-2.5-flash") is None
+
+    def test_get_gemini_tools_model_version_suffix(self) -> None:
+        """GIVEN supported model with version suffix WHEN _get_gemini_tools THEN matches."""
+        tools = self.service._get_gemini_tools("gemini/gemini-2.5-flash-preview-05-20")
+        assert tools is not None
 
 
 class TestGroundingDetection:
@@ -1074,6 +1147,50 @@ class TestCleanupWithImages:
         assert not (Path(str(tmp_path)) / "img_jkl.jpeg").exists()
         assert not (Path(str(tmp_path)) / "img_mno.webp").exists()
         assert (Path(str(tmp_path)) / "other.txt").exists()
+
+
+class TestCleanupLock:
+    """Test that _cleanup_old_files uses a lock for thread safety (Fix 5)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def test_cleanup_lock_exists(self) -> None:
+        """GIVEN service WHEN initialized THEN _cleanup_lock exists."""
+        assert hasattr(self.service, "_cleanup_lock")
+
+    def test_cleanup_serializes_concurrent_calls(self, tmp_path: object) -> None:
+        """GIVEN concurrent cleanup calls WHEN running THEN lock prevents races."""
+        from pathlib import Path
+
+        # Create a test file
+        (Path(str(tmp_path)) / "img_test.png").write_bytes(b"png")
+
+        errors: list[Exception] = []
+
+        def run_cleanup() -> None:
+            try:
+                self.service._cleanup_old_files(str(tmp_path), max_age_hours=0, max_files=0)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run_cleanup) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
 
 
 class TestDrawContext:

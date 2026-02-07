@@ -7,6 +7,7 @@ import mimetypes
 import subprocess
 import threading
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -292,7 +293,6 @@ class LLM(callbacks.Plugin):
 
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
-        self._reminder_counter: int = 0
         self._reminders_lock = threading.Lock()
 
         # Reload persisted reminders from database
@@ -509,6 +509,37 @@ class LLM(callbacks.Plugin):
             channel_max_messages=self.registryValue("channelContextMaxMessages", channel),
         )
 
+    def _make_reminder_delivery_closure(
+        self, nick: str, channel: str, message: str, event_name: str
+    ):
+        """Create a reminder delivery closure with error handling.
+
+        Wraps delivery in try/finally so cleanup (removing from _reminders
+        and database) always happens even if queueMsg raises.
+
+        Args:
+            nick: User's nick
+            channel: Channel to deliver to
+            message: Reminder message
+            event_name: Scheduler event name for cleanup
+
+        Returns:
+            Callable for use with schedule.addEvent
+        """
+        lock = self._reminders_lock
+
+        def _deliver() -> None:
+            try:
+                for active_irc in world.ircs:
+                    active_irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {message}"))
+                    break
+            finally:
+                with lock:
+                    self._reminders.pop(event_name, None)
+                self.db.delete_reminder(event_name)
+
+        return _deliver
+
     def _reload_reminders(self, irc: callbacks.Irc) -> None:
         """Reload persisted reminders from database on startup.
 
@@ -518,29 +549,13 @@ class LLM(callbacks.Plugin):
         pending = self.db.load_pending_reminders()
         now = time.time()
 
-        # Capture lock ref for use in delivery closures (scheduler thread)
-        lock = self._reminders_lock
-
         for reminder in pending:
             nick = reminder.nick
             channel = reminder.channel
             message = reminder.message
             event_name = reminder.event_name
 
-            def make_deliver(n: str, ch: str, msg: str, ev: str):
-                """Create delivery closure (avoid late binding in loop)."""
-
-                def _deliver() -> None:
-                    for active_irc in world.ircs:
-                        active_irc.queueMsg(ircmsgs.privmsg(ch, f"{n}: Reminder: {msg}"))
-                        break
-                    with lock:
-                        self._reminders.pop(ev, None)
-                    self.db.delete_reminder(ev)
-
-                return _deliver
-
-            deliver = make_deliver(nick, channel, message, event_name)
+            deliver = self._make_reminder_delivery_closure(nick, channel, message, event_name)
 
             if reminder.fire_at <= now:
                 # Overdue — deliver immediately
@@ -1185,21 +1200,10 @@ class LLM(callbacks.Plugin):
 
             # Schedule the reminder
             reminder_message = result.message or text
-            # Capture lock ref for use in delivery closure (scheduler thread)
-            lock = self._reminders_lock
-            with self._reminders_lock:
-                self._reminder_counter += 1
-                event_name = f"llm_remind_{int(time.time())}_{self._reminder_counter}"
-
-            def deliver() -> None:
-                for active_irc in world.ircs:
-                    active_irc.queueMsg(
-                        ircmsgs.privmsg(channel, f"{nick}: Reminder: {reminder_message}")
-                    )
-                    break
-                with lock:
-                    self._reminders.pop(event_name, None)
-                self.db.delete_reminder(event_name)
+            event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
+            deliver = self._make_reminder_delivery_closure(
+                nick, channel, reminder_message, event_name
+            )
 
             try:
                 schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)

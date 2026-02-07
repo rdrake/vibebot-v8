@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import os
 import re
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,17 +117,11 @@ class LLMService:
         self.plugin = plugin_instance
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
+        self._cleanup_lock = threading.Lock()
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
             r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:[?#][^\s]*)?",
-            re.IGNORECASE,
-        )
-
-        # Pattern to detect API keys for sanitization
-        # Matches common formats: sk-*, AIza*, long alphanumeric strings
-        self.api_key_pattern = re.compile(
-            r"(?:sk-[a-zA-Z0-9_-]{10,}|AIza[a-zA-Z0-9_-]{30,}|\b[a-zA-Z0-9_-]{32,}\b)",
             re.IGNORECASE,
         )
 
@@ -138,6 +133,10 @@ class LLMService:
     def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
 
+        Collects actual configured API keys and replaces them with [REDACTED].
+        This is more reliable than regex patterns because it catches every key
+        format regardless of structure.
+
         Args:
             text: Text that may contain API keys
 
@@ -146,7 +145,12 @@ class LLMService:
         """
         if not text:
             return ""
-        return self.api_key_pattern.sub("[REDACTED]", str(text))
+        result = str(text)
+        for key_name in ("askApiKey", "codeApiKey", "drawApiKey"):
+            key = self.plugin.registryValue(key_name)
+            if key and isinstance(key, str):
+                result = result.replace(key, "[REDACTED]")
+        return result
 
     def sanitize_output(self, text: str | None) -> str:
         """Sanitize output to prevent IRC command injection.
@@ -672,25 +676,37 @@ class LLMService:
         Enables Google Search grounding and URL Context for Gemini 2.0+ text models.
         These tools allow the model to search the web and fetch URL content.
 
+        Uses provider-prefix matching instead of substring matching to avoid
+        false positives (e.g. a model name containing "gemini" as a substring).
+
         Args:
             model: Model identifier string
 
         Returns:
             List of tool dictionaries or None if not supported
         """
-        model_lower = model.lower()
+        # Extract provider from "provider/model-name" format
+        gemini_providers = {"gemini", "vertex_ai", "vertex_ai_beta"}
+        if "/" in model:
+            provider, model_name = model.split("/", 1)
+            if provider.lower() not in gemini_providers:
+                return None
+        else:
+            model_name = model
 
-        # Supported Gemini text models for grounding tools (explicit opt-in)
-        supported_models = [
+        model_name_lower = model_name.lower()
+
+        # Supported Gemini text model families for grounding tools (prefix match)
+        supported_families = (
             "gemini-2.0-flash",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-3-flash",
             "gemini-3-flash-preview",
-            "gemini-flash-latest",  # Alias for latest flash model
-        ]
+            "gemini-flash-latest",
+        )
 
-        if any(supported in model_lower for supported in supported_models):
+        if model_name_lower.startswith(supported_families):
             return [{"googleSearch": {}}, {"urlContext": {}}]
 
         # Default: no tools
@@ -943,7 +959,12 @@ class LLMService:
 
         except Exception as e:
             self.log.exception("Completion failed: %s", self._sanitize(str(e)))
-            error_content = self._handle_llm_error(e, "completion")
+            if self._is_content_safety_error(e):
+                error_content = _(
+                    "Error: Content violates AI safety policies. Please rephrase your request."
+                )
+            else:
+                error_content = self._handle_llm_error(e, "completion")
             return CompletionResult(
                 content=error_content,
                 grounding_used=False,
@@ -968,6 +989,18 @@ class LLMService:
             ReminderParseResult with action, seconds, message, confirmation, note
         """
         import json
+
+        # Validate input before making API call
+        if not text or not text.strip():
+            return ReminderParseResult(
+                action="clarify",
+                confirmation=_("Please tell me what to remind you about and when."),
+            )
+        if len(text) > 500:
+            return ReminderParseResult(
+                action="clarify",
+                confirmation=_("Reminder request is too long (max 500 characters)."),
+            )
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
         if not self.plugin.registryValue("askApiKey"):
@@ -1867,40 +1900,43 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             max_age_hours: Delete files older than this (uses config if None)
             max_files: Keep at most this many files (uses config if None)
         """
-        if max_age_hours is None:
-            max_age_hours = self.plugin.registryValue("fileCleanupAge")
-        if max_files is None:
-            max_files = self.plugin.registryValue("fileCleanupMax")
+        with self._cleanup_lock:
+            if max_age_hours is None:
+                max_age_hours = self.plugin.registryValue("fileCleanupAge")
+            if max_files is None:
+                max_files = self.plugin.registryValue("fileCleanupMax")
 
-        dir_path = Path(directory)
-        if not dir_path.exists():
-            return
+            dir_path = Path(directory)
+            if not dir_path.exists():
+                return
 
-        current_time = time.time()
-        max_age_seconds = max_age_hours * 3600
+            current_time = time.time()
+            max_age_seconds = max_age_hours * 3600
 
-        # Collect files with mtime
-        files: list[tuple[Path, float]] = []
-        for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp"):
-            for file_path in dir_path.glob(pattern):
-                with contextlib.suppress(OSError):
-                    files.append((file_path, file_path.stat().st_mtime))
+            # Collect files with mtime
+            files: list[tuple[Path, float]] = []
+            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp"):
+                for file_path in dir_path.glob(pattern):
+                    with contextlib.suppress(OSError):
+                        files.append((file_path, file_path.stat().st_mtime))
 
-        # Partition into old and recent (no mutation during iteration)
-        old_files = [f for f, mtime in files if current_time - mtime > max_age_seconds]
-        recent_files = [(f, mtime) for f, mtime in files if current_time - mtime <= max_age_seconds]
+            # Partition into old and recent (no mutation during iteration)
+            old_files = [f for f, mtime in files if current_time - mtime > max_age_seconds]
+            recent_files = [
+                (f, mtime) for f, mtime in files if current_time - mtime <= max_age_seconds
+            ]
 
-        # Delete old files
-        for file_path in old_files:
-            with contextlib.suppress(OSError):
-                file_path.unlink()
-
-        # If still too many, delete oldest from recent
-        if len(recent_files) > max_files:
-            recent_files.sort(key=lambda x: x[1])  # Sort by mtime
-            for file_path, _ in recent_files[:-max_files]:
+            # Delete old files
+            for file_path in old_files:
                 with contextlib.suppress(OSError):
                     file_path.unlink()
+
+            # If still too many, delete oldest from recent
+            if len(recent_files) > max_files:
+                recent_files.sort(key=lambda x: x[1])  # Sort by mtime
+                for file_path, _ in recent_files[:-max_files]:
+                    with contextlib.suppress(OSError):
+                        file_path.unlink()
 
     def run_scheduled_cleanup(self) -> None:
         """Run file cleanup (public interface for scheduler)."""

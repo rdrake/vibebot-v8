@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import threading
 
 import litellm
 import supybot.conf as conf
@@ -25,6 +26,7 @@ class ValidatedModelName(registry.String):
     """
 
     _warned: set[str] = set()
+    _warned_lock: threading.Lock = threading.Lock()
 
     def setValue(self, v: str) -> None:  # noqa: N802
         v = v.strip()
@@ -46,18 +48,20 @@ class ValidatedModelName(registry.String):
             raise registry.InvalidRegistryValue(msg)  # noqa: B904
 
         # Provider recognized — warn once if model is not in the known list
-        if model not in litellm.model_list and model not in ValidatedModelName._warned:
-            ValidatedModelName._warned.add(model)
-            suggestions = self._suggest_models(model)
-            hint = ""
-            if suggestions:
-                hint = f" Similar known models: {', '.join(suggestions)}."
-            _log.warning(
-                "Model %r not in litellm's known model list (may be a custom "
-                "deployment or newer model).%s",
-                model,
-                hint,
-            )
+        if model not in litellm.model_list:
+            with ValidatedModelName._warned_lock:
+                if model not in ValidatedModelName._warned:
+                    ValidatedModelName._warned.add(model)
+                    suggestions = self._suggest_models(model)
+                    hint = ""
+                    if suggestions:
+                        hint = f" Similar known models: {', '.join(suggestions)}."
+                    _log.warning(
+                        "Model %r not in litellm's known model list (may be a custom "
+                        "deployment or newer model).%s",
+                        model,
+                        hint,
+                    )
 
     @staticmethod
     def _suggest_models(model: str, n: int = 3, cutoff: float = 0.6) -> list[str]:

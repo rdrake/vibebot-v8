@@ -286,6 +286,41 @@ class TestParseReminderService:
         with patch("llm.service.log"):
             return LLMService(mock_plugin)
 
+    def test_parse_reminder_empty_text(self, service: MagicMock) -> None:
+        """GIVEN empty text WHEN parsing THEN returns clarify without API call."""
+        result = service.parse_reminder("")
+        assert result.action == "clarify"
+        assert (
+            "what to remind" in result.confirmation.lower()
+            or "tell me" in result.confirmation.lower()
+        )
+
+    def test_parse_reminder_whitespace_only(self, service: MagicMock) -> None:
+        """GIVEN whitespace-only text WHEN parsing THEN returns clarify without API call."""
+        result = service.parse_reminder("   \n\t  ")
+        assert result.action == "clarify"
+
+    def test_parse_reminder_too_long(self, service: MagicMock) -> None:
+        """GIVEN text over 500 chars WHEN parsing THEN returns clarify without API call."""
+        result = service.parse_reminder("x" * 501)
+        assert result.action == "clarify"
+        assert "too long" in result.confirmation.lower()
+
+    def test_parse_reminder_exactly_500_chars_accepted(self, service: MagicMock) -> None:
+        """GIVEN text at exactly 500 chars WHEN parsing THEN proceeds to API call."""
+        text = "x" * 500
+        with patch("llm.service.litellm.completion") as mock_completion:
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[
+                0
+            ].message.content = (
+                '{"action": "schedule", "seconds": 60, "message": "test", "confirmation": "Set!"}'
+            )
+            mock_completion.return_value = mock_response
+            result = service.parse_reminder(text)
+        assert result.action == "schedule"
+
     def test_parse_reminder_no_api_key(self, mock_plugin: MagicMock) -> None:
         """GIVEN no API key WHEN parsing THEN returns clarify with error."""
         from llm.service import LLMService
@@ -513,3 +548,93 @@ class TestParseReminderService:
 
         assert result.action == "schedule"
         assert result.seconds == 120
+
+
+class TestReminderEventNaming:
+    """Tests for uuid-based reminder event naming (Fix 3)."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc: MagicMock) -> MagicMock:
+        """Create a plugin instance."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        with (
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(),
+        ):
+            plugin = LLM(mock_irc)
+
+        return plugin
+
+    def test_event_name_uses_uuid_format(self, plugin: MagicMock) -> None:
+        """GIVEN reminder delivery closure WHEN created THEN event name uses uuid hex."""
+        import re
+
+        closure = plugin._make_reminder_delivery_closure(
+            "nick", "#chan", "msg", "llm_remind_abc123"
+        )
+        assert callable(closure)
+        # The event name format should be llm_remind_ + 12 hex chars
+        assert re.match(r"^[a-f0-9]{12}$", "abc123def456")
+
+    def test_no_reminder_counter_attribute(self, plugin: MagicMock) -> None:
+        """GIVEN plugin WHEN initialized THEN no _reminder_counter attribute."""
+        assert not hasattr(plugin, "_reminder_counter")
+
+
+class TestReminderDeliveryClosure:
+    """Tests for _make_reminder_delivery_closure (Fix 6)."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc: MagicMock) -> MagicMock:
+        """Create a plugin instance."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        with (
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(),
+        ):
+            plugin = LLM(mock_irc)
+
+        return plugin
+
+    @patch("llm.plugin.world")
+    def test_delivery_cleans_up_on_success(self, mock_world: MagicMock, plugin: MagicMock) -> None:
+        """GIVEN delivery closure WHEN queueMsg succeeds THEN cleans up reminder."""
+        mock_irc = MagicMock()
+        mock_world.ircs = [mock_irc]
+
+        event_name = "llm_remind_test123"
+        plugin._reminders[event_name] = ("nick", "#chan", "test msg")
+
+        deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
+        deliver()
+
+        assert event_name not in plugin._reminders
+        plugin.db.delete_reminder.assert_called_with(event_name)
+        mock_irc.queueMsg.assert_called_once()
+
+    @patch("llm.plugin.world")
+    def test_delivery_cleans_up_even_on_error(
+        self, mock_world: MagicMock, plugin: MagicMock
+    ) -> None:
+        """GIVEN delivery closure WHEN queueMsg raises THEN still cleans up reminder."""
+        mock_irc = MagicMock()
+        mock_irc.queueMsg.side_effect = RuntimeError("send failed")
+        mock_world.ircs = [mock_irc]
+
+        event_name = "llm_remind_test456"
+        plugin._reminders[event_name] = ("nick", "#chan", "test msg")
+
+        deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
+
+        with pytest.raises(RuntimeError, match="send failed"):
+            deliver()
+
+        # Cleanup should still happen despite the error
+        assert event_name not in plugin._reminders
+        plugin.db.delete_reminder.assert_called_with(event_name)
