@@ -346,6 +346,7 @@ class LLMDatabase:
         Returns:
             List of UsageBreakdown sorted by total_cost descending.
         """
+        assert dimension in ("nick", "channel"), f"Invalid dimension: {dimension}"
         # dimension is always a hardcoded column name from our own code,
         # never user input, so string interpolation is safe here.
         conn = self._connect()

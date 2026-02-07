@@ -452,7 +452,7 @@ class LLM(callbacks.Plugin):
         message = f"VibeBot started | v8 | {channel_count} channel{plural} | {timestamp}"
 
         irc.queueMsg(ircmsgs.privmsg(owner, message))
-        self.log.info(f"Startup notification sent to {owner}")
+        self.log.info("Startup notification sent to %s", owner)
 
     @staticmethod
     def _get_build_info() -> str:
@@ -735,8 +735,8 @@ class LLM(callbacks.Plugin):
                 self.log.info("replying to %s/%s", channel, nick)
                 irc.reply(display_response, prefixNick=False)
 
-            # Store conversation context if enabled for this channel
-            if self._get_context_enabled(channel):
+            # Store conversation context if enabled and no error occurred
+            if result.error is None and self._get_context_enabled(channel):
                 # Store in personal context (without icon for clean history)
                 self.context.add_message(nick, channel, Role.USER, text)
                 self.context.add_message(nick, channel, Role.ASSISTANT, response)
@@ -827,8 +827,8 @@ class LLM(callbacks.Plugin):
                     self.log.info("replying to %s/%s", channel, nick)
                     irc.reply(display_response)
 
-            # Store conversation context if enabled for this channel
-            if self._get_context_enabled(channel):
+            # Store conversation context if enabled and no error occurred
+            if result.error is None and self._get_context_enabled(channel):
                 # Store in personal context (without icon for clean history)
                 self.context.add_message(nick, channel, Role.USER, text)
                 self.context.add_message(nick, channel, Role.ASSISTANT, response)
@@ -1015,7 +1015,11 @@ class LLM(callbacks.Plugin):
         Returns:
             List of (event_name, (nick, channel, message)) tuples
         """
-        return [(name, data) for name, data in self._reminders.items() if data[0] == nick]
+        return [
+            (name, data)
+            for name, data in self._reminders.items()
+            if data[0].lower() == nick.lower()
+        ]
 
     def _format_reminders(self, reminders: list[tuple[str, tuple[str, str, str]]]) -> str:
         """Format reminders list for display.
@@ -1046,7 +1050,7 @@ class LLM(callbacks.Plugin):
             Event name if found and owned by user, None otherwise
         """
         for name, (owner, _, _) in self._reminders.items():
-            if name.endswith(f"_{reminder_id}") and owner == nick:
+            if name.endswith(f"_{reminder_id}") and owner.lower() == nick.lower():
                 return name
         return None
 

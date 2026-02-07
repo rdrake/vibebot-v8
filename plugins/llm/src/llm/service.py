@@ -8,7 +8,7 @@ import hashlib
 import os
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -60,6 +60,7 @@ class CompletionResult(NamedTuple):
     completion_tokens: int = 0
     cost: float = 0.0
     model: str = ""
+    error: str | None = None
 
 
 class ImageResult(NamedTuple):
@@ -71,6 +72,7 @@ class ImageResult(NamedTuple):
     cost: float = 0.0
     model: str = ""
     rewritten_prompt: str | None = None
+    error: str | None = None
 
 
 class ReminderParseResult(NamedTuple):
@@ -323,7 +325,7 @@ class LLMService:
         lines = []
 
         # Date and uptime
-        now = datetime.now()
+        now = datetime.now(UTC)
         lines.append(f"Date: {now.strftime('%A, %B %d, %Y')}")
 
         # Bot uptime (for troubleshooting)
@@ -856,7 +858,10 @@ class LLMService:
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
-                return CompletionResult(content=_("Error: %s") % error_msg, grounding_used=False)
+                error_content = _("Error: %s") % error_msg
+                return CompletionResult(
+                    content=error_content, grounding_used=False, error=error_content
+                )
 
             # Validate and filter image URLs
             if images:
@@ -871,9 +876,11 @@ class LLMService:
             channel = msg.args[0] if msg and msg.args else None
             # Validate API key exists (don't store in local var to avoid logging in traces)
             if not self.plugin.registryValue(f"{command}ApiKey"):
+                error_content = _("Error: API key not configured for %s command") % command
                 return CompletionResult(
-                    content=_("Error: API key not configured for %s command") % command,
+                    content=error_content,
                     grounding_used=False,
+                    error=error_content,
                 )
             model = self.plugin.registryValue(f"{command}Model", channel)
             base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
@@ -936,9 +943,11 @@ class LLMService:
 
         except Exception as e:
             self.log.exception("Completion failed: %s", self._sanitize(str(e)))
+            error_content = self._handle_llm_error(e, "completion")
             return CompletionResult(
-                content=self._handle_llm_error(e, "completion"),
+                content=error_content,
                 grounding_used=False,
+                error=error_content,
             )
         finally:
             if irc and target:
@@ -959,7 +968,6 @@ class LLMService:
             ReminderParseResult with action, seconds, message, confirmation, note
         """
         import json
-        from datetime import UTC, datetime
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
         if not self.plugin.registryValue("askApiKey"):
@@ -1273,7 +1281,8 @@ Rules:
                         cost=cost,
                         model=model,
                     )
-                return ImageResult(content=_("Error: Failed to save generated image"))
+                error_content = _("Error: Failed to save generated image")
+                return ImageResult(content=error_content, error=error_content)
 
         # No image data — content was blocked
         return None
@@ -1315,13 +1324,15 @@ Rules:
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
-                return ImageResult(content=_("Error: %s") % error_msg)
+                error_content = _("Error: %s") % error_msg
+                return ImageResult(content=error_content, error=error_content)
 
             # Get configuration (channel-specific for model, global for api key)
             # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
             if not self.plugin.registryValue("drawApiKey"):
-                return ImageResult(content=_("Error: API key not configured for draw command"))
+                error_content = _("Error: API key not configured for draw command")
+                return ImageResult(content=error_content, error=error_content)
             model = self.plugin.registryValue("drawModel", channel)
             timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue(
                 "timeout"
@@ -1365,17 +1376,17 @@ Rules:
                     block_reason = self._sanitize(str(e))[:200]
                 else:
                     # Non-content errors: no retry
-                    return ImageResult(content=self._handle_llm_error(e, "image generation"))
+                    error_content = self._handle_llm_error(e, "image generation")
+                    return ImageResult(content=error_content, error=error_content)
 
             # --- Auto-rewrite loop ---
             if not content_blocked or max_rewrites <= 0:
                 self.log.warning("Image generation returned no data. Prompt: %s", prompt[:100])
-                return ImageResult(
-                    content=_(
-                        "Error: No image generated. The prompt may have been blocked by "
-                        "content safety filters. Try rephrasing your request."
-                    )
+                error_content = _(
+                    "Error: No image generated. The prompt may have been blocked by "
+                    "content safety filters. Try rephrasing your request."
                 )
+                return ImageResult(content=error_content, error=error_content)
 
             self.log.info(
                 "Image generation blocked, attempting auto-rewrite (max %s)", max_rewrites
@@ -1424,26 +1435,29 @@ Rules:
                         prior_rewrites.append((current_prompt, block_reason))
                     else:
                         # Non-content error during retry — stop
-                        return ImageResult(content=self._handle_llm_error(e, "image generation"))
+                        error_content = self._handle_llm_error(e, "image generation")
+                        return ImageResult(content=error_content, error=error_content)
 
             # Exhausted all retries
             self.log.warning(
                 "Image generation blocked after %s rewrite attempts", len(prior_rewrites)
             )
+            error_content = _(
+                "Error: No image generated. The prompt was blocked by content safety "
+                "filters even after %d rewrite attempt(s). Try a different subject."
+            ) % len(prior_rewrites)
             return ImageResult(
-                content=_(
-                    "Error: No image generated. The prompt was blocked by content safety "
-                    "filters even after %d rewrite attempt(s). Try a different subject."
-                )
-                % len(prior_rewrites),
+                content=error_content,
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
                 cost=total_cost,
                 model=model,
+                error=error_content,
             )
 
         except Exception as e:
-            return ImageResult(content=self._handle_llm_error(e, "image generation"))
+            error_content = self._handle_llm_error(e, "image generation")
+            return ImageResult(content=error_content, error=error_content)
         finally:
             # Send typing done indicator
             if irc and target:

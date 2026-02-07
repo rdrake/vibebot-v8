@@ -17,12 +17,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Stage 2: Runtime
 FROM python:3.14-slim
+
+# Create non-root user for running the bot
+RUN groupadd -r vibebot && useradd -r -g vibebot -d /app vibebot
+
 WORKDIR /app
-COPY --from=builder /app /app
+COPY --from=builder --chown=vibebot:vibebot /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Volumes for persistent data
 VOLUME ["/app/conf", "/app/data", "/app/logs"]
 
-# Use --user at runtime for proper volume permissions
+# Default to non-root user; callers can override with --user if needed for volume permissions
+USER vibebot
 ENTRYPOINT ["limnoria", "bot.conf"]
