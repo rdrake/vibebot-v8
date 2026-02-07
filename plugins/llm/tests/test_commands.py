@@ -685,11 +685,14 @@ class TestLlmkeysCommand:
 
 
 class TestUsageCommand:
-    """Tests for the real LLM.usage method."""
+    """Tests for the real LLM.usage method (dual-mode: channel + PM)."""
 
-    def test_usage_shows_today_and_month_stats(self, plugin_env):
-        """GIVEN admin WHEN usage called THEN response includes today and monthly stats."""
+    # -- PM mode (global stats, admin only) --
+
+    def test_usage_pm_shows_today_and_month_stats(self, plugin_env):
+        """GIVEN admin via PM WHEN usage called THEN response includes today and monthly stats."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None  # PM mode
         plugin.db.get_usage_summary.return_value = UsageSummary(
             total_requests=10,
             total_prompt_tokens=1000,
@@ -727,9 +730,10 @@ class TestUsageCommand:
         # Sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
-    def test_usage_with_no_top_users_or_channels(self, plugin_env):
-        """GIVEN no usage data WHEN usage called THEN response omits top users/channels."""
+    def test_usage_pm_with_no_top_users_or_channels(self, plugin_env):
+        """GIVEN no usage data via PM WHEN usage called THEN response omits top users/channels."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None  # PM mode
         plugin.db.get_usage_summary.return_value = UsageSummary(
             total_requests=0,
             total_prompt_tokens=0,
@@ -745,6 +749,92 @@ class TestUsageCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Top users:" not in reply_text
         assert "Top channels:" not in reply_text
+
+    def test_usage_pm_requires_admin(self, plugin_env):
+        """GIVEN non-admin via PM WHEN usage called THEN error is returned."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None  # PM mode
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
+            plugin.usage(mock_irc, mock_msg, [])
+
+        mock_irc.error.assert_called_once()
+        error_text = mock_irc.error.call_args[0][0]
+        assert "admin" in error_text.lower()
+
+    # -- Channel mode (personal + channel stats, any user) --
+
+    def test_usage_channel_shows_channel_and_personal_stats(self, plugin_env):
+        """GIVEN user in channel WHEN usage called THEN shows channel and personal stats."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        # msg.channel is already "#test" from fixture
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(
+            total_requests=45,
+            total_prompt_tokens=5000,
+            total_completion_tokens=2500,
+            total_cost=0.0292,
+        )
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(
+            total_requests=12,
+            total_prompt_tokens=1200,
+            total_completion_tokens=600,
+            total_cost=0.0139,
+        )
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=5)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=8)
+
+        plugin.usage(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        # Channel stats
+        assert "#test this month:" in reply_text
+        assert "45 requests" in reply_text
+        assert "rank 1/5 channels" in reply_text
+        # Personal stats
+        assert "You:" in reply_text
+        assert "12 requests" in reply_text
+        assert "rank 1/8 users" in reply_text
+        # Not sent privately
+        assert mock_irc.reply.call_args.kwargs.get("private") is not True
+        assert mock_irc.reply.call_args.kwargs.get("prefixNick") is False
+
+    def test_usage_channel_works_without_admin(self, plugin_env):
+        """GIVEN non-admin in channel WHEN usage called THEN stats shown (no error)."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=0, total=0)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=0)
+
+        # No admin capability needed — should still work
+        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
+            plugin.usage(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        mock_irc.error.assert_not_called()
+
+    def test_usage_channel_zero_data_graceful(self, plugin_env):
+        """GIVEN no usage data WHEN usage called in channel THEN shows zeros without rank."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=0, total=0)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=0)
+
+        plugin.usage(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "#test this month: $0.0000" in reply_text
+        assert "You: $0.0000" in reply_text
+        # rank should not appear when rank=0
+        assert "rank" not in reply_text
 
 
 # ---------------------------------------------------------------------------

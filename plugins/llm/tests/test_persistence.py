@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from llm.persistence import LLMDatabase, ReminderRow
+from llm.persistence import LLMDatabase, ReminderRow, UsageRank
 
 
 class TestDatabaseInit:
@@ -317,3 +317,194 @@ class TestRoundTrip:
         summary = db.get_usage_summary()
         assert summary.total_requests == 100  # 5 threads * 20 writes
         db.close()
+
+
+class TestFilteredUsageSummary:
+    """Test channel- and nick-filtered usage summaries."""
+
+    def test_channel_summary_filters_to_channel(self, tmp_path: Path) -> None:
+        """GIVEN usage in two channels WHEN querying one THEN only that channel counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#general", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#general", "ask", "gpt-4", 200, 100, 0.02)
+        db.log_usage("alice", "#dev", "ask", "gpt-4", 300, 150, 0.05)
+
+        summary = db.get_usage_summary_for_channel("#general")
+        assert summary.total_requests == 2
+        assert summary.total_cost == pytest.approx(0.03)
+
+    def test_channel_summary_with_since_filter(self, tmp_path: Path) -> None:
+        """GIVEN old and new usage WHEN filtering by since THEN only recent counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            old_time = time.time() - 7200
+            conn.execute(
+                "INSERT INTO usage "
+                "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_time, "alice", "#test", "ask", "gpt-4", 100, 50, 0.01),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        db.log_usage("bob", "#test", "ask", "gpt-4", 200, 100, 0.02)
+
+        since = time.time() - 3600
+        summary = db.get_usage_summary_for_channel("#test", since=since)
+        assert summary.total_requests == 1
+        assert summary.total_cost == pytest.approx(0.02)
+
+    def test_channel_summary_empty(self, tmp_path: Path) -> None:
+        """GIVEN no usage WHEN querying channel THEN returns zeros."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        summary = db.get_usage_summary_for_channel("#empty")
+        assert summary.total_requests == 0
+        assert summary.total_cost == pytest.approx(0.0)
+
+    def test_nick_summary_filters_to_nick(self, tmp_path: Path) -> None:
+        """GIVEN usage from two nicks WHEN querying one THEN only that nick counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#test", "ask", "gpt-4", 200, 100, 0.05)
+
+        summary = db.get_usage_summary_for_nick("alice")
+        assert summary.total_requests == 1
+        assert summary.total_cost == pytest.approx(0.01)
+
+    def test_nick_summary_scoped_to_channel(self, tmp_path: Path) -> None:
+        """GIVEN usage in two channels WHEN querying nick with channel THEN scoped."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#general", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("alice", "#dev", "ask", "gpt-4", 200, 100, 0.05)
+
+        summary = db.get_usage_summary_for_nick("alice", channel="#general")
+        assert summary.total_requests == 1
+        assert summary.total_cost == pytest.approx(0.01)
+
+    def test_nick_summary_with_since_and_channel(self, tmp_path: Path) -> None:
+        """GIVEN old and new usage WHEN filtering by since and channel THEN both applied."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            old_time = time.time() - 7200
+            conn.execute(
+                "INSERT INTO usage "
+                "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_time, "alice", "#test", "ask", "gpt-4", 100, 50, 0.01),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        db.log_usage("alice", "#test", "ask", "gpt-4", 200, 100, 0.02)
+        db.log_usage("alice", "#other", "ask", "gpt-4", 300, 150, 0.03)
+
+        since = time.time() - 3600
+        summary = db.get_usage_summary_for_nick("alice", since=since, channel="#test")
+        assert summary.total_requests == 1
+        assert summary.total_cost == pytest.approx(0.02)
+
+
+class TestUsageRanking:
+    """Test rank computation for channels and nicks."""
+
+    def test_channel_rank_top(self, tmp_path: Path) -> None:
+        """GIVEN channel with highest cost WHEN ranking THEN rank is 1."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
+        db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
+        db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
+
+        rank = db.get_channel_rank("#top")
+        assert rank == UsageRank(rank=1, total=3)
+
+    def test_channel_rank_middle(self, tmp_path: Path) -> None:
+        """GIVEN channel with middle cost WHEN ranking THEN rank is 2."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
+        db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
+        db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
+
+        rank = db.get_channel_rank("#middle")
+        assert rank == UsageRank(rank=2, total=3)
+
+    def test_channel_rank_bottom(self, tmp_path: Path) -> None:
+        """GIVEN channel with lowest cost WHEN ranking THEN rank is 3."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
+        db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
+        db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
+
+        rank = db.get_channel_rank("#bottom")
+        assert rank == UsageRank(rank=3, total=3)
+
+    def test_channel_rank_unknown(self, tmp_path: Path) -> None:
+        """GIVEN channel with no usage WHEN ranking THEN rank is 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#known", "ask", "gpt-4", 100, 50, 0.10)
+
+        rank = db.get_channel_rank("#unknown")
+        assert rank == UsageRank(rank=0, total=1)
+
+    def test_channel_rank_empty_db(self, tmp_path: Path) -> None:
+        """GIVEN no usage data WHEN ranking THEN rank is 0 total is 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        rank = db.get_channel_rank("#any")
+        assert rank == UsageRank(rank=0, total=0)
+
+    def test_channel_rank_with_since(self, tmp_path: Path) -> None:
+        """GIVEN old and new usage WHEN ranking with since THEN only recent counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            old_time = time.time() - 7200
+            conn.execute(
+                "INSERT INTO usage "
+                "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_time, "alice", "#old_top", "ask", "gpt-4", 100, 50, 1.00),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        db.log_usage("bob", "#recent", "ask", "gpt-4", 100, 50, 0.01)
+
+        since = time.time() - 3600
+        rank = db.get_channel_rank("#recent", since=since)
+        assert rank == UsageRank(rank=1, total=1)
+
+    def test_nick_rank_top(self, tmp_path: Path) -> None:
+        """GIVEN nick with highest cost WHEN ranking THEN rank is 1."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.10)
+        db.log_usage("bob", "#test", "ask", "gpt-4", 100, 50, 0.05)
+        db.log_usage("charlie", "#test", "ask", "gpt-4", 100, 50, 0.01)
+
+        rank = db.get_nick_rank("alice")
+        assert rank == UsageRank(rank=1, total=3)
+
+    def test_nick_rank_unknown(self, tmp_path: Path) -> None:
+        """GIVEN nick with no usage WHEN ranking THEN rank is 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.10)
+
+        rank = db.get_nick_rank("unknown_user")
+        assert rank == UsageRank(rank=0, total=1)
+
+    def test_nick_rank_scoped_to_channel(self, tmp_path: Path) -> None:
+        """GIVEN usage in multiple channels WHEN ranking with channel THEN scoped."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        # alice is top globally but not in #dev
+        db.log_usage("alice", "#general", "ask", "gpt-4", 100, 50, 0.50)
+        db.log_usage("alice", "#dev", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#dev", "ask", "gpt-4", 100, 50, 0.10)
+
+        rank = db.get_nick_rank("alice", channel="#dev")
+        assert rank == UsageRank(rank=2, total=2)
+
+    def test_nick_rank_empty_db(self, tmp_path: Path) -> None:
+        """GIVEN no usage data WHEN ranking nick THEN rank is 0 total is 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        rank = db.get_nick_rank("anyone")
+        assert rank == UsageRank(rank=0, total=0)

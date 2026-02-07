@@ -48,6 +48,16 @@ class UsageBreakdown(NamedTuple):
     total_cost: float
 
 
+class UsageRank(NamedTuple):
+    """Rank position within a leaderboard.
+
+    rank=0 means the entry has no usage data; rank=1 is the top spender.
+    """
+
+    rank: int  # 1-based position, 0 = no data
+    total: int  # total entries in the leaderboard
+
+
 class LLMDatabase:
     """SQLite database for LLM plugin persistence.
 
@@ -377,5 +387,192 @@ class LLMDatabase:
                 )
                 for row in rows
             ]
+        finally:
+            conn.close()
+
+    def get_usage_summary_for_channel(
+        self, channel: str, since: float | None = None
+    ) -> UsageSummary:
+        """Get aggregated usage statistics for a specific channel.
+
+        Args:
+            channel: IRC channel name to filter by.
+            since: Optional Unix timestamp filter.
+
+        Returns:
+            UsageSummary with totals for the given channel.
+        """
+        conn = self._connect()
+        try:
+            if since is not None:
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                    "FROM usage WHERE channel = ? AND timestamp >= ?",
+                    (channel, since),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                    "FROM usage WHERE channel = ?",
+                    (channel,),
+                ).fetchone()
+            if row is None:
+                return UsageSummary(0, 0, 0, 0.0)
+            return UsageSummary(
+                total_requests=row[0],
+                total_prompt_tokens=row[1],
+                total_completion_tokens=row[2],
+                total_cost=row[3],
+            )
+        finally:
+            conn.close()
+
+    def get_usage_summary_for_nick(
+        self, nick: str, since: float | None = None, channel: str | None = None
+    ) -> UsageSummary:
+        """Get aggregated usage statistics for a specific nick.
+
+        Args:
+            nick: IRC nick to filter by.
+            since: Optional Unix timestamp filter.
+            channel: Optional channel to further scope the query.
+
+        Returns:
+            UsageSummary with totals for the given nick (optionally in a channel).
+        """
+        conn = self._connect()
+        try:
+            conditions = ["nick = ?"]
+            params: list[object] = [nick]
+            if channel is not None:
+                conditions.append("channel = ?")
+                params.append(channel)
+            if since is not None:
+                conditions.append("timestamp >= ?")
+                params.append(since)
+            where = " AND ".join(conditions)
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                f"FROM usage WHERE {where}",
+                tuple(params),
+            ).fetchone()
+            if row is None:
+                return UsageSummary(0, 0, 0, 0.0)
+            return UsageSummary(
+                total_requests=row[0],
+                total_prompt_tokens=row[1],
+                total_completion_tokens=row[2],
+                total_cost=row[3],
+            )
+        finally:
+            conn.close()
+
+    def get_channel_rank(self, channel: str, since: float | None = None) -> UsageRank:
+        """Get the cost rank of a channel among all channels.
+
+        Args:
+            channel: IRC channel name.
+            since: Optional Unix timestamp filter.
+
+        Returns:
+            UsageRank with 1-based rank (0 if channel has no usage).
+        """
+        return self._get_rank("channel", channel, since)
+
+    def get_nick_rank(
+        self, nick: str, since: float | None = None, channel: str | None = None
+    ) -> UsageRank:
+        """Get the cost rank of a nick among all nicks.
+
+        Args:
+            nick: IRC nick.
+            since: Optional Unix timestamp filter.
+            channel: Optional channel to scope the ranking.
+
+        Returns:
+            UsageRank with 1-based rank (0 if nick has no usage).
+        """
+        return self._get_rank("nick", nick, since, scope_channel=channel)
+
+    def _get_rank(
+        self,
+        dimension: str,
+        value: str,
+        since: float | None,
+        scope_channel: str | None = None,
+    ) -> UsageRank:
+        """Compute the cost rank of a value within a dimension.
+
+        Uses a count-of-higher approach for SQLite compatibility (no window
+        functions required): rank = number of entries with strictly higher
+        total cost + 1.
+
+        Args:
+            dimension: Column to rank by ("nick" or "channel").
+            value: The specific nick or channel to find the rank of.
+            since: Optional Unix timestamp filter.
+            scope_channel: Optional channel to scope the query (only for nick ranking).
+
+        Returns:
+            UsageRank with 1-based rank, or rank=0 if the value has no usage.
+        """
+        assert dimension in ("nick", "channel"), f"Invalid dimension: {dimension}"
+        conn = self._connect()
+        try:
+            # Build WHERE clause fragments
+            time_filter = "timestamp >= ?" if since is not None else None
+            channel_filter = "channel = ?" if scope_channel is not None else None
+
+            base_conditions = [c for c in (time_filter, channel_filter) if c]
+            base_where = (" WHERE " + " AND ".join(base_conditions)) if base_conditions else ""
+            base_params: list[object] = []
+            if since is not None:
+                base_params.append(since)
+            if scope_channel is not None:
+                base_params.append(scope_channel)
+
+            # Total distinct entries
+            total_row = conn.execute(
+                f"SELECT COUNT(DISTINCT {dimension}) FROM usage{base_where}",
+                tuple(base_params),
+            ).fetchone()
+            total = total_row[0] if total_row else 0
+
+            # Get the value's total cost
+            value_conditions = [f"{dimension} = ?"] + list(base_conditions)
+            value_where = " AND ".join(value_conditions)
+            value_params: list[object] = [value, *base_params]
+
+            cost_row = conn.execute(
+                f"SELECT COALESCE(SUM(cost), 0.0) FROM usage WHERE {value_where}",
+                tuple(value_params),
+            ).fetchone()
+            value_cost = cost_row[0] if cost_row else 0.0
+
+            if value_cost == 0.0:
+                # Check if there's actually any usage for this value
+                count_row = conn.execute(
+                    f"SELECT COUNT(*) FROM usage WHERE {value_where}",
+                    tuple(value_params),
+                ).fetchone()
+                if count_row is None or count_row[0] == 0:
+                    return UsageRank(rank=0, total=total)
+
+            # Count entries with strictly higher cost
+            rank_sql = (
+                f"SELECT COUNT(*) FROM "
+                f"(SELECT {dimension}, SUM(cost) AS total_cost "
+                f"FROM usage{base_where} "
+                f"GROUP BY {dimension}) sub "
+                f"WHERE sub.total_cost > ?"
+            )
+            rank_params: list[object] = [*base_params, value_cost]
+            rank_row = conn.execute(rank_sql, tuple(rank_params)).fetchone()
+            rank = (rank_row[0] + 1) if rank_row else 1
+
+            return UsageRank(rank=rank, total=total)
         finally:
             conn.close()

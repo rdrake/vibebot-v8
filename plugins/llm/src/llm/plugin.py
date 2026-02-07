@@ -1064,9 +1064,24 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """(takes no arguments)
 
-        Show API usage statistics (admin only).
-        Displays today's and this month's cost, top users, and top channels.
+        Show API usage statistics.
+
+        In a channel: shows channel stats and your personal stats (any user).
+        Via PM: shows global overview with top users and channels (admin only).
         """
+        if msg.channel:
+            self._usage_channel(irc, msg)
+        else:
+            # PM mode requires admin
+            if not ircdb.checkCapability(msg.prefix, "admin"):
+                irc.error(_("You need the 'admin' capability to view global usage stats."))
+                return
+            self._usage_global(irc, msg)
+
+    usage = wrap(usage, [])
+
+    def _usage_global(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Show global usage overview via PM (admin only)."""
         # Today: midnight UTC
         today_midnight = (
             datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -1097,7 +1112,36 @@ class LLM(callbacks.Plugin):
 
         irc.reply(" | ".join(parts), private=True)
 
-    usage = wrap(usage, ["admin"])
+    def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Show channel and personal usage stats in-channel."""
+        channel = msg.channel
+        nick = self._get_nick(msg)
+
+        # This month: first of month midnight UTC
+        month_start = (
+            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
+        chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
+        nick_summary = self.db.get_usage_summary_for_nick(nick, since=month_start, channel=channel)
+        chan_rank = self.db.get_channel_rank(channel, since=month_start)
+        nick_rank = self.db.get_nick_rank(nick, since=month_start, channel=channel)
+
+        # Format channel part
+        chan_part = f"{channel} this month: ${chan_summary.total_cost:.4f}"
+        chan_part += f" ({chan_summary.total_requests} requests"
+        if chan_rank.rank > 0:
+            chan_part += f", rank {chan_rank.rank}/{chan_rank.total} channels"
+        chan_part += ")"
+
+        # Format personal part
+        nick_part = f"You: ${nick_summary.total_cost:.4f}"
+        nick_part += f" ({nick_summary.total_requests} requests"
+        if nick_rank.rank > 0:
+            nick_part += f", rank {nick_rank.rank}/{nick_rank.total} users"
+        nick_part += ")"
+
+        irc.reply(f"{chan_part} | {nick_part}", prefixNick=False)
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
