@@ -63,16 +63,6 @@ class TestPluginCommandRouting:
 class TestPluginLifecycleIntegration:
     """Test plugin initialization, reload, and shutdown behaviors."""
 
-    @pytest.fixture
-    def mock_irc(self) -> MagicMock:
-        """Create a mock IRC object."""
-        irc = MagicMock()
-        irc.nick = "testbot"
-        irc.state = MagicMock()
-        irc.state.channels = {}
-        irc.state.capabilities_ack = set()
-        return irc
-
     def test_plugin_initializes_all_components(self, mock_irc: MagicMock) -> None:
         """GIVEN fresh plugin WHEN initialized THEN all components created."""
         from llm.plugin import LLM
@@ -149,30 +139,15 @@ class TestPluginContextIntegration:
     """Test plugin context management integration."""
 
     @pytest.fixture
-    def plugin_with_context(self) -> tuple:
+    def plugin_with_context(self, mock_irc: MagicMock) -> tuple:
         """Create plugin with initialized context."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_irc.nick = "testbot"
+        from .conftest import make_registry_side_effect, plugin_init_patches
 
         with (
-            patch.object(
-                LLM,
-                "registryValue",
-                side_effect=lambda key, *args: {
-                    "httpRoot": "",
-                    "contextMaxMessages": 20,
-                    "contextTimeoutMinutes": 30,
-                    "contextEnabled": True,
-                    "channelContextMaxMessages": 10,
-                }.get(key, ""),
-            ),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(mock_database=False),
         ):
             plugin = LLM(mock_irc)
 
@@ -203,32 +178,17 @@ class TestDoPrivmsgIntegration:
     """Test doPrivmsg message tracking integration."""
 
     @pytest.fixture
-    def plugin_for_tracking(self) -> tuple:
+    def plugin_for_tracking(self, mock_irc: MagicMock) -> tuple:
         """Create plugin configured for message tracking."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_irc.nick = "testbot"
+        from .conftest import make_registry_side_effect, plugin_init_patches
 
-        def registry_side_effect(key, *args):
-            return {
-                "httpRoot": "",
-                "databasePath": "",
-                "contextMaxMessages": 20,
-                "contextTimeoutMinutes": 30,
-                "contextEnabled": True,
-                "channelContextMaxMessages": 10,
-                "contextTrackAllMessages": True,
-            }.get(key, True)
+        registry_side_effect = make_registry_side_effect({"contextTrackAllMessages": True})
 
         with (
             patch.object(LLM, "registryValue", side_effect=registry_side_effect),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.LLMDatabase"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
+            plugin_init_patches(),
         ):
             plugin = LLM(mock_irc)
             plugin.registryValue = MagicMock(side_effect=registry_side_effect)
@@ -420,19 +380,16 @@ class TestFullCommandFlow:
         """Create fully mocked plugin for command testing."""
         from llm.plugin import LLM
 
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
         mock_irc = MagicMock()
         mock_irc.nick = "testbot"
         mock_irc.state = MagicMock()
         mock_irc.state.channels = {"#test": MagicMock(topic="Test channel")}
         mock_irc.state.capabilities_ack = {"message-tags"}
 
-        def registry_side_effect(key, *args):
-            return {
-                "httpRoot": "",
-                "contextMaxMessages": 20,
-                "contextTimeoutMinutes": 30,
-                "contextEnabled": True,
-                "channelContextMaxMessages": 10,
+        registry_side_effect = make_registry_side_effect(
+            {
                 "contextTrackAllMessages": False,
                 "askApiKey": "test-key",
                 "askModel": "gpt-4",
@@ -446,15 +403,12 @@ class TestFullCommandFlow:
                 "maxPromptLength": 10000,
                 "commandPrefixes": [".", "/"],
                 "httpUrlBase": "http://localhost:8080/llm",
-            }.get(key, "")
+            }
+        )
 
         with (
             patch.object(LLM, "registryValue", side_effect=registry_side_effect),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
+            plugin_init_patches(mock_database=False),
         ):
             plugin = LLM(mock_irc)
             plugin.registryValue = MagicMock(side_effect=registry_side_effect)

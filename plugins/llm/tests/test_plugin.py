@@ -691,7 +691,7 @@ class TestDoPrivmsg:
         plugin.context.add_message.assert_called_once()
 
     def test_doprivmsg_tracks_normal_messages(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN normal message WHEN doPrivmsg called THEN tracks message."""
+        """GIVEN normal message WHEN doPrivmsg called THEN tracks message with channel config."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
         with (
@@ -700,9 +700,10 @@ class TestDoPrivmsg:
         ):
             plugin.doPrivmsg(mock_irc, mock_msg)
 
-        plugin.context.add_message.assert_called_once_with(
-            "usernick", "#channel", "user", "hello world"
-        )
+        # add_message called with channel-specific config kwarg
+        call_args = plugin.context.add_message.call_args
+        assert call_args[0] == ("usernick", "#channel", "user", "hello world")
+        assert "config" in call_args[1]
 
 
 class TestCommandFlows:
@@ -1606,49 +1607,27 @@ class TestAllowConcurrent:
 class TestPluginDatabaseWiring:
     """Test database persistence wiring in plugin lifecycle."""
 
-    @pytest.fixture
-    def mock_irc(self) -> MagicMock:
-        """Create a mock IRC object."""
-        irc = MagicMock()
-        irc.nick = "testbot"
-        irc.state = MagicMock()
-        irc.state.channels = {}
-        irc.state.capabilities_ack = set()
-        return irc
-
-    def _registry_side_effect(self, key: str, *args) -> object:
-        """Registry side effect with databasePath."""
-        return {
-            "httpRoot": "",
-            "databasePath": "",
-            "contextMaxMessages": 20,
-            "contextTimeoutMinutes": 30,
-            "contextEnabled": True,
-            "channelContextMaxMessages": 10,
-        }.get(key, "")
-
     def test_plugin_creates_database(self, mock_irc: MagicMock) -> None:
         """GIVEN plugin WHEN initialized THEN LLMDatabase is instantiated."""
         from llm.plugin import LLM
 
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
         with (
-            patch.object(LLM, "registryValue", side_effect=self._registry_side_effect),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.LLMDatabase") as mock_db_cls,
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches() as mocks,
         ):
             plugin = LLM(mock_irc)
 
-        mock_db_cls.assert_called_once()
-        assert plugin.db is mock_db_cls.return_value
+        mocks["LLMDatabase"].assert_called_once()
+        assert plugin.db is mocks["LLMDatabase"].return_value
 
     def test_plugin_reload_reminders_reschedules_future(self, mock_irc: MagicMock) -> None:
         """GIVEN future reminder in DB WHEN plugin starts THEN schedule.addEvent called."""
         from llm.persistence import ReminderRow
         from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
 
         future_time = time.time() + 3600  # 1 hour from now
         reminder = ReminderRow(
@@ -1665,13 +1644,9 @@ class TestPluginDatabaseWiring:
         mock_db.load_pending_reminders.return_value = [reminder]
 
         with (
-            patch.object(LLM, "registryValue", side_effect=self._registry_side_effect),
-            patch("llm.plugin.LLMService"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(mock_database=False),
             patch("llm.plugin.LLMDatabase", return_value=mock_db),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
             patch("llm.plugin.schedule.addEvent") as mock_add_event,
         ):
             plugin = LLM(mock_irc)
@@ -1689,6 +1664,8 @@ class TestPluginDatabaseWiring:
         from llm.persistence import ReminderRow
         from llm.plugin import LLM
 
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
         past_time = time.time() - 60  # 1 minute ago
         reminder = ReminderRow(
             id=1,
@@ -1704,13 +1681,9 @@ class TestPluginDatabaseWiring:
         mock_db.load_pending_reminders.return_value = [reminder]
 
         with (
-            patch.object(LLM, "registryValue", side_effect=self._registry_side_effect),
-            patch("llm.plugin.LLMService"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(mock_database=False),
             patch("llm.plugin.LLMDatabase", return_value=mock_db),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
             patch("llm.plugin.world") as mock_world,
         ):
             mock_world.ircs = [mock_irc]
@@ -1729,17 +1702,15 @@ class TestPluginDatabaseWiring:
         """GIVEN plugin with database WHEN die called THEN db.delete_expired_reminders called."""
         from llm.plugin import LLM
 
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
         mock_db = MagicMock()
         mock_db.load_pending_reminders.return_value = []
 
         with (
-            patch.object(LLM, "registryValue", side_effect=self._registry_side_effect),
-            patch("llm.plugin.LLMService"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(mock_database=False),
             patch("llm.plugin.LLMDatabase", return_value=mock_db),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
         ):
             plugin = LLM(mock_irc)
 

@@ -18,7 +18,11 @@ class Role:
 
 @dataclass
 class ContextConfig:
-    """Configuration for conversation context."""
+    """Configuration for conversation context.
+
+    Used both as default config in the ConversationContext constructor
+    and as per-channel overrides passed to individual operations.
+    """
 
     max_messages: int  # Maximum messages to keep per conversation
     timeout_minutes: int  # Clear context after this many minutes of inactivity
@@ -42,13 +46,18 @@ class ConversationContext:
     """Thread-safe conversation context manager.
 
     Stores conversation history per user per channel with automatic expiry.
+
+    All public methods accept an optional ``config`` parameter.  When provided
+    it overrides the instance-level default for that single call, enabling
+    per-channel configuration without having to mutate shared state.
     """
 
     def __init__(self, config: ContextConfig) -> None:
         """Initialize context manager.
 
         Args:
-            config: Context configuration
+            config: Default context configuration (used when callers
+                do not supply a per-call override)
         """
         self.config = config
         self._lock = Lock()
@@ -58,7 +67,7 @@ class ConversationContext:
         self._channel_contexts: dict[str, Conversation] = {}
 
     def update_config(self, config: ContextConfig) -> None:
-        """Update configuration without losing conversation data.
+        """Update default configuration without losing conversation data.
 
         Args:
             config: New configuration to apply
@@ -85,34 +94,49 @@ class ConversationContext:
         """
         return (nick.lower(), channel.lower())
 
-    def _is_expired(self, conversation: Conversation) -> bool:
+    def _effective(self, config: ContextConfig | None) -> ContextConfig:
+        """Return the per-call config or fall back to the instance default."""
+        return config if config is not None else self.config
+
+    def _is_expired(self, conversation: Conversation, cfg: ContextConfig) -> bool:
         """Check if a conversation has expired.
 
         Args:
             conversation: Conversation to check
+            cfg: Configuration to use for timeout/enabled checks
 
         Returns:
             True if expired
         """
-        if not self.config.enabled:
+        if not cfg.enabled:
             return True
-        timeout_seconds = self.config.timeout_minutes * 60
+        timeout_seconds = cfg.timeout_minutes * 60
         return time.time() - conversation.last_activity > timeout_seconds
 
-    def _prune_expired(self) -> None:
+    def _prune_expired(self, cfg: ContextConfig) -> None:
         """Remove expired conversations. Must be called with lock held."""
-        expired_keys = [key for key, conv in self._conversations.items() if self._is_expired(conv)]
+        expired_keys = [
+            key for key, conv in self._conversations.items() if self._is_expired(conv, cfg)
+        ]
         for key in expired_keys:
             del self._conversations[key]
 
         # Also prune expired channel contexts
         expired_channels = [
-            ch for ch, ctx in self._channel_contexts.items() if self._is_expired(ctx)
+            ch for ch, ctx in self._channel_contexts.items() if self._is_expired(ctx, cfg)
         ]
         for ch in expired_channels:
             del self._channel_contexts[ch]
 
-    def add_message(self, nick: str, channel: str, role: str, content: str) -> None:
+    def add_message(
+        self,
+        nick: str,
+        channel: str,
+        role: str,
+        content: str,
+        *,
+        config: ContextConfig | None = None,
+    ) -> None:
         """Add a message to conversation history.
 
         Args:
@@ -120,12 +144,14 @@ class ConversationContext:
             channel: IRC channel
             role: Message role ("user" or "assistant")
             content: Message content
+            config: Per-channel config override (uses instance default if None)
         """
         with self._lock:
-            if not self.config.enabled:
+            cfg = self._effective(config)
+            if not cfg.enabled:
                 return
 
-            self._prune_expired()
+            self._prune_expired(cfg)
 
             key = self._get_key(nick, channel)
             if key not in self._conversations:
@@ -136,36 +162,52 @@ class ConversationContext:
             conv.last_activity = time.time()
 
             # Trim to max messages, keeping most recent
-            if len(conv.messages) > self.config.max_messages:
+            if len(conv.messages) > cfg.max_messages:
                 # Remove oldest messages, keeping most recent
-                conv.messages = conv.messages[-self.config.max_messages :]
+                conv.messages = conv.messages[-cfg.max_messages :]
 
-    def get_messages(self, nick: str, channel: str) -> list[dict[str, str]]:
+    def get_messages(
+        self,
+        nick: str,
+        channel: str,
+        *,
+        config: ContextConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Get conversation history for LiteLLM.
 
         Args:
             nick: User's IRC nick
             channel: IRC channel
+            config: Per-channel config override (uses instance default if None)
 
         Returns:
             List of message dicts for LiteLLM
         """
         with self._lock:
-            if not self.config.enabled:
+            cfg = self._effective(config)
+            if not cfg.enabled:
                 return []
 
-            self._prune_expired()
+            self._prune_expired(cfg)
 
             key = self._get_key(nick, channel)
             conv = self._conversations.get(key)
 
-            if conv is None or self._is_expired(conv):
+            if conv is None or self._is_expired(conv, cfg):
                 return []
 
             # Return deep copies to prevent external modification
             return [dict(msg) for msg in conv.messages]
 
-    def add_channel_message(self, channel: str, nick: str, role: str, content: str) -> None:
+    def add_channel_message(
+        self,
+        channel: str,
+        nick: str,
+        role: str,
+        content: str,
+        *,
+        config: ContextConfig | None = None,
+    ) -> None:
         """Add a message to shared channel context.
 
         Channel context is shared across all users in a channel, allowing
@@ -176,12 +218,14 @@ class ConversationContext:
             nick: Nick of who sent the message
             role: Message role ("user" or "assistant")
             content: Message content
+            config: Per-channel config override (uses instance default if None)
         """
         with self._lock:
-            if not self.config.enabled:
+            cfg = self._effective(config)
+            if not cfg.enabled:
                 return
 
-            self._prune_expired()
+            self._prune_expired(cfg)
 
             ch_key = channel.lower()
             if ch_key not in self._channel_contexts:
@@ -192,11 +236,15 @@ class ConversationContext:
             ctx.last_activity = time.time()
 
             # Trim to max messages
-            if len(ctx.messages) > self.config.channel_max_messages:
-                ctx.messages = ctx.messages[-self.config.channel_max_messages :]
+            if len(ctx.messages) > cfg.channel_max_messages:
+                ctx.messages = ctx.messages[-cfg.channel_max_messages :]
 
     def get_channel_messages(
-        self, channel: str, exclude_nick: str | None = None
+        self,
+        channel: str,
+        exclude_nick: str | None = None,
+        *,
+        config: ContextConfig | None = None,
     ) -> list[dict[str, str]]:
         """Get shared channel context.
 
@@ -204,20 +252,22 @@ class ConversationContext:
             channel: IRC channel
             exclude_nick: Optional nick to exclude (typically the current user,
                 since their messages are in personal context)
+            config: Per-channel config override (uses instance default if None)
 
         Returns:
             List of channel messages with nick, role, and content
         """
         with self._lock:
-            if not self.config.enabled:
+            cfg = self._effective(config)
+            if not cfg.enabled:
                 return []
 
-            self._prune_expired()
+            self._prune_expired(cfg)
 
             ch_key = channel.lower()
             ctx = self._channel_contexts.get(ch_key)
 
-            if ctx is None or self._is_expired(ctx):
+            if ctx is None or self._is_expired(ctx, cfg):
                 return []
 
             # Filter out excluded nick if specified
@@ -267,7 +317,7 @@ class ConversationContext:
             Dictionary with current statistics
         """
         with self._lock:
-            self._prune_expired()
+            self._prune_expired(self.config)
 
             total_messages = sum(len(conv.messages) for conv in self._conversations.values())
             channel_messages = sum(len(ctx.messages) for ctx in self._channel_contexts.values())

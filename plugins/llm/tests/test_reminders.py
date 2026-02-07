@@ -149,39 +149,15 @@ class TestReminderHelperMethods:
     """Tests for reminder helper methods on the plugin."""
 
     @pytest.fixture
-    def mock_irc(self) -> MagicMock:
-        """Create a mock IRC object."""
-        irc = MagicMock()
-        irc.nick = "testbot"
-        irc.state = MagicMock()
-        irc.state.channels = {}
-        irc.state.capabilities_ack = set()
-        return irc
-
-    @pytest.fixture
     def plugin(self, mock_irc: MagicMock) -> MagicMock:
         """Create a plugin instance with reminder support."""
         from llm.plugin import LLM
 
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
         with (
-            patch.object(
-                LLM,
-                "registryValue",
-                side_effect=lambda key, *args: {
-                    "httpRoot": "",
-                    "databasePath": "",
-                    "contextMaxMessages": 20,
-                    "contextTimeoutMinutes": 30,
-                    "contextEnabled": True,
-                    "channelContextMaxMessages": 10,
-                }.get(key, ""),
-            ),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.LLMDatabase"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook"),
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
+            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
+            plugin_init_patches(),
         ):
             plugin = LLM(mock_irc)
 

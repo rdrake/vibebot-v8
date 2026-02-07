@@ -387,8 +387,9 @@ class LLM(callbacks.Plugin):
         message_text = msg.args[1] if len(msg.args) > 1 else ""
 
         # Store in conversation context for richer follow-up questions
-        self.context.add_message(nick, channel, Role.USER, message_text)
-        self.context.add_channel_message(channel, nick, Role.USER, message_text)
+        ctx_cfg = self._get_context_config(channel)
+        self.context.add_message(nick, channel, Role.USER, message_text, config=ctx_cfg)
+        self.context.add_channel_message(channel, nick, Role.USER, message_text, config=ctx_cfg)
 
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Track channels the bot is joining for startup notification.
@@ -479,7 +480,10 @@ class LLM(callbacks.Plugin):
             return f"v{__version__}"
 
     def _init_context(self) -> None:
-        """Initialize context manager from current config (called once at startup)."""
+        """Initialize context manager with global defaults (called once at startup).
+
+        Per-channel overrides are read at query time via ``_get_context_config``.
+        """
         config = ContextConfig(
             max_messages=self.registryValue("contextMaxMessages"),
             timeout_minutes=self.registryValue("contextTimeoutMinutes"),
@@ -487,6 +491,23 @@ class LLM(callbacks.Plugin):
             channel_max_messages=self.registryValue("channelContextMaxMessages"),
         )
         self.context = ConversationContext(config)
+
+    def _get_context_config(self, channel: str) -> ContextConfig:
+        """Read channel-specific context configuration.
+
+        Args:
+            channel: IRC channel name (passed to ``registryValue``
+                for per-channel overrides)
+
+        Returns:
+            ContextConfig with channel-specific values
+        """
+        return ContextConfig(
+            max_messages=self.registryValue("contextMaxMessages", channel),
+            timeout_minutes=self.registryValue("contextTimeoutMinutes", channel),
+            enabled=self.registryValue("contextEnabled", channel),
+            channel_max_messages=self.registryValue("channelContextMaxMessages", channel),
+        )
 
     def _reload_reminders(self, irc: callbacks.Irc) -> None:
         """Reload persisted reminders from database on startup.
@@ -702,13 +723,16 @@ class LLM(callbacks.Plugin):
         """
         # Store conversation context if enabled and no error occurred
         if result.error is None and self._get_context_enabled(channel):
+            ctx_cfg = self._get_context_config(channel)
             # Store in personal context (without icon for clean history)
-            self.context.add_message(nick, channel, Role.USER, text)
-            self.context.add_message(nick, channel, Role.ASSISTANT, response)
+            self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
+            self.context.add_message(nick, channel, Role.ASSISTANT, response, config=ctx_cfg)
 
             # Store in shared channel context (allows group conversation flow)
-            self.context.add_channel_message(channel, nick, Role.USER, text)
-            self.context.add_channel_message(channel, irc.nick, Role.ASSISTANT, response)
+            self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
+            self.context.add_channel_message(
+                channel, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
+            )
 
         # Log usage
         if result.cost > 0 or result.prompt_tokens > 0:
@@ -752,8 +776,11 @@ class LLM(callbacks.Plugin):
 
             # Get conversation history (personal + shared channel) if context enabled
             if self._get_context_enabled(channel):
-                history = self.context.get_messages(nick, channel)
-                channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+                ctx_cfg = self._get_context_config(channel)
+                history = self.context.get_messages(nick, channel, config=ctx_cfg)
+                channel_history = self.context.get_channel_messages(
+                    channel, exclude_nick=nick, config=ctx_cfg
+                )
             else:
                 history, channel_history = [], []
 
@@ -827,8 +854,11 @@ class LLM(callbacks.Plugin):
         with self._trace_request("code", nick, channel):
             # Get conversation history (personal + shared channel) if context enabled
             if self._get_context_enabled(channel):
-                history = self.context.get_messages(nick, channel)
-                channel_history = self.context.get_channel_messages(channel, exclude_nick=nick)
+                ctx_cfg = self._get_context_config(channel)
+                history = self.context.get_messages(nick, channel, config=ctx_cfg)
+                channel_history = self.context.get_channel_messages(
+                    channel, exclude_nick=nick, config=ctx_cfg
+                )
             else:
                 history, channel_history = [], []
 
