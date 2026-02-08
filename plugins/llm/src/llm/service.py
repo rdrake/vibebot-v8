@@ -1317,8 +1317,9 @@ Rules:
             image_data = response.data[0]
 
             if hasattr(image_data, "url") and image_data.url:
+                local_url = self._download_and_save_image(image_data.url)
                 return ImageResult(
-                    content=image_data.url,
+                    content=local_url or image_data.url,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     cost=cost,
@@ -1668,6 +1669,33 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             self.log.error("Failed to save code file: %s", e)
             return None
 
+    def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
+        """Save raw image bytes to HTTP server and return public URL.
+
+        Args:
+            image_bytes: Raw image bytes
+            extension: Image file extension (default: png)
+
+        Returns:
+            Public URL to saved image or None on error
+        """
+        http_root, url_base = self.get_http_paths()
+
+        # Generate unique filename
+        hash_input = hashlib.sha256(image_bytes[:256]).hexdigest() + str(time.time())
+        hash_str = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+        filename = f"img_{hash_str}.{extension}"
+        filepath = Path(http_root) / filename
+
+        try:
+            Path(http_root).mkdir(parents=True, exist_ok=True)
+            with AtomicFile(str(filepath), "wb") as f:
+                f.write(image_bytes)
+            return f"{url_base}/{filename}"
+        except OSError as e:
+            self.log.error("Failed to save image file: %s", e)
+            return None
+
     def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
         """Save base64-encoded image to HTTP server.
 
@@ -1681,29 +1709,66 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Returns:
             Public URL to saved image or None on error
         """
-        http_root, url_base = self.get_http_paths()
-
-        # Decode base64
         try:
             image_bytes = base64.b64decode(b64_data)
         except base64.binascii.Error as e:
             self.log.error("Invalid base64 image data: %s", e)
             return None
 
-        # Generate unique filename
-        hash_input = f"{b64_data[:100]}{time.time()}".encode()
-        hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
-        filename = f"img_{hash_str}.{extension}"
-        filepath = Path(http_root) / filename
+        return self._save_image_bytes(image_bytes, extension)
 
-        # Write binary image file
+    def _download_and_save_image(self, url: str) -> str | None:
+        """Download an image from a URL and save it locally.
+
+        Args:
+            url: Image URL to download
+
+        Returns:
+            Local public URL to saved image or None on error
+        """
+        import urllib.request
+
+        max_size = 20 * 1024 * 1024  # 20 MB
+
+        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+
         try:
-            Path(http_root).mkdir(parents=True, exist_ok=True)
-            with AtomicFile(str(filepath), "wb") as f:
-                f.write(image_bytes)
-            return f"{url_base}/{filename}"
-        except OSError as e:
-            self.log.error("Failed to save image file: %s", e)
+            req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                content_type = resp.headers.get("Content-Type", "")
+                data = resp.read(max_size + 1)
+
+                if len(data) > max_size:
+                    self.log.warning("Image too large to download: %s", url[:200])
+                    return None
+
+            # Infer extension from Content-Type
+            ct_map = {
+                "image/png": "png",
+                "image/jpeg": "jpg",
+                "image/webp": "webp",
+                "image/gif": "gif",
+            }
+            extension = ct_map.get(content_type.split(";")[0].strip().lower(), "")
+
+            # Fall back to URL path extension
+            if not extension:
+                from urllib.parse import urlparse
+
+                path = urlparse(url).path.lower()
+                for ext in ("png", "jpg", "jpeg", "webp", "gif"):
+                    if path.endswith(f".{ext}"):
+                        extension = ext
+                        break
+
+            # Default to png
+            if not extension:
+                extension = "png"
+
+            return self._save_image_bytes(data, extension)
+
+        except Exception as e:
+            self.log.warning("Failed to download image from %s: %s", url[:200], e)
             return None
 
     def _build_messages(

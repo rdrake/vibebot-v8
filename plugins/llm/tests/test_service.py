@@ -974,6 +974,187 @@ class TestSaveImageToHttp:
         assert result is None
 
 
+class TestSaveImageBytes:
+    """Tests for _save_image_bytes functionality."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": "/tmp/test_llm_images",
+                "httpUrlBase": "https://example.com/llm",
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def test_save_image_bytes_success(self, tmp_path: object) -> None:
+        """GIVEN valid image bytes WHEN saving THEN returns URL."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        image_data = b"\x89PNG\r\n\x1a\n" + b"fake image data"
+        result = self.service._save_image_bytes(image_data)
+
+        assert result is not None
+        assert result.startswith("https://example.com/llm/img_")
+        assert result.endswith(".png")
+
+    def test_save_image_bytes_custom_extension(self, tmp_path: object) -> None:
+        """GIVEN custom extension WHEN saving THEN uses that extension."""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        result = self.service._save_image_bytes(b"fake jpeg data", extension="jpg")
+
+        assert result is not None
+        assert result.endswith(".jpg")
+
+    def test_save_image_bytes_writes_file(self, tmp_path: object) -> None:
+        """GIVEN image bytes WHEN saving THEN file exists on disk."""
+        from pathlib import Path
+
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        image_data = b"\x89PNG\r\n\x1a\nfake"
+        self.service._save_image_bytes(image_data)
+
+        png_files = list(Path(str(tmp_path)).glob("img_*.png"))
+        assert len(png_files) == 1
+        assert png_files[0].read_bytes() == image_data
+
+
+class TestDownloadAndSaveImage:
+    """Tests for _download_and_save_image functionality."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        """Set up test fixtures."""
+        self.mock_plugin = Mock()
+        self.mock_plugin.log = Mock()
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": "/tmp/test_llm_images",
+                "httpUrlBase": "https://example.com/llm",
+                "drawTimeout": 60,
+                "timeout": 30,
+                "fileCleanupAge": 24,
+                "fileCleanupMax": 1000,
+            }.get(key)
+        )
+        self.service = LLMService(self.mock_plugin)
+
+    def test_download_success(self) -> None:
+        """GIVEN valid image URL WHEN downloading THEN returns local URL."""
+        mock_resp = Mock()
+        mock_resp.read.return_value = b"\x89PNG\r\n\x1a\nfake"
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch.object(
+                self.service,
+                "_save_image_bytes",
+                return_value="https://example.com/llm/img_abc.png",
+            ) as mock_save,
+        ):
+            result = self.service._download_and_save_image("https://provider.com/img.png")
+
+        assert result == "https://example.com/llm/img_abc.png"
+        mock_save.assert_called_once_with(b"\x89PNG\r\n\x1a\nfake", "png")
+
+    def test_download_jpeg_content_type(self) -> None:
+        """GIVEN JPEG content type WHEN downloading THEN uses jpg extension."""
+        mock_resp = Mock()
+        mock_resp.read.return_value = b"fake jpeg"
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch.object(self.service, "_save_image_bytes", return_value="url") as mock_save,
+        ):
+            self.service._download_and_save_image("https://provider.com/img")
+
+        mock_save.assert_called_once_with(b"fake jpeg", "jpg")
+
+    def test_download_infers_extension_from_url(self) -> None:
+        """GIVEN no content type WHEN URL has extension THEN infers from URL."""
+        mock_resp = Mock()
+        mock_resp.read.return_value = b"fake webp"
+        mock_resp.headers = {"Content-Type": "application/octet-stream"}
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch.object(self.service, "_save_image_bytes", return_value="url") as mock_save,
+        ):
+            self.service._download_and_save_image("https://provider.com/img.webp")
+
+        mock_save.assert_called_once_with(b"fake webp", "webp")
+
+    def test_download_defaults_to_png(self) -> None:
+        """GIVEN no content type and no URL extension WHEN downloading THEN defaults to png."""
+        mock_resp = Mock()
+        mock_resp.read.return_value = b"mystery image"
+        mock_resp.headers = {"Content-Type": ""}
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch.object(self.service, "_save_image_bytes", return_value="url") as mock_save,
+        ):
+            self.service._download_and_save_image("https://provider.com/generate?id=123")
+
+        mock_save.assert_called_once_with(b"mystery image", "png")
+
+    def test_download_too_large(self) -> None:
+        """GIVEN image exceeds 20 MB WHEN downloading THEN returns None."""
+        mock_resp = Mock()
+        mock_resp.read.return_value = b"x" * (20 * 1024 * 1024 + 1)
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = self.service._download_and_save_image("https://provider.com/huge.png")
+
+        assert result is None
+
+    def test_download_network_error(self) -> None:
+        """GIVEN network error WHEN downloading THEN returns None."""
+        import urllib.error
+
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")
+        ):
+            result = self.service._download_and_save_image("https://provider.com/img.png")
+
+        assert result is None
+
+
 class TestImageGenerationWithBase64:
     """Tests for image_generation with base64 handling and typing indicators."""
 
@@ -1012,11 +1193,32 @@ class TestImageGenerationWithBase64:
         return msg
 
     def test_image_generation_with_url_response(self) -> None:
-        """GIVEN provider returns URL WHEN generating THEN returns URL directly."""
+        """GIVEN provider returns URL WHEN generating THEN downloads and returns local URL."""
         mock_response = Mock()
         mock_response.data = [Mock(url="https://provider.com/image.png", b64_json=None)]
 
-        with patch("llm.service.litellm.image_generation", return_value=mock_response):
+        with (
+            patch("llm.service.litellm.image_generation", return_value=mock_response),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_abc123.png",
+            ) as mock_download,
+        ):
+            result = self.service.image_generation("a cat")
+
+        mock_download.assert_called_once_with("https://provider.com/image.png")
+        assert result.content == "https://example.com/llm/img_abc123.png"
+
+    def test_image_generation_url_download_failure_falls_back(self) -> None:
+        """GIVEN provider returns URL and download fails WHEN generating THEN falls back to provider URL."""
+        mock_response = Mock()
+        mock_response.data = [Mock(url="https://provider.com/image.png", b64_json=None)]
+
+        with (
+            patch("llm.service.litellm.image_generation", return_value=mock_response),
+            patch.object(self.service, "_download_and_save_image", return_value=None),
+        ):
             result = self.service.image_generation("a cat")
 
         assert result.content == "https://provider.com/image.png"
@@ -1058,7 +1260,10 @@ class TestImageGenerationWithBase64:
         mock_response = Mock()
         mock_response.data = [Mock(url="https://example.com/image.png", b64_json=None)]
 
-        with patch("llm.service.litellm.image_generation", return_value=mock_response):
+        with (
+            patch("llm.service.litellm.image_generation", return_value=mock_response),
+            patch.object(self.service, "_download_and_save_image", return_value=None),
+        ):
             self.service.image_generation("a cat", irc=irc, msg=msg)
 
         # Should have called queueMsg twice - once for active, once for done
@@ -1103,10 +1308,17 @@ class TestImageGenerationWithBase64:
         mock_response = Mock()
         mock_response.data = [Mock(url="https://example.com/image.png", b64_json=None)]
 
-        with patch("llm.service.litellm.image_generation", return_value=mock_response):
+        with (
+            patch("llm.service.litellm.image_generation", return_value=mock_response),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
+        ):
             result = self.service.image_generation("a cat")
 
-        assert result.content == "https://example.com/image.png"
+        assert result.content == "https://example.com/llm/img_local.png"
 
 
 class TestCleanupWithImages:
@@ -1222,7 +1434,10 @@ class TestDrawContext:
             mock_response.data = [Mock(url="https://example.com/img.png", b64_json=None)]
             return mock_response
 
-        with patch("llm.service.litellm.image_generation", side_effect=capture_prompt):
+        with (
+            patch("llm.service.litellm.image_generation", side_effect=capture_prompt),
+            patch.object(self.service, "_download_and_save_image", return_value=None),
+        ):
             self.service.image_generation("a sunset")
 
         assert prompt_used[0] == "a sunset"
@@ -2228,10 +2443,15 @@ class TestDrawAutoRewrite:
             patch("llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]),
             patch("llm.service.litellm.completion", return_value=rewrite_resp),
             patch("llm.service.litellm.completion_cost", return_value=0.01),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
         ):
             result = self.service.image_generation("a dangerous cat")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a friendly cat"
 
     def test_auto_rewrite_on_content_policy_error_succeeds(self) -> None:
@@ -2253,10 +2473,15 @@ class TestDrawAutoRewrite:
             ),
             patch("llm.service.litellm.completion", return_value=rewrite_resp),
             patch("llm.service.litellm.completion_cost", return_value=0.01),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
         ):
             result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_auto_rewrite_multiple_retries_succeeds_on_third(self) -> None:
@@ -2276,10 +2501,15 @@ class TestDrawAutoRewrite:
                 side_effect=[rewrite1, rewrite2],
             ),
             patch("llm.service.litellm.completion_cost", return_value=0.001),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
         ):
             result = self.service.image_generation("test prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "rewrite v2"
 
     def test_auto_rewrite_exhausts_all_retries(self) -> None:
@@ -2361,6 +2591,7 @@ class TestDrawAutoRewrite:
             patch("llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]),
             patch("llm.service.litellm.completion", return_value=rewrite_resp),
             patch("llm.service.litellm.completion_cost", return_value=0.005),
+            patch.object(self.service, "_download_and_save_image", return_value=None),
         ):
             result = self.service.image_generation("test prompt")
 
@@ -2438,6 +2669,7 @@ class TestDrawAutoRewrite:
         with (
             patch("llm.service.litellm.image_generation", return_value=success_resp),
             patch("llm.service.litellm.completion_cost", return_value=0.01),
+            patch.object(self.service, "_download_and_save_image", return_value=None),
         ):
             result = self.service.image_generation("a cat")
 
@@ -2467,10 +2699,15 @@ class TestDrawAutoRewrite:
             ),
             patch("llm.service.litellm.completion", return_value=rewrite_resp),
             patch("llm.service.litellm.completion_cost", return_value=0.01),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
         ):
             result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:

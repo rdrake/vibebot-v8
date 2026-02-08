@@ -271,7 +271,14 @@ class TestResponseLengthHandling:
             }.get(key)
         )
 
-        with patch("llm.service.litellm.image_generation", return_value=mock_response):
+        with (
+            patch("llm.service.litellm.image_generation", return_value=mock_response),
+            patch.object(
+                self.service,
+                "_download_and_save_image",
+                return_value="https://example.com/llm/img_local.png",
+            ),
+        ):
             result = self.service.image_generation("a cat")
 
         assert result.content.startswith("http")
