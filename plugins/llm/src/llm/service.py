@@ -34,21 +34,12 @@ from .tracing import TraceFilter, request_id
 # See: https://github.com/BerriAI/litellm/issues/14635
 litellm.request_timeout = 120  # 2 minutes
 
-# Register pricing for models not yet in LiteLLM's built-in cost map.
-litellm.register_model(
-    {
-        "xai/grok-imagine-image-pro": {
-            "output_cost_per_image": 0.07,
-            "litellm_provider": "xai",
-            "mode": "image_generation",
-        },
-        "xai/grok-imagine-image": {
-            "output_cost_per_image": 0.02,
-            "litellm_provider": "xai",
-            "mode": "image_generation",
-        },
-    }
-)
+# Per-image cost for models not in LiteLLM's built-in cost map.
+# Used as fallback when litellm.completion_cost() returns 0.
+IMAGE_COST_PER_IMAGE: dict[str, float] = {
+    "xai/grok-imagine-image-pro": 0.07,
+    "xai/grok-imagine-image": 0.02,
+}
 
 _ = PluginInternationalization("LLM")
 
@@ -1309,6 +1300,8 @@ Rules:
         self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
 
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+        if cost == 0.0:
+            cost = IMAGE_COST_PER_IMAGE.get(model, 0.0)
 
         if response.data and len(response.data) > 0:
             image_data = response.data[0]
