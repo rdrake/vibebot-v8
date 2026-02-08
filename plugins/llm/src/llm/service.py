@@ -34,6 +34,22 @@ from .tracing import TraceFilter, request_id
 # See: https://github.com/BerriAI/litellm/issues/14635
 litellm.request_timeout = 120  # 2 minutes
 
+# Register pricing for models not yet in LiteLLM's built-in cost map.
+litellm.register_model(
+    {
+        "xai/grok-imagine-image-pro": {
+            "output_cost_per_image": 0.07,
+            "litellm_provider": "xai",
+            "mode": "image_generation",
+        },
+        "xai/grok-imagine-image": {
+            "output_cost_per_image": 0.02,
+            "litellm_provider": "xai",
+            "mode": "image_generation",
+        },
+    }
+)
+
 _ = PluginInternationalization("LLM")
 
 # Constants
