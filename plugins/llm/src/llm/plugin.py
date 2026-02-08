@@ -531,7 +531,10 @@ class LLM(callbacks.Plugin):
         def _deliver() -> None:
             try:
                 for active_irc in world.ircs:
-                    active_irc.queueMsg(ircmsgs.privmsg(channel, f"{nick}: Reminder: {message}"))
+                    safe_message = self.llm_service.sanitize_output(message)
+                    active_irc.queueMsg(
+                        ircmsgs.privmsg(channel, f"{nick}: Reminder: {safe_message}")
+                    )
                     break
             finally:
                 with lock:
@@ -946,15 +949,16 @@ class LLM(callbacks.Plugin):
             with self._allow_concurrent():
                 result = self.llm_service.image_generation(text, irc=irc, msg=msg)
                 self.log.info("replying to %s/%s", channel, nick)
+                sanitized_content = self.llm_service.sanitize_output(result.content)
                 if result.rewritten_prompt:
-                    prompt_preview = result.rewritten_prompt
+                    prompt_preview = self.llm_service.sanitize_output(result.rewritten_prompt)
                     if len(prompt_preview) > 200:
                         prompt_preview = prompt_preview[:197] + "..."
                     irc.reply(
-                        _("[Rewritten: %s] %s") % (prompt_preview, result.content),
+                        _("[Rewritten: %s] %s") % (prompt_preview, sanitized_content),
                     )
                 else:
-                    irc.reply(result.content)
+                    irc.reply(sanitized_content)
 
             # Store conversation context if enabled and no error
             if result.error is None and self._get_context_enabled(channel):
@@ -1258,9 +1262,9 @@ class LLM(callbacks.Plugin):
                 )
 
                 # Build reply with optional note
-                reply = result.confirmation
+                reply = self.llm_service.sanitize_output(result.confirmation)
                 if result.note:
-                    reply = f"{reply} ({result.note})"
+                    reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
                 irc.reply(reply)
             except Exception as e:
                 self.log.error("Failed to schedule reminder: %s", e)

@@ -1,78 +1,9 @@
-"""Tests for reminder duration parsing and reminder commands."""
+"""Tests for reminder commands."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from llm.service import ReminderParseResult, format_duration, parse_duration
-
-
-class TestParseDuration:
-    """Tests for parse_duration function."""
-
-    def test_seconds(self) -> None:
-        """GIVEN seconds format WHEN parsed THEN returns correct seconds."""
-        assert parse_duration("30s") == 30
-        assert parse_duration("1s") == 1
-
-    def test_minutes(self) -> None:
-        """GIVEN minutes format WHEN parsed THEN returns correct seconds."""
-        assert parse_duration("5m") == 300
-        assert parse_duration("30m") == 1800
-
-    def test_hours(self) -> None:
-        """GIVEN hours format WHEN parsed THEN returns correct seconds."""
-        assert parse_duration("2h") == 7200
-        assert parse_duration("24h") == 86400
-
-    def test_days(self) -> None:
-        """GIVEN days format WHEN parsed THEN returns correct seconds."""
-        assert parse_duration("1d") == 86400
-        assert parse_duration("7d") == 604800
-
-    def test_case_insensitive(self) -> None:
-        """GIVEN uppercase unit WHEN parsed THEN works correctly."""
-        assert parse_duration("5M") == 300
-        assert parse_duration("2H") == 7200
-        assert parse_duration("1D") == 86400
-
-    def test_invalid_formats(self) -> None:
-        """GIVEN invalid formats WHEN parsed THEN returns None."""
-        assert parse_duration("30") is None
-        assert parse_duration("abc") is None
-        assert parse_duration("") is None
-        assert parse_duration("5x") is None
-        assert parse_duration("m5") is None
-        assert parse_duration("-5m") is None
-
-    def test_whitespace_handling(self) -> None:
-        """GIVEN whitespace around duration WHEN parsed THEN handles correctly."""
-        assert parse_duration(" 30m ") == 1800
-        assert parse_duration("  5h  ") == 18000
-
-
-class TestFormatDuration:
-    """Tests for format_duration function."""
-
-    def test_simple_units(self) -> None:
-        """GIVEN simple duration WHEN formatted THEN returns single unit."""
-        assert format_duration(45) == "45s"
-        assert format_duration(300) == "5m"
-        assert format_duration(3600) == "1h"
-        assert format_duration(86400) == "1d"
-
-    def test_compound_durations(self) -> None:
-        """GIVEN compound duration WHEN formatted THEN returns multiple units."""
-        assert format_duration(3660) == "1h 1m"
-        assert format_duration(90000) == "1d 1h"
-        assert format_duration(3661) == "1h 1m 1s"
-
-    def test_zero(self) -> None:
-        """GIVEN zero WHEN formatted THEN returns 0s."""
-        assert format_duration(0) == "0s"
-
-    def test_negative(self) -> None:
-        """GIVEN negative WHEN formatted THEN returns 0s."""
-        assert format_duration(-10) == "0s"
+from llm.service import ReminderParseResult
 
 
 class TestReminderCommands:

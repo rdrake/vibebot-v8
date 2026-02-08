@@ -3,12 +3,20 @@ __pycache__/
 *.pyc
 .git/
 .github/
+.claude/
+.worktrees/
 *.md
 logs/
 backup/
 tmp/
 .env
 *.db
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+docs/
 
 # Config files - must be mounted at runtime
 bot.conf

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
-import os
 import re
 import threading
 import time
@@ -358,7 +357,8 @@ class LLMService:
             lines.append(f"Channel: {channel}")
             topic = self._get_channel_topic(irc, channel)
             if topic:
-                lines.append(f"Topic: {topic}")  # Raw, no filtering
+                topic_trimmed = topic[:300] + "..." if len(topic) > 300 else topic
+                lines.append(f"Topic: {topic_trimmed}")
 
         # Caller nick and access level
         if msg.prefix:
@@ -656,6 +656,32 @@ class LLMService:
                 )
             raise
 
+    def _get_provider_kwargs(self, model: str, *, include_tools: bool = True) -> dict[str, Any]:
+        """Build provider-specific kwargs for a LiteLLM call.
+
+        Centralizes Gemini-specific logic (safety settings, grounding tools)
+        so callers don't need inline ``if "gemini" in model`` checks.
+
+        Args:
+            model: Model identifier string
+            include_tools: Whether to include grounding tools (disable for
+                summarization where grounding adds unnecessary overhead)
+
+        Returns:
+            Dict of extra kwargs to spread into litellm.completion()
+        """
+        kwargs: dict[str, Any] = {"metadata": self._get_litellm_metadata()}
+
+        if include_tools:
+            gemini_tools = self._get_gemini_tools(model)
+            if gemini_tools:
+                kwargs["tools"] = gemini_tools
+
+        if "gemini" in model.lower():
+            kwargs["safety_settings"] = self._get_safety_settings()
+
+        return kwargs
+
     def _get_safety_settings(self) -> list[dict[str, str]]:
         """Get Gemini safety settings (all categories set to BLOCK_NONE).
 
@@ -893,7 +919,8 @@ class LLMService:
                 valid_images = [url for url in images if self.validate_image_url(url)]
                 if len(valid_images) != len(images):
                     self.log.warning(
-                        f"Filtered out {len(images) - len(valid_images)} invalid image URLs"
+                        "Filtered out %d invalid image URLs",
+                        len(images) - len(valid_images),
                     )
                 images = valid_images if valid_images else None
 
@@ -924,18 +951,11 @@ class LLMService:
             # Call LiteLLM with API key passed directly (thread-safe)
             # CRITICAL: Never mutate environment variables - prevents race conditions
 
-            # Build optional kwargs - only include if not None
-            # (passing tools=None explicitly can cause issues with some providers)
-            optional_kwargs: dict[str, Any] = {}
-            optional_kwargs["metadata"] = self._get_litellm_metadata()
-            gemini_tools = self._get_gemini_tools(model)
-            if gemini_tools:
-                optional_kwargs["tools"] = gemini_tools
-            if "gemini" in model.lower():
-                optional_kwargs["safety_settings"] = self._get_safety_settings()
+            # Build provider-specific kwargs (Gemini tools, safety settings, etc.)
+            optional_kwargs = self._get_provider_kwargs(model)
 
             # Log request details for debugging
-            tool_names = [list(t.keys())[0] for t in gemini_tools] if gemini_tools else []
+            tool_names = [list(t.keys())[0] for t in optional_kwargs.get("tools", [])]
             self.log.info(
                 "completion request: model=%s messages=%s tools=%s",
                 model,
@@ -1042,14 +1062,7 @@ Rules:
 - For absolute times ("at 3pm"), calculate seconds until that time"""
 
         try:
-            # Build optional kwargs for Gemini
-            optional_kwargs: dict[str, Any] = {}
-            optional_kwargs["metadata"] = self._get_litellm_metadata()
-            gemini_tools = self._get_gemini_tools(model)
-            if gemini_tools:
-                optional_kwargs["tools"] = gemini_tools
-            if "gemini" in model.lower():
-                optional_kwargs["safety_settings"] = self._get_safety_settings()
+            optional_kwargs = self._get_provider_kwargs(model)
 
             response = litellm.completion(
                 model=model,
@@ -1146,10 +1159,7 @@ Rules:
 
             timeout = self.plugin.registryValue("timeout")
 
-            optional_kwargs: dict[str, Any] = {}
-            optional_kwargs["metadata"] = self._get_litellm_metadata()
-            if "gemini" in model.lower():
-                optional_kwargs["safety_settings"] = self._get_safety_settings()
+            optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
 
             response = litellm.completion(
                 model=model,
@@ -1571,7 +1581,7 @@ Rules:
         hash_input = f"{content}{time.time()}".encode()
         hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
         filename = f"code_{hash_str}.html"
-        filepath = os.path.join(http_root, filename)
+        filepath = Path(http_root) / filename
 
         # Protect LaTeX delimiters from markdown escaping
         # Markdown treats \[ as escaped [, stripping the backslash
@@ -1631,13 +1641,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 {pygments_css}
 </style>
 <!-- KaTeX CSS -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" integrity="sha384-zh0CIslj+VczCZtlzBcjt5ppRcsAmDnRem7ESsYwWwg3m/OaJ2l4x7YBZl9Kxxib" crossorigin="anonymous">
 </head>
 <body>
 {rendered}
 <!-- KaTeX JS + auto-render -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js" integrity="sha384-Rma6DA2IPUwhNxmrB/7S3Tno0YY7sFu9WSYMCuulLhIqYSGZ2gKCJWIqhBWqMQfh" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"
     onload="renderMathInElement(document.body, {{
         delimiters: [
             {{left: '$$', right: '$$', display: true}},
@@ -1650,8 +1660,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 </html>"""
 
         try:
-            os.makedirs(http_root, exist_ok=True)
-            with AtomicFile(filepath, "w") as f:
+            Path(http_root).mkdir(parents=True, exist_ok=True)
+            with AtomicFile(str(filepath), "w") as f:
                 f.write(html)
             return f"{url_base}/{filename}"
         except OSError as e:
@@ -1684,12 +1694,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         hash_input = f"{b64_data[:100]}{time.time()}".encode()
         hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
         filename = f"img_{hash_str}.{extension}"
-        filepath = os.path.join(http_root, filename)
+        filepath = Path(http_root) / filename
 
         # Write binary image file
         try:
-            os.makedirs(http_root, exist_ok=True)
-            with AtomicFile(filepath, "wb") as f:
+            Path(http_root).mkdir(parents=True, exist_ok=True)
+            with AtomicFile(str(filepath), "wb") as f:
                 f.write(image_bytes)
             return f"{url_base}/{filename}"
         except OSError as e:
@@ -1842,43 +1852,3 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         """Run file cleanup (public interface for scheduler)."""
         http_root, _ = self.get_http_paths()
         self._cleanup_old_files(http_root)
-
-
-# Duration parsing for reminders (module-level functions)
-DURATION_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
-DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
-
-def parse_duration(text: str) -> int | None:
-    """Parse duration string like '30m' to seconds.
-
-    Args:
-        text: Duration string (e.g., "30s", "5m", "2h", "1d")
-
-    Returns:
-        Seconds as int, or None if invalid format
-    """
-    match = DURATION_PATTERN.match(text.strip())
-    if not match:
-        return None
-    value, unit = int(match.group(1)), match.group(2).lower()
-    return value * DURATION_UNITS[unit]
-
-
-def format_duration(seconds: int) -> str:
-    """Format seconds as human-readable duration.
-
-    Args:
-        seconds: Duration in seconds
-
-    Returns:
-        Human-readable string (e.g., "2h 30m")
-    """
-    if seconds <= 0:
-        return "0s"
-    parts = []
-    for unit, divisor in [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]:
-        if seconds >= divisor:
-            count, seconds = divmod(seconds, divisor)
-            parts.append(f"{count}{unit}")
-    return " ".join(parts)

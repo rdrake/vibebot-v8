@@ -94,6 +94,9 @@ def plugin_env():
     # Provide the MetaSynchronized RLock that _allow_concurrent expects.
     plugin._MetaSynchronized_rlock = threading.RLock()
 
+    # sanitize_output is a passthrough in tests (the mock would return MagicMock).
+    plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
     return plugin, mock_irc, mock_msg
 
 
