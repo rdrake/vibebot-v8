@@ -854,6 +854,21 @@ class TestUsageCommand:
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
         assert "Larry" in mock_irc.reply.call_args[0][0]
 
+    def test_usage_handles_nick_with_brackets(self, plugin_env):
+        """GIVEN nick with brackets WHEN usage called THEN brackets reconstructed from tokens."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(3, 300, 150, 0.005)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=4)
+
+        # Limnoria tokenizes "Rubin[F]" into ["Rubin", ["F"]]
+        plugin.usage(mock_irc, mock_msg, ["Rubin", ["F"]])
+
+        # Should reconstruct to "Rubin[F]" and query DB
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Rubin[F]"
+        assert "Rubin[F]" in mock_irc.reply.call_args[0][0]
+
     def test_usage_resolves_target_nick_to_account(self, plugin_env):
         """GIVEN target nick with NickServ account WHEN usage called THEN queries by account."""
         from llm.persistence import UsageRank

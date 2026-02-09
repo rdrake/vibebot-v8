@@ -505,6 +505,25 @@ class TestPluginHelperMethods:
 
         assert result == "testnick"
 
+    def test_rejoin_args_reconstructs_bracket_nick(self) -> None:
+        """GIVEN tokenized nick with brackets WHEN _rejoin_args called THEN original reconstructed."""
+        from llm.plugin import LLM
+
+        # Limnoria tokenizes "Rubin[F]" into ["Rubin", ["F"]]
+        assert LLM._rejoin_args(["Rubin", ["F"]]) == "Rubin[F]"
+
+    def test_rejoin_args_simple_nick(self) -> None:
+        """GIVEN simple nick tokens WHEN _rejoin_args called THEN joined correctly."""
+        from llm.plugin import LLM
+
+        assert LLM._rejoin_args(["othernick"]) == "othernick"
+
+    def test_rejoin_args_empty_list(self) -> None:
+        """GIVEN empty token list WHEN _rejoin_args called THEN returns empty string."""
+        from llm.plugin import LLM
+
+        assert LLM._rejoin_args([]) == ""
+
     def test_get_channel_extracts_channel_from_args(self, mock_msg: MagicMock) -> None:
         """GIVEN message with args WHEN _get_channel called THEN returns channel."""
         from llm.plugin import LLM

@@ -703,6 +703,23 @@ class LLM(callbacks.Plugin):
         """
         return msg.args[0] if msg.args else "unknown"
 
+    @staticmethod
+    def _rejoin_args(tokens: list) -> str:
+        """Rejoin Limnoria-tokenized args, reconstructing bracket groups.
+
+        Limnoria's tokenizer treats ``[…]`` as nested-command syntax, so a
+        nick like ``Rubin[F]`` is split into ``['Rubin', ['F']]``.  This
+        reconstructs the original string so commands that accept nicks
+        (e.g. ``%usage Rubin[F]``) work correctly.
+        """
+        parts: list[str] = []
+        for token in tokens:
+            if isinstance(token, list):
+                parts.append("[" + LLM._rejoin_args(token) + "]")
+            else:
+                parts.append(str(token))
+        return "".join(parts)
+
     def _is_old_message(self, msg: IrcMsg) -> bool:
         """Check if message predates bot startup (ZNC playback).
 
@@ -1072,7 +1089,6 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
-        target: str | None,
     ) -> None:
         """[<nick or #channel>]
 
@@ -1083,6 +1099,13 @@ class LLM(callbacks.Plugin):
         <nick>: shows that user's stats (scoped to current channel if in one).
         <#channel>: shows that channel's stats.
         """
+        # Parse target manually instead of using wrap so that nicks containing
+        # brackets (e.g. "Rubin[F]") work.  Limnoria's tokenizer splits on "["
+        # for nested-command syntax, turning "Rubin[F]" into ['Rubin', ['F']].
+        # _rejoin_args reconstructs the original string from those tokens.
+        target: str | None = self._rejoin_args(args) or None
+        args[:] = []  # consume all tokens
+
         # Strip IRC status prefixes (@op, +voice, %halfop) from nick targets
         if target and not ircutils.isChannel(target):
             target = target.lstrip("@+%")
@@ -1098,8 +1121,6 @@ class LLM(callbacks.Plugin):
                 irc.error(_("You need the 'admin' capability to view global usage stats."))
                 return
             self._usage_global(irc, msg)
-
-    usage = wrap(usage, [optional("somethingWithoutSpaces")])
 
     def _usage_global(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show global usage overview via PM (admin only)."""
