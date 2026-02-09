@@ -668,13 +668,34 @@ class LLM(callbacks.Plugin):
         # wrap() replaces ask's signature at runtime; ty sees the pre-wrap params
         self.ask(irc, msg, tokens[:])  # ty: ignore[missing-argument]
 
-    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
-        """Return account name if the user is logged in, else fall back to nick.
+    def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
+        """Resolve a plain nick to its NickServ account, falling back to nick.
 
         AfterNet supports ``account-notify``, so Limnoria caches NickServ
         account names in ``irc.state.nicksToAccounts``.  Using the account
         name means usage stats, conversation context, and reminders follow
         the user across nick changes.
+
+        Args:
+            irc: IRC connection (provides account lookup via ``state``)
+            nick: Plain IRC nick (no hostmask)
+
+        Returns:
+            NickServ account name, or the original nick as fallback.
+        """
+        try:
+            account = irc.state.nickToAccount(nick)
+            if account:
+                return account
+        except (KeyError, AttributeError):
+            pass
+        return nick
+
+    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
+        """Return account name if the user is logged in, else fall back to nick.
+
+        Extracts the nick from *msg.prefix* and delegates to
+        :meth:`_resolve_nick_to_identity`.
 
         Args:
             irc: IRC connection (provides account lookup via ``state``)
@@ -684,13 +705,7 @@ class LLM(callbacks.Plugin):
             NickServ account name, or the user's current nick as fallback.
         """
         nick = ircutils.nickFromHostmask(msg.prefix)
-        try:
-            account = irc.state.nickToAccount(nick)
-            if account:
-                return account
-        except (KeyError, AttributeError):
-            pass
-        return nick
+        return self._resolve_nick_to_identity(irc, nick)
 
     def _get_channel(self, msg: IrcMsg) -> str:
         """Extract channel from IRC message.
@@ -1205,13 +1220,7 @@ class LLM(callbacks.Plugin):
         channel = msg.channel
 
         # Resolve target nick → account for the DB query
-        identity = nick
-        try:
-            account = irc.state.nickToAccount(nick)
-            if account:
-                identity = account
-        except (KeyError, AttributeError):
-            pass
+        identity = self._resolve_nick_to_identity(irc, nick)
 
         month_start = (
             datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()

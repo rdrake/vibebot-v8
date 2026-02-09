@@ -1242,3 +1242,214 @@ class TestUnremindCommand:
         # Still confirmed
         reply_text = mock_irc.reply.call_args[0][0]
         assert "cancelled" in reply_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Account-based identity
+# ---------------------------------------------------------------------------
+
+
+class TestAccountBasedIdentity:
+    """Tests for NickServ account-based identity resolution across commands."""
+
+    @pytest.fixture
+    def account_env(self, plugin_env):
+        """Extend plugin_env so the calling user has a NickServ account."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = MagicMock(return_value="MyAccount")
+        return plugin, mock_irc, mock_msg
+
+    # -- Usage logging under account --
+
+    def test_ask_logs_usage_under_account(self, account_env):
+        """GIVEN user with NickServ account WHEN ask completes THEN usage logged under account."""
+        plugin, mock_irc, mock_msg = account_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="ok",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "MyAccount", "#test", "ask", "gpt-4", 10, 5, 0.001
+        )
+
+    def test_code_logs_usage_under_account(self, account_env):
+        """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
+        plugin, mock_irc, mock_msg = account_env
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="x = 1",
+            prompt_tokens=50,
+            completion_tokens=20,
+            cost=0.003,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = None
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.code(mock_irc, mock_msg, ["assign"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "MyAccount", "#test", "code", "gpt-4", 50, 20, 0.003
+        )
+
+    def test_draw_logs_usage_under_account(self, account_env):
+        """GIVEN user with NickServ account WHEN draw completes THEN usage logged under account."""
+        plugin, mock_irc, mock_msg = account_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=10,
+            completion_tokens=0,
+            cost=0.04,
+            model="dall-e-3",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["a", "cat"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "MyAccount", "#test", "draw", "dall-e-3", 10, 0, 0.04
+        )
+
+    # -- Context storage under account --
+
+    def test_ask_stores_context_under_account(self, account_env):
+        """GIVEN user with NickServ account WHEN ask completes THEN context stored under account."""
+        plugin, mock_irc, mock_msg = account_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="response",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        # Context keyed by account, not nick
+        messages = plugin.context.get_messages("MyAccount", "#test")
+        assert len(messages) == 2
+        assert messages[0]["role"] == "user"
+        assert messages[1]["role"] == "assistant"
+
+        # No context under the raw nick
+        assert len(plugin.context.get_messages("testnick", "#test")) == 0
+
+    def test_draw_stores_context_under_account(self, account_env):
+        """GIVEN user with NickServ account WHEN draw completes THEN context stored under account."""
+        plugin, mock_irc, mock_msg = account_env
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.draw(mock_irc, mock_msg, ["sunset"])
+
+        messages = plugin.context.get_messages("MyAccount", "#test")
+        assert len(messages) == 2
+        assert len(plugin.context.get_messages("testnick", "#test")) == 0
+
+    # -- Usage query resolves calling user to account --
+
+    def test_usage_channel_resolves_caller_to_account(self, account_env):
+        """GIVEN user with account WHEN usage called in channel THEN queries by account."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = account_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(10, 1000, 500, 0.01)
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 500, 250, 0.005)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
+
+        with patch("llm.plugin.callbacks.addressed", return_value=None):
+            plugin.usage(mock_irc, mock_msg, [])
+
+        # Personal stats should query by account name
+        plugin.db.get_usage_summary_for_nick.assert_called_once()
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "MyAccount"
+
+    # -- Fallback when no account --
+
+    def test_ask_falls_back_to_nick_when_no_account(self, plugin_env):
+        """GIVEN user without NickServ account WHEN ask completes THEN usage logged under nick."""
+        plugin, mock_irc, mock_msg = plugin_env
+        # nickToAccount returns None (default in plugin_env fixture)
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="ok",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
+        )
+
+    def test_ask_falls_back_to_nick_on_keyerror(self, plugin_env):
+        """GIVEN nickToAccount raises KeyError WHEN ask completes THEN usage logged under nick."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = MagicMock(side_effect=KeyError("unknown"))
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="ok",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
+        )
+
+    def test_context_stored_under_nick_when_no_account(self, plugin_env):
+        """GIVEN user without account WHEN ask completes THEN context stored under nick."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="response",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 2
+
+    def test_forget_clears_context_under_account(self, account_env):
+        """GIVEN user with account has context WHEN forget called THEN account context cleared."""
+        plugin, mock_irc, mock_msg = account_env
+
+        # Pre-populate context under account name
+        plugin.context.add_message("MyAccount", "#test", "user", "hi")
+        plugin.context.add_message("MyAccount", "#test", "assistant", "hello")
+
+        plugin.forget(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "cleared" in reply_text.lower() or "fresh" in reply_text.lower()
+        assert len(plugin.context.get_messages("MyAccount", "#test")) == 0
