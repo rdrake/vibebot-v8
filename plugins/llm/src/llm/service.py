@@ -1064,7 +1064,7 @@ Rules:
         try:
             optional_kwargs = self._get_provider_kwargs(model)
 
-            response = litellm.completion(
+            response = self._completion_with_tool_fallback(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1072,7 +1072,7 @@ Rules:
                 ],
                 api_key=self.plugin.registryValue("askApiKey"),
                 timeout=timeout,
-                **optional_kwargs,
+                optional_kwargs=optional_kwargs,
             )
 
             raw_content = response.choices[0].message.content.strip()

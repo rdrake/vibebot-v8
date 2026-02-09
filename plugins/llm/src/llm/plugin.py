@@ -590,6 +590,11 @@ class LLM(callbacks.Plugin):
 
         Uses RLock._release_save()/_acquire_restore() — the same mechanism
         threading.Condition uses internally.
+
+        WARNING: These are private CPython implementation details (prefixed
+        with ``_``) and are not guaranteed by the Python language spec. They
+        are stable in CPython 3.12-3.14 and used by threading.Condition, but
+        could break on alternative interpreters or future CPython versions.
         """
         lock = self._MetaSynchronized_rlock
         try:
@@ -1379,10 +1384,6 @@ class LLM(callbacks.Plugin):
 
             if result.seconds > 604800:  # 7 days
                 irc.error(_("Reminder can't be more than 7 days out."))
-                return
-
-            if result.seconds < 0:
-                irc.error(_("That time has already passed."))
                 return
 
             # Schedule the reminder

@@ -1497,3 +1497,195 @@ class TestAccountBasedIdentity:
 
         assert identity == "testnick"
         plugin.db.migrate_nick.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage: edge cases for usage, remindme, code
+# ---------------------------------------------------------------------------
+
+
+class TestUsageEdgeCases:
+    """Additional edge-case tests for usage command flows."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_addressed(self):
+        """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
+        with patch("llm.plugin.callbacks.addressed", return_value=None):
+            yield
+
+    def test_usage_for_nick_with_zero_rank(self, plugin_env):
+        """GIVEN nick target with no usage WHEN usage called THEN rank is omitted."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=5)
+
+        with patch("llm.plugin.callbacks.addressed", return_value="usage somenick"):
+            plugin.usage(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "somenick" in reply_text
+        assert "rank" not in reply_text
+
+    def test_usage_for_channel_with_zero_rank(self, plugin_env):
+        """GIVEN channel target with no usage WHEN usage called THEN rank is omitted."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=0, total=0)
+
+        with (
+            patch("llm.plugin.callbacks.addressed", return_value="usage #empty"),
+            patch("llm.plugin.ircutils.isChannel", return_value=True),
+        ):
+            plugin.usage(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "#empty this month:" in reply_text
+        assert "rank" not in reply_text
+
+
+class TestExtractRawArgEdgeCases:
+    """Tests for _extract_raw_arg edge cases."""
+
+    def test_extract_raw_arg_command_not_in_payload(self):
+        """GIVEN payload without the command WHEN _extract_raw_arg THEN returns None."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_msg = MagicMock()
+
+        with patch("llm.plugin.callbacks.addressed", return_value="help something"):
+            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+
+        assert result is None
+
+
+class TestRemindmeEdgeCases:
+    """Additional edge-case tests for remindme command."""
+
+    def test_remindme_rejects_negative_seconds_via_min_check(self, plugin_env):
+        """GIVEN duration < 0 WHEN remindme called THEN caught by the <10s check."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=-100,
+            message="test",
+            confirmation="ok",
+        )
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.remindme(mock_irc, mock_msg, ["yesterday", "test"])
+
+        mock_irc.error.assert_called_once()
+        error_text = mock_irc.error.call_args[0][0]
+        assert "10 seconds" in error_text
+
+    def test_remindme_uses_input_text_when_no_message(self, plugin_env):
+        """GIVEN parse result with no message WHEN remindme called THEN uses original text."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message=None,  # No message extracted
+            confirmation="Reminder set for 1 minute.",
+        )
+
+        with (
+            patch("llm.plugin.ircdb.checkCapability", return_value=True),
+            patch("llm.plugin.schedule.addEvent"),
+        ):
+            plugin.remindme(mock_irc, mock_msg, ["in", "1m", "something"])
+
+        # The save_reminder call should use the original text as fallback
+        save_call = plugin.db.save_reminder.call_args
+        assert save_call[0][3] == "in 1m something"  # message arg = original text
+
+
+class TestReloadRemindersEdgeCases:
+    """Tests for _reload_reminders error handling."""
+
+    def test_reload_reminders_handles_schedule_failure(self, plugin_env):
+        """GIVEN future reminder WHEN schedule.addEvent fails THEN reminder cleaned from DB."""
+        import time as time_module
+
+        from llm.persistence import ReminderRow
+
+        plugin, mock_irc, mock_msg = plugin_env
+        future_time = time_module.time() + 3600
+        reminder = ReminderRow(
+            id=1,
+            event_name="llm_remind_broken_1",
+            nick="testuser",
+            channel="#test",
+            message="test",
+            fire_at=future_time,
+            created_at=time_module.time(),
+        )
+
+        plugin.db.load_pending_reminders.return_value = [reminder]
+
+        with patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke")):
+            plugin._reload_reminders(mock_irc)
+
+        # Failed reminder should be deleted from DB
+        plugin.db.delete_reminder.assert_called_with("llm_remind_broken_1")
+        # Should NOT be stored in _reminders dict
+        assert "llm_remind_broken_1" not in plugin._reminders
+
+
+class TestCodeEdgeCases:
+    """Additional edge-case tests for code command."""
+
+    def test_code_skips_context_when_disabled(self, plugin_env):
+        """GIVEN context disabled WHEN code called THEN no context stored."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="print('hi')",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = None
+
+        def disabled_registry(key, *args):
+            if key == "contextEnabled":
+                return False
+            return _registry(key, *args)
+
+        plugin.registryValue = MagicMock(side_effect=disabled_registry)
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.code(mock_irc, mock_msg, ["hello"])
+
+        mock_irc.reply.assert_called_once()
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 0
+
+    def test_code_truncates_long_preview_without_summary(self, plugin_env):
+        """GIVEN long code and no AI summary WHEN code called THEN preview is truncated."""
+        plugin, mock_irc, mock_msg = plugin_env
+        long_code = "x" * 200  # > CODE_PREVIEW_MAX_LEN (60)
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content=long_code,
+            prompt_tokens=10,
+            completion_tokens=50,
+            cost=0.002,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
+        plugin.llm_service.summarize.return_value = None  # no AI summary
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
+            plugin.code(mock_irc, mock_msg, ["generate"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "..." in reply_text
+        assert "http://x/code.html" in reply_text
+        # Preview should be truncated to ~60 chars
+        preview_part = reply_text.split(" — ")[0]
+        assert len(preview_part) <= 61  # 57 + "..."
