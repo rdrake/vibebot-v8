@@ -99,6 +99,9 @@ def plugin_env():
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
+    # migrate_nick returns an int (0 = nothing to migrate) by default.
+    plugin.db.migrate_nick.return_value = 0
+
     return plugin, mock_irc, mock_msg
 
 
@@ -1453,3 +1456,44 @@ class TestAccountBasedIdentity:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "cleared" in reply_text.lower() or "fresh" in reply_text.lower()
         assert len(plugin.context.get_messages("MyAccount", "#test")) == 0
+
+    # -- Lazy nick→account migration --
+
+    def test_migrate_called_when_nick_differs_from_account(self, account_env):
+        """GIVEN nick != account WHEN identity resolved THEN migrate_nick called."""
+        plugin, mock_irc, _ = account_env
+        plugin.db.migrate_nick.return_value = 3
+
+        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
+
+        assert identity == "MyAccount"
+        plugin.db.migrate_nick.assert_called_once_with("testnick", "MyAccount")
+
+    def test_migrate_not_called_when_nick_matches_account(self, plugin_env):
+        """GIVEN nick == account (case-insensitive) WHEN resolved THEN no migration."""
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.nickToAccount = MagicMock(return_value="testnick")
+
+        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
+
+        assert identity == "testnick"
+        plugin.db.migrate_nick.assert_not_called()
+
+    def test_migrate_called_only_once_per_nick(self, account_env):
+        """GIVEN nick already migrated WHEN resolved again THEN no second DB call."""
+        plugin, mock_irc, _ = account_env
+        plugin.db.migrate_nick.return_value = 0
+
+        plugin._resolve_nick_to_identity(mock_irc, "testnick")
+        plugin._resolve_nick_to_identity(mock_irc, "testnick")
+
+        plugin.db.migrate_nick.assert_called_once()
+
+    def test_migrate_not_called_when_no_account(self, plugin_env):
+        """GIVEN nickToAccount returns None WHEN resolved THEN no migration."""
+        plugin, mock_irc, _ = plugin_env
+
+        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
+
+        assert identity == "testnick"
+        plugin.db.migrate_nick.assert_not_called()

@@ -291,6 +291,9 @@ class LLM(callbacks.Plugin):
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
 
+        # Track nicks already migrated to account-based identity this session
+        self._migrated_nicks: set[str] = set()
+
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
         self._reminders_lock = threading.Lock()
@@ -676,6 +679,10 @@ class LLM(callbacks.Plugin):
         name means usage stats, conversation context, and reminders follow
         the user across nick changes.
 
+        When the account differs from the nick, old usage rows logged under
+        the raw nick are lazily migrated to the account name (once per nick
+        per session) so that ``%usage`` reports include historical data.
+
         Args:
             irc: IRC connection (provides account lookup via ``state``)
             nick: Plain IRC nick (no hostmask)
@@ -686,10 +693,32 @@ class LLM(callbacks.Plugin):
         try:
             account = irc.state.nickToAccount(nick)
             if account:
+                self._maybe_migrate_nick(nick, account)
                 return account
         except (KeyError, AttributeError):
             pass
         return nick
+
+    def _maybe_migrate_nick(self, old_nick: str, account: str) -> None:
+        """Migrate old nick-based usage rows to the account, once per session.
+
+        Skips the DB call entirely when the nick and account are the same
+        (case-insensitive) or when we've already attempted migration for
+        this nick.
+
+        Args:
+            old_nick: The user's current IRC nick.
+            account: The resolved NickServ account name.
+        """
+        if old_nick.lower() == account.lower():
+            return
+        key = old_nick.lower()
+        if key in self._migrated_nicks:
+            return
+        self._migrated_nicks.add(key)
+        count = self.db.migrate_nick(old_nick, account)
+        if count > 0:
+            self.log.info("Migrated %d usage row(s) from %s to %s", count, old_nick, account)
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Return account name if the user is logged in, else fall back to nick.

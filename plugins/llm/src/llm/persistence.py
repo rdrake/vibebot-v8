@@ -231,6 +231,38 @@ class LLMDatabase:
             conn.close()
 
     # ------------------------------------------------------------------
+    # Usage migration
+    # ------------------------------------------------------------------
+
+    def migrate_nick(self, old_nick: str, new_nick: str) -> int:
+        """Migrate usage rows from an old nick to a new identity.
+
+        Used when switching from nick-based to account-based tracking:
+        rows logged under the raw IRC nick are re-attributed to the
+        NickServ account name so ``%usage`` queries return complete data.
+
+        The match is case-insensitive (IRC nicks are case-insensitive).
+        Rows that already carry *new_nick* are left untouched.
+
+        Args:
+            old_nick: Previous nick value (e.g. ``"Rubin[F]"``).
+            new_nick: New identity value (e.g. ``"Rubin"``).
+
+        Returns:
+            Number of rows updated.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE usage SET nick = ? WHERE LOWER(nick) = LOWER(?) AND nick != ?",
+                (new_nick, old_nick, new_nick),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Usage operations
     # ------------------------------------------------------------------
 

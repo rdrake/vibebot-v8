@@ -508,3 +508,81 @@ class TestUsageRanking:
         db = LLMDatabase(str(tmp_path / "test.db"))
         rank = db.get_nick_rank("anyone")
         assert rank == UsageRank(rank=0, total=0)
+
+
+class TestMigrateNick:
+    """Test nick-to-account migration for usage rows."""
+
+    def test_migrate_updates_matching_rows(self, tmp_path: Path) -> None:
+        """GIVEN usage under old nick WHEN migrating THEN rows updated to account."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("Rubin[F]", "#test", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("Rubin[F]", "#test", "code", "gpt-4", 200, 100, 0.02)
+
+        count = db.migrate_nick("Rubin[F]", "Rubin")
+        assert count == 2
+
+        # Old nick should have no rows
+        summary_old = db.get_usage_summary_for_nick("Rubin[F]")
+        assert summary_old.total_requests == 0
+
+        # Account should have all rows
+        summary_new = db.get_usage_summary_for_nick("Rubin")
+        assert summary_new.total_requests == 2
+        assert summary_new.total_cost == pytest.approx(0.03)
+
+    def test_migrate_case_insensitive(self, tmp_path: Path) -> None:
+        """GIVEN usage under different casings WHEN migrating THEN all casings updated."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("rubin", "#test", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("RUBIN", "#test", "code", "gpt-4", 200, 100, 0.02)
+
+        count = db.migrate_nick("Rubin", "RubinAccount")
+        assert count == 2
+
+        summary = db.get_usage_summary_for_nick("RubinAccount")
+        assert summary.total_requests == 2
+
+    def test_migrate_skips_already_migrated(self, tmp_path: Path) -> None:
+        """GIVEN rows already under account WHEN migrating THEN those rows untouched."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("Rubin", "#test", "ask", "gpt-4", 100, 50, 0.01)  # already correct
+        db.log_usage("Rubin[F]", "#test", "code", "gpt-4", 200, 100, 0.02)  # needs migration
+
+        count = db.migrate_nick("Rubin[F]", "Rubin")
+        assert count == 1
+
+        summary = db.get_usage_summary_for_nick("Rubin")
+        assert summary.total_requests == 2
+
+    def test_migrate_returns_zero_when_nothing_to_migrate(self, tmp_path: Path) -> None:
+        """GIVEN no matching rows WHEN migrating THEN returns zero."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.01)
+
+        count = db.migrate_nick("nonexistent", "SomeAccount")
+        assert count == 0
+
+    def test_migrate_idempotent(self, tmp_path: Path) -> None:
+        """GIVEN already-migrated rows WHEN migrating again THEN zero updates."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("OldNick", "#test", "ask", "gpt-4", 100, 50, 0.01)
+
+        first = db.migrate_nick("OldNick", "Account")
+        assert first == 1
+
+        second = db.migrate_nick("OldNick", "Account")
+        assert second == 0
+
+    def test_migrate_preserves_other_nicks(self, tmp_path: Path) -> None:
+        """GIVEN usage from multiple nicks WHEN migrating one THEN others untouched."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("bob", "#test", "ask", "gpt-4", 200, 100, 0.02)
+
+        db.migrate_nick("alice", "AliceAccount")
+
+        # alice's rows migrated
+        assert db.get_usage_summary_for_nick("AliceAccount").total_requests == 1
+        # bob's rows untouched
+        assert db.get_usage_summary_for_nick("bob").total_requests == 1

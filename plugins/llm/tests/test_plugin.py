@@ -475,6 +475,10 @@ class TestPluginHelperMethods:
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
+            plugin._migrated_nicks = set()
+            plugin.db = MagicMock()
+            plugin.db.migrate_nick.return_value = 0
+            plugin.log = MagicMock()
             result = plugin._get_identity(mock_irc, mock_msg)
 
         assert result == "MyAccount"
