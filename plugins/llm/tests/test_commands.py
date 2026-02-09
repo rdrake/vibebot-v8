@@ -68,6 +68,8 @@ def plugin_env():
     mock_irc.state = MagicMock()
     mock_irc.state.channels = {"#test": MagicMock(topic="Test topic")}
     mock_irc.state.capabilities_ack = set()
+    # Default: no NickServ account (nick fallback)
+    mock_irc.state.nickToAccount = MagicMock(return_value=None)
 
     mock_msg = MagicMock()
     mock_msg.prefix = "testnick!user@host"
@@ -851,6 +853,24 @@ class TestUsageCommand:
         # Should query for "Larry", not "@Larry"
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
         assert "Larry" in mock_irc.reply.call_args[0][0]
+
+    def test_usage_resolves_target_nick_to_account(self, plugin_env):
+        """GIVEN target nick with NickServ account WHEN usage called THEN queries by account."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        # Target nick "OldNick" resolves to account "RealAccount"
+        mock_irc.state.nickToAccount = MagicMock(return_value="RealAccount")
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 500, 250, 0.01)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=2, total=6)
+
+        plugin.usage(mock_irc, mock_msg, ["OldNick"])
+
+        # DB should be queried with the account name
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "RealAccount"
+        # But display should still show the original nick typed
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "OldNick" in reply_text
 
     def test_usage_with_nick_in_channel(self, plugin_env):
         """GIVEN nick target in channel WHEN usage called THEN shows that nick's channel stats."""

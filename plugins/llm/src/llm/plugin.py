@@ -383,7 +383,7 @@ class LLM(callbacks.Plugin):
         if ircutils.strEqual(irc.nick, msg.nick):
             return
 
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         message_text = msg.args[1] if len(msg.args) > 1 else ""
 
         # Store in conversation context for richer follow-up questions
@@ -668,16 +668,29 @@ class LLM(callbacks.Plugin):
         # wrap() replaces ask's signature at runtime; ty sees the pre-wrap params
         self.ask(irc, msg, tokens[:])  # ty: ignore[missing-argument]
 
-    def _get_nick(self, msg: IrcMsg) -> str:
-        """Extract nick from IRC message.
+    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
+        """Return account name if the user is logged in, else fall back to nick.
+
+        AfterNet supports ``account-notify``, so Limnoria caches NickServ
+        account names in ``irc.state.nicksToAccounts``.  Using the account
+        name means usage stats, conversation context, and reminders follow
+        the user across nick changes.
 
         Args:
+            irc: IRC connection (provides account lookup via ``state``)
             msg: IRC message
 
         Returns:
-            User's nick
+            NickServ account name, or the user's current nick as fallback.
         """
-        return ircutils.nickFromHostmask(msg.prefix)
+        nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            account = irc.state.nickToAccount(nick)
+            if account:
+                return account
+        except (KeyError, AttributeError):
+            pass
+        return nick
 
     def _get_channel(self, msg: IrcMsg) -> str:
         """Extract channel from IRC message.
@@ -785,7 +798,7 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
         with self._trace_request("ask", nick, channel):
@@ -866,7 +879,7 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
         with self._trace_request("code", nick, channel):
@@ -941,7 +954,7 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
         with self._trace_request("draw", nick, channel):
@@ -1007,7 +1020,7 @@ class LLM(callbacks.Plugin):
         Clear your conversation context (memory) for the current or specified channel.
         Use this to start fresh.
         """
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         # Default to current channel if not specified
         if channel is None:
             channel = self._get_channel(msg)
@@ -1123,7 +1136,7 @@ class LLM(callbacks.Plugin):
     def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show channel and personal usage stats in-channel."""
         channel = msg.channel
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
 
         # This month: first of month midnight UTC
         month_start = (
@@ -1152,15 +1165,31 @@ class LLM(callbacks.Plugin):
         irc.reply(f"{chan_part} | {nick_part}", prefixNick=False)
 
     def _usage_for_nick(self, irc: callbacks.Irc, msg: IrcMsg, nick: str) -> None:
-        """Show usage stats for a specific nick."""
+        """Show usage stats for a specific nick.
+
+        Resolves the target nick to a NickServ account before querying the
+        database, so ``%usage OldNick`` finds stats logged under the account.
+        The display still uses the nick the caller typed.
+        """
         channel = msg.channel
+
+        # Resolve target nick → account for the DB query
+        identity = nick
+        try:
+            account = irc.state.nickToAccount(nick)
+            if account:
+                identity = account
+        except (KeyError, AttributeError):
+            pass
 
         month_start = (
             datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
         )
 
-        nick_summary = self.db.get_usage_summary_for_nick(nick, since=month_start, channel=channel)
-        nick_rank = self.db.get_nick_rank(nick, since=month_start, channel=channel)
+        nick_summary = self.db.get_usage_summary_for_nick(
+            identity, since=month_start, channel=channel
+        )
+        nick_rank = self.db.get_nick_rank(identity, since=month_start, channel=channel)
 
         scope = f" in {channel}" if channel else ""
         nick_part = f"{nick}{scope} this month: ${nick_summary.total_cost:.4f}"
@@ -1257,7 +1286,7 @@ class LLM(callbacks.Plugin):
           %remindme in 2 hours meeting starts
           %remindme next Tuesday morning dentist appointment
         """
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
         with self._trace_request("remindme", nick, channel):
@@ -1329,7 +1358,7 @@ class LLM(callbacks.Plugin):
 
         List your pending reminders.
         """
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         user_reminders = self._get_user_reminders(nick)
 
         if not user_reminders:
@@ -1351,7 +1380,7 @@ class LLM(callbacks.Plugin):
 
         Cancel a reminder by ID (shown in %reminders).
         """
-        nick = self._get_nick(msg)
+        nick = self._get_identity(irc, msg)
         target = self._find_user_reminder(nick, reminder_id)
 
         if not target:

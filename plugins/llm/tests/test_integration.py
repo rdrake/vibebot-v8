@@ -387,6 +387,7 @@ class TestFullCommandFlow:
         mock_irc.state = MagicMock()
         mock_irc.state.channels = {"#test": MagicMock(topic="Test channel")}
         mock_irc.state.capabilities_ack = {"message-tags"}
+        mock_irc.state.nickToAccount = MagicMock(return_value=None)
 
         registry_side_effect = make_registry_side_effect(
             {
@@ -433,7 +434,7 @@ class TestFullCommandFlow:
         plugin._is_old_message = MagicMock(return_value=False)
         plugin._get_context_enabled = MagicMock(return_value=True)
 
-        nick = plugin._get_nick(mock_msg)
+        nick = plugin._get_identity(mock_irc, mock_msg)
         channel = plugin._get_channel(mock_msg)
         history = plugin.context.get_messages(nick, channel)
         channel_history = plugin.context.get_channel_messages(channel, exclude_nick=nick)

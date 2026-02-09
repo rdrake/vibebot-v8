@@ -72,6 +72,8 @@ def mock_irc() -> MagicMock:
     irc.state = MagicMock()
     irc.state.channels = {}
     irc.state.capabilities_ack = set()
+    # Default: no NickServ account (nick fallback)
+    irc.state.nickToAccount = MagicMock(return_value=None)
     return irc
 
 

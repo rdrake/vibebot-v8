@@ -466,13 +466,42 @@ class TestPluginHelperMethods:
         msg.channel = "#testchannel"
         return msg
 
-    def test_get_nick_extracts_nick_from_hostmask(self, mock_msg: MagicMock) -> None:
-        """GIVEN message with prefix WHEN _get_nick called THEN returns nick."""
+    def test_get_identity_returns_account_when_available(self, mock_msg: MagicMock) -> None:
+        """GIVEN user logged into NickServ WHEN _get_identity called THEN returns account."""
         from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_irc.state.nickToAccount = MagicMock(return_value="MyAccount")
 
         with patch.object(LLM, "__init__", lambda self, irc: None):
             plugin = LLM.__new__(LLM)
-            result = plugin._get_nick(mock_msg)
+            result = plugin._get_identity(mock_irc, mock_msg)
+
+        assert result == "MyAccount"
+
+    def test_get_identity_falls_back_to_nick_when_no_account(self, mock_msg: MagicMock) -> None:
+        """GIVEN user not logged in WHEN _get_identity called THEN returns nick."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_irc.state.nickToAccount = MagicMock(return_value=None)
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            result = plugin._get_identity(mock_irc, mock_msg)
+
+        assert result == "testnick"
+
+    def test_get_identity_falls_back_to_nick_on_keyerror(self, mock_msg: MagicMock) -> None:
+        """GIVEN nickToAccount raises KeyError WHEN _get_identity called THEN returns nick."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_irc.state.nickToAccount = MagicMock(side_effect=KeyError("unknown nick"))
+
+        with patch.object(LLM, "__init__", lambda self, irc: None):
+            plugin = LLM.__new__(LLM)
+            result = plugin._get_identity(mock_irc, mock_msg)
 
         assert result == "testnick"
 
@@ -608,6 +637,7 @@ class TestDoPrivmsg:
 
         mock_irc = MagicMock()
         mock_irc.nick = "botname"
+        mock_irc.state.nickToAccount = MagicMock(return_value=None)
 
         mock_msg = MagicMock()
         mock_msg.prefix = "usernick!user@host"
