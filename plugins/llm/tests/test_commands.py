@@ -689,6 +689,12 @@ class TestLlmkeysCommand:
 class TestUsageCommand:
     """Tests for the real LLM.usage method (dual-mode: channel + PM)."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_addressed(self):
+        """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
+        with patch("llm.plugin.callbacks.addressed", return_value=None):
+            yield
+
     # -- PM mode (global stats, admin only) --
 
     def test_usage_pm_shows_today_and_month_stats(self, plugin_env):
@@ -848,24 +854,26 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(7, 800, 400, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        plugin.usage(mock_irc, mock_msg, ["@Larry"])
+        with patch("llm.plugin.callbacks.addressed", return_value="usage @Larry"):
+            plugin.usage(mock_irc, mock_msg, [])
 
         # Should query for "Larry", not "@Larry"
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
         assert "Larry" in mock_irc.reply.call_args[0][0]
 
     def test_usage_handles_nick_with_brackets(self, plugin_env):
-        """GIVEN nick with brackets WHEN usage called THEN brackets reconstructed from tokens."""
+        """GIVEN nick with brackets WHEN usage called THEN raw arg parsed correctly."""
         from llm.persistence import UsageRank
 
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(3, 300, 150, 0.005)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=4)
 
-        # Limnoria tokenizes "Rubin[F]" into ["Rubin", ["F"]]
-        plugin.usage(mock_irc, mock_msg, ["Rubin", ["F"]])
+        # Mock the raw message extraction to return the bracket nick intact
+        with patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]"):
+            plugin.usage(mock_irc, mock_msg, [])
 
-        # Should reconstruct to "Rubin[F]" and query DB
+        # Should query DB with the full bracket nick
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Rubin[F]"
         assert "Rubin[F]" in mock_irc.reply.call_args[0][0]
 
@@ -879,7 +887,8 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 500, 250, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=2, total=6)
 
-        plugin.usage(mock_irc, mock_msg, ["OldNick"])
+        with patch("llm.plugin.callbacks.addressed", return_value="usage OldNick"):
+            plugin.usage(mock_irc, mock_msg, [])
 
         # DB should be queried with the account name
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "RealAccount"
@@ -900,7 +909,8 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=3, total=10)
 
-        plugin.usage(mock_irc, mock_msg, ["othernick"])
+        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
+            plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
@@ -928,7 +938,8 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        plugin.usage(mock_irc, mock_msg, ["othernick"])
+        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
+            plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "othernick" in reply_text
@@ -950,8 +961,11 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=2, total=8)
 
-        with patch("llm.plugin.ircutils.isChannel", return_value=True):
-            plugin.usage(mock_irc, mock_msg, ["#other"])
+        with (
+            patch("llm.plugin.callbacks.addressed", return_value="usage #other"),
+            patch("llm.plugin.ircutils.isChannel", return_value=True),
+        ):
+            plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#other this month:" in reply_text
@@ -974,8 +988,11 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
 
-        with patch("llm.plugin.ircutils.isChannel", return_value=True):
-            plugin.usage(mock_irc, mock_msg, ["#somechan"])
+        with (
+            patch("llm.plugin.callbacks.addressed", return_value="usage #somechan"),
+            patch("llm.plugin.ircutils.isChannel", return_value=True),
+        ):
+            plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#somechan this month:" in reply_text

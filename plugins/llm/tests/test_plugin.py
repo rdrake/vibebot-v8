@@ -505,24 +505,53 @@ class TestPluginHelperMethods:
 
         assert result == "testnick"
 
-    def test_rejoin_args_reconstructs_bracket_nick(self) -> None:
-        """GIVEN tokenized nick with brackets WHEN _rejoin_args called THEN original reconstructed."""
+    def test_extract_raw_arg_returns_target_with_brackets(self) -> None:
+        """GIVEN message with bracket nick WHEN _extract_raw_arg THEN brackets preserved."""
         from llm.plugin import LLM
 
-        # Limnoria tokenizes "Rubin[F]" into ["Rubin", ["F"]]
-        assert LLM._rejoin_args(["Rubin", ["F"]]) == "Rubin[F]"
+        mock_irc = MagicMock()
+        mock_msg = MagicMock()
 
-    def test_rejoin_args_simple_nick(self) -> None:
-        """GIVEN simple nick tokens WHEN _rejoin_args called THEN joined correctly."""
+        with patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]"):
+            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+
+        assert result == "Rubin[F]"
+
+    def test_extract_raw_arg_returns_simple_nick(self) -> None:
+        """GIVEN message with simple nick WHEN _extract_raw_arg THEN nick returned."""
         from llm.plugin import LLM
 
-        assert LLM._rejoin_args(["othernick"]) == "othernick"
+        mock_irc = MagicMock()
+        mock_msg = MagicMock()
 
-    def test_rejoin_args_empty_list(self) -> None:
-        """GIVEN empty token list WHEN _rejoin_args called THEN returns empty string."""
+        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
+            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+
+        assert result == "othernick"
+
+    def test_extract_raw_arg_returns_none_when_no_arg(self) -> None:
+        """GIVEN usage with no argument WHEN _extract_raw_arg THEN returns None."""
         from llm.plugin import LLM
 
-        assert LLM._rejoin_args([]) == ""
+        mock_irc = MagicMock()
+        mock_msg = MagicMock()
+
+        with patch("llm.plugin.callbacks.addressed", return_value="usage"):
+            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+
+        assert result is None
+
+    def test_extract_raw_arg_handles_plugin_qualified_command(self) -> None:
+        """GIVEN plugin-qualified command WHEN _extract_raw_arg THEN arg extracted."""
+        from llm.plugin import LLM
+
+        mock_irc = MagicMock()
+        mock_msg = MagicMock()
+
+        with patch("llm.plugin.callbacks.addressed", return_value="llm usage Rubin[F]"):
+            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+
+        assert result == "Rubin[F]"
 
     def test_get_channel_extracts_channel_from_args(self, mock_msg: MagicMock) -> None:
         """GIVEN message with args WHEN _get_channel called THEN returns channel."""

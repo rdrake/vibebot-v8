@@ -704,21 +704,31 @@ class LLM(callbacks.Plugin):
         return msg.args[0] if msg.args else "unknown"
 
     @staticmethod
-    def _rejoin_args(tokens: list) -> str:
-        """Rejoin Limnoria-tokenized args, reconstructing bracket groups.
+    def _extract_raw_arg(irc: callbacks.Irc, msg: IrcMsg, command: str) -> str | None:
+        """Extract the raw argument for a command from the original message.
 
         Limnoria's tokenizer treats ``[…]`` as nested-command syntax, so a
-        nick like ``Rubin[F]`` is split into ``['Rubin', ['F']]``.  This
-        reconstructs the original string so commands that accept nicks
-        (e.g. ``%usage Rubin[F]``) work correctly.
+        nick like ``Rubin[F]`` is evaluated as a nested command before the
+        command method ever sees it.  This bypasses the tokenizer entirely
+        by reading the addressed text from the raw IRC message.
+
+        Args:
+            irc: IRC connection (needed by ``callbacks.addressed``)
+            msg: IRC message
+            command: Command name to find (e.g. ``"usage"``)
+
+        Returns:
+            The raw text after the command name, or None if absent.
         """
-        parts: list[str] = []
-        for token in tokens:
-            if isinstance(token, list):
-                parts.append("[" + LLM._rejoin_args(token) + "]")
-            else:
-                parts.append(str(token))
-        return "".join(parts)
+        payload = callbacks.addressed(irc, msg)
+        if not payload:
+            return None
+        # payload is e.g. "usage Rubin[F]" or "llm usage Rubin[F]"
+        idx = payload.lower().find(command)
+        if idx < 0:
+            return None
+        after = payload[idx + len(command) :].strip()
+        return after or None
 
     def _is_old_message(self, msg: IrcMsg) -> bool:
         """Check if message predates bot startup (ZNC playback).
@@ -1099,11 +1109,11 @@ class LLM(callbacks.Plugin):
         <nick>: shows that user's stats (scoped to current channel if in one).
         <#channel>: shows that channel's stats.
         """
-        # Parse target manually instead of using wrap so that nicks containing
-        # brackets (e.g. "Rubin[F]") work.  Limnoria's tokenizer splits on "["
-        # for nested-command syntax, turning "Rubin[F]" into ['Rubin', ['F']].
-        # _rejoin_args reconstructs the original string from those tokens.
-        target: str | None = self._rejoin_args(args) or None
+        # Extract the raw target from the IRC message instead of using
+        # Limnoria's tokenized args.  The tokenizer treats "[" as nested-
+        # command syntax, so "Rubin[F]" is evaluated as a nested command
+        # before the args reach us — _extract_raw_arg bypasses that.
+        target: str | None = self._extract_raw_arg(irc, msg, "usage")
         args[:] = []  # consume all tokens
 
         # Strip IRC status prefixes (@op, +voice, %halfop) from nick targets
