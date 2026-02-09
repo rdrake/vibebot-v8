@@ -1070,6 +1070,9 @@ class LLM(callbacks.Plugin):
         <nick>: shows that user's stats (scoped to current channel if in one).
         <#channel>: shows that channel's stats.
         """
+        # Strip IRC status prefixes (@op, +voice, %halfop) from nick targets
+        if target and not ircutils.isChannel(target):
+            target = target.lstrip("@+%")
         if target and ircutils.isChannel(target):
             self._usage_for_channel(irc, msg, target)
         elif target:

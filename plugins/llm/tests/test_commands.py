@@ -838,6 +838,20 @@ class TestUsageCommand:
 
     # -- Target nick mode --
 
+    def test_usage_strips_irc_status_prefix_from_nick(self, plugin_env):
+        """GIVEN nick with @ prefix WHEN usage called THEN prefix stripped before lookup."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(7, 800, 400, 0.01)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
+
+        plugin.usage(mock_irc, mock_msg, ["@Larry"])
+
+        # Should query for "Larry", not "@Larry"
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
+        assert "Larry" in mock_irc.reply.call_args[0][0]
+
     def test_usage_with_nick_in_channel(self, plugin_env):
         """GIVEN nick target in channel WHEN usage called THEN shows that nick's channel stats."""
         from llm.persistence import UsageRank
