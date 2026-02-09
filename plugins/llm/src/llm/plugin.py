@@ -1059,15 +1059,22 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
+        target: str | None,
     ) -> None:
-        """(takes no arguments)
+        """[<nick or #channel>]
 
         Show API usage statistics.
 
-        In a channel: shows channel stats and your personal stats (any user).
-        Via PM: shows global overview with top users and channels (admin only).
+        No argument in a channel: shows channel stats and your personal stats.
+        No argument via PM: shows global overview (admin only).
+        <nick>: shows that user's stats (scoped to current channel if in one).
+        <#channel>: shows that channel's stats.
         """
-        if msg.channel:
+        if target and ircutils.isChannel(target):
+            self._usage_for_channel(irc, msg, target)
+        elif target:
+            self._usage_for_nick(irc, msg, target)
+        elif msg.channel:
             self._usage_channel(irc, msg)
         else:
             # PM mode requires admin
@@ -1076,7 +1083,7 @@ class LLM(callbacks.Plugin):
                 return
             self._usage_global(irc, msg)
 
-    usage = wrap(usage, [])
+    usage = wrap(usage, [optional("somethingWithoutSpaces")])
 
     def _usage_global(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show global usage overview via PM (admin only)."""
@@ -1140,6 +1147,43 @@ class LLM(callbacks.Plugin):
         nick_part += ")"
 
         irc.reply(f"{chan_part} | {nick_part}", prefixNick=False)
+
+    def _usage_for_nick(self, irc: callbacks.Irc, msg: IrcMsg, nick: str) -> None:
+        """Show usage stats for a specific nick."""
+        channel = msg.channel
+
+        month_start = (
+            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
+        nick_summary = self.db.get_usage_summary_for_nick(nick, since=month_start, channel=channel)
+        nick_rank = self.db.get_nick_rank(nick, since=month_start, channel=channel)
+
+        scope = f" in {channel}" if channel else ""
+        nick_part = f"{nick}{scope} this month: ${nick_summary.total_cost:.4f}"
+        nick_part += f" ({nick_summary.total_requests} requests"
+        if nick_rank.rank > 0:
+            nick_part += f", rank {nick_rank.rank}/{nick_rank.total} users"
+        nick_part += ")"
+
+        irc.reply(nick_part, prefixNick=False)
+
+    def _usage_for_channel(self, irc: callbacks.Irc, msg: IrcMsg, channel: str) -> None:
+        """Show usage stats for a specific channel."""
+        month_start = (
+            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
+        chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
+        chan_rank = self.db.get_channel_rank(channel, since=month_start)
+
+        chan_part = f"{channel} this month: ${chan_summary.total_cost:.4f}"
+        chan_part += f" ({chan_summary.total_requests} requests"
+        if chan_rank.rank > 0:
+            chan_part += f", rank {chan_rank.rank}/{chan_rank.total} channels"
+        chan_part += ")"
+
+        irc.reply(chan_part, prefixNick=False)
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 

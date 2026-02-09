@@ -836,6 +836,102 @@ class TestUsageCommand:
         # rank should not appear when rank=0
         assert "rank" not in reply_text
 
+    # -- Target nick mode --
+
+    def test_usage_with_nick_in_channel(self, plugin_env):
+        """GIVEN nick target in channel WHEN usage called THEN shows that nick's channel stats."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(
+            total_requests=7,
+            total_prompt_tokens=800,
+            total_completion_tokens=400,
+            total_cost=0.0100,
+        )
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=3, total=10)
+
+        plugin.usage(mock_irc, mock_msg, ["othernick"])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "othernick" in reply_text
+        assert "in #test" in reply_text
+        assert "7 requests" in reply_text
+        assert "rank 3/10 users" in reply_text
+        # Scoped to current channel
+        plugin.db.get_usage_summary_for_nick.assert_called_once()
+        call_kwargs = plugin.db.get_usage_summary_for_nick.call_args
+        assert call_kwargs[0][0] == "othernick"
+        assert call_kwargs[1]["channel"] == "#test"
+
+    def test_usage_with_nick_via_pm(self, plugin_env):
+        """GIVEN nick target via PM WHEN usage called THEN shows that nick's global stats."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None  # PM mode
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(
+            total_requests=20,
+            total_prompt_tokens=2000,
+            total_completion_tokens=1000,
+            total_cost=0.0500,
+        )
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
+
+        plugin.usage(mock_irc, mock_msg, ["othernick"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "othernick" in reply_text
+        assert "in #" not in reply_text  # no channel scope
+        assert "20 requests" in reply_text
+
+    # -- Target channel mode --
+
+    def test_usage_with_channel_target(self, plugin_env):
+        """GIVEN channel target WHEN usage called THEN shows that channel's stats."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(
+            total_requests=100,
+            total_prompt_tokens=10000,
+            total_completion_tokens=5000,
+            total_cost=0.1234,
+        )
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=2, total=8)
+
+        with patch("llm.plugin.ircutils.isChannel", return_value=True):
+            plugin.usage(mock_irc, mock_msg, ["#other"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "#other this month:" in reply_text
+        assert "100 requests" in reply_text
+        assert "rank 2/8 channels" in reply_text
+        plugin.db.get_usage_summary_for_channel.assert_called_once()
+        assert plugin.db.get_usage_summary_for_channel.call_args[0][0] == "#other"
+
+    def test_usage_with_channel_target_via_pm(self, plugin_env):
+        """GIVEN channel target via PM WHEN usage called THEN shows channel stats."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None  # PM mode
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(
+            total_requests=50,
+            total_prompt_tokens=5000,
+            total_completion_tokens=2500,
+            total_cost=0.0750,
+        )
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
+
+        with patch("llm.plugin.ircutils.isChannel", return_value=True):
+            plugin.usage(mock_irc, mock_msg, ["#somechan"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "#somechan this month:" in reply_text
+        assert "50 requests" in reply_text
+
 
 # ---------------------------------------------------------------------------
 # remindme
