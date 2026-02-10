@@ -44,6 +44,7 @@ addopts = "-v --tb=short"
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 filterwarnings = [
     "error",                            # Treat project warnings as test failures
+    "ignore::SyntaxWarning",               # PEP 765: return-in-finally (supybot)
     "ignore::DeprecationWarning:litellm",  # asyncio.iscoroutinefunction (Python 3.16)
     "ignore::DeprecationWarning:supybot",  # currentThread(), codecs.open()
     "ignore::ResourceWarning:supybot",     # Unclosed conf/*.conf files
