@@ -296,6 +296,9 @@ class LLM(callbacks.Plugin):
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
 
+        # Load pending video requests that survived a restart
+        self.llm_service.load_pending_videos(str(conf.supybot.directories.data()))
+
         # Track nicks already migrated to account-based identity this session
         self._migrated_nicks: set[str] = set()
 

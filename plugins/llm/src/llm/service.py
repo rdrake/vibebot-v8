@@ -138,6 +138,7 @@ class LLMService:
         self.log.addFilter(TraceFilter())
         self._cleanup_lock = threading.Lock()
         self._pending_videos: list[dict] = []
+        self._pending_videos_path: Path | None = None
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -1613,6 +1614,7 @@ Rules:
                             "submitted_at": time.time() - elapsed,
                         }
                     )
+                    self._save_pending_videos()
                     self.log.info(
                         "video_generation timed out after %ds, stashed request_id=%s for recovery",
                         timeout,
@@ -1723,6 +1725,34 @@ Rules:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
+    def load_pending_videos(self, data_dir: str) -> None:
+        """Load pending video requests from disk.
+
+        Args:
+            data_dir: Limnoria data directory path
+        """
+        import json
+
+        self._pending_videos_path = Path(data_dir) / "llm_pending_videos.json"
+        if self._pending_videos_path.exists():
+            try:
+                self._pending_videos = json.loads(self._pending_videos_path.read_text())
+                self.log.info("Loaded %d pending video requests", len(self._pending_videos))
+            except Exception:
+                self.log.warning("Failed to load pending videos, starting fresh")
+                self._pending_videos = []
+
+    def _save_pending_videos(self) -> None:
+        """Persist pending video requests to disk."""
+        import json
+
+        if self._pending_videos_path is None:
+            return
+        try:
+            self._pending_videos_path.write_text(json.dumps(self._pending_videos))
+        except Exception:
+            self.log.warning("Failed to save pending videos to disk")
+
     def check_pending_videos(self) -> list[dict]:
         """Poll stashed video requests that previously timed out.
 
@@ -1799,6 +1829,7 @@ Rules:
                 still_pending.append(entry)
 
         self._pending_videos = still_pending
+        self._save_pending_videos()
         return completed
 
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
