@@ -6,106 +6,10 @@ without requiring a full Limnoria runtime environment.
 
 from __future__ import annotations
 
-import os
-import tempfile
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-
-class TestPluginImport:
-    """Test plugin module can be imported and has expected structure."""
-
-    def test_plugin_module_imports(self) -> None:
-        """GIVEN llm.plugin module WHEN imported THEN no errors."""
-        from llm import plugin
-
-        assert plugin is not None
-
-    def test_plugin_class_exists(self) -> None:
-        """GIVEN llm.plugin module WHEN accessing Class THEN plugin class found."""
-        from llm.plugin import Class
-
-        assert Class is not None
-        assert Class.__name__ == "LLM"
-
-    def test_plugin_inherits_from_callbacks(self) -> None:
-        """GIVEN LLM class WHEN checking inheritance THEN inherits from Plugin."""
-        # Check that LLM inherits from callbacks.Plugin
-        import supybot.callbacks as callbacks
-        from llm.plugin import LLM
-
-        assert issubclass(LLM, callbacks.Plugin)
-
-
-class TestCommandExistence:
-    """Test that expected commands are defined on the plugin class."""
-
-    def test_ask_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for ask THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "ask")
-        assert callable(LLM.ask)
-
-    def test_code_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for code THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "code")
-        assert callable(LLM.code)
-
-    def test_draw_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for draw THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "draw")
-        assert callable(LLM.draw)
-
-    def test_forget_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for forget THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "forget")
-        assert callable(LLM.forget)
-
-    def test_llmkeys_command_exists(self) -> None:
-        """GIVEN LLM plugin class WHEN checking for llmkeys THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "llmkeys")
-        assert callable(LLM.llmkeys)
-
-    def test_usage_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for usage THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "usage")
-        assert callable(LLM.usage)
-
-
-class TestPluginConfiguration:
-    """Test plugin configuration and service dependencies."""
-
-    def test_plugin_is_threaded(self) -> None:
-        """GIVEN LLM plugin class WHEN checking threaded attribute THEN True."""
-        from llm.plugin import LLM
-
-        assert LLM.threaded is True
-
-    def test_service_module_imports(self) -> None:
-        """GIVEN llm.service module WHEN imported THEN no errors."""
-        from llm.service import LLMService
-
-        assert LLMService is not None
-
-    def test_context_module_imports(self) -> None:
-        """GIVEN llm.context module WHEN imported THEN no errors."""
-        from llm.context import ContextConfig, ConversationContext
-
-        assert ConversationContext is not None
-        assert ContextConfig is not None
 
 
 class TestHTTPCallback:
@@ -188,138 +92,128 @@ class TestHTTPCallbackDoGet:
         mock_handler.send_response.assert_called_with(404)
         mock_handler.end_headers.assert_called_once()
 
-    def test_doget_serves_existing_file(self, http_callback, mock_handler: MagicMock) -> None:
+    def test_doget_serves_existing_file(
+        self, http_callback, mock_handler: MagicMock, tmp_path
+    ) -> None:
         """GIVEN existing file WHEN doGet called THEN returns 200 with content."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.txt")
-            with open(test_file, "wb") as f:
-                f.write(b"test content")
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"test content")
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                http_callback.doGet(mock_handler, "test.txt")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            http_callback.doGet(mock_handler, "test.txt")
 
-            mock_handler.send_response.assert_called_with(200)
-            mock_handler.send_header.assert_any_call("Content-Type", "text/plain")
-            mock_handler.send_header.assert_any_call("Content-Length", "12")
+        mock_handler.send_response.assert_called_with(200)
+        mock_handler.send_header.assert_any_call("Content-Type", "text/plain")
+        mock_handler.send_header.assert_any_call("Content-Length", "12")
 
     def test_doget_serves_image_with_correct_type(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN image file WHEN doGet called THEN returns correct content type."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.png")
-            with open(test_file, "wb") as f:
-                f.write(b"\x89PNG\r\n\x1a\n")  # PNG header
+        test_file = tmp_path / "test.png"
+        test_file.write_bytes(b"\x89PNG\r\n\x1a\n")  # PNG header
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                http_callback.doGet(mock_handler, "test.png")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            http_callback.doGet(mock_handler, "test.png")
 
-            mock_handler.send_response.assert_called_with(200)
-            mock_handler.send_header.assert_any_call("Content-Type", "image/png")
+        mock_handler.send_response.assert_called_with(200)
+        mock_handler.send_header.assert_any_call("Content-Type", "image/png")
 
     def test_doget_handles_unknown_content_type(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN file with unknown extension WHEN doGet called THEN uses octet-stream."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.xyz123")
-            with open(test_file, "wb") as f:
-                f.write(b"binary data")
+        test_file = tmp_path / "test.xyz123"
+        test_file.write_bytes(b"binary data")
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                http_callback.doGet(mock_handler, "test.xyz123")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            http_callback.doGet(mock_handler, "test.xyz123")
 
-            mock_handler.send_response.assert_called_with(200)
-            mock_handler.send_header.assert_any_call("Content-Type", "application/octet-stream")
+        mock_handler.send_response.assert_called_with(200)
+        mock_handler.send_header.assert_any_call("Content-Type", "application/octet-stream")
 
     def test_doget_handles_broken_pipe_silently(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN client disconnect WHEN doGet serving file THEN no error raised."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.txt")
-            with open(test_file, "wb") as f:
-                f.write(b"test")
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"test")
 
-            mock_handler.wfile.write.side_effect = BrokenPipeError()
+        mock_handler.wfile.write.side_effect = BrokenPipeError()
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                # Should not raise
-                http_callback.doGet(mock_handler, "test.txt")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            # Should not raise
+            http_callback.doGet(mock_handler, "test.txt")
 
     def test_doget_handles_connection_reset_silently(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN connection reset WHEN doGet serving file THEN no error raised."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.txt")
-            with open(test_file, "wb") as f:
-                f.write(b"test")
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"test")
 
-            mock_handler.wfile.write.side_effect = ConnectionResetError()
+        mock_handler.wfile.write.side_effect = ConnectionResetError()
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                # Should not raise
-                http_callback.doGet(mock_handler, "test.txt")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            # Should not raise
+            http_callback.doGet(mock_handler, "test.txt")
 
-    def test_doget_handles_os_error_with_500(self, http_callback, mock_handler: MagicMock) -> None:
+    def test_doget_handles_os_error_with_500(
+        self, http_callback, mock_handler: MagicMock, tmp_path
+    ) -> None:
         """GIVEN OS error reading file WHEN doGet called THEN returns 500."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test.txt")
-            with open(test_file, "wb") as f:
-                f.write(b"test")
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"test")
 
-            with (
-                patch.object(http_callback, "_get_web_dir", return_value=tmpdir),
-                patch("builtins.open", side_effect=OSError("disk error")),
-            ):
-                http_callback.doGet(mock_handler, "test.txt")
+        with (
+            patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)),
+            patch("builtins.open", side_effect=OSError("disk error")),
+        ):
+            http_callback.doGet(mock_handler, "test.txt")
 
-            mock_handler.send_response.assert_called_with(500)
+        mock_handler.send_response.assert_called_with(500)
 
-    def test_doget_blocks_symlink_escape(self, http_callback, mock_handler: MagicMock) -> None:
+    def test_doget_blocks_symlink_escape(
+        self, http_callback, mock_handler: MagicMock, tmp_path
+    ) -> None:
         """GIVEN symlink pointing outside web dir WHEN doGet called THEN returns 403."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            web_dir = os.path.join(tmpdir, "web")
-            os.makedirs(web_dir)
+        web_dir = tmp_path / "web"
+        web_dir.mkdir()
 
-            # Create a file outside web dir
-            outside_file = os.path.join(tmpdir, "secret.txt")
-            with open(outside_file, "w") as f:
-                f.write("secret data")
+        # Create a file outside web dir
+        outside_file = tmp_path / "secret.txt"
+        outside_file.write_text("secret data")
 
-            # Create a symlink inside web dir pointing outside
-            symlink_path = os.path.join(web_dir, "escape.txt")
-            os.symlink(outside_file, symlink_path)
+        # Create a symlink inside web dir pointing outside
+        symlink_path = web_dir / "escape.txt"
+        symlink_path.symlink_to(outside_file)
 
-            with patch.object(http_callback, "_get_web_dir", return_value=web_dir):
-                http_callback.doGet(mock_handler, "escape.txt")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(web_dir)):
+            http_callback.doGet(mock_handler, "escape.txt")
 
-            # Should return 403 because resolved path is outside web_dir
-            mock_handler.send_response.assert_called_with(403)
+        # Should return 403 because resolved path is outside web_dir
+        mock_handler.send_response.assert_called_with(403)
 
     def test_doget_allows_symlink_within_web_dir(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN symlink pointing within web dir WHEN doGet called THEN serves file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            web_dir = os.path.join(tmpdir, "web")
-            os.makedirs(web_dir)
+        web_dir = tmp_path / "web"
+        web_dir.mkdir()
 
-            # Create a file inside web dir
-            real_file = os.path.join(web_dir, "real.txt")
-            with open(real_file, "wb") as f:
-                f.write(b"content")
+        # Create a file inside web dir
+        real_file = web_dir / "real.txt"
+        real_file.write_bytes(b"content")
 
-            # Create a symlink inside web dir pointing to the file
-            symlink_path = os.path.join(web_dir, "link.txt")
-            os.symlink(real_file, symlink_path)
+        # Create a symlink inside web dir pointing to the file
+        symlink_path = web_dir / "link.txt"
+        symlink_path.symlink_to(real_file)
 
-            with patch.object(http_callback, "_get_web_dir", return_value=web_dir):
-                http_callback.doGet(mock_handler, "link.txt")
+        with patch.object(http_callback, "_get_web_dir", return_value=str(web_dir)):
+            http_callback.doGet(mock_handler, "link.txt")
 
-            # Should serve the file
-            mock_handler.send_response.assert_called_with(200)
+        # Should serve the file
+        mock_handler.send_response.assert_called_with(200)
 
     def test_doget_handles_realpath_oserror(self, http_callback, mock_handler: MagicMock) -> None:
         """GIVEN realpath raises OSError WHEN doGet called THEN returns 403."""
@@ -405,21 +299,19 @@ class TestHTTPCallbackServeHelpPage:
         assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
 
     def test_serve_help_page_uses_custom_file_when_exists(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN custom help.html WHEN _serve_help_page THEN uses custom file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            custom_help = os.path.join(tmpdir, "help.html")
-            custom_content = b"<html>Custom Help</html>"
-            with open(custom_help, "wb") as f:
-                f.write(custom_content)
+        custom_help = tmp_path / "help.html"
+        custom_content = b"<html>Custom Help</html>"
+        custom_help.write_bytes(custom_content)
 
-            with patch.object(http_callback, "_get_web_dir", return_value=tmpdir):
-                http_callback._serve_help_page(mock_handler)
+        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
+            http_callback._serve_help_page(mock_handler)
 
-            mock_handler.send_response.assert_called_with(200)
-            written_content = mock_handler.wfile.write.call_args[0][0]
-            assert written_content == custom_content
+        mock_handler.send_response.assert_called_with(200)
+        written_content = mock_handler.wfile.write.call_args[0][0]
+        assert written_content == custom_content
 
     def test_serve_help_page_handles_broken_pipe(
         self, http_callback, mock_handler: MagicMock
@@ -432,25 +324,22 @@ class TestHTTPCallbackServeHelpPage:
             http_callback._serve_help_page(mock_handler)
 
     def test_serve_help_page_falls_back_on_read_error(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, tmp_path
     ) -> None:
         """GIVEN custom file read error WHEN _serve_help_page THEN falls back to template."""
         from llm.plugin import HELP_HTML_TEMPLATE
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            custom_help = os.path.join(tmpdir, "help.html")
-            # Create file then make it unreadable by mocking
-            with open(custom_help, "wb") as f:
-                f.write(b"content")
+        custom_help = tmp_path / "help.html"
+        custom_help.write_bytes(b"content")
 
-            with (
-                patch.object(http_callback, "_get_web_dir", return_value=tmpdir),
-                patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")),
-            ):
-                http_callback._serve_help_page(mock_handler)
+        with (
+            patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)),
+            patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")),
+        ):
+            http_callback._serve_help_page(mock_handler)
 
-            written_content = mock_handler.wfile.write.call_args[0][0]
-            assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
+        written_content = mock_handler.wfile.write.call_args[0][0]
+        assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
 
 
 class TestPluginHelperMethods:

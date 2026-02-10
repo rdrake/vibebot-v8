@@ -20,41 +20,11 @@ from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
 from llm.service import CompletionResult, ImageResult, ReminderParseResult
 
+from .conftest import make_registry_side_effect
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
-
-# Default config values returned by registryValue in tests
-_DEFAULT_CONFIG: dict[str, object] = {
-    "httpRoot": "/tmp/llm-test-web",
-    "httpUrlBase": "http://localhost:8080/llm",
-    "databasePath": "",
-    "contextMaxMessages": 20,
-    "contextTimeoutMinutes": 30,
-    "contextEnabled": True,
-    "channelContextMaxMessages": 10,
-    "contextTrackAllMessages": False,
-    "askApiKey": "test-key",
-    "askModel": "gpt-4",
-    "askSystemPrompt": "You are helpful.",
-    "codeApiKey": "test-key",
-    "codeModel": "gpt-4",
-    "codeSystemPrompt": "You write code.",
-    "drawApiKey": "test-key",
-    "drawModel": "dall-e-3",
-    "drawTimeout": 60,
-    "drawAutoRewriteMax": 2,
-    "timeout": 30,
-    "maxPromptLength": 10000,
-    "commandPrefixes": [".", "/"],
-    "fileCleanupAge": 24,
-    "fileCleanupMax": 100,
-}
-
-
-def _registry(key: str, *args: object) -> object:
-    """Simulate registryValue look-ups for tests."""
-    return _DEFAULT_CONFIG.get(key, "")
 
 
 @pytest.fixture
@@ -63,6 +33,8 @@ def plugin_env():
 
     Returns (plugin, mock_irc, mock_msg) ready for command invocation.
     """
+    registry = make_registry_side_effect()
+
     mock_irc = MagicMock()
     mock_irc.nick = "testbot"
     mock_irc.state = MagicMock()
@@ -79,7 +51,7 @@ def plugin_env():
     mock_msg.nick = "testnick"
 
     with (
-        patch.object(LLM, "registryValue", side_effect=_registry),
+        patch.object(LLM, "registryValue", side_effect=registry),
         patch("llm.plugin.LLMService"),
         patch("llm.plugin.LLMDatabase"),
         patch("llm.plugin.log"),
@@ -91,7 +63,7 @@ def plugin_env():
         plugin = LLM(mock_irc)
         # After __init__, swap registryValue to a plain MagicMock so
         # each test can override specific keys while keeping defaults.
-        plugin.registryValue = MagicMock(side_effect=_registry)
+        plugin.registryValue = MagicMock(side_effect=registry)
 
     # Provide the MetaSynchronized RLock that _allow_concurrent expects.
     plugin._MetaSynchronized_rlock = threading.RLock()
@@ -250,12 +222,9 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        def disabled_registry(key, *args):
-            if key == "contextEnabled":
-                return False
-            return _registry(key, *args)
-
-        plugin.registryValue = MagicMock(side_effect=disabled_registry)
+        plugin.registryValue = MagicMock(
+            side_effect=make_registry_side_effect({"contextEnabled": False})
+        )
 
         with patch("llm.plugin.ircdb.checkCapability", return_value=True):
             plugin.ask(mock_irc, mock_msg, ["hello"])
@@ -578,12 +547,9 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        def disabled_registry(key, *args):
-            if key == "contextEnabled":
-                return False
-            return _registry(key, *args)
-
-        plugin.registryValue = MagicMock(side_effect=disabled_registry)
+        plugin.registryValue = MagicMock(
+            side_effect=make_registry_side_effect({"contextEnabled": False})
+        )
 
         with patch("llm.plugin.ircdb.checkCapability", return_value=True):
             plugin.draw(mock_irc, mock_msg, ["sunset"])
@@ -1651,12 +1617,9 @@ class TestCodeEdgeCases:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        def disabled_registry(key, *args):
-            if key == "contextEnabled":
-                return False
-            return _registry(key, *args)
-
-        plugin.registryValue = MagicMock(side_effect=disabled_registry)
+        plugin.registryValue = MagicMock(
+            side_effect=make_registry_side_effect({"contextEnabled": False})
+        )
 
         with patch("llm.plugin.ircdb.checkCapability", return_value=True):
             plugin.code(mock_irc, mock_msg, ["hello"])
