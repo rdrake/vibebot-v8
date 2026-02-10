@@ -635,8 +635,8 @@ class TestLlmkeysCommand:
         mock_irc.reply.assert_called_once()
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
-        # Should call safe_key_display for all 3 keys
-        assert plugin.llm_service.safe_key_display.call_count == 3
+        # Should call safe_key_display for all 4 keys (ask, code, draw, animate)
+        assert plugin.llm_service.safe_key_display.call_count == 4
 
     def test_llmkeys_response_contains_all_key_types(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin WHEN llmkeys called THEN response mentions ask, code, draw."""
@@ -650,6 +650,7 @@ class TestLlmkeysCommand:
         assert "ask=" in reply_text
         assert "code=" in reply_text
         assert "draw=" in reply_text
+        assert "animate=" in reply_text
 
 
 # ---------------------------------------------------------------------------

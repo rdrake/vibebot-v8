@@ -40,6 +40,10 @@ IMAGE_COST_PER_IMAGE: dict[str, float] = {
     "xai/grok-imagine-image": 0.02,
 }
 
+VIDEO_COST_PER_VIDEO: dict[str, float] = {
+    "grok-imagine-video": 0.10,
+}
+
 _ = PluginInternationalization("LLM")
 
 # Constants
@@ -77,6 +81,17 @@ class ImageResult(NamedTuple):
     cost: float = 0.0
     model: str = ""
     rewritten_prompt: str | None = None
+    error: str | None = None
+
+
+class VideoResult(NamedTuple):
+    """Result of video generation API call."""
+
+    content: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    model: str = ""
     error: str | None = None
 
 
@@ -150,7 +165,7 @@ class LLMService:
         if not text:
             return ""
         result = str(text)
-        for key_name in ("askApiKey", "codeApiKey", "drawApiKey"):
+        for key_name in ("askApiKey", "codeApiKey", "drawApiKey", "animateApiKey"):
             key = self.plugin.registryValue(key_name)
             if key and isinstance(key, str):
                 result = result.replace(key, "[REDACTED]")
@@ -1506,6 +1521,192 @@ Rules:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
+    def video_generation(
+        self,
+        prompt: str,
+        irc: Irc | None = None,
+        msg: IrcMsg | None = None,
+    ) -> VideoResult:
+        """Generate video from text prompt using xAI API.
+
+        Uses xAI's two-step async API: submit a generation request,
+        then poll until the video is ready. Sends IRC typing indicators
+        during polling to show the bot is working.
+
+        Args:
+            prompt: Text description of video to generate
+            irc: IRC connection for typing indicators (optional)
+            msg: IRC message for context (optional)
+
+        Returns:
+            VideoResult with URL to generated video or error message
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        target = None
+        if irc and msg and msg.args:
+            target = msg.args[0]
+
+        try:
+            if irc and target:
+                self.send_typing_indicator(irc, target, "active")
+
+            # Validate prompt
+            is_valid, error_msg = self.validate_prompt(prompt)
+            if not is_valid:
+                error_content = _("Error: %s") % error_msg
+                return VideoResult(content=error_content, error=error_content)
+
+            # Get configuration
+            channel = msg.args[0] if msg and msg.args else None
+            api_key = self.plugin.registryValue("animateApiKey")
+            if not api_key:
+                error_content = _("Error: API key not configured for animate command")
+                return VideoResult(content=error_content, error=error_content)
+            model = self.plugin.registryValue("animateModel", channel)
+            timeout = self.plugin.registryValue("animateTimeout") or self.plugin.registryValue(
+                "timeout"
+            )
+
+            # Step 1: Submit generation request
+            submit_url = "https://api.x.ai/v1/videos/generations"
+            submit_body = json.dumps({"model": model, "prompt": prompt}).encode()
+            submit_req = urllib.request.Request(
+                submit_url,
+                data=submit_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                method="POST",
+            )
+
+            self.log.info("video_generation request: model=%s", model)
+
+            with urllib.request.urlopen(submit_req, timeout=30) as resp:  # noqa: S310
+                submit_data = json.loads(resp.read())
+
+            request_id = submit_data.get("request_id")
+            if not request_id:
+                error_content = _("Error: Video generation API returned no request ID")
+                return VideoResult(content=error_content, error=error_content)
+
+            self.log.info("video_generation submitted: request_id=%s", request_id)
+
+            # Step 2: Poll for result
+            poll_url = f"https://api.x.ai/v1/videos/{request_id}"
+            poll_headers = {"Authorization": f"Bearer {api_key}"}
+            start_time = time.time()
+            poll_interval = 3  # seconds
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    error_content = (
+                        _(
+                            "Error: Video generation timed out after %d seconds. "
+                            "Try a simpler prompt."
+                        )
+                        % timeout
+                    )
+                    return VideoResult(content=error_content, model=model, error=error_content)
+
+                time.sleep(poll_interval)
+
+                # Send typing indicator on each poll
+                if irc and target:
+                    self.send_typing_indicator(irc, target, "active")
+
+                poll_req = urllib.request.Request(poll_url, headers=poll_headers)
+                with urllib.request.urlopen(poll_req, timeout=30) as resp:  # noqa: S310
+                    poll_data = json.loads(resp.read())
+
+                status = poll_data.get("status")
+                self.log.debug("video_generation poll: status=%s elapsed=%.0fs", status, elapsed)
+
+                if status == "done":
+                    break
+                elif status == "expired":
+                    error_content = _("Error: Video generation request expired. Please try again.")
+                    return VideoResult(content=error_content, model=model, error=error_content)
+                # status == "pending": continue polling
+
+            # Step 3: Extract video URL and download
+            video_url = None
+            # Try common response structures
+            if "video_url" in poll_data:
+                video_url = poll_data["video_url"]
+            elif "url" in poll_data:
+                video_url = poll_data["url"]
+            elif "data" in poll_data and poll_data["data"]:
+                first = (
+                    poll_data["data"][0]
+                    if isinstance(poll_data["data"], list)
+                    else poll_data["data"]
+                )
+                video_url = first.get("url") or first.get("video_url")
+
+            if not video_url:
+                error_content = _("Error: Video generation completed but no video URL returned")
+                return VideoResult(content=error_content, model=model, error=error_content)
+
+            self.log.info("video_generation complete, downloading from %s", video_url[:100])
+
+            # Download and save locally
+            local_url = self._download_and_save_video(video_url, api_key)
+            if not local_url:
+                # Fall back to temporary URL if download fails
+                local_url = video_url
+
+            # Calculate cost
+            cost = VIDEO_COST_PER_VIDEO.get(model, 0.0)
+
+            return VideoResult(
+                content=local_url,
+                cost=cost,
+                model=model,
+            )
+
+        except urllib.error.HTTPError as e:
+            body = ""
+            with contextlib.suppress(Exception):
+                body = e.read().decode()[:200]
+            sanitized = self._sanitize(body or str(e))
+            self.log.error("Video generation HTTP error %s: %s", e.code, sanitized)
+
+            if e.code == 401:
+                error_content = _(
+                    "Error: Invalid API key for animate. Please check your configuration."
+                )
+            elif e.code == 429:
+                error_content = _("Error: API rate limit reached. Please wait and try again.")
+            elif e.code == 400 and any(
+                kw in body.lower() for kw in ("moderation", "safety", "content policy", "blocked")
+            ):
+                error_content = _(
+                    "Error: Content violates AI safety policies. Please rephrase your request."
+                )
+            else:
+                error_content = (
+                    _("Error: Video generation API error (%s). Check logs for details.") % e.code
+                )
+            return VideoResult(content=error_content, error=error_content)
+
+        except Exception as e:
+            sanitized = self._sanitize(str(e))
+            self.log.exception("Video generation failed: %s", sanitized)
+            error_content = _(
+                "Error: Unable to complete video generation. "
+                "Check your configuration or try again later."
+            )
+            return VideoResult(content=error_content, error=error_content)
+
+        finally:
+            if irc and target:
+                self.send_typing_indicator(irc, target, "done")
+
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
         """Strip markdown code fences and extract language if present.
 
@@ -1696,6 +1897,32 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             self.log.error("Failed to save image file: %s", e)
             return None
 
+    def _save_video_bytes(self, video_bytes: bytes, extension: str = "mp4") -> str | None:
+        """Save raw video bytes to HTTP server and return public URL.
+
+        Args:
+            video_bytes: Raw video bytes
+            extension: Video file extension (default: mp4)
+
+        Returns:
+            Public URL to saved video or None on error
+        """
+        http_root, url_base = self.get_http_paths()
+
+        hash_input = hashlib.sha256(video_bytes[:256]).hexdigest() + str(time.time())
+        hash_str = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+        filename = f"vid_{hash_str}.{extension}"
+        filepath = Path(http_root) / filename
+
+        try:
+            Path(http_root).mkdir(parents=True, exist_ok=True)
+            with AtomicFile(str(filepath), "wb") as f:
+                f.write(video_bytes)
+            return f"{url_base}/{filename}"
+        except OSError as e:
+            self.log.error("Failed to save video file: %s", e)
+            return None
+
     def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
         """Save base64-encoded image to HTTP server.
 
@@ -1769,6 +1996,42 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         except Exception as e:
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
+            return None
+
+    def _download_and_save_video(self, url: str, api_key: str | None = None) -> str | None:
+        """Download a video from a URL and save it locally.
+
+        Args:
+            url: Video URL to download
+            api_key: Optional API key for authenticated downloads
+
+        Returns:
+            Local public URL to saved video or None on error
+        """
+        import urllib.request
+
+        max_size = 100 * 1024 * 1024  # 100 MB
+
+        timeout = self.plugin.registryValue("animateTimeout") or self.plugin.registryValue(
+            "timeout"
+        )
+
+        try:
+            headers = {"User-Agent": "VibeBot/8"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                data = resp.read(max_size + 1)
+
+                if len(data) > max_size:
+                    self.log.warning("Video too large to download: %s", url[:200])
+                    return None
+
+            return self._save_video_bytes(data)
+
+        except Exception as e:
+            self.log.warning("Failed to download video from %s: %s", url[:200], e)
             return None
 
     def _build_messages(
@@ -1890,7 +2153,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
             # Collect files with mtime
             files: list[tuple[Path, float]] = []
-            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp"):
+            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.mp4"):
                 for file_path in dir_path.glob(pattern):
                     with contextlib.suppress(OSError):
                         files.append((file_path, file_path.stat().st_mtime))

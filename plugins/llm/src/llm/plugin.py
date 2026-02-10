@@ -121,6 +121,11 @@ a { color: #66d9ef; }
 <pre><code><span class="example">%draw A sunset over mountains in watercolor style</span>
 <span class="example">%draw A cyberpunk cityscape at night</span></code></pre>
 
+<h3><code class="command">%animate</code> <span class="param">&lt;prompt&gt;</span></h3>
+<p>Generate a short video from a text description. Also available as <code>%video</code>. Requires NickServ identification.</p>
+<pre><code><span class="example">%animate A cat playing with a ball of yarn</span>
+<span class="example">%animate A timelapse of a sunset over the ocean</span></code></pre>
+
 <h3><code class="command">%forget</code> <span class="param">[channel]</span></h3>
 <p>Clear your conversation context (memory) for the current or specified channel. Use this to start fresh.</p>
 <pre><code><span class="example">%forget</span>
@@ -644,7 +649,7 @@ class LLM(callbacks.Plugin):
         return (
             _(
                 "AI-powered commands using LiteLLM. "
-                "Commands: ask, code, draw, forget. "
+                "Commands: ask, code, draw, animate (video), forget. "
                 "Full documentation: %s"
             )
             % url
@@ -1084,6 +1089,83 @@ class LLM(callbacks.Plugin):
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
+    def animate(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<prompt>
+
+        Generate a short video from a text description.
+        Requires NickServ identification.
+
+        Examples:
+          %animate A cat playing with a ball of yarn
+          %animate A timelapse of a sunset over the ocean
+        """
+        # Skip ZNC playback messages
+        if self._is_old_message(msg):
+            return
+
+        # Require NickServ identification
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            account = irc.state.nickToAccount(raw_nick)
+        except (KeyError, AttributeError):
+            account = None
+        if not account:
+            irc.error(_("You must be identified with NickServ to use this command."))
+            return
+
+        nick = self._resolve_nick_to_identity(irc, raw_nick)
+        channel = self._get_channel(msg)
+
+        with self._trace_request("animate", nick, channel):
+            with self._allow_concurrent():
+                result = self.llm_service.video_generation(text, irc=irc, msg=msg)
+                self.log.info("replying to %s/%s", channel, nick)
+                sanitized_content = self.llm_service.sanitize_output(result.content)
+                irc.reply(sanitized_content)
+
+            # Store conversation context if enabled and no error
+            if result.error is None and self._get_context_enabled(channel):
+                ctx_cfg = self._get_context_config(channel)
+                self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
+                self.context.add_message(
+                    nick,
+                    channel,
+                    Role.ASSISTANT,
+                    f"[Generated video: {result.content}]",
+                    config=ctx_cfg,
+                )
+                self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
+                self.context.add_channel_message(
+                    channel,
+                    irc.nick,
+                    Role.ASSISTANT,
+                    f"[Generated video: {result.content}]",
+                    config=ctx_cfg,
+                )
+
+            # Log usage
+            if result.error is None:
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    "animate",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
+
+    animate = wrap(animate, ["text"])
+
+    # Alias: %video works the same as %animate
+    video = animate
+
     def forget(
         self,
         irc: callbacks.Irc,
@@ -1125,17 +1207,20 @@ class LLM(callbacks.Plugin):
         ask_key = self.registryValue("askApiKey")
         code_key = self.registryValue("codeApiKey")
         draw_key = self.registryValue("drawApiKey")
+        animate_key = self.registryValue("animateApiKey")
 
         # Safely display each key
         ask_status = self.llm_service.safe_key_display(ask_key)
         code_status = self.llm_service.safe_key_display(code_key)
         draw_status = self.llm_service.safe_key_display(draw_key)
+        animate_status = self.llm_service.safe_key_display(animate_key)
 
         # Build response
-        response = _("API Key Status: ask=%s, code=%s, draw=%s") % (
+        response = _("API Key Status: ask=%s, code=%s, draw=%s, animate=%s") % (
             ask_status,
             code_status,
             draw_status,
+            animate_status,
         )
 
         # Send as private message for extra security

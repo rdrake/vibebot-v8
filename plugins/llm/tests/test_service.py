@@ -119,6 +119,7 @@ class TestLLMService:
                 "askApiKey": api_key,
                 "codeApiKey": "",
                 "drawApiKey": "",
+                "animateApiKey": "",
             }.get(key, "")
         )
         text_with_key = f"Error: Invalid API key {api_key}"
@@ -134,6 +135,7 @@ class TestLLMService:
                 "askApiKey": "",
                 "codeApiKey": "",
                 "drawApiKey": api_key,
+                "animateApiKey": "",
             }.get(key, "")
         )
         text_with_key = f"Error with key {api_key}"
@@ -155,6 +157,7 @@ class TestLLMService:
                 "askApiKey": ask_key,
                 "codeApiKey": code_key,
                 "drawApiKey": "",
+                "animateApiKey": "",
             }.get(key, "")
         )
         text = f"Error with {ask_key} and also {code_key}"
@@ -170,6 +173,7 @@ class TestLLMService:
                 "askApiKey": "",
                 "codeApiKey": "",
                 "drawApiKey": "",
+                "animateApiKey": "",
             }.get(key, "")
         )
         text = "Error: some random text with no keys"

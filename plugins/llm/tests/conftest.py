@@ -123,6 +123,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawModel": "dall-e-3",
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
+        # Animate command
+        "animateApiKey": TEST_API_KEY,
+        "animateModel": "grok-imagine-video",
+        "animateTimeout": 300,
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,
