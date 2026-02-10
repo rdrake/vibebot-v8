@@ -1579,6 +1579,7 @@ Rules:
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "VibeBot/8",
                 },
                 method="POST",
             )
@@ -1597,7 +1598,7 @@ Rules:
 
             # Step 2: Poll for result
             poll_url = f"https://api.x.ai/v1/videos/{request_id}"
-            poll_headers = {"Authorization": f"Bearer {api_key}"}
+            poll_headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "VibeBot/8"}
             start_time = time.time()
             poll_interval = 3  # seconds
 
