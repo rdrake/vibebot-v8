@@ -47,6 +47,7 @@ filterwarnings = [
     "ignore::DeprecationWarning:litellm",  # asyncio.iscoroutinefunction (Python 3.16)
     "ignore::DeprecationWarning:supybot",  # currentThread(), codecs.open()
     "ignore::ResourceWarning:supybot",     # Unclosed conf/*.conf files
+    "ignore::SyntaxWarning:supybot",       # return-in-finally (PEP 765)
 ]
 
 [tool.ty.environment]
