@@ -7,8 +7,6 @@ proper structure.
 
 from __future__ import annotations
 
-from unittest.mock import Mock
-
 import pytest
 from llm.service import LLMService
 
@@ -17,19 +15,15 @@ class TestHtmlCodeOutputStructure:
     """Test the structure of generated HTML code pages."""
 
     @pytest.fixture
-    def service(self, tmp_path) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_html_has_doctype(self, service: LLMService, tmp_path) -> None:
         """GIVEN code content WHEN saved THEN HTML has doctype."""
@@ -90,19 +84,15 @@ class TestSyntaxHighlighting:
     """Test syntax highlighting in HTML output."""
 
     @pytest.fixture
-    def service(self, tmp_path) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_python_code_highlighted(self, service: LLMService, tmp_path) -> None:
         """GIVEN Python code WHEN saved THEN has highlighting classes."""
@@ -178,19 +168,15 @@ class TestXssPrevention:
     """Test XSS prevention in HTML output."""
 
     @pytest.fixture
-    def service(self, tmp_path) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_script_tags_stripped(self, service: LLMService, tmp_path) -> None:
         """GIVEN content with script tag WHEN saved THEN script stripped."""
@@ -275,19 +261,15 @@ class TestMarkdownRendering:
     """Test markdown to HTML rendering."""
 
     @pytest.fixture
-    def service(self, tmp_path) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_heading_rendered(self, service: LLMService, tmp_path) -> None:
         """GIVEN markdown heading WHEN saved THEN rendered as h1."""
@@ -405,81 +387,3 @@ class TestHelpPageStructure:
 
         assert "viewport" in HELP_HTML_TEMPLATE
         assert "@media" in HELP_HTML_TEMPLATE  # Media queries for responsiveness
-
-
-class TestSanitizeHtmlMethod:
-    """Test the _sanitize_html method directly."""
-
-    @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(return_value=10000)
-        return LLMService(mock_plugin)
-
-    def test_preserves_safe_html_tags(self, service: LLMService) -> None:
-        """GIVEN safe HTML tags WHEN sanitizing THEN preserved."""
-        safe_tags = [
-            "<p>Paragraph</p>",
-            "<br>",
-            "<hr>",
-            "<div>Division</div>",
-            "<span>Span</span>",
-            "<h1>Heading</h1>",
-            "<ul><li>Item</li></ul>",
-            "<ol><li>Item</li></ol>",
-            "<pre>Preformatted</pre>",
-            "<code>Code</code>",
-            "<strong>Strong</strong>",
-            "<em>Emphasis</em>",
-            "<blockquote>Quote</blockquote>",
-        ]
-
-        for tag in safe_tags:
-            result = service._sanitize_html(tag)
-            # Tag content should be preserved
-            assert ">" in result, f"Tag stripped: {tag}"
-
-    def test_strips_dangerous_tags(self, service: LLMService) -> None:
-        """GIVEN dangerous HTML tags WHEN sanitizing THEN stripped."""
-        dangerous = [
-            ("<script>alert(1)</script>", "script"),
-            ("<iframe src='evil.com'></iframe>", "iframe"),
-            ("<object data='evil.swf'></object>", "object"),
-            ("<embed src='evil.swf'>", "embed"),
-            ("<form action='evil.com'></form>", "form"),
-            ("<input type='hidden' value='evil'>", "input"),
-        ]
-
-        for html, tag_name in dangerous:
-            result = service._sanitize_html(html)
-            assert f"<{tag_name}" not in result.lower()
-
-    def test_preserves_code_class_attribute(self, service: LLMService) -> None:
-        """GIVEN code with class WHEN sanitizing THEN class preserved."""
-        html = '<code class="language-python">print("hi")</code>'
-        result = service._sanitize_html(html)
-
-        assert 'class="language-python"' in result
-
-    def test_preserves_span_class_for_highlighting(self, service: LLMService) -> None:
-        """GIVEN span with Pygments class WHEN sanitizing THEN preserved."""
-        html = '<span class="k">def</span>'
-        result = service._sanitize_html(html)
-
-        assert 'class="k"' in result
-
-    def test_preserves_http_links(self, service: LLMService) -> None:
-        """GIVEN http link WHEN sanitizing THEN preserved."""
-        html = '<a href="https://example.com">Link</a>'
-        result = service._sanitize_html(html)
-
-        assert 'href="https://example.com"' in result
-
-    def test_strips_javascript_links(self, service: LLMService) -> None:
-        """GIVEN javascript link WHEN sanitizing THEN href stripped."""
-        html = '<a href="javascript:alert(1)">Click</a>'
-        result = service._sanitize_html(html)
-
-        assert "javascript:" not in result

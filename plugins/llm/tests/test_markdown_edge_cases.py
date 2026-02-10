@@ -6,8 +6,6 @@ markdown content in code generation and rendering.
 
 from __future__ import annotations
 
-from unittest.mock import Mock
-
 import pytest
 from llm.service import LLMService
 
@@ -16,12 +14,10 @@ class TestCodeFenceEdgeCases:
     """Test edge cases in code fence parsing and stripping."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(return_value=10000)
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_strip_simple_fence_with_language(self, service: LLMService) -> None:
         """GIVEN fenced code with language WHEN stripping THEN extracts both."""
@@ -125,19 +121,15 @@ class TestMarkdownInCodeOutput:
     """Test markdown rendering edge cases in save_code_to_http."""
 
     @pytest.fixture
-    def service(self, tmp_path) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_multiple_code_blocks_same_language(self, service: LLMService, tmp_path) -> None:
         """GIVEN multiple code blocks same language WHEN saved THEN all rendered."""
@@ -292,12 +284,10 @@ class TestChannelHistoryFormatting:
     """Test channel history formatting edge cases."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(return_value=10000)
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_empty_channel_history(self, service: LLMService) -> None:
         """GIVEN empty channel history WHEN formatting THEN returns empty."""
@@ -341,12 +331,10 @@ class TestImageUrlDetection:
     """Test edge cases in image URL detection."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(return_value=10000)
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_detects_standard_extensions(self, service: LLMService) -> None:
         """GIVEN standard image extensions WHEN detecting THEN finds all."""

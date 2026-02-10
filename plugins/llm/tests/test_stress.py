@@ -14,6 +14,8 @@ import pytest
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
 
+pytestmark = pytest.mark.slow
+
 
 class TestMultiUserContextIsolation:
     """Test context isolation under concurrent multi-user access."""
@@ -182,25 +184,15 @@ class TestRapidRequestHandling:
     """Test handling of rapid sequential requests from same user."""
 
     @pytest.fixture
-    def mock_service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-                "httpRoot": "/tmp/test",
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    def mock_service(self, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot="/tmp/test",
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        return LLMService(mock_plugin)
+        return service
 
     def test_rapid_image_detection(self, mock_service: LLMService) -> None:
         """GIVEN rapid requests with images WHEN detecting THEN no missed detections."""
@@ -526,7 +518,7 @@ class TestLongRunningSessionScenarios:
 class TestNetworkFailureRecovery:
     """Test handling of network failures and retries."""
 
-    def test_completion_handles_intermittent_failures(self) -> None:
+    def test_completion_handles_intermittent_failures(self, make_service) -> None:
         """GIVEN intermittent API failures WHEN completing THEN proper error handling."""
         call_count = [0]
         lock = threading.Lock()
@@ -547,20 +539,7 @@ class TestNetworkFailureRecovery:
             response.choices[0].message.tool_calls = None
             return response
 
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-
-        service = LLMService(mock_plugin)
+        service, _ = make_service()
         results = []
 
         with patch("llm.service.litellm.completion", side_effect=flaky_completion):
@@ -579,20 +558,19 @@ class TestNetworkFailureRecovery:
 class TestHighVolumeFileOperations:
     """Test file operations under high volume."""
 
-    def test_concurrent_code_saving(self, tmp_path) -> None:
-        """GIVEN many concurrent saves WHEN saving code THEN all files created."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+    @pytest.fixture
+    def service(self, tmp_path, make_service) -> LLMService:
+        """Create service with HTTP output config."""
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
+        return service
 
-        service = LLMService(mock_plugin)
+    def test_concurrent_code_saving(self, service: LLMService, tmp_path) -> None:
+        """GIVEN many concurrent saves WHEN saving code THEN all files created."""
         urls = []
         lock = threading.Lock()
         errors = []
@@ -627,22 +605,10 @@ class TestHighVolumeFileOperations:
         files = list(tmp_path.glob("*.html"))
         assert len(files) == 50
 
-    def test_concurrent_image_saving(self, tmp_path) -> None:
+    def test_concurrent_image_saving(self, service: LLMService, tmp_path) -> None:
         """GIVEN many concurrent image saves WHEN saving THEN all files created."""
         import base64
 
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "http://localhost/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
-        )
-
-        service = LLMService(mock_plugin)
         urls = []
         lock = threading.Lock()
         errors = []

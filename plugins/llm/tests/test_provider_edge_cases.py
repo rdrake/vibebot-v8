@@ -17,21 +17,10 @@ class TestProviderSpecificErrors:
     """Test handling of provider-specific error conditions."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_handles_timeout_error(self, service: LLMService) -> None:
         """GIVEN timeout error WHEN completing THEN returns user-friendly message."""
@@ -76,49 +65,46 @@ class TestProviderSpecificErrors:
         assert "api key" in result.content.lower() or "invalid" in result.content.lower()
         assert "Error" in result.content
 
-    def test_handles_content_policy_violation(self, service: LLMService) -> None:
-        """GIVEN content policy error WHEN completing THEN returns user-friendly message."""
-        with patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.ContentPolicyViolationError(
-                message="Content violates policy",
-                model="gpt-4",
-                llm_provider="openai",
+    @pytest.mark.parametrize(
+        ("error_class", "error_kwargs", "expected_words"),
+        [
+            (
+                litellm.ContentPolicyViolationError,
+                {"message": "Content violates policy", "model": "gpt-4", "llm_provider": "openai"},
+                ["safety", "policy"],
             ),
-        ):
-            result = service.completion("test", command="ask")
-
-        assert "safety" in result.content.lower() or "policy" in result.content.lower()
-        assert "Error" in result.content
-
-    def test_handles_bad_request_moderation_blocked(self, service: LLMService) -> None:
-        """GIVEN BadRequestError with moderation_blocked WHEN completing THEN returns safety message."""
-        with patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.BadRequestError(
-                message="moderation_blocked: content was flagged",
-                model="gpt-4",
-                llm_provider="openai",
+            (
+                litellm.BadRequestError,
+                {
+                    "message": "moderation_blocked: content was flagged",
+                    "model": "gpt-4",
+                    "llm_provider": "openai",
+                },
+                ["safety", "policy"],
             ),
-        ):
-            result = service.completion("test", command="ask")
-
-        assert "safety" in result.content.lower() or "policy" in result.content.lower()
-        assert "Error" in result.content
-
-    def test_handles_bad_request_safety_system(self, service: LLMService) -> None:
-        """GIVEN BadRequestError with safety system WHEN completing THEN returns safety message."""
-        with patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.BadRequestError(
-                message="Blocked by safety system filters",
-                model="gpt-4",
-                llm_provider="openai",
+            (
+                litellm.BadRequestError,
+                {
+                    "message": "Blocked by safety system filters",
+                    "model": "gpt-4",
+                    "llm_provider": "openai",
+                },
+                ["safety", "policy"],
             ),
-        ):
+        ],
+        ids=[
+            "content_policy_violation",
+            "bad_request_moderation_blocked",
+            "bad_request_safety_system",
+        ],
+    )
+    def test_handles_content_safety_errors(
+        self, service: LLMService, error_class, error_kwargs, expected_words
+    ) -> None:
+        """GIVEN content safety error WHEN completing THEN returns user-friendly message."""
+        with patch("llm.service.litellm.completion", side_effect=error_class(**error_kwargs)):
             result = service.completion("test", command="ask")
-
-        assert "safety" in result.content.lower() or "policy" in result.content.lower()
+        assert any(word in result.content.lower() for word in expected_words)
         assert "Error" in result.content
 
     def test_handles_generic_api_error(self, service: LLMService) -> None:
@@ -154,21 +140,10 @@ class TestImageGenerationErrors:
     """Test error handling in image generation."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "drawApiKey": "test-key",
-                "drawModel": "dall-e-3",
-                "timeout": 30,
-                "drawAutoRewriteMax": 0,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with draw config."""
+        service, _ = make_service(drawApiKey="test-key", drawModel="dall-e-3", drawAutoRewriteMax=0)
+        return service
 
     def test_handles_empty_response_data(self, service: LLMService) -> None:
         """GIVEN empty response data WHEN generating image THEN returns content filter message."""
@@ -230,21 +205,10 @@ class TestPartialResponseHandling:
     """Test handling of partial or malformed responses."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_handles_empty_content_response(self, service: LLMService) -> None:
         """GIVEN response with empty content WHEN completing THEN handles gracefully."""
@@ -304,21 +268,10 @@ class TestGeminiSpecificBehaviors:
     """Test Gemini-specific features and behaviors."""
 
     @pytest.fixture
-    def gemini_service(self) -> LLMService:
+    def gemini_service(self, make_service) -> LLMService:
         """Create service configured for Gemini."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "AIza-test-key",
-                "askModel": "gemini/gemini-2.0-flash",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+        service, _ = make_service(askApiKey="AIza-test-key", askModel="gemini/gemini-2.0-flash")
+        return service
 
     def test_gemini_tools_included_for_2x_models(self, gemini_service: LLMService) -> None:
         """GIVEN Gemini 2.x model WHEN getting tools THEN returns search tools."""
@@ -386,21 +339,10 @@ class TestOpenAISpecificBehaviors:
     """Test OpenAI-specific behaviors."""
 
     @pytest.fixture
-    def openai_service(self) -> LLMService:
+    def openai_service(self, make_service) -> LLMService:
         """Create service configured for OpenAI."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "sk-test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+        service, _ = make_service(askApiKey="sk-test-key")
+        return service
 
     def test_no_gemini_tools_for_openai(self, openai_service: LLMService) -> None:
         """GIVEN OpenAI model WHEN getting tools THEN returns None."""
@@ -429,21 +371,10 @@ class TestAnthropicSpecificBehaviors:
     """Test Anthropic-specific behaviors."""
 
     @pytest.fixture
-    def anthropic_service(self) -> LLMService:
+    def anthropic_service(self, make_service) -> LLMService:
         """Create service configured for Anthropic."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "sk-ant-test-key",
-                "askModel": "anthropic/claude-3-opus",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+        service, _ = make_service(askApiKey="sk-ant-test-key", askModel="anthropic/claude-3-opus")
+        return service
 
     def test_no_gemini_tools_for_anthropic(self, anthropic_service: LLMService) -> None:
         """GIVEN Anthropic model WHEN getting tools THEN returns None."""
@@ -455,18 +386,10 @@ class TestSummarizeEdgeCases:
     """Test edge cases in the summarize method."""
 
     @pytest.fixture
-    def service(self) -> LLMService:
-        """Create service with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "timeout": 30,
-            }.get(key)
-        )
-        return LLMService(mock_plugin)
+    def service(self, make_service) -> LLMService:
+        """Create service with default config."""
+        service, _ = make_service()
+        return service
 
     def test_summarize_handles_very_long_content(self, service: LLMService) -> None:
         """GIVEN very long content WHEN summarizing THEN still works."""
@@ -531,69 +454,31 @@ def fibonacci(n):
 class TestAPIKeyHandling:
     """Test API key handling across different scenarios."""
 
-    def test_missing_ask_key_returns_error(self) -> None:
+    def test_missing_ask_key_returns_error(self, make_service) -> None:
         """GIVEN no ask API key WHEN completing THEN returns error."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": None,
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-
-        service = LLMService(mock_plugin)
+        service, _ = make_service(askApiKey=None)
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
         assert "API key not configured" in result.content
 
-    def test_empty_ask_key_returns_error(self) -> None:
+    def test_empty_ask_key_returns_error(self, make_service) -> None:
         """GIVEN empty ask API key WHEN completing THEN returns error."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-
-        service = LLMService(mock_plugin)
+        service, _ = make_service(askApiKey="")
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
 
-    def test_api_key_sanitized_in_errors(self) -> None:
+    def test_api_key_sanitized_in_errors(self, make_service) -> None:
         """GIVEN API error containing key WHEN handling THEN key sanitized."""
-        mock_plugin = Mock()
-        mock_plugin.log = Mock()
-        mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "sk-secret12345678901234567890",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
-        )
-
-        service = LLMService(mock_plugin)
+        fake_key = "sk-" + "x" * 25  # noqa: S105
+        service, _ = make_service(askApiKey=fake_key)
 
         with patch(
             "llm.service.litellm.completion",
-            side_effect=Exception("Error with key sk-secret12345678901234567890"),
+            side_effect=Exception(f"Error with key {fake_key}"),
         ):
             result = service.completion("test", command="ask")
 
         # Key should not appear in result
-        assert "sk-secret12345678901234567890" not in result
+        assert fake_key not in str(result)

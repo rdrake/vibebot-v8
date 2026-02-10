@@ -15,7 +15,6 @@ import time
 from unittest.mock import Mock, patch
 
 import pytest
-from llm.service import LLMService
 
 # =============================================================================
 # Etiquette Helper Utilities
@@ -155,27 +154,22 @@ class TestSystemPromptEtiquette:
     """
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=self._config_lookup)
-        self.service = LLMService(self.mock_plugin)
-
-    def _config_lookup(self, key: str, channel: str | None = None) -> str | int:
-        """Mock config values."""
-        config = {
-            "askSystemPrompt": (
+        self.service, self.mock_plugin = make_service(
+            askSystemPrompt=(
                 "You are a helpful IRC assistant. Keep responses concise and suitable for IRC chat. "
                 "Avoid markdown formatting. Be direct and informative."
             ),
-            "codeSystemPrompt": (
+            codeSystemPrompt=(
                 "You are a helpful code assistant. Explain your code and provide context. "
                 "Use markdown formatting for code blocks."
             ),
-            "maxPromptLength": 10000,
-        }
-        return config.get(key, "")
+        )
+
+    def _config_lookup(self, key: str) -> str | int:
+        """Look up config values from the mock plugin."""
+        return self.mock_plugin.registryValue(key)
 
     def test_ask_system_prompt_instructs_conciseness(self) -> None:
         """GIVEN askSystemPrompt WHEN examined THEN contains conciseness instruction."""
@@ -217,21 +211,15 @@ class TestResponseLengthHandling:
     """Tests for response length handling to prevent IRC flooding."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path: object) -> None:
+    def setup(self, tmp_path, make_service) -> None:
         """Set up test fixtures."""
         self.tmp_path = tmp_path
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "https://example.com/llm",
-                "maxPromptLength": 10000,
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="https://example.com/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_code_save_returns_http_url(self) -> None:
         """GIVEN code content WHEN saved THEN returns HTTP URL."""
@@ -380,13 +368,10 @@ class TestResponseAppropriateness:
     """
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
+        self.service, self.mock_plugin = make_service()
         self.mock_plugin.startup_time = time.time() - 3600
-        self.service = LLMService(self.mock_plugin)
 
     def _make_mock_irc(
         self,
