@@ -41,6 +41,7 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --tb=short"
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.ty.environment]
 python-version = "3.14"
@@ -68,6 +69,7 @@ dev = [
     "prek>=0.3.1",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
+    "pytest-mock>=3.14.0",
     "ruff>=0.14.9",
     "ty>=0.0.1a34",
 ]

@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from llm.service import LLMService
+
+# =============================================================================
+# Test constants
+# =============================================================================
+
+TEST_MODEL = "gpt-4"
+TEST_API_KEY = "test-key"
+TEST_URL_BASE = "https://example.com/llm"
 
 # =============================================================================
 # Session-scoped fixtures
@@ -80,8 +89,8 @@ def mock_irc() -> MagicMock:
 def make_registry_side_effect(overrides: dict[str, Any] | None = None):
     """Create a registryValue side_effect function with standard defaults.
 
-    The base defaults provide the minimum config needed to initialize the LLM
-    plugin. Tests can override specific keys via the ``overrides`` parameter.
+    The base defaults provide the superset of config keys used across all test
+    files. Tests can override specific keys via the ``overrides`` parameter.
 
     Args:
         overrides: Optional dict of config keys to override or extend.
@@ -90,12 +99,34 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         A callable suitable for ``registryValue.side_effect``.
     """
     defaults: dict[str, Any] = {
+        # Plugin-level init config
         "httpRoot": "",
         "databasePath": "",
         "contextMaxMessages": 20,
         "contextTimeoutMinutes": 30,
         "contextEnabled": True,
         "channelContextMaxMessages": 10,
+        "contextTrackAllMessages": False,
+        # Ask command
+        "askApiKey": TEST_API_KEY,
+        "askModel": TEST_MODEL,
+        "askSystemPrompt": "You are helpful.",
+        # Code command
+        "codeApiKey": TEST_API_KEY,
+        "codeModel": TEST_MODEL,
+        "codeSystemPrompt": "You write code.",
+        # Draw command
+        "drawApiKey": TEST_API_KEY,
+        "drawModel": "dall-e-3",
+        "drawTimeout": 60,
+        "drawAutoRewriteMax": 2,
+        # Shared
+        "timeout": 30,
+        "maxPromptLength": 10000,
+        "commandPrefixes": [".", "/"],
+        "httpUrlBase": TEST_URL_BASE,
+        "fileCleanupAge": 24,
+        "fileCleanupMax": 100,
     }
     if overrides:
         defaults.update(overrides)
@@ -104,6 +135,37 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         return defaults.get(key, "")
 
     return side_effect
+
+
+# =============================================================================
+# Service factory fixture
+# =============================================================================
+
+
+@pytest.fixture
+def make_service() -> Callable[..., tuple[LLMService, Mock]]:
+    """Factory fixture that creates an LLMService with standard config defaults.
+
+    Usage::
+
+        def test_something(make_service):
+            service, plugin = make_service()
+            # or with overrides:
+            service, plugin = make_service(askModel="gemini/gemini-2.0-flash")
+    """
+
+    def _make(**overrides: Any) -> tuple[LLMService, Mock]:
+        plugin = Mock()
+        plugin.log = Mock()
+        plugin.registryValue = Mock(side_effect=make_registry_side_effect(overrides or None))
+        return LLMService(plugin), plugin
+
+    return _make
+
+
+# =============================================================================
+# Plugin initialization patches
+# =============================================================================
 
 
 @contextlib.contextmanager
