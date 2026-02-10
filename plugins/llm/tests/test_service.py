@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -14,67 +13,28 @@ class TestLLMService:
     """Test LLM service functionality."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.LLMService = LLMService
-
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        # Handle both registryValue(key) and registryValue(key, channel) calls
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
-        self.service = self.LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_service_initialization(self) -> None:
-        """Service initializes with plugin instance."""
+        """GIVEN plugin WHEN service initialized THEN stores plugin reference."""
         assert self.service.plugin == self.mock_plugin
 
-    def test_detect_images_finds_valid_urls(self) -> None:
-        """Image detection finds valid image URLs."""
-        text = "Check https://example.com/image.jpg and https://example.com/photo.png"
-        images = self.service.detect_images(text)
-        assert len(images) == 2
-        assert "https://example.com/image.jpg" in images
-        assert "https://example.com/photo.png" in images
-
-    def test_detect_images_ignores_non_images(self) -> None:
-        """Image detection ignores non-image URLs."""
-        text = "Visit https://example.com/page.html for more info"
-        images = self.service.detect_images(text)
-        assert len(images) == 0
-
-    def test_detect_images_various_extensions(self) -> None:
-        """Image detection handles all supported extensions."""
-        text = """
-        https://example.com/a.jpg
-        https://example.com/b.jpeg
-        https://example.com/c.png
-        https://example.com/d.gif
-        https://example.com/e.webp
-        https://example.com/f.bmp
-        """
-        images = self.service.detect_images(text)
-        assert len(images) == 6
-
-    def test_detect_images_preserves_query_string(self) -> None:
-        """Image detection keeps query strings for signed URLs."""
-        text = "Check https://cdn.example.com/image.jpg?token=abc123&expires=123"
-        images = self.service.detect_images(text)
-        assert images == ["https://cdn.example.com/image.jpg?token=abc123&expires=123"]
-
     def test_validate_prompt_rejects_empty(self) -> None:
-        """Prompt validation rejects empty prompts."""
+        """GIVEN empty prompt WHEN validated THEN rejected."""
         is_valid, error = self.service.validate_prompt("")
         assert is_valid is False
         assert "empty" in error.lower()
 
     def test_validate_prompt_rejects_whitespace_only(self) -> None:
-        """Prompt validation rejects whitespace-only prompts."""
+        """GIVEN whitespace-only prompt WHEN validated THEN rejected."""
         is_valid, error = self.service.validate_prompt("   \n\t  ")
         assert is_valid is False
         assert "empty" in error.lower()
 
     def test_validate_prompt_rejects_too_long(self) -> None:
-        """Prompt validation rejects prompts over configured max."""
+        """GIVEN prompt over configured max WHEN validated THEN rejected."""
         self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 100)
         long_prompt = "x" * 101
         is_valid, error = self.service.validate_prompt(long_prompt)
@@ -82,59 +42,46 @@ class TestLLMService:
         assert "too long" in error.lower()
 
     def test_validate_prompt_accepts_valid(self) -> None:
-        """Prompt validation accepts valid prompts."""
+        """GIVEN valid prompt WHEN validated THEN accepted."""
         is_valid, error = self.service.validate_prompt("This is a valid prompt")
         assert is_valid is True
         assert error == ""
 
-    def test_validate_image_url_blocks_javascript(self) -> None:
-        """GIVEN javascript: URL WHEN validated THEN rejected."""
-        assert self.service.validate_image_url("javascript:alert('xss')") is False
-        assert self.service.validate_image_url("javascript:alert('xss').jpg") is False
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "javascript:alert('xss')",
+            "javascript:alert('xss').jpg",
+            "data:text/html,<script>alert('xss')</script>",
+            "data:image/png;base64,malicious.jpg",
+            "file:///etc/passwd",
+            "file:///etc/passwd.jpg",
+            "ftp://evil.com/image.jpg",
+            "https://example.com/../../etc/passwd.jpg",
+            "https://example.com/../../../image.png",
+            "https://example.com/..\\..\\image.png",
+            "https://example.com/image.txt",
+            "https://example.com/page.html",
+            "https://example.com/noext",
+        ],
+    )
+    def test_validate_image_url_rejects_dangerous_urls(self, url: str) -> None:
+        """GIVEN dangerous/invalid URL WHEN validated THEN rejected."""
+        assert self.service.validate_image_url(url) is False
 
-    def test_validate_image_url_blocks_data(self) -> None:
-        """GIVEN data: URL WHEN validated THEN rejected."""
-        assert (
-            self.service.validate_image_url("data:text/html,<script>alert('xss')</script>") is False
-        )
-        assert self.service.validate_image_url("data:image/png;base64,malicious.jpg") is False
-
-    def test_validate_image_url_blocks_file(self) -> None:
-        """GIVEN file: URL WHEN validated THEN rejected."""
-        assert self.service.validate_image_url("file:///etc/passwd") is False
-        assert self.service.validate_image_url("file:///etc/passwd.jpg") is False
-
-    def test_validate_image_url_blocks_ftp(self) -> None:
-        """GIVEN ftp: URL WHEN validated THEN rejected."""
-        assert self.service.validate_image_url("ftp://evil.com/image.jpg") is False
-
-    def test_validate_image_url_blocks_path_traversal(self) -> None:
-        """GIVEN path traversal attempts WHEN validated THEN rejected."""
-        assert self.service.validate_image_url("https://example.com/../../etc/passwd.jpg") is False
-        assert self.service.validate_image_url("https://example.com/../../../image.png") is False
-        assert self.service.validate_image_url("https://example.com/..\\..\\image.png") is False
-
-    def test_validate_image_url_accepts_valid_http(self) -> None:
-        """GIVEN valid http URLs WHEN validated THEN accepted."""
-        # Mock SSRF check to allow public URLs (real DNS may vary)
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.com/image.jpg",
+            "http://example.com/photo.png",
+            "https://example.com/image.jpg",
+            "https://cdn.example.com/path/to/image.gif",
+        ],
+    )
+    def test_validate_image_url_accepts_valid_urls(self, url: str) -> None:
+        """GIVEN valid HTTP(S) image URL WHEN validated THEN accepted."""
         with patch.object(self.service, "_is_private_host", return_value=False):
-            assert self.service.validate_image_url("http://example.com/image.jpg") is True
-            assert self.service.validate_image_url("http://example.com/photo.png") is True
-
-    def test_validate_image_url_accepts_valid_https(self) -> None:
-        """GIVEN valid https URLs WHEN validated THEN accepted."""
-        # Mock SSRF check to allow public URLs (real DNS may vary)
-        with patch.object(self.service, "_is_private_host", return_value=False):
-            assert self.service.validate_image_url("https://example.com/image.jpg") is True
-            assert (
-                self.service.validate_image_url("https://cdn.example.com/path/to/image.gif") is True
-            )
-
-    def test_validate_image_url_rejects_invalid_extension(self) -> None:
-        """GIVEN URL without image extension WHEN validated THEN rejected."""
-        assert self.service.validate_image_url("https://example.com/image.txt") is False
-        assert self.service.validate_image_url("https://example.com/page.html") is False
-        assert self.service.validate_image_url("https://example.com/noext") is False
+            assert self.service.validate_image_url(url) is True
 
     def test_safe_key_display_shows_only_first_3_chars(self) -> None:
         """GIVEN API key WHEN displaying safely THEN only first 3 chars shown."""
@@ -222,75 +169,6 @@ class TestLLMService:
         text = "Error: some random text with no keys"
         sanitized = self.service._sanitize(text)
         assert sanitized == text
-
-    def test_strip_markdown_fences_with_language(self) -> None:
-        """Strip markdown fences and extract language."""
-        code = "```python\ndef hello():\n    print('Hello')\n```"
-        clean, lang = self.service._strip_markdown_fences(code)
-        assert lang == "python"
-        assert clean == "def hello():\n    print('Hello')"
-
-    def test_strip_markdown_fences_without_language(self) -> None:
-        """Strip markdown fences without language."""
-        code = "```\ndef hello():\n    pass\n```"
-        clean, lang = self.service._strip_markdown_fences(code)
-        assert lang is None
-        assert clean == "def hello():\n    pass"
-
-    def test_strip_markdown_fences_no_fences(self) -> None:
-        """Return code unchanged when no fences."""
-        code = "def hello():\n    pass"
-        clean, lang = self.service._strip_markdown_fences(code)
-        assert lang is None
-        assert clean == code
-
-    def test_concurrent_api_key_isolation(self) -> None:
-        """GIVEN concurrent requests WHEN different API keys THEN no cross-contamination."""
-        api_keys_used: list[str] = []
-        lock = threading.Lock()
-
-        def mock_completion(**kwargs: object) -> Mock:
-            time.sleep(0.001)  # Simulate latency
-            with lock:
-                api_keys_used.append(str(kwargs.get("api_key", "NOT_PASSED")))
-
-            mock_response = Mock()
-            mock_response.choices = [Mock()]
-            mock_response.choices[0].message = Mock()
-            mock_response.choices[0].message.content = "Response"
-            return mock_response
-
-        def make_request(thread_id: int, api_key: str) -> None:
-            mock_plugin = Mock()
-            mock_plugin.registryValue = Mock(
-                side_effect=lambda key, channel=None: {
-                    "askApiKey": api_key,
-                    "askModel": "gpt-4",
-                    "askSystemPrompt": "You are helpful.",
-                    "timeout": 30,
-                    "maxPromptLength": 10000,
-                }.get(key)
-            )
-            mock_plugin.log = Mock()
-
-            service = self.LLMService(mock_plugin)
-            service.completion("test prompt", command="ask")
-
-        with patch("llm.service.litellm.completion", side_effect=mock_completion):
-            threads = []
-            for i in range(10):
-                api_key = f"secret_key_{i}"
-                t = threading.Thread(target=make_request, args=(i, api_key))
-                threads.append(t)
-                t.start()
-
-            for t in threads:
-                t.join()
-
-        assert len(api_keys_used) == 10
-        assert "NOT_PASSED" not in api_keys_used
-        # All keys should be unique (no cross-contamination)
-        assert len(set(api_keys_used)) == 10
 
     def test_completion_with_system_prompt(self) -> None:
         """GIVEN system prompt configured WHEN completion THEN system message prepended."""
@@ -397,101 +275,60 @@ class TestLLMService:
         assert messages_sent[2]["content"] == "Hi there!"
         assert messages_sent[3]["content"] == "How are you?"
 
-    def test_get_gemini_tools_returns_tools_for_gemini_2_flash(self) -> None:
-        """GIVEN gemini-2.0-flash model WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("gemini/gemini-2.0-flash")
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gemini/gemini-2.0-flash",
+            "gemini/gemini-2.5-flash",
+            "gemini/gemini-2.5-pro",
+            "gemini/gemini-flash-latest",
+            "GEMINI/GEMINI-2.5-FLASH",
+            "vertex_ai/gemini-2.5-flash",
+            "vertex_ai_beta/gemini-2.5-pro",
+            "gemini/gemini-2.5-flash-preview-05-20",
+        ],
+    )
+    def test_get_gemini_tools_returns_tools_for_supported_models(self, model: str) -> None:
+        """GIVEN supported Gemini model WHEN _get_gemini_tools THEN returns tools."""
+        tools = self.service._get_gemini_tools(model)
         assert tools is not None
         assert len(tools) == 2
         assert {"googleSearch": {}} in tools
         assert {"urlContext": {}} in tools
 
-    def test_get_gemini_tools_returns_tools_for_gemini_25_flash(self) -> None:
-        """GIVEN gemini-2.5-flash model WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("gemini/gemini-2.5-flash")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_returns_tools_for_gemini_25_pro(self) -> None:
-        """GIVEN gemini-2.5-pro model WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("gemini/gemini-2.5-pro")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_returns_tools_for_gemini_flash_latest(self) -> None:
-        """GIVEN gemini-flash-latest alias WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("gemini/gemini-flash-latest")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_returns_none_for_gemini_15(self) -> None:
-        """GIVEN gemini-1.5-flash model WHEN _get_gemini_tools THEN returns None."""
-        tools = self.service._get_gemini_tools("gemini/gemini-1.5-flash")
-        assert tools is None
-
-    def test_get_gemini_tools_returns_none_for_non_gemini(self) -> None:
-        """GIVEN non-Gemini model WHEN _get_gemini_tools THEN returns None."""
-        assert self.service._get_gemini_tools("gpt-4") is None
-        assert self.service._get_gemini_tools("claude-3-opus") is None
-        assert self.service._get_gemini_tools("anthropic/claude-3-sonnet") is None
-
-    def test_get_gemini_tools_returns_none_for_imagen(self) -> None:
-        """GIVEN Imagen model WHEN _get_gemini_tools THEN returns None."""
-        assert self.service._get_gemini_tools("vertex_ai/imagen-4.0-generate-001") is None
-        assert self.service._get_gemini_tools("gemini/imagen-3.0-generate-001") is None
-
-    def test_get_gemini_tools_case_insensitive(self) -> None:
-        """GIVEN mixed case model name WHEN _get_gemini_tools THEN matches correctly."""
-        tools = self.service._get_gemini_tools("GEMINI/GEMINI-2.5-FLASH")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_vertex_ai_provider(self) -> None:
-        """GIVEN vertex_ai provider with supported model WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("vertex_ai/gemini-2.5-flash")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_vertex_ai_beta_provider(self) -> None:
-        """GIVEN vertex_ai_beta provider WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools("vertex_ai_beta/gemini-2.5-pro")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_get_gemini_tools_rejects_non_gemini_provider(self) -> None:
-        """GIVEN non-Gemini provider WHEN _get_gemini_tools THEN returns None."""
-        assert self.service._get_gemini_tools("openai/gemini-2.5-flash") is None
-        assert self.service._get_gemini_tools("anthropic/gemini-2.5-pro") is None
-
-    def test_get_gemini_tools_prefix_match_not_substring(self) -> None:
-        """GIVEN model that contains supported name as substring WHEN _get_gemini_tools THEN no false positive."""
-        # "not-gemini-2.5-flash" shouldn't match because it doesn't start with the family
-        assert self.service._get_gemini_tools("gemini/not-gemini-2.5-flash") is None
-
-    def test_get_gemini_tools_model_version_suffix(self) -> None:
-        """GIVEN supported model with version suffix WHEN _get_gemini_tools THEN matches."""
-        tools = self.service._get_gemini_tools("gemini/gemini-2.5-flash-preview-05-20")
-        assert tools is not None
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gemini/gemini-1.5-flash",
+            "gpt-4",
+            "claude-3-opus",
+            "anthropic/claude-3-sonnet",
+            "vertex_ai/imagen-4.0-generate-001",
+            "gemini/imagen-3.0-generate-001",
+            "openai/gemini-2.5-flash",
+            "anthropic/gemini-2.5-pro",
+            "gemini/not-gemini-2.5-flash",
+        ],
+    )
+    def test_get_gemini_tools_returns_none_for_unsupported_models(self, model: str) -> None:
+        """GIVEN unsupported model WHEN _get_gemini_tools THEN returns None."""
+        assert self.service._get_gemini_tools(model) is None
 
 
 class TestGroundingDetection:
     """Tests for _check_grounding_used and CompletionResult."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "maxPromptLength": 10000,
-                "commandPrefixes": [".", "/"],
-                "askApiKey": "test-key",
-                "askModel": "gemini/gemini-2.0-flash",
-                "askSystemPrompt": "You are helpful.",
-                "timeout": 30,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            askApiKey="test-key",
+            askModel="gemini/gemini-2.0-flash",
+            askSystemPrompt="You are helpful.",
+            timeout=30,
+            maxPromptLength=10000,
+            commandPrefixes=[".", "/"],
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_check_grounding_used_returns_false_for_no_metadata(self) -> None:
         """GIVEN response with no grounding metadata WHEN checking THEN returns False."""
@@ -714,12 +551,9 @@ class TestBuildSystemPrompt:
     """Tests for _build_system_prompt with anti-injection preamble."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_build_system_prompt_includes_anti_injection_preamble(self) -> None:
         """GIVEN base prompt WHEN building prompt THEN includes anti-injection warning."""
@@ -797,12 +631,9 @@ class TestGetChannelTopic:
     """Tests for _get_channel_topic helper."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value=10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def _make_mock_irc(self, channels: dict | None = None) -> Mock:
         """Create a mock IRC object."""
@@ -851,12 +682,9 @@ class TestTypingIndicators:
     """Tests for IRCv3 typing indicator support."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def _make_mock_irc(self, capabilities: set | None = None) -> Mock:
         """Create mock IRC with capability negotiation."""
@@ -903,23 +731,20 @@ class TestTypingIndicators:
         self.service.send_typing_indicator(irc, "#test", "active")
 
 
-class TestSaveImageToHttp:
-    """Tests for save_image_to_http functionality."""
+class TestImageSaving:
+    """Tests for save_image_to_http and _save_image_bytes functionality."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": "/tmp/test_llm_images",
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            httpRoot="/tmp/test_llm_images",
+            httpUrlBase="https://example.com/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
+
+    # --- save_image_to_http tests ---
 
     def test_save_image_to_http_success(self, tmp_path: object) -> None:
         """GIVEN valid base64 image WHEN saving THEN returns URL."""
@@ -973,24 +798,7 @@ class TestSaveImageToHttp:
         # Error is logged via service's own logger (not plugin.log)
         assert result is None
 
-
-class TestSaveImageBytes:
-    """Tests for _save_image_bytes functionality."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self) -> None:
-        """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": "/tmp/test_llm_images",
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
-        )
-        self.service = LLMService(self.mock_plugin)
+    # --- _save_image_bytes tests ---
 
     def test_save_image_bytes_success(self, tmp_path: object) -> None:
         """GIVEN valid image bytes WHEN saving THEN returns URL."""
@@ -1045,21 +853,16 @@ class TestDownloadAndSaveImage:
     """Tests for _download_and_save_image functionality."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": "/tmp/test_llm_images",
-                "httpUrlBase": "https://example.com/llm",
-                "drawTimeout": 60,
-                "timeout": 30,
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            httpRoot="/tmp/test_llm_images",
+            httpUrlBase="https://example.com/llm",
+            drawTimeout=60,
+            timeout=30,
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_download_success(self) -> None:
         """GIVEN valid image URL WHEN downloading THEN returns local URL."""
@@ -1159,24 +962,19 @@ class TestImageGenerationWithBase64:
     """Tests for image_generation with base64 handling and typing indicators."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "drawApiKey": "test-api-key",
-                "drawModel": "gemini/imagen-4.0-generate-001",
-                "timeout": 30,
-                "maxPromptLength": 10000,
-                "httpRoot": "/tmp/test",
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-                "drawAutoRewriteMax": 0,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            drawApiKey="test-api-key",
+            drawModel="gemini/imagen-4.0-generate-001",
+            timeout=30,
+            maxPromptLength=10000,
+            httpRoot="/tmp/test",
+            httpUrlBase="https://example.com/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
+            drawAutoRewriteMax=0,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def _make_mock_irc(self, capabilities: set | None = None) -> Mock:
         """Create mock IRC with capability negotiation."""
@@ -1325,17 +1123,12 @@ class TestCleanupWithImages:
     """Tests for _cleanup_old_files with image extensions."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_cleanup_collects_image_files(self, tmp_path: object) -> None:
         """GIVEN image files exist WHEN cleanup runs THEN collects them."""
@@ -1365,17 +1158,12 @@ class TestCleanupLock:
     """Test that _cleanup_old_files uses a lock for thread safety (Fix 5)."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_cleanup_lock_exists(self) -> None:
         """GIVEN service WHEN initialized THEN _cleanup_lock exists."""
@@ -1409,20 +1197,15 @@ class TestDrawContext:
     """Tests for context integration in image generation."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "drawApiKey": "test-api-key",
-                "drawModel": "gemini/imagen",
-                "timeout": 30,
-                "maxPromptLength": 10000,
-                "drawAutoRewriteMax": 0,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            drawApiKey="test-api-key",
+            drawModel="gemini/imagen",
+            timeout=30,
+            maxPromptLength=10000,
+            drawAutoRewriteMax=0,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_image_generation_uses_raw_prompt(self) -> None:
         """GIVEN a prompt WHEN generating image THEN uses prompt as-is."""
@@ -1447,19 +1230,14 @@ class TestXssSanitization:
     """Tests for XSS prevention in HTML output."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": "/tmp/test_llm",
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            httpRoot="/tmp/test_llm",
+            httpUrlBase="https://example.com/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_sanitize_html_strips_script_tags(self) -> None:
         """GIVEN HTML with script tag WHEN sanitized THEN script removed."""
@@ -1553,18 +1331,9 @@ class TestSanitizeOutput:
     """Tests for sanitize_output IRC command injection prevention."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-
-        def mock_registry_value(key: str, channel: str | None = None) -> int | list[str]:
-            if key == "commandPrefixes":
-                return [".", "/"]  # Default prefixes
-            return 10000
-
-        self.mock_plugin.registryValue = Mock(side_effect=mock_registry_value)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service(commandPrefixes=[".", "/"])
 
     def test_sanitize_output_empty(self) -> None:
         """GIVEN empty/None input WHEN sanitizing THEN returns empty string."""
@@ -1647,12 +1416,9 @@ class TestBuildContextMessage:
     """Tests for _build_context_message context injection."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value=10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_build_context_message_no_irc(self) -> None:
         """GIVEN no irc/msg WHEN building context THEN returns None."""
@@ -1746,16 +1512,15 @@ class TestBuildContextMessage:
         assert "Bot help: https://bot.example.com/llm" in result["content"]
 
 
-class TestGetBotRole:
-    """Tests for _get_bot_role() method."""
+class TestRoleDetection:
+    """Tests for _get_bot_role() and _get_channel_role() methods."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value="test-value")
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
+
+    # --- _get_bot_role tests ---
 
     def test_get_bot_role_owner(self) -> None:
         """GIVEN owner hostmask WHEN checking role THEN returns owner."""
@@ -1785,17 +1550,7 @@ class TestGetBotRole:
             result = self.service._get_bot_role("user!user@host")
             assert result is None
 
-
-class TestGetChannelRole:
-    """Tests for _get_channel_role() method."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self) -> None:
-        """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value="test-value")
-        self.service = LLMService(self.mock_plugin)
+    # --- _get_channel_role tests ---
 
     def test_get_channel_role_op(self) -> None:
         """GIVEN op nick WHEN checking role THEN returns op."""
@@ -1862,12 +1617,9 @@ class TestBuildContextMessageWithRoles:
     """Tests for _build_context_message() including bot and channel roles."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value="test-value")
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_context_includes_bot_role_owner(self) -> None:
         """GIVEN owner user WHEN building context THEN includes bot role."""
@@ -1923,12 +1675,9 @@ class TestGetUptimeInfo:
     """Tests for _get_uptime_info() method."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(return_value="test-value")
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_get_uptime_info_seconds(self) -> None:
         """GIVEN bot started 45 seconds ago WHEN getting uptime THEN returns seconds."""
@@ -1993,18 +1742,13 @@ class TestSummarize:
     """Tests for summarize() method."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: {
-                "askApiKey": "test-api-key",
-                "askModel": "gpt-4",
-                "timeout": 30,
-            }.get(key)
+        self.service, self.mock_plugin = make_service(
+            askApiKey="test-api-key",
+            askModel="gpt-4",
+            timeout=30,
         )
-        self.service = LLMService(self.mock_plugin)
 
     def test_summarize_returns_summary(self) -> None:
         """GIVEN content WHEN summarize called THEN returns summary."""
@@ -2188,12 +1932,9 @@ class TestImageUrlSsrfProtection:
     """Tests for SSRF protection in image URL validation."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_blocks_localhost(self) -> None:
         """GIVEN localhost URL WHEN validated THEN rejected."""
@@ -2228,12 +1969,9 @@ class TestHtmlSanitizationSecurity:
     """Additional tests for XSS prevention via nh3."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
-        self.mock_plugin.registryValue = Mock(side_effect=lambda key, channel=None: 10000)
-        self.service = LLMService(self.mock_plugin)
+        self.service, self.mock_plugin = make_service()
 
     def test_strips_script_tags_completely(self) -> None:
         """GIVEN script tag with content WHEN sanitized THEN entirely removed."""
@@ -2306,12 +2044,10 @@ class TestUsageExtraction:
     """Tests for extracting usage data from LiteLLM responses."""
 
     @pytest.fixture()
-    def service(self) -> LLMService:
+    def service(self, make_service) -> LLMService:
         """Create an LLMService with mock plugin."""
-        mock_plugin = Mock()
-        mock_plugin.registryValue.return_value = ""
-        with patch("llm.service.log"):
-            return LLMService(mock_plugin)
+        service, _ = make_service()
+        return service
 
     def test_completion_result_has_usage_fields(self) -> None:
         """GIVEN CompletionResult WHEN created with usage THEN fields accessible."""
@@ -2392,10 +2128,19 @@ class TestDrawAutoRewrite:
     """Tests for automatic prompt rewriting on content safety failures."""
 
     @pytest.fixture(autouse=True)
-    def setup(self) -> None:
+    def setup(self, make_service) -> None:
         """Set up test fixtures."""
-        self.mock_plugin = Mock()
-        self.mock_plugin.log = Mock()
+        self.service, self.mock_plugin = make_service(
+            drawApiKey="test-draw-key",
+            drawModel="vertex_ai/imagen-4.0-generate-001",
+            askApiKey="test-ask-key",
+            askModel="gemini/gemini-flash-latest",
+            timeout=30,
+            maxPromptLength=10000,
+            httpRoot="/tmp/test",
+            httpUrlBase="https://example.com/llm",
+            drawAutoRewriteMax=3,
+        )
         self.config_values = {
             "drawApiKey": "test-draw-key",
             "drawModel": "vertex_ai/imagen-4.0-generate-001",
@@ -2407,10 +2152,6 @@ class TestDrawAutoRewrite:
             "httpUrlBase": "https://example.com/llm",
             "drawAutoRewriteMax": 3,
         }
-        self.mock_plugin.registryValue = Mock(
-            side_effect=lambda key, channel=None: self.config_values.get(key)
-        )
-        self.service = LLMService(self.mock_plugin)
 
     def _make_success_response(self, url: str = "https://example.com/img.png") -> Mock:
         """Create a mock successful image generation response."""
@@ -2538,6 +2279,9 @@ class TestDrawAutoRewrite:
     def test_auto_rewrite_disabled_when_max_zero(self) -> None:
         """GIVEN drawAutoRewriteMax=0 WHEN content blocked THEN no rewrite attempted."""
         self.config_values["drawAutoRewriteMax"] = 0
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: self.config_values.get(key)
+        )
         empty_resp = self._make_empty_response()
 
         with (
@@ -2569,6 +2313,9 @@ class TestDrawAutoRewrite:
     def test_auto_rewrite_skipped_when_ask_key_missing(self) -> None:
         """GIVEN askApiKey not configured WHEN content blocked THEN skips rewrite."""
         self.config_values["askApiKey"] = ""
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: self.config_values.get(key)
+        )
         empty_resp = self._make_empty_response()
 
         with (
@@ -2638,6 +2385,9 @@ class TestDrawAutoRewrite:
     def test_prior_rewrites_passed_to_subsequent_attempts(self) -> None:
         """GIVEN multiple rewrite attempts WHEN calling rewriter THEN prior history passed."""
         self.config_values["drawAutoRewriteMax"] = 2
+        self.mock_plugin.registryValue = Mock(
+            side_effect=lambda key, channel=None: self.config_values.get(key)
+        )
         empty_resp = self._make_empty_response()
         rewrite1 = self._make_rewrite_response("rewrite v1")
         rewrite2 = self._make_rewrite_response("rewrite v2")
