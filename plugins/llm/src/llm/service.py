@@ -1541,13 +1541,14 @@ Rules:
         Returns:
             VideoResult with URL to generated video or error message
         """
-        import json
-        import urllib.error
-        import urllib.request
+        import requests
 
         target = None
         if irc and msg and msg.args:
             target = msg.args[0]
+
+        session = requests.Session()
+        session.headers.update({"User-Agent": "VibeBot/8"})
 
         try:
             if irc and target:
@@ -1569,25 +1570,20 @@ Rules:
             timeout = self.plugin.registryValue("animateTimeout") or self.plugin.registryValue(
                 "timeout"
             )
+            session.headers["Authorization"] = f"Bearer {api_key}"
 
             # Step 1: Submit generation request
             submit_url = "https://api.x.ai/v1/videos/generations"
-            submit_body = json.dumps({"model": model, "prompt": prompt}).encode()
-            submit_req = urllib.request.Request(
-                submit_url,
-                data=submit_body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": "VibeBot/8",
-                },
-                method="POST",
-            )
 
             self.log.info("video_generation request: model=%s", model)
 
-            with urllib.request.urlopen(submit_req, timeout=30) as resp:  # noqa: S310
-                submit_data = json.loads(resp.read())
+            resp = session.post(
+                submit_url,
+                json={"model": model, "prompt": prompt},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            submit_data = resp.json()
 
             request_id = submit_data.get("request_id")
             if not request_id:
@@ -1598,7 +1594,6 @@ Rules:
 
             # Step 2: Poll for result
             poll_url = f"https://api.x.ai/v1/videos/{request_id}"
-            poll_headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "VibeBot/8"}
             start_time = time.time()
             poll_interval = 3  # seconds
 
@@ -1620,9 +1615,9 @@ Rules:
                 if irc and target:
                     self.send_typing_indicator(irc, target, "active")
 
-                poll_req = urllib.request.Request(poll_url, headers=poll_headers)
-                with urllib.request.urlopen(poll_req, timeout=30) as resp:  # noqa: S310
-                    poll_data = json.loads(resp.read())
+                poll_resp = session.get(poll_url, timeout=30)
+                poll_resp.raise_for_status()
+                poll_data = poll_resp.json()
 
                 status = poll_data.get("status")
                 self.log.debug("video_generation poll: status=%s elapsed=%.0fs", status, elapsed)
@@ -1670,20 +1665,21 @@ Rules:
                 model=model,
             )
 
-        except urllib.error.HTTPError as e:
+        except requests.HTTPError as e:
             body = ""
             with contextlib.suppress(Exception):
-                body = e.read().decode()[:200]
+                body = e.response.text[:200] if e.response is not None else ""
+            code = e.response.status_code if e.response is not None else 0
             sanitized = self._sanitize(body or str(e))
-            self.log.error("Video generation HTTP error %s: %s", e.code, sanitized)
+            self.log.error("Video generation HTTP error %s: %s", code, sanitized)
 
-            if e.code == 401:
+            if code == 401:
                 error_content = _(
                     "Error: Invalid API key for animate. Please check your configuration."
                 )
-            elif e.code == 429:
+            elif code == 429:
                 error_content = _("Error: API rate limit reached. Please wait and try again.")
-            elif e.code == 400 and any(
+            elif code == 400 and any(
                 kw in body.lower() for kw in ("moderation", "safety", "content policy", "blocked")
             ):
                 error_content = _(
@@ -1691,7 +1687,7 @@ Rules:
                 )
             else:
                 error_content = (
-                    _("Error: Video generation API error (%s). Check logs for details.") % e.code
+                    _("Error: Video generation API error (%s). Check logs for details.") % code
                 )
             return VideoResult(content=error_content, error=error_content)
 
@@ -1705,6 +1701,7 @@ Rules:
             return VideoResult(content=error_content, error=error_content)
 
         finally:
+            session.close()
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
@@ -2009,7 +2006,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Returns:
             Local public URL to saved video or None on error
         """
-        import urllib.request
+        import requests
 
         max_size = 100 * 1024 * 1024  # 100 MB
 
@@ -2018,16 +2015,16 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         )
 
         try:
-            headers = {"User-Agent": "VibeBot/8"}
+            headers: dict[str, str] = {"User-Agent": "VibeBot/8"}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                data = resp.read(max_size + 1)
+            resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+            resp.raise_for_status()
 
-                if len(data) > max_size:
-                    self.log.warning("Video too large to download: %s", url[:200])
-                    return None
+            data = resp.content
+            if len(data) > max_size:
+                self.log.warning("Video too large to download: %s", url[:200])
+                return None
 
             return self._save_video_bytes(data)
 

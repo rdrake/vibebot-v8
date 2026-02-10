@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import io
-import json
 import threading
 import time
-import urllib.error
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,24 +21,31 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _make_urlopen_resp(
-    mocker: MockerFixture,
-    data: dict | bytes,
-):
-    """Create a mock urllib response usable as a context manager.
+def _mock_response(mocker: MockerFixture, *, json: dict | None = None, status: int = 200):
+    """Create a mock requests.Response.
 
     Args:
         mocker: pytest-mock fixture
-        data: dict (JSON-serialized) or raw bytes for resp.read()
+        json: JSON body to return from .json()
+        status: HTTP status code
     """
     resp = mocker.MagicMock()
-    resp.__enter__ = mocker.Mock(return_value=resp)
-    resp.__exit__ = mocker.Mock(return_value=False)
-    if isinstance(data, bytes):
-        resp.read.return_value = data
-    else:
-        resp.read.return_value = json.dumps(data).encode()
+    resp.status_code = status
+    resp.ok = 200 <= status < 400
+    if json is not None:
+        resp.json.return_value = json
+    resp.raise_for_status.side_effect = None if resp.ok else _make_http_error(mocker, status)
     return resp
+
+
+def _make_http_error(mocker: MockerFixture, status: int):
+    """Create a requests.HTTPError for raise_for_status."""
+    import requests
+
+    resp = mocker.MagicMock()
+    resp.status_code = status
+    resp.text = ""
+    return requests.HTTPError(response=resp)
 
 
 # ---------------------------------------------------------------------------
@@ -278,36 +282,18 @@ class TestVideoGeneration:
         THEN returns VideoResult with URL.
         """
         service, plugin = make_service()
-        mocker.patch("time.sleep")
 
-        service._save_video_bytes = mocker.Mock(
-            return_value=("https://example.com/llm/vid_abc.mp4"),
-        )
-
-        submit = _make_urlopen_resp(
-            mocker,
-            {"request_id": "req-123"},
-        )
-        poll = _make_urlopen_resp(
-            mocker,
-            {
-                "status": "done",
-                "url": "https://tmp.xai/v.mp4",
-            },
-        )
-        download = _make_urlopen_resp(
-            mocker,
-            b"fake video bytes",
+        service._download_and_save_video = mocker.Mock(
+            return_value="https://example.com/llm/vid_abc.mp4",
         )
 
-        mock_urlopen = mocker.patch(
-            "urllib.request.urlopen",
-        )
-        mock_urlopen.side_effect = [
-            submit,
-            poll,
-            download,
-        ]
+        submit_resp = _mock_response(mocker, json={"request_id": "req-123"})
+        poll_resp = _mock_response(mocker, json={"status": "done", "url": "https://tmp.xai/v.mp4"})
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
 
         result = service.video_generation("a cat playing")
 
@@ -358,19 +344,13 @@ class TestVideoGeneration:
         # start_time, first elapsed, second elapsed
         mock_time_mod.time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
 
-        submit = _make_urlopen_resp(
-            mocker,
-            {"request_id": "req-123"},
-        )
-        poll = _make_urlopen_resp(
-            mocker,
-            {"status": "pending"},
-        )
+        submit_resp = _mock_response(mocker, json={"request_id": "req-123"})
+        poll_resp = _mock_response(mocker, json={"status": "pending"})
 
-        mock_urlopen = mocker.patch(
-            "urllib.request.urlopen",
-        )
-        mock_urlopen.side_effect = [submit, poll]
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
 
         result = service.video_generation("a cat")
 
@@ -386,21 +366,14 @@ class TestVideoGeneration:
         THEN returns expired error.
         """
         service, plugin = make_service()
-        mocker.patch("time.sleep")
 
-        submit = _make_urlopen_resp(
-            mocker,
-            {"request_id": "req-123"},
-        )
-        poll = _make_urlopen_resp(
-            mocker,
-            {"status": "expired"},
-        )
+        submit_resp = _mock_response(mocker, json={"request_id": "req-123"})
+        poll_resp = _mock_response(mocker, json={"status": "expired"})
 
-        mock_urlopen = mocker.patch(
-            "urllib.request.urlopen",
-        )
-        mock_urlopen.side_effect = [submit, poll]
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
 
         result = service.video_generation("a cat")
 
@@ -415,18 +388,18 @@ class TestVideoGeneration:
         """GIVEN invalid API key WHEN submit
         THEN returns auth error.
         """
+        import requests
+
         service, plugin = make_service()
 
-        mock_urlopen = mocker.patch(
-            "urllib.request.urlopen",
-        )
-        mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="https://api.x.ai/v1/videos/generations",
-            code=401,
-            msg="Unauthorized",
-            hdrs=mocker.MagicMock(),
-            fp=io.BytesIO(b""),
-        )
+        error_resp = mocker.MagicMock()
+        error_resp.status_code = 401
+        error_resp.text = "Unauthorized"
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = error_resp
+        error_resp.raise_for_status.side_effect = requests.HTTPError(response=error_resp)
+        mocker.patch("requests.Session", return_value=mock_session)
 
         result = service.video_generation("a cat")
 
@@ -441,19 +414,18 @@ class TestVideoGeneration:
         """GIVEN blocked prompt WHEN submit returns 400
         THEN returns safety error.
         """
-        service, plugin = make_service()
-        body = b'{"error": "moderation blocked"}'
+        import requests
 
-        mock_urlopen = mocker.patch(
-            "urllib.request.urlopen",
-        )
-        mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="https://api.x.ai/v1/videos/generations",
-            code=400,
-            msg="Bad Request",
-            hdrs=mocker.MagicMock(),
-            fp=io.BytesIO(body),
-        )
+        service, plugin = make_service()
+
+        error_resp = mocker.MagicMock()
+        error_resp.status_code = 400
+        error_resp.text = '{"error": "moderation blocked"}'
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = error_resp
+        error_resp.raise_for_status.side_effect = requests.HTTPError(response=error_resp)
+        mocker.patch("requests.Session", return_value=mock_session)
 
         result = service.video_generation("bad prompt")
 
