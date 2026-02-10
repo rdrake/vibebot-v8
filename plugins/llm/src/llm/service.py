@@ -1523,6 +1523,27 @@ Rules:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
+    @staticmethod
+    def _extract_video_url(data: dict) -> str | None:
+        """Extract video URL from xAI API response.
+
+        The API returns different structures depending on status:
+        - Completed: ``{"video": {"url": "..."}, "model": "..."}``
+        - Legacy/alt: ``{"url": "..."}`` or ``{"video_url": "..."}``
+        """
+        # Primary format: {"video": {"url": "..."}}
+        if "video" in data and isinstance(data["video"], dict):
+            return data["video"].get("url")
+        # Fallback formats
+        if "video_url" in data:
+            return data["video_url"]
+        if "url" in data:
+            return data["url"]
+        if "data" in data and data["data"]:
+            first = data["data"][0] if isinstance(data["data"], list) else data["data"]
+            return first.get("url") or first.get("video_url")
+        return None
+
     def video_generation(
         self,
         prompt: str,
@@ -1642,7 +1663,9 @@ Rules:
                 status = poll_data.get("status")
                 self.log.debug("video_generation poll: status=%s elapsed=%.0fs", status, elapsed)
 
-                if status == "done":
+                # Check for completion: either explicit status or video data present
+                video_url = self._extract_video_url(poll_data)
+                if status == "done" or video_url:
                     break
                 elif status == "expired":
                     error_content = _("Error: Video generation request expired. Please try again.")
@@ -1650,19 +1673,8 @@ Rules:
                 # status == "pending": continue polling
 
             # Step 3: Extract video URL and download
-            video_url = None
-            # Try common response structures
-            if "video_url" in poll_data:
-                video_url = poll_data["video_url"]
-            elif "url" in poll_data:
-                video_url = poll_data["url"]
-            elif "data" in poll_data and poll_data["data"]:
-                first = (
-                    poll_data["data"][0]
-                    if isinstance(poll_data["data"], list)
-                    else poll_data["data"]
-                )
-                video_url = first.get("url") or first.get("video_url")
+            if not video_url:
+                video_url = self._extract_video_url(poll_data)
 
             if not video_url:
                 error_content = _("Error: Video generation completed but no video URL returned")
@@ -1796,12 +1808,8 @@ Rules:
                 continue
 
             status = data.get("status")
-            if status == "done":
-                video_url = data.get("video_url") or data.get("url")
-                if not video_url and "data" in data and data["data"]:
-                    first = data["data"][0] if isinstance(data["data"], list) else data["data"]
-                    video_url = first.get("url") or first.get("video_url")
-
+            video_url = self._extract_video_url(data)
+            if status == "done" or video_url:
                 local_url = None
                 if video_url:
                     local_url = self._download_and_save_video(video_url, entry["api_key"])

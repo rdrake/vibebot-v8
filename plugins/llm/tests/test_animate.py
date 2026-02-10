@@ -288,7 +288,9 @@ class TestVideoGeneration:
         )
 
         submit_resp = _mock_response(mocker, json={"request_id": "req-123"})
-        poll_resp = _mock_response(mocker, json={"status": "done", "url": "https://tmp.xai/v.mp4"})
+        poll_resp = _mock_response(
+            mocker, json={"video": {"url": "https://tmp.xai/v.mp4"}, "model": "grok-imagine-video"}
+        )
 
         mock_session = mocker.MagicMock()
         mock_session.post.return_value = submit_resp
