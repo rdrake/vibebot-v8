@@ -352,10 +352,11 @@ class TestVideoGeneration:
         """
         service, plugin = make_service(animateTimeout=1)
 
-        mocker.patch("time.sleep")
-        mock_time = mocker.patch("time.time")
+        # Patch the time module reference in llm.service's namespace (not globally)
+        # so the logging framework's internal time.time() calls are unaffected.
+        mock_time_mod = mocker.patch("llm.service.time")
         # start_time, first elapsed, second elapsed
-        mock_time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
+        mock_time_mod.time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
 
         submit = _make_urlopen_resp(
             mocker,
