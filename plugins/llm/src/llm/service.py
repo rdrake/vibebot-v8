@@ -137,6 +137,7 @@ class LLMService:
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
         self._cleanup_lock = threading.Lock()
+        self._pending_videos: list[dict] = []
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -1600,10 +1601,27 @@ Rules:
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout:
+                    # Stash for background recovery — the video may still complete
+                    self._pending_videos.append(
+                        {
+                            "request_id": request_id,
+                            "api_key": api_key,
+                            "model": model,
+                            "channel": target,
+                            "nick": msg.nick if msg else None,
+                            "prompt": prompt[:100],
+                            "submitted_at": time.time() - elapsed,
+                        }
+                    )
+                    self.log.info(
+                        "video_generation timed out after %ds, stashed request_id=%s for recovery",
+                        timeout,
+                        request_id,
+                    )
                     error_content = (
                         _(
                             "Error: Video generation timed out after %d seconds. "
-                            "Try a simpler prompt."
+                            "I'll keep checking and deliver it if it finishes."
                         )
                         % timeout
                     )
@@ -1704,6 +1722,84 @@ Rules:
             session.close()
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
+
+    def check_pending_videos(self) -> list[dict]:
+        """Poll stashed video requests that previously timed out.
+
+        Returns a list of completed results, each with keys:
+        ``channel``, ``nick``, ``prompt``, ``url``, ``model``, ``cost``.
+        Removes completed or expired entries from the pending list.
+        """
+        import requests as _requests
+
+        if not self._pending_videos:
+            return []
+
+        completed: list[dict] = []
+        still_pending: list[dict] = []
+        max_age = 3600  # drop requests older than 1 hour
+
+        for entry in self._pending_videos:
+            age = time.time() - entry["submitted_at"]
+            if age > max_age:
+                self.log.info(
+                    "Dropping stale pending video request_id=%s (age=%.0fs)",
+                    entry["request_id"],
+                    age,
+                )
+                continue
+
+            try:
+                resp = _requests.get(
+                    f"https://api.x.ai/v1/videos/{entry['request_id']}",
+                    headers={
+                        "Authorization": f"Bearer {entry['api_key']}",
+                        "User-Agent": "VibeBot/8",
+                    },
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:
+                self.log.debug("Pending video poll failed for request_id=%s", entry["request_id"])
+                still_pending.append(entry)
+                continue
+
+            status = data.get("status")
+            if status == "done":
+                video_url = data.get("video_url") or data.get("url")
+                if not video_url and "data" in data and data["data"]:
+                    first = data["data"][0] if isinstance(data["data"], list) else data["data"]
+                    video_url = first.get("url") or first.get("video_url")
+
+                local_url = None
+                if video_url:
+                    local_url = self._download_and_save_video(video_url, entry["api_key"])
+
+                url = local_url or video_url or "?"
+                model = entry["model"]
+                completed.append(
+                    {
+                        "channel": entry["channel"],
+                        "nick": entry["nick"],
+                        "prompt": entry["prompt"],
+                        "url": url,
+                        "model": model,
+                        "cost": VIDEO_COST_PER_VIDEO.get(model, 0.0),
+                    }
+                )
+                self.log.info(
+                    "Pending video completed: request_id=%s url=%s",
+                    entry["request_id"],
+                    url[:100],
+                )
+            elif status == "expired":
+                self.log.info("Pending video expired: request_id=%s", entry["request_id"])
+            else:
+                still_pending.append(entry)
+
+        self._pending_videos = still_pending
+        return completed
 
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
         """Strip markdown code fences and extract language if present.

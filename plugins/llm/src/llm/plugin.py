@@ -331,6 +331,17 @@ class LLM(callbacks.Plugin):
             now=False,  # Don't run immediately on startup
         )
 
+        # Schedule periodic check for timed-out video requests (every 30s)
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_pending_videos")
+
+        schedule.addPeriodicEvent(
+            self._check_pending_videos,
+            30,
+            name="llm_pending_videos",
+            now=False,
+        )
+
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
         # Clean up expired reminders from database
@@ -340,6 +351,8 @@ class LLM(callbacks.Plugin):
         # Remove scheduled cleanup event
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_file_cleanup")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_pending_videos")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
 
@@ -363,6 +376,39 @@ class LLM(callbacks.Plugin):
             self.log.debug("Scheduled file cleanup completed")
         except Exception as e:
             self.log.error("Scheduled file cleanup failed: %s", e)
+
+    def _check_pending_videos(self) -> None:
+        """Poll timed-out video requests and deliver any that completed."""
+        try:
+            results = self.llm_service.check_pending_videos()
+            for r in results:
+                channel = r["channel"]
+                nick = r["nick"]
+                url = r["url"]
+                prompt = r["prompt"]
+                if channel and nick:
+                    for irc in world.ircs:
+                        if channel in irc.state.channels:
+                            irc.queueMsg(
+                                ircmsgs.privmsg(
+                                    channel,
+                                    f'{nick}: your video is ready! "{prompt}" \u2192 {url}',
+                                )
+                            )
+                            # Log usage
+                            identity = self._resolve_nick_to_identity(irc, nick)
+                            self.db.log_usage(
+                                identity,
+                                channel,
+                                "animate",
+                                r["model"],
+                                0,
+                                0,
+                                r["cost"],
+                            )
+                            break
+        except Exception as e:
+            self.log.error("Pending video check failed: %s", e)
 
     def doPrivmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Monitor channel messages for enhanced context (opt-in feature).

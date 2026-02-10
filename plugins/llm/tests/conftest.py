@@ -126,7 +126,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Animate command
         "animateApiKey": TEST_API_KEY,
         "animateModel": "grok-imagine-video",
-        "animateTimeout": 300,
+        "animateTimeout": 600,
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,

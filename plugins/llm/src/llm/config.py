@@ -226,7 +226,7 @@ conf.registerGlobalValue(
     LLM,
     "animateTimeout",
     registry.NonNegativeInteger(
-        300,
+        600,
         _("""Timeout for video generation API calls in seconds. Video generation
         is slower than image generation due to polling for completion.
         Set to 0 to use the global timeout setting instead."""),
