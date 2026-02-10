@@ -65,7 +65,17 @@ endif
 
 # GitHub helpers
 wait-ci:
-	gh run watch $$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
+	@RUN_ID=$$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId'); \
+	echo "Watching run $$RUN_ID …"; \
+	while true; do \
+		STATUS=$$(gh run view "$$RUN_ID" --json status,conclusion --jq '.status + " " + .conclusion'); \
+		echo "$$(date +%H:%M:%S) $$STATUS"; \
+		case "$$STATUS" in \
+			completed\ success) echo "CI passed ✓"; exit 0;; \
+			completed\ *) echo "CI failed ✗"; exit 1;; \
+		esac; \
+		sleep 10; \
+	done
 
 rebase-pr:
 ifndef PR
