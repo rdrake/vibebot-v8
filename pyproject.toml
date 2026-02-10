@@ -42,6 +42,12 @@ python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --tb=short"
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+filterwarnings = [
+    "error",                            # Treat project warnings as test failures
+    "ignore::DeprecationWarning:litellm",  # asyncio.iscoroutinefunction (Python 3.16)
+    "ignore::DeprecationWarning:supybot",  # currentThread(), codecs.open()
+    "ignore::ResourceWarning:supybot",     # Unclosed conf/*.conf files
+]
 
 [tool.ty.environment]
 python-version = "3.14"

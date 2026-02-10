@@ -7,9 +7,14 @@ without requiring a full Limnoria runtime environment.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
+    from pytest_mock import MockerFixture
 
 
 class TestHTTPCallback:
@@ -40,9 +45,9 @@ class TestHTTPCallbackDoGet:
     """Test HTTP callback doGet method for serving files."""
 
     @pytest.fixture
-    def mock_plugin(self) -> MagicMock:
+    def mock_plugin(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock plugin for HTTP callback."""
-        plugin = MagicMock()
+        plugin = mocker.MagicMock()
         plugin.registryValue.return_value = ""  # No custom httpRoot
         return plugin
 
@@ -54,11 +59,11 @@ class TestHTTPCallbackDoGet:
         return LLMHTTPCallback(mock_plugin)
 
     @pytest.fixture
-    def mock_handler(self) -> MagicMock:
+    def mock_handler(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock HTTP handler."""
-        handler = MagicMock()
+        handler = mocker.MagicMock()
         # wfile needs to be a MagicMock so we can set side_effect
-        handler.wfile = MagicMock()
+        handler.wfile = mocker.MagicMock()
         return handler
 
     def test_doget_serves_help_at_root(self, http_callback, mock_handler: MagicMock) -> None:
@@ -84,56 +89,56 @@ class TestHTTPCallbackDoGet:
         mock_handler.send_response.assert_called_with(403)
 
     def test_doget_returns_404_for_missing_file(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN nonexistent file WHEN doGet called THEN returns 404."""
-        with patch.object(http_callback, "_get_web_dir", return_value="/nonexistent"):
-            http_callback.doGet(mock_handler, "missing.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value="/nonexistent")
+        http_callback.doGet(mock_handler, "missing.txt")
         mock_handler.send_response.assert_called_with(404)
         mock_handler.end_headers.assert_called_once()
 
     def test_doget_serves_existing_file(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN existing file WHEN doGet called THEN returns 200 with content."""
         test_file = tmp_path / "test.txt"
         test_file.write_bytes(b"test content")
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            http_callback.doGet(mock_handler, "test.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        http_callback.doGet(mock_handler, "test.txt")
 
         mock_handler.send_response.assert_called_with(200)
         mock_handler.send_header.assert_any_call("Content-Type", "text/plain")
         mock_handler.send_header.assert_any_call("Content-Length", "12")
 
     def test_doget_serves_image_with_correct_type(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN image file WHEN doGet called THEN returns correct content type."""
         test_file = tmp_path / "test.png"
         test_file.write_bytes(b"\x89PNG\r\n\x1a\n")  # PNG header
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            http_callback.doGet(mock_handler, "test.png")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        http_callback.doGet(mock_handler, "test.png")
 
         mock_handler.send_response.assert_called_with(200)
         mock_handler.send_header.assert_any_call("Content-Type", "image/png")
 
     def test_doget_handles_unknown_content_type(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN file with unknown extension WHEN doGet called THEN uses octet-stream."""
         test_file = tmp_path / "test.xyz123"
         test_file.write_bytes(b"binary data")
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            http_callback.doGet(mock_handler, "test.xyz123")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        http_callback.doGet(mock_handler, "test.xyz123")
 
         mock_handler.send_response.assert_called_with(200)
         mock_handler.send_header.assert_any_call("Content-Type", "application/octet-stream")
 
     def test_doget_handles_broken_pipe_silently(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN client disconnect WHEN doGet serving file THEN no error raised."""
         test_file = tmp_path / "test.txt"
@@ -141,12 +146,12 @@ class TestHTTPCallbackDoGet:
 
         mock_handler.wfile.write.side_effect = BrokenPipeError()
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            # Should not raise
-            http_callback.doGet(mock_handler, "test.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        # Should not raise
+        http_callback.doGet(mock_handler, "test.txt")
 
     def test_doget_handles_connection_reset_silently(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN connection reset WHEN doGet serving file THEN no error raised."""
         test_file = tmp_path / "test.txt"
@@ -154,27 +159,25 @@ class TestHTTPCallbackDoGet:
 
         mock_handler.wfile.write.side_effect = ConnectionResetError()
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            # Should not raise
-            http_callback.doGet(mock_handler, "test.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        # Should not raise
+        http_callback.doGet(mock_handler, "test.txt")
 
     def test_doget_handles_os_error_with_500(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN OS error reading file WHEN doGet called THEN returns 500."""
         test_file = tmp_path / "test.txt"
         test_file.write_bytes(b"test")
 
-        with (
-            patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)),
-            patch("builtins.open", side_effect=OSError("disk error")),
-        ):
-            http_callback.doGet(mock_handler, "test.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        mocker.patch("builtins.open", side_effect=OSError("disk error"))
+        http_callback.doGet(mock_handler, "test.txt")
 
         mock_handler.send_response.assert_called_with(500)
 
     def test_doget_blocks_symlink_escape(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN symlink pointing outside web dir WHEN doGet called THEN returns 403."""
         web_dir = tmp_path / "web"
@@ -188,14 +191,14 @@ class TestHTTPCallbackDoGet:
         symlink_path = web_dir / "escape.txt"
         symlink_path.symlink_to(outside_file)
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(web_dir)):
-            http_callback.doGet(mock_handler, "escape.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(web_dir))
+        http_callback.doGet(mock_handler, "escape.txt")
 
         # Should return 403 because resolved path is outside web_dir
         mock_handler.send_response.assert_called_with(403)
 
     def test_doget_allows_symlink_within_web_dir(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN symlink pointing within web dir WHEN doGet called THEN serves file."""
         web_dir = tmp_path / "web"
@@ -209,19 +212,19 @@ class TestHTTPCallbackDoGet:
         symlink_path = web_dir / "link.txt"
         symlink_path.symlink_to(real_file)
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(web_dir)):
-            http_callback.doGet(mock_handler, "link.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(web_dir))
+        http_callback.doGet(mock_handler, "link.txt")
 
         # Should serve the file
         mock_handler.send_response.assert_called_with(200)
 
-    def test_doget_handles_realpath_oserror(self, http_callback, mock_handler: MagicMock) -> None:
+    def test_doget_handles_realpath_oserror(
+        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN realpath raises OSError WHEN doGet called THEN returns 403."""
-        with (
-            patch.object(http_callback, "_get_web_dir", return_value="/some/dir"),
-            patch("os.path.realpath", side_effect=OSError("permission denied")),
-        ):
-            http_callback.doGet(mock_handler, "test.txt")
+        mocker.patch.object(http_callback, "_get_web_dir", return_value="/some/dir")
+        mocker.patch("os.path.realpath", side_effect=OSError("permission denied"))
+        http_callback.doGet(mock_handler, "test.txt")
 
         mock_handler.send_response.assert_called_with(403)
 
@@ -229,11 +232,11 @@ class TestHTTPCallbackDoGet:
 class TestHTTPCallbackGetWebDir:
     """Test HTTP callback _get_web_dir method."""
 
-    def test_get_web_dir_uses_http_root_when_set(self) -> None:
+    def test_get_web_dir_uses_http_root_when_set(self, mocker: MockerFixture) -> None:
         """GIVEN httpRoot configured WHEN _get_web_dir called THEN returns httpRoot."""
         from llm.plugin import LLMHTTPCallback
 
-        mock_plugin = MagicMock()
+        mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.return_value = "/custom/path"
         callback = LLMHTTPCallback(mock_plugin)
 
@@ -242,11 +245,11 @@ class TestHTTPCallbackGetWebDir:
         assert result == "/custom/path"
         mock_plugin.registryValue.assert_called_with("httpRoot")
 
-    def test_get_web_dir_uses_data_web_when_no_http_root(self) -> None:
+    def test_get_web_dir_uses_data_web_when_no_http_root(self, mocker: MockerFixture) -> None:
         """GIVEN httpRoot empty WHEN _get_web_dir called THEN returns data/web/llm."""
         from llm.plugin import LLMHTTPCallback
 
-        mock_plugin = MagicMock()
+        mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.return_value = ""
         callback = LLMHTTPCallback(mock_plugin)
 
@@ -263,9 +266,9 @@ class TestHTTPCallbackServeHelpPage:
     """Test HTTP callback _serve_help_page method."""
 
     @pytest.fixture
-    def mock_plugin(self) -> MagicMock:
+    def mock_plugin(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock plugin for HTTP callback."""
-        plugin = MagicMock()
+        plugin = mocker.MagicMock()
         plugin.registryValue.return_value = ""
         return plugin
 
@@ -277,20 +280,20 @@ class TestHTTPCallbackServeHelpPage:
         return LLMHTTPCallback(mock_plugin)
 
     @pytest.fixture
-    def mock_handler(self) -> MagicMock:
+    def mock_handler(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock HTTP handler."""
-        handler = MagicMock()
-        handler.wfile = MagicMock()
+        handler = mocker.MagicMock()
+        handler.wfile = mocker.MagicMock()
         return handler
 
     def test_serve_help_page_uses_builtin_template(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN no custom help.html WHEN _serve_help_page THEN uses builtin template."""
         from llm.plugin import HELP_HTML_TEMPLATE
 
-        with patch.object(http_callback, "_get_web_dir", return_value="/nonexistent"):
-            http_callback._serve_help_page(mock_handler)
+        mocker.patch.object(http_callback, "_get_web_dir", return_value="/nonexistent")
+        http_callback._serve_help_page(mock_handler)
 
         mock_handler.send_response.assert_called_with(200)
         mock_handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
@@ -299,32 +302,32 @@ class TestHTTPCallbackServeHelpPage:
         assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
 
     def test_serve_help_page_uses_custom_file_when_exists(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN custom help.html WHEN _serve_help_page THEN uses custom file."""
         custom_help = tmp_path / "help.html"
         custom_content = b"<html>Custom Help</html>"
         custom_help.write_bytes(custom_content)
 
-        with patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)):
-            http_callback._serve_help_page(mock_handler)
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        http_callback._serve_help_page(mock_handler)
 
         mock_handler.send_response.assert_called_with(200)
         written_content = mock_handler.wfile.write.call_args[0][0]
         assert written_content == custom_content
 
     def test_serve_help_page_handles_broken_pipe(
-        self, http_callback, mock_handler: MagicMock
+        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN client disconnect WHEN _serve_help_page THEN no error raised."""
         mock_handler.wfile.write.side_effect = BrokenPipeError()
 
-        with patch.object(http_callback, "_get_web_dir", return_value="/nonexistent"):
-            # Should not raise
-            http_callback._serve_help_page(mock_handler)
+        mocker.patch.object(http_callback, "_get_web_dir", return_value="/nonexistent")
+        # Should not raise
+        http_callback._serve_help_page(mock_handler)
 
     def test_serve_help_page_falls_back_on_read_error(
-        self, http_callback, mock_handler: MagicMock, tmp_path
+        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN custom file read error WHEN _serve_help_page THEN falls back to template."""
         from llm.plugin import HELP_HTML_TEMPLATE
@@ -332,11 +335,9 @@ class TestHTTPCallbackServeHelpPage:
         custom_help = tmp_path / "help.html"
         custom_help.write_bytes(b"content")
 
-        with (
-            patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path)),
-            patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")),
-        ):
-            http_callback._serve_help_page(mock_handler)
+        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
+        mocker.patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied"))
+        http_callback._serve_help_page(mock_handler)
 
         written_content = mock_handler.wfile.write.call_args[0][0]
         assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
@@ -346,158 +347,166 @@ class TestPluginHelperMethods:
     """Test plugin helper methods."""
 
     @pytest.fixture
-    def mock_msg(self) -> MagicMock:
+    def mock_msg(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock IRC message."""
-        msg = MagicMock()
+        msg = mocker.MagicMock()
         msg.prefix = "testnick!user@host"
         msg.args = ("#testchannel", "test message")
         msg.time = time.time()
         msg.channel = "#testchannel"
         return msg
 
-    def test_get_identity_returns_account_when_available(self, mock_msg: MagicMock) -> None:
+    def test_get_identity_returns_account_when_available(
+        self, mock_msg: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN user logged into NickServ WHEN _get_identity called THEN returns account."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_irc.state.nickToAccount = MagicMock(return_value="MyAccount")
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="MyAccount")
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._migrated_nicks = set()
-            plugin.db = MagicMock()
-            plugin.db.migrate_nick.return_value = 0
-            plugin.log = MagicMock()
-            result = plugin._get_identity(mock_irc, mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._migrated_nicks = set()
+        plugin.db = mocker.MagicMock()
+        plugin.db.migrate_nick.return_value = 0
+        plugin.log = mocker.MagicMock()
+        result = plugin._get_identity(mock_irc, mock_msg)
 
         assert result == "MyAccount"
 
-    def test_get_identity_falls_back_to_nick_when_no_account(self, mock_msg: MagicMock) -> None:
+    def test_get_identity_falls_back_to_nick_when_no_account(
+        self, mock_msg: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN user not logged in WHEN _get_identity called THEN returns nick."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_irc.state.nickToAccount = MagicMock(return_value=None)
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            result = plugin._get_identity(mock_irc, mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        result = plugin._get_identity(mock_irc, mock_msg)
 
         assert result == "testnick"
 
-    def test_get_identity_falls_back_to_nick_on_keyerror(self, mock_msg: MagicMock) -> None:
+    def test_get_identity_falls_back_to_nick_on_keyerror(
+        self, mock_msg: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN nickToAccount raises KeyError WHEN _get_identity called THEN returns nick."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_irc.state.nickToAccount = MagicMock(side_effect=KeyError("unknown nick"))
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("unknown nick"))
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            result = plugin._get_identity(mock_irc, mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        result = plugin._get_identity(mock_irc, mock_msg)
 
         assert result == "testnick"
 
-    def test_extract_raw_arg_returns_target_with_brackets(self) -> None:
+    def test_extract_raw_arg_returns_target_with_brackets(self, mocker: MockerFixture) -> None:
         """GIVEN message with bracket nick WHEN _extract_raw_arg THEN brackets preserved."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_msg = MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]"):
-            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]")
+        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
 
         assert result == "Rubin[F]"
 
-    def test_extract_raw_arg_returns_simple_nick(self) -> None:
+    def test_extract_raw_arg_returns_simple_nick(self, mocker: MockerFixture) -> None:
         """GIVEN message with simple nick WHEN _extract_raw_arg THEN nick returned."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_msg = MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
-            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
+        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
 
         assert result == "othernick"
 
-    def test_extract_raw_arg_returns_none_when_no_arg(self) -> None:
+    def test_extract_raw_arg_returns_none_when_no_arg(self, mocker: MockerFixture) -> None:
         """GIVEN usage with no argument WHEN _extract_raw_arg THEN returns None."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_msg = MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage"):
-            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage")
+        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
 
         assert result is None
 
-    def test_extract_raw_arg_handles_plugin_qualified_command(self) -> None:
+    def test_extract_raw_arg_handles_plugin_qualified_command(self, mocker: MockerFixture) -> None:
         """GIVEN plugin-qualified command WHEN _extract_raw_arg THEN arg extracted."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_msg = MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("llm.plugin.callbacks.addressed", return_value="llm usage Rubin[F]"):
-            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="llm usage Rubin[F]")
+        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
 
         assert result == "Rubin[F]"
 
-    def test_get_channel_extracts_channel_from_args(self, mock_msg: MagicMock) -> None:
+    def test_get_channel_extracts_channel_from_args(
+        self, mock_msg: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN message with args WHEN _get_channel called THEN returns channel."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            result = plugin._get_channel(mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        result = plugin._get_channel(mock_msg)
 
         assert result == "#testchannel"
 
-    def test_get_channel_returns_unknown_for_empty_args(self) -> None:
+    def test_get_channel_returns_unknown_for_empty_args(self, mocker: MockerFixture) -> None:
         """GIVEN message with no args WHEN _get_channel called THEN returns unknown."""
         from llm.plugin import LLM
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.args = []
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            result = plugin._get_channel(mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        result = plugin._get_channel(mock_msg)
 
         assert result == "unknown"
 
-    def test_is_old_message_returns_true_for_old_message(self) -> None:
+    def test_is_old_message_returns_true_for_old_message(self, mocker: MockerFixture) -> None:
         """GIVEN message older than startup WHEN _is_old_message THEN returns True."""
         from llm.plugin import LLM
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.time = time.time() - 100
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.startup_time = time.time()
-            result = plugin._is_old_message(mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        result = plugin._is_old_message(mock_msg)
 
         assert result is True
 
-    def test_is_old_message_returns_false_for_new_message(self) -> None:
+    def test_is_old_message_returns_false_for_new_message(self, mocker: MockerFixture) -> None:
         """GIVEN message newer than startup WHEN _is_old_message THEN returns False."""
         from llm.plugin import LLM
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.time = time.time() + 100
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.startup_time = time.time()
-            result = plugin._is_old_message(mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        result = plugin._is_old_message(mock_msg)
 
         assert result is False
 
-    def test_is_old_message_returns_false_for_zero_timestamp(self) -> None:
+    def test_is_old_message_returns_false_for_zero_timestamp(self, mocker: MockerFixture) -> None:
         """GIVEN message with time=0 WHEN _is_old_message THEN returns False.
 
         Limnoria defaults msg.time to 0 when no server-time tag is present.
@@ -505,61 +514,61 @@ class TestPluginHelperMethods:
         """
         from llm.plugin import LLM
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.time = 0
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.startup_time = time.time()
-            result = plugin._is_old_message(mock_msg)
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        result = plugin._is_old_message(mock_msg)
 
         assert result is False
 
-    def test_get_help_url_delegates_to_service(self) -> None:
+    def test_get_help_url_delegates_to_service(self, mocker: MockerFixture) -> None:
         """GIVEN service returns url_base WHEN _get_help_url THEN returns url_base + /."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.llm_service = MagicMock()
-            plugin.llm_service.get_http_paths.return_value = (
-                "/var/www/llm",
-                "https://example.com/llm",
-            )
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.get_http_paths.return_value = (
+            "/var/www/llm",
+            "https://example.com/llm",
+        )
 
-            result = plugin._get_help_url()
+        result = plugin._get_help_url()
 
         assert result == "https://example.com/llm/"
 
-    def test_get_help_url_with_localhost_fallback(self) -> None:
+    def test_get_help_url_with_localhost_fallback(self, mocker: MockerFixture) -> None:
         """GIVEN service returns localhost url WHEN _get_help_url THEN uses it."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.llm_service = MagicMock()
-            plugin.llm_service.get_http_paths.return_value = (
-                "/data/web/llm",
-                "http://localhost:8080/llm",
-            )
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.get_http_paths.return_value = (
+            "/data/web/llm",
+            "http://localhost:8080/llm",
+        )
 
-            result = plugin._get_help_url()
+        result = plugin._get_help_url()
 
         assert result == "http://localhost:8080/llm/"
 
-    def test_get_plugin_help_includes_url(self) -> None:
+    def test_get_plugin_help_includes_url(self, mocker: MockerFixture) -> None:
         """GIVEN plugin WHEN getPluginHelp called THEN includes help URL."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.llm_service = MagicMock()
-            plugin.llm_service.get_http_paths.return_value = (
-                "/data/web/llm",
-                "https://example.com/llm",
-            )
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.get_http_paths.return_value = (
+            "/data/web/llm",
+            "https://example.com/llm",
+        )
 
-            result = plugin.getPluginHelp()
+        result = plugin.getPluginHelp()
 
         assert "https://example.com/llm/" in result
         assert "ask" in result
@@ -572,25 +581,25 @@ class TestDoPrivmsg:
     """Test plugin doPrivmsg for channel message tracking."""
 
     @pytest.fixture
-    def plugin_with_mocks(self) -> tuple:
+    def plugin_with_mocks(self, mocker: MockerFixture) -> tuple:
         """Create plugin with mocked dependencies."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
         mock_irc.nick = "botname"
-        mock_irc.state.nickToAccount = MagicMock(return_value=None)
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.prefix = "usernick!user@host"
         mock_msg.args = ("#channel", "hello world")
         mock_msg.time = time.time() + 100  # Future time (not ZNC playback)
         mock_msg.channel = "#channel"
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.startup_time = time.time()
-            plugin.registryValue = MagicMock(return_value=True)
-            plugin.context = MagicMock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        plugin.registryValue = mocker.MagicMock(return_value=True)
+        plugin.context = mocker.MagicMock()
 
         return plugin, mock_irc, mock_msg
 
@@ -626,50 +635,52 @@ class TestDoPrivmsg:
 
         plugin.context.add_message.assert_not_called()
 
-    def test_doprivmsg_skips_bot_own_messages(self, plugin_with_mocks: tuple) -> None:
+    def test_doprivmsg_skips_bot_own_messages(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN message from bot itself WHEN doPrivmsg called THEN does not track."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
         mock_msg.prefix = "botname!user@host"  # Same as bot nick
 
-        with patch("supybot.ircutils.strEqual", return_value=True):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircutils.strEqual", return_value=True)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         plugin.context.add_message.assert_not_called()
 
-    def test_doprivmsg_skips_ctcp_messages(self, plugin_with_mocks: tuple) -> None:
+    def test_doprivmsg_skips_ctcp_messages(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN CTCP message WHEN doPrivmsg called THEN does not track."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        with (
-            patch("supybot.ircmsgs.isCtcp", return_value=True),
-            patch("supybot.ircmsgs.isAction", return_value=False),
-        ):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircmsgs.isCtcp", return_value=True)
+        mocker.patch("supybot.ircmsgs.isAction", return_value=False)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         plugin.context.add_message.assert_not_called()
 
-    def test_doprivmsg_tracks_action_messages(self, plugin_with_mocks: tuple) -> None:
+    def test_doprivmsg_tracks_action_messages(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN ACTION message WHEN doPrivmsg called THEN tracks message."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        with (
-            patch("supybot.ircmsgs.isCtcp", return_value=True),
-            patch("supybot.ircmsgs.isAction", return_value=True),
-            patch("supybot.ircutils.strEqual", return_value=False),
-        ):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircmsgs.isCtcp", return_value=True)
+        mocker.patch("supybot.ircmsgs.isAction", return_value=True)
+        mocker.patch("supybot.ircutils.strEqual", return_value=False)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         plugin.context.add_message.assert_called_once()
 
-    def test_doprivmsg_tracks_normal_messages(self, plugin_with_mocks: tuple) -> None:
+    def test_doprivmsg_tracks_normal_messages(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN normal message WHEN doPrivmsg called THEN tracks message with channel config."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        with (
-            patch("supybot.ircmsgs.isCtcp", return_value=False),
-            patch("supybot.ircutils.strEqual", return_value=False),
-        ):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircmsgs.isCtcp", return_value=False)
+        mocker.patch("supybot.ircutils.strEqual", return_value=False)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         # add_message called with channel-specific config kwarg
         call_args = plugin.context.add_message.call_args
@@ -680,68 +691,64 @@ class TestDoPrivmsg:
 class TestInitContext:
     """Test _init_context method."""
 
-    def test_init_context_creates_new_context(self) -> None:
+    def test_init_context_creates_new_context(self, mocker: MockerFixture) -> None:
         """GIVEN plugin WHEN _init_context called THEN creates new context."""
         from llm.context import ConversationContext
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            # Returns: contextMaxMessages, contextTimeoutMinutes, contextEnabled, channelContextMaxMessages
-            plugin.registryValue = MagicMock(side_effect=[20, 30, True, 10])
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        # Returns: contextMaxMessages, contextTimeoutMinutes, contextEnabled, channelContextMaxMessages
+        plugin.registryValue = mocker.MagicMock(side_effect=[20, 30, True, 10])
 
-            plugin._init_context()
+        plugin._init_context()
 
-            assert isinstance(plugin.context, ConversationContext)
+        assert isinstance(plugin.context, ConversationContext)
 
 
 class TestPluginInitialization:
     """Test plugin initialization paths."""
 
-    def test_init_with_httproot_skips_http_callback(self) -> None:
+    def test_init_with_httproot_skips_http_callback(self, mocker: MockerFixture) -> None:
         """GIVEN httpRoot configured WHEN plugin initialized THEN skips HTTP callback."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
 
-        with (
-            patch.object(LLM, "registryValue", return_value="/var/www/llm"),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.LLMDatabase"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook") as mock_hook,
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", return_value="/var/www/llm")
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mock_hook = mocker.patch("llm.plugin.httpserver.hook")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin = LLM(mock_irc)
 
         # Should NOT hook HTTP callback when httpRoot is set
         mock_hook.assert_not_called()
         assert plugin._http_callback is None
 
-    def test_init_without_httproot_registers_http_callback(self) -> None:
+    def test_init_without_httproot_registers_http_callback(self, mocker: MockerFixture) -> None:
         """GIVEN httpRoot empty WHEN plugin initialized THEN registers HTTP callback."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
 
         def registry_side_effect(key, *args):
             if key == "httpRoot":
                 return ""
             if key == "databasePath":
                 return ""
-            return MagicMock()
+            return mocker.MagicMock()
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=registry_side_effect),
-            patch("llm.plugin.LLMService"),
-            patch("llm.plugin.LLMDatabase"),
-            patch("llm.plugin.log"),
-            patch("llm.plugin.httpserver.hook") as mock_hook,
-            patch("llm.plugin.schedule.addPeriodicEvent"),
-            patch("llm.plugin.schedule.removeEvent"),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mock_hook = mocker.patch("llm.plugin.httpserver.hook")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin = LLM(mock_irc)
 
         # Should hook HTTP callback when httpRoot is not set
         mock_hook.assert_called_once()
@@ -751,229 +758,238 @@ class TestPluginInitialization:
 class TestPluginLifecycle:
     """Test plugin initialization and cleanup."""
 
-    def test_plugin_die_removes_scheduled_event(self) -> None:
+    def test_plugin_die_removes_scheduled_event(self, mocker: MockerFixture) -> None:
         """GIVEN plugin WHEN die called THEN removes scheduled event."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._http_callback = None
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._http_callback = None
 
-            with patch("supybot.schedule.removeEvent") as mock_remove:
-                # Call parent's die
-                with patch.object(LLM.__bases__[0], "die", return_value=None):
-                    plugin.die()
+        mock_remove = mocker.patch("supybot.schedule.removeEvent")
+        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
+        plugin.die()
 
-                mock_remove.assert_any_call("llm_file_cleanup")
-                mock_remove.assert_any_call("llm_startup_check")
+        mock_remove.assert_any_call("llm_file_cleanup")
+        mock_remove.assert_any_call("llm_startup_check")
 
-    def test_plugin_die_unhooks_http_callback(self) -> None:
+    def test_plugin_die_unhooks_http_callback(self, mocker: MockerFixture) -> None:
         """GIVEN plugin with HTTP callback WHEN die called THEN unhooks."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._http_callback = MagicMock()  # Has callback
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._http_callback = mocker.MagicMock()  # Has callback
 
-            with (
-                patch("supybot.schedule.removeEvent"),
-                patch("supybot.httpserver.unhook") as mock_unhook,
-                patch.object(LLM.__bases__[0], "die", return_value=None),
-            ):
-                plugin.die()
+        mocker.patch("supybot.schedule.removeEvent")
+        mock_unhook = mocker.patch("supybot.httpserver.unhook")
+        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
+        plugin.die()
 
-            mock_unhook.assert_called_with("llm")
+        mock_unhook.assert_called_with("llm")
 
 
 class TestRunFileCleanup:
     """Test _run_file_cleanup scheduled task."""
 
-    def test_run_file_cleanup_calls_service(self) -> None:
+    def test_run_file_cleanup_calls_service(self, mocker: MockerFixture) -> None:
         """GIVEN scheduled cleanup WHEN _run_file_cleanup called THEN calls service."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.llm_service = MagicMock()
-            plugin.log = MagicMock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
 
-            plugin._run_file_cleanup()
+        plugin._run_file_cleanup()
 
-            plugin.llm_service.run_scheduled_cleanup.assert_called_once()
+        plugin.llm_service.run_scheduled_cleanup.assert_called_once()
 
-    def test_run_file_cleanup_handles_errors(self) -> None:
+    def test_run_file_cleanup_handles_errors(self, mocker: MockerFixture) -> None:
         """GIVEN cleanup error WHEN _run_file_cleanup called THEN logs error."""
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.llm_service = MagicMock()
-            plugin.llm_service.run_scheduled_cleanup.side_effect = Exception("test error")
-            plugin.log = MagicMock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.run_scheduled_cleanup.side_effect = Exception("test error")
+        plugin.log = mocker.MagicMock()
 
-            # Should not raise
-            plugin._run_file_cleanup()
+        # Should not raise
+        plugin._run_file_cleanup()
 
-            plugin.log.error.assert_called_once()
+        plugin.log.error.assert_called_once()
 
 
 class TestStartupNotification:
     """Test startup notification to bot owner."""
 
     @pytest.fixture
-    def plugin_with_mocks(self) -> tuple:
+    def plugin_with_mocks(self, mocker: MockerFixture) -> tuple:
         """Create plugin with mocked dependencies for startup tests."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
         mock_irc.nick = "VibeBot"
-        mock_irc.state.channels = {"#channel1": MagicMock(), "#channel2": MagicMock()}
+        mock_irc.state.channels = {"#channel1": mocker.MagicMock(), "#channel2": mocker.MagicMock()}
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._pending_channels = set()
-            plugin._startup_notified = False
-            plugin.log = MagicMock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._pending_channels = set()
+        plugin._startup_notified = False
+        plugin.log = mocker.MagicMock()
 
         return plugin, mock_irc
 
-    def test_dojoin_tracks_bot_joins(self, plugin_with_mocks: tuple) -> None:
+    def test_dojoin_tracks_bot_joins(self, plugin_with_mocks: tuple, mocker: MockerFixture) -> None:
         """GIVEN bot joining channel WHEN doJoin called THEN adds to pending."""
         plugin, mock_irc = plugin_with_mocks
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.nick = "VibeBot"
         mock_msg.args = ["#channel1"]
 
-        with patch("supybot.ircutils.strEqual", return_value=True):
-            plugin.doJoin(mock_irc, mock_msg)
+        mocker.patch("supybot.ircutils.strEqual", return_value=True)
+        plugin.doJoin(mock_irc, mock_msg)
 
         assert "#channel1" in plugin._pending_channels
 
-    def test_dojoin_ignores_other_users(self, plugin_with_mocks: tuple) -> None:
+    def test_dojoin_ignores_other_users(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN other user joining WHEN doJoin called THEN does not track."""
         plugin, mock_irc = plugin_with_mocks
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.nick = "someuser"
         mock_msg.args = ["#channel1"]
 
-        with patch("supybot.ircutils.strEqual", return_value=False):
-            plugin.doJoin(mock_irc, mock_msg)
+        mocker.patch("supybot.ircutils.strEqual", return_value=False)
+        plugin.doJoin(mock_irc, mock_msg)
 
         assert "#channel1" not in plugin._pending_channels
 
-    def test_do315_removes_synced_channel(self, plugin_with_mocks: tuple) -> None:
+    def test_do315_removes_synced_channel(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN pending channel WHEN do315 received THEN removes from pending."""
         plugin, mock_irc = plugin_with_mocks
         plugin._pending_channels.add("#channel1")
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.args = ["VibeBot", "#channel1"]
 
-        with patch.object(plugin, "_send_startup_notification"):
-            plugin.do315(mock_irc, mock_msg)
+        mocker.patch.object(plugin, "_send_startup_notification")
+        plugin.do315(mock_irc, mock_msg)
 
         assert "#channel1" not in plugin._pending_channels
 
-    def test_do315_sends_notification_when_all_synced(self, plugin_with_mocks: tuple) -> None:
+    def test_do315_sends_notification_when_all_synced(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN last channel synced WHEN do315 received THEN sends notification."""
         plugin, mock_irc = plugin_with_mocks
         plugin._pending_channels.add("#channel1")
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.args = ["VibeBot", "#channel1"]
 
-        with patch.object(plugin, "_send_startup_notification") as mock_notify:
-            plugin.do315(mock_irc, mock_msg)
+        mock_notify = mocker.patch.object(plugin, "_send_startup_notification")
+        plugin.do315(mock_irc, mock_msg)
 
         mock_notify.assert_called_once_with(mock_irc)
         assert plugin._startup_notified is True
 
     def test_do315_does_not_send_notification_if_channels_pending(
-        self, plugin_with_mocks: tuple
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
         """GIVEN other channels pending WHEN do315 received THEN no notification."""
         plugin, mock_irc = plugin_with_mocks
         plugin._pending_channels.add("#channel1")
         plugin._pending_channels.add("#channel2")
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.args = ["VibeBot", "#channel1"]
 
-        with patch.object(plugin, "_send_startup_notification") as mock_notify:
-            plugin.do315(mock_irc, mock_msg)
+        mock_notify = mocker.patch.object(plugin, "_send_startup_notification")
+        plugin.do315(mock_irc, mock_msg)
 
         mock_notify.assert_not_called()
         assert plugin._startup_notified is False
 
-    def test_do315_does_not_send_duplicate_notification(self, plugin_with_mocks: tuple) -> None:
+    def test_do315_does_not_send_duplicate_notification(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN already notified WHEN do315 received THEN no duplicate."""
         plugin, mock_irc = plugin_with_mocks
         plugin._pending_channels.add("#channel1")
         plugin._startup_notified = True
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.args = ["VibeBot", "#channel1"]
 
-        with patch.object(plugin, "_send_startup_notification") as mock_notify:
-            plugin.do315(mock_irc, mock_msg)
+        mock_notify = mocker.patch.object(plugin, "_send_startup_notification")
+        plugin.do315(mock_irc, mock_msg)
 
         mock_notify.assert_not_called()
 
-    def test_do376_resets_tracking_state(self, plugin_with_mocks: tuple) -> None:
+    def test_do376_resets_tracking_state(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN plugin WHEN do376 received THEN resets tracking state."""
         plugin, mock_irc = plugin_with_mocks
         plugin._pending_channels.add("#oldchannel")
         plugin._startup_notified = True
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("supybot.schedule.addEvent"):
-            plugin.do376(mock_irc, mock_msg)
+        mocker.patch("supybot.schedule.addEvent")
+        plugin.do376(mock_irc, mock_msg)
 
         assert len(plugin._pending_channels) == 0
         assert plugin._startup_notified is False
 
-    def test_do376_schedules_no_channels_check(self, plugin_with_mocks: tuple) -> None:
+    def test_do376_schedules_no_channels_check(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN MOTD end WHEN do376 received THEN schedules check for no channels."""
         plugin, mock_irc = plugin_with_mocks
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with (
-            patch("supybot.schedule.removeEvent") as mock_remove_event,
-            patch("supybot.schedule.addEvent") as mock_add_event,
-        ):
-            plugin.do376(mock_irc, mock_msg)
+        mock_remove_event = mocker.patch("supybot.schedule.removeEvent")
+        mock_add_event = mocker.patch("supybot.schedule.addEvent")
+        plugin.do376(mock_irc, mock_msg)
 
         mock_add_event.assert_called_once()
         mock_remove_event.assert_called_once_with("llm_startup_check")
         call_args = mock_add_event.call_args
         assert call_args.kwargs.get("name") == "llm_startup_check"
 
-    def _mock_owner_user(self, name: str) -> MagicMock:
+    def _mock_owner_user(self, mocker: MockerFixture, name: str) -> MagicMock:
         """Create a mock user with owner capability."""
-        mock_user = MagicMock()
+        mock_user = mocker.MagicMock()
         mock_user.name = name
         mock_user.capabilities = ["owner"]
         return mock_user
 
-    def test_send_startup_notification_sends_pm(self, plugin_with_mocks: tuple) -> None:
+    def test_send_startup_notification_sends_pm(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN owner configured WHEN notification sent THEN PMs owner."""
         from llm import plugin as plugin_module
 
         plugin, mock_irc = plugin_with_mocks
 
         # Mock ircdb.users.users with an owner user
-        mock_ircdb = MagicMock()
-        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner_nick")]
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user(mocker, "owner_nick")]
 
         original_ircdb = plugin_module.ircdb
         plugin_module.ircdb = mock_ircdb
         try:
-            with patch("supybot.schedule.removeEvent"):
-                plugin._send_startup_notification(mock_irc)
+            mocker.patch("supybot.schedule.removeEvent")
+            plugin._send_startup_notification(mock_irc)
         finally:
             plugin_module.ircdb = original_ircdb
 
@@ -984,42 +1000,46 @@ class TestStartupNotification:
         assert "2 channels" in queued_msg.args[1]
         assert "UTC" in queued_msg.args[1]
 
-    def test_send_startup_notification_handles_no_owner(self, plugin_with_mocks: tuple) -> None:
+    def test_send_startup_notification_handles_no_owner(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN no owner configured WHEN notification sent THEN logs warning."""
         from llm import plugin as plugin_module
 
         plugin, mock_irc = plugin_with_mocks
 
         # Mock ircdb.users.users with no owner users
-        mock_ircdb = MagicMock()
+        mock_ircdb = mocker.MagicMock()
         mock_ircdb.users.users.values.return_value = []
 
         original_ircdb = plugin_module.ircdb
         plugin_module.ircdb = mock_ircdb
         try:
-            with patch("supybot.schedule.removeEvent"):
-                plugin._send_startup_notification(mock_irc)
+            mocker.patch("supybot.schedule.removeEvent")
+            plugin._send_startup_notification(mock_irc)
         finally:
             plugin_module.ircdb = original_ircdb
 
         mock_irc.queueMsg.assert_not_called()
         plugin.log.warning.assert_called_once()
 
-    def test_send_startup_notification_singular_channel(self, plugin_with_mocks: tuple) -> None:
+    def test_send_startup_notification_singular_channel(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN single channel WHEN notification sent THEN uses singular."""
         from llm import plugin as plugin_module
 
         plugin, mock_irc = plugin_with_mocks
-        mock_irc.state.channels = {"#channel1": MagicMock()}
+        mock_irc.state.channels = {"#channel1": mocker.MagicMock()}
 
-        mock_ircdb = MagicMock()
-        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner")]
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user(mocker, "owner")]
 
         original_ircdb = plugin_module.ircdb
         plugin_module.ircdb = mock_ircdb
         try:
-            with patch("supybot.schedule.removeEvent"):
-                plugin._send_startup_notification(mock_irc)
+            mocker.patch("supybot.schedule.removeEvent")
+            plugin._send_startup_notification(mock_irc)
         finally:
             plugin_module.ircdb = original_ircdb
 
@@ -1027,21 +1047,21 @@ class TestStartupNotification:
         assert "1 channel |" in queued_msg.args[1]
 
     def test_send_startup_notification_removes_scheduled_check(
-        self, plugin_with_mocks: tuple
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
         """GIVEN scheduled check exists WHEN notification sent THEN removes it."""
         from llm import plugin as plugin_module
 
         plugin, mock_irc = plugin_with_mocks
 
-        mock_ircdb = MagicMock()
-        mock_ircdb.users.users.values.return_value = [self._mock_owner_user("owner")]
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [self._mock_owner_user(mocker, "owner")]
 
         original_ircdb = plugin_module.ircdb
         plugin_module.ircdb = mock_ircdb
         try:
-            with patch("supybot.schedule.removeEvent") as mock_remove:
-                plugin._send_startup_notification(mock_irc)
+            mock_remove = mocker.patch("supybot.schedule.removeEvent")
+            plugin._send_startup_notification(mock_irc)
         finally:
             plugin_module.ircdb = original_ircdb
 
@@ -1052,27 +1072,27 @@ class TestInvalidCommand:
     """Test invalidCommand fallback to ask."""
 
     @pytest.fixture
-    def plugin_with_mocks(self) -> tuple:
+    def plugin_with_mocks(self, mocker: MockerFixture) -> tuple:
         """Create plugin with mocked dependencies for invalidCommand tests."""
         import threading
 
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
         mock_irc.nick = "botname"
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.prefix = "usernick!user@host"
         mock_msg.args = ("#channel", "hello there")
         mock_msg.time = time.time() + 100  # Future time (not ZNC playback)
         mock_msg.channel = "#channel"
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin.startup_time = time.time()
-            plugin.ask = MagicMock()
-            # Limnoria's MetaSynchronized requires this lock for synchronized methods
-            plugin._MetaSynchronized_rlock = threading.RLock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        plugin.ask = mocker.MagicMock()
+        # Limnoria's MetaSynchronized requires this lock for synchronized methods
+        plugin._MetaSynchronized_rlock = threading.RLock()
 
         return plugin, mock_irc, mock_msg
 
@@ -1084,31 +1104,37 @@ class TestInvalidCommand:
 
         plugin.ask.assert_not_called()
 
-    def test_invalid_command_no_capability_returns_early(self, plugin_with_mocks: tuple) -> None:
+    def test_invalid_command_no_capability_returns_early(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN user without llm.ask capability WHEN invalidCommand THEN returns early."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
-            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin.ask.assert_not_called()
 
-    def test_invalid_command_old_message_returns_early(self, plugin_with_mocks: tuple) -> None:
+    def test_invalid_command_old_message_returns_early(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN ZNC playback message WHEN invalidCommand THEN returns early."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
         mock_msg.time = time.time() - 100  # Old message
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin.ask.assert_not_called()
 
-    def test_invalid_command_delegates_to_ask(self, plugin_with_mocks: tuple) -> None:
+    def test_invalid_command_delegates_to_ask(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN valid tokens and capability WHEN invalidCommand THEN delegates to ask."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin.ask.assert_called_once_with(mock_irc, mock_msg, ["hello", "there"])
 
@@ -1116,15 +1142,15 @@ class TestInvalidCommand:
 class TestReminderDelivery:
     """Test reminder delivery callback."""
 
-    def test_deliver_queues_message_and_removes_reminder(self) -> None:
+    def test_deliver_queues_message_and_removes_reminder(self, mocker: MockerFixture) -> None:
         """GIVEN scheduled reminder WHEN deliver fires THEN queues privmsg and cleans up."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
+        mock_irc = mocker.MagicMock()
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._reminders = {}
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._reminders = {}
 
         event_name = "llm_remind_12345_1"
         channel = "#test"
@@ -1157,29 +1183,29 @@ class TestAllowConcurrent:
 
         assert hasattr(LLM, "_allow_concurrent")
 
-    def test_allow_concurrent_noop_when_lock_not_held(self) -> None:
+    def test_allow_concurrent_noop_when_lock_not_held(self, mocker: MockerFixture) -> None:
         """GIVEN LLM plugin WHEN _allow_concurrent called without lock THEN is a no-op."""
         import threading
 
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._MetaSynchronized_rlock = threading.RLock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._MetaSynchronized_rlock = threading.RLock()
 
         # Calling _allow_concurrent when lock is not held should not raise
         with plugin._allow_concurrent():
             pass
 
-    def test_allow_concurrent_releases_and_reacquires_lock(self) -> None:
+    def test_allow_concurrent_releases_and_reacquires_lock(self, mocker: MockerFixture) -> None:
         """GIVEN lock held WHEN _allow_concurrent used THEN lock released inside and reacquired after."""
         import threading
 
         from llm.plugin import LLM
 
-        with patch.object(LLM, "__init__", lambda self, irc: None):
-            plugin = LLM.__new__(LLM)
-            plugin._MetaSynchronized_rlock = threading.RLock()
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._MetaSynchronized_rlock = threading.RLock()
 
         lock = plugin._MetaSynchronized_rlock
         lock.acquire()
@@ -1203,22 +1229,22 @@ class TestAllowConcurrent:
 class TestPluginDatabaseWiring:
     """Test database persistence wiring in plugin lifecycle."""
 
-    def test_plugin_creates_database(self, mock_irc: MagicMock) -> None:
+    def test_plugin_creates_database(self, mock_irc: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN plugin WHEN initialized THEN LLMDatabase is instantiated."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches() as mocks,
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        mocks = plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
 
         mocks["LLMDatabase"].assert_called_once()
         assert plugin.db is mocks["LLMDatabase"].return_value
 
-    def test_plugin_reload_reminders_reschedules_future(self, mock_irc: MagicMock) -> None:
+    def test_plugin_reload_reminders_reschedules_future(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN future reminder in DB WHEN plugin starts THEN schedule.addEvent called."""
         from llm.persistence import ReminderRow
         from llm.plugin import LLM
@@ -1236,16 +1262,14 @@ class TestPluginDatabaseWiring:
             created_at=time.time(),
         )
 
-        mock_db = MagicMock()
+        mock_db = mocker.MagicMock()
         mock_db.load_pending_reminders.return_value = [reminder]
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(mock_database=False),
-            patch("llm.plugin.LLMDatabase", return_value=mock_db),
-            patch("llm.plugin.schedule.addEvent") as mock_add_event,
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.LLMDatabase", return_value=mock_db)
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
 
         # schedule.addEvent should be called with the future fire_at time
         mock_add_event.assert_called_once()
@@ -1255,7 +1279,9 @@ class TestPluginDatabaseWiring:
         assert "llm_remind_123_1" in plugin._reminders
         assert plugin._reminders["llm_remind_123_1"] == ("testuser", "#test", "check build")
 
-    def test_plugin_reload_reminders_delivers_overdue(self, mock_irc: MagicMock) -> None:
+    def test_plugin_reload_reminders_delivers_overdue(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN overdue reminder in DB WHEN plugin starts THEN irc.queueMsg called."""
         from llm.persistence import ReminderRow
         from llm.plugin import LLM
@@ -1273,18 +1299,16 @@ class TestPluginDatabaseWiring:
             created_at=time.time() - 120,
         )
 
-        mock_db = MagicMock()
+        mock_db = mocker.MagicMock()
         mock_db.load_pending_reminders.return_value = [reminder]
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(mock_database=False) as mocks,
-            patch("llm.plugin.LLMDatabase", return_value=mock_db),
-            patch("llm.plugin.world") as mock_world,
-        ):
-            mocks["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
-            mock_world.ircs = [mock_irc]
-            LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        mocks = plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.LLMDatabase", return_value=mock_db)
+        mock_world = mocker.patch("llm.plugin.world")
+        mocks["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
+        mock_world.ircs = [mock_irc]
+        LLM(mock_irc)
 
         # Overdue reminder should be delivered immediately via irc.queueMsg
         mock_irc.queueMsg.assert_called_once()
@@ -1295,28 +1319,25 @@ class TestPluginDatabaseWiring:
         # Overdue reminder should be deleted from DB after delivery
         mock_db.delete_reminder.assert_called_once_with("llm_remind_123_1")
 
-    def test_plugin_die_cleans_expired_reminders(self, mock_irc: MagicMock) -> None:
+    def test_plugin_die_cleans_expired_reminders(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN plugin with database WHEN die called THEN db.delete_expired_reminders called."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        mock_db = MagicMock()
+        mock_db = mocker.MagicMock()
         mock_db.load_pending_reminders.return_value = []
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(mock_database=False),
-            patch("llm.plugin.LLMDatabase", return_value=mock_db),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.LLMDatabase", return_value=mock_db)
+        plugin = LLM(mock_irc)
 
-        with (
-            patch("llm.plugin.schedule.removeEvent"),
-            patch("llm.plugin.httpserver.unhook"),
-            patch.object(LLM.__bases__[0], "die", return_value=None),
-        ):
-            plugin.die()
+        mocker.patch("llm.plugin.httpserver.unhook")
+        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
+        plugin.die()
 
         mock_db.delete_expired_reminders.assert_called_once()
 

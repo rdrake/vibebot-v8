@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import Mock, patch
+from typing import TYPE_CHECKING
 
 import pytest
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
+
+if TYPE_CHECKING:
+    from unittest.mock import Mock
+
+    from pytest_mock import MockerFixture
 
 pytestmark = pytest.mark.slow
 
@@ -256,7 +261,7 @@ class TestRapidRequestHandling:
 class TestConcurrentAPIKeyIsolation:
     """Test that API keys are isolated in concurrent requests."""
 
-    def test_completion_api_key_isolation(self) -> None:
+    def test_completion_api_key_isolation(self, mocker: MockerFixture) -> None:
         """GIVEN concurrent completion requests WHEN different keys THEN proper isolation."""
         api_keys_used: list[str] = []
         lock = threading.Lock()
@@ -266,20 +271,20 @@ class TestConcurrentAPIKeyIsolation:
                 api_keys_used.append(kwargs.get("api_key", "MISSING"))
             time.sleep(0.01)  # Simulate latency
 
-            response = Mock()
-            response.choices = [Mock()]
-            response.choices[0].message = Mock()
+            response = mocker.Mock()
+            response.choices = [mocker.Mock()]
+            response.choices[0].message = mocker.Mock()
             response.choices[
                 0
             ].message.content = f"Response for key {kwargs.get('api_key', '')[:10]}"
             return response
 
         def make_request(user_id: int) -> None:
-            mock_plugin = Mock()
-            mock_plugin.log = Mock()
+            mock_plugin = mocker.Mock()
+            mock_plugin.log = mocker.Mock()
             unique_key = f"key_{user_id}_{'x' * 30}"
 
-            mock_plugin.registryValue = Mock(
+            mock_plugin.registryValue = mocker.Mock(
                 side_effect=lambda key, channel=None: {
                     "maxPromptLength": 10000,
                     "commandPrefixes": [".", "/"],
@@ -293,15 +298,15 @@ class TestConcurrentAPIKeyIsolation:
             service = LLMService(mock_plugin)
             service.completion(f"Request from user {user_id}", command="ask")
 
-        with patch("llm.service.litellm.completion", side_effect=mock_completion):
-            threads = []
-            for i in range(20):
-                t = threading.Thread(target=make_request, args=(i,))
-                threads.append(t)
-                t.start()
+        mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
+        threads = []
+        for i in range(20):
+            t = threading.Thread(target=make_request, args=(i,))
+            threads.append(t)
+            t.start()
 
-            for t in threads:
-                t.join()
+        for t in threads:
+            t.join()
 
         # All keys should be unique
         assert len(api_keys_used) == 20
@@ -518,7 +523,9 @@ class TestLongRunningSessionScenarios:
 class TestNetworkFailureRecovery:
     """Test handling of network failures and retries."""
 
-    def test_completion_handles_intermittent_failures(self, make_service) -> None:
+    def test_completion_handles_intermittent_failures(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
         """GIVEN intermittent API failures WHEN completing THEN proper error handling."""
         call_count = [0]
         lock = threading.Lock()
@@ -532,9 +539,9 @@ class TestNetworkFailureRecovery:
             if current % 3 == 0:
                 raise Exception("Intermittent network error")
 
-            response = Mock()
-            response.choices = [Mock()]
-            response.choices[0].message = Mock()
+            response = mocker.Mock()
+            response.choices = [mocker.Mock()]
+            response.choices[0].message = mocker.Mock()
             response.choices[0].message.content = f"Response {current}"
             response.choices[0].message.tool_calls = None
             return response
@@ -542,10 +549,10 @@ class TestNetworkFailureRecovery:
         service, _ = make_service()
         results = []
 
-        with patch("llm.service.litellm.completion", side_effect=flaky_completion):
-            for i in range(9):
-                result = service.completion(f"Request {i}", command="ask")
-                results.append(result.content)
+        mocker.patch("llm.service.litellm.completion", side_effect=flaky_completion)
+        for i in range(9):
+            result = service.completion(f"Request {i}", command="ask")
+            results.append(result.content)
 
         # Should have mix of successes and error messages
         successes = [r for r in results if "Response" in r]

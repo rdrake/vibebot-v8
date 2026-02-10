@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import re
 import time
-from unittest.mock import Mock, patch
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from unittest.mock import Mock
+
+    from pytest_mock import MockerFixture
 
 # =============================================================================
 # Etiquette Helper Utilities
@@ -245,12 +250,12 @@ class TestResponseLengthHandling:
         # 5 lines = 4 newlines (last line doesn't end with newline)
         assert line_count == 4
 
-    def test_image_responses_are_urls(self) -> None:
+    def test_image_responses_are_urls(self, mocker: MockerFixture) -> None:
         """GIVEN image generated WHEN response returned THEN is URL not data."""
-        mock_response = Mock()
-        mock_response.data = [Mock(url="https://provider.com/image.png", b64_json=None)]
+        mock_response = mocker.Mock()
+        mock_response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
 
-        self.mock_plugin.registryValue = Mock(
+        self.mock_plugin.registryValue = mocker.Mock(
             side_effect=lambda key, channel=None: {
                 "drawApiKey": "test-key",
                 "drawModel": "imagen",
@@ -259,15 +264,13 @@ class TestResponseLengthHandling:
             }.get(key)
         )
 
-        with (
-            patch("llm.service.litellm.image_generation", return_value=mock_response),
-            patch.object(
-                self.service,
-                "_download_and_save_image",
-                return_value="https://example.com/llm/img_local.png",
-            ),
-        ):
-            result = self.service.image_generation("a cat")
+        mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        mocker.patch.object(
+            self.service,
+            "_download_and_save_image",
+            return_value="https://example.com/llm/img_local.png",
+        )
+        result = self.service.image_generation("a cat")
 
         assert result.content.startswith("http")
         assert "base64" not in result.content.lower()
@@ -368,8 +371,9 @@ class TestResponseAppropriateness:
     """
 
     @pytest.fixture(autouse=True)
-    def setup(self, make_service) -> None:
+    def setup(self, make_service, mocker: MockerFixture) -> None:
         """Set up test fixtures."""
+        self._mocker = mocker
         self.service, self.mock_plugin = make_service()
         self.mock_plugin.startup_time = time.time() - 3600
 
@@ -380,12 +384,12 @@ class TestResponseAppropriateness:
         channels: dict | None = None,
     ) -> Mock:
         """Create a mock IRC object."""
-        irc = Mock()
+        irc = self._mocker.Mock()
         irc.network = network
         irc.nick = nick
-        irc.state = Mock()
+        irc.state = self._mocker.Mock()
         irc.state.channels = channels or {}
-        irc.state.nickToAccount = Mock(return_value=None)
+        irc.state.nickToAccount = self._mocker.Mock(return_value=None)
         return irc
 
     def _make_mock_msg(
@@ -394,7 +398,7 @@ class TestResponseAppropriateness:
         nick: str = "user",
     ) -> Mock:
         """Create a mock IRC message object."""
-        msg = Mock()
+        msg = self._mocker.Mock()
         msg.args = (channel, "some message text")
         msg.prefix = f"{nick}!username@hostname.example.com"
         return msg
@@ -408,16 +412,16 @@ class TestResponseAppropriateness:
         voices: set | None = None,
     ) -> Mock:
         """Create a mock channel state object."""
-        ch_state = Mock()
+        ch_state = self._mocker.Mock()
         ch_state.users = users or {"user1", "user2", "testbot"}
         ch_state.modes = {"n": None, "t": None}
         ch_state.topic = topic
         ch_state.ops = ops or set()
         ch_state.halfops = halfops or set()
         ch_state.voices = voices or set()
-        ch_state.isOp = Mock(return_value=False)
-        ch_state.isHalfop = Mock(return_value=False)
-        ch_state.isVoice = Mock(return_value=False)
+        ch_state.isOp = self._mocker.Mock(return_value=False)
+        ch_state.isHalfop = self._mocker.Mock(return_value=False)
+        ch_state.isVoice = self._mocker.Mock(return_value=False)
         return ch_state
 
     def test_channel_context_in_user_message(self) -> None:

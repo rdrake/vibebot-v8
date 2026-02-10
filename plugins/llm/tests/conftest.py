@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import Callable, Generator
-from typing import Any
-from unittest.mock import MagicMock, Mock, patch
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from llm.service import LLMService
+
+if TYPE_CHECKING:
+    from unittest.mock import MagicMock, Mock
+
+    from pytest_mock import MockerFixture
 
 # =============================================================================
 # Test constants
@@ -70,19 +73,19 @@ def cleanup_limnoria_logging() -> Generator[None]:
 
 
 @pytest.fixture
-def mock_irc() -> MagicMock:
+def mock_irc(mocker: MockerFixture) -> MagicMock:
     """Create a mock IRC object suitable for plugin initialization.
 
     Provides the minimum attributes required by LLM.__init__:
     nick, state.channels, and state.capabilities_ack.
     """
-    irc = MagicMock()
+    irc = mocker.MagicMock()
     irc.nick = "testbot"
-    irc.state = MagicMock()
+    irc.state = mocker.MagicMock()
     irc.state.channels = {}
     irc.state.capabilities_ack = set()
     # Default: no NickServ account (nick fallback)
-    irc.state.nickToAccount = MagicMock(return_value=None)
+    irc.state.nickToAccount = mocker.MagicMock(return_value=None)
     return irc
 
 
@@ -143,7 +146,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
 
 
 @pytest.fixture
-def make_service() -> Callable[..., tuple[LLMService, Mock]]:
+def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]]:
     """Factory fixture that creates an LLMService with standard config defaults.
 
     Usage::
@@ -155,9 +158,9 @@ def make_service() -> Callable[..., tuple[LLMService, Mock]]:
     """
 
     def _make(**overrides: Any) -> tuple[LLMService, Mock]:
-        plugin = Mock()
-        plugin.log = Mock()
-        plugin.registryValue = Mock(side_effect=make_registry_side_effect(overrides or None))
+        plugin = mocker.Mock()
+        plugin.log = mocker.Mock()
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect(overrides or None))
         return LLMService(plugin), plugin
 
     return _make
@@ -168,29 +171,28 @@ def make_service() -> Callable[..., tuple[LLMService, Mock]]:
 # =============================================================================
 
 
-@contextlib.contextmanager
-def plugin_init_patches(*, mock_database: bool = True) -> Generator[dict[str, MagicMock]]:
-    """Context manager that patches all external dependencies for LLM.__init__.
+def plugin_init_patches(
+    mocker: MockerFixture, *, mock_database: bool = True
+) -> dict[str, MagicMock]:
+    """Patch all external dependencies for LLM.__init__.
 
     This patches LLMService, log, httpserver.hook, schedule.addPeriodicEvent,
-    and schedule.removeEvent. Optionally patches LLMDatabase.
+    and schedule.removeEvent. Optionally patches LLMDatabase.  All patches are
+    automatically reverted at the end of the test by pytest-mock.
 
     Args:
+        mocker: The pytest-mock fixture.
         mock_database: If True (default), also patches LLMDatabase.
 
-    Yields:
+    Returns:
         Dict of patch names to their MagicMock objects.
     """
     patches: dict[str, Any] = {}
-
-    with contextlib.ExitStack() as stack:
-        patches["LLMService"] = stack.enter_context(patch("llm.plugin.LLMService"))
-        if mock_database:
-            patches["LLMDatabase"] = stack.enter_context(patch("llm.plugin.LLMDatabase"))
-        patches["log"] = stack.enter_context(patch("llm.plugin.log"))
-        patches["httpserver_hook"] = stack.enter_context(patch("llm.plugin.httpserver.hook"))
-        patches["addPeriodicEvent"] = stack.enter_context(
-            patch("llm.plugin.schedule.addPeriodicEvent")
-        )
-        patches["removeEvent"] = stack.enter_context(patch("llm.plugin.schedule.removeEvent"))
-        yield patches
+    patches["LLMService"] = mocker.patch("llm.plugin.LLMService")
+    if mock_database:
+        patches["LLMDatabase"] = mocker.patch("llm.plugin.LLMDatabase")
+    patches["log"] = mocker.patch("llm.plugin.log")
+    patches["httpserver_hook"] = mocker.patch("llm.plugin.httpserver.hook")
+    patches["addPeriodicEvent"] = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+    patches["removeEvent"] = mocker.patch("llm.plugin.schedule.removeEvent")
+    return patches

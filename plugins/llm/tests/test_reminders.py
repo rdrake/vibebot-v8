@@ -1,9 +1,16 @@
 """Tests for reminder commands."""
 
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import pytest
 from llm.service import ReminderParseResult
+
+if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
+    from pytest_mock import MockerFixture
 
 
 class TestReminderCommands:
@@ -80,17 +87,15 @@ class TestReminderHelperMethods:
     """Tests for reminder helper methods on the plugin."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
         """Create a plugin instance with reminder support."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
 
         return plugin
 
@@ -171,24 +176,23 @@ class TestReminderHelperMethods:
 
     # Test plugin cleanup
 
-    @patch("llm.plugin.schedule.removeEvent")
     def test_plugin_die_cleans_up_reminders(
         self,
-        mock_remove_event: MagicMock,
         plugin: MagicMock,
+        mocker: MockerFixture,
     ) -> None:
         """GIVEN plugin with reminders WHEN die called THEN removes all."""
         from llm.plugin import LLM
+
+        mock_remove_event = mocker.patch("llm.plugin.schedule.removeEvent")
 
         # Add some reminders
         plugin._reminders["llm_remind_1_100"] = ("user1", "#channel", "msg1")
         plugin._reminders["llm_remind_2_200"] = ("user2", "#channel", "msg2")
 
-        with (
-            patch.object(LLM.__bases__[0], "die", return_value=None),
-            patch("llm.plugin.httpserver.unhook"),
-        ):
-            plugin.die()
+        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
+        mocker.patch("llm.plugin.httpserver.unhook")
+        plugin.die()
 
         # Should have removed both reminder events
         assert mock_remove_event.call_count >= 2
@@ -199,9 +203,9 @@ class TestParseReminderService:
     """Tests for parse_reminder method in LLMService."""
 
     @pytest.fixture
-    def mock_plugin(self) -> MagicMock:
+    def mock_plugin(self, mocker: MockerFixture) -> MagicMock:
         """Create a mock plugin for service tests."""
-        plugin = MagicMock()
+        plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args: {
             "askApiKey": "test-api-key",
             "askModel": "gemini/gemini-2.0-flash",
@@ -210,12 +214,12 @@ class TestParseReminderService:
         return plugin
 
     @pytest.fixture
-    def service(self, mock_plugin: MagicMock) -> MagicMock:
+    def service(self, mock_plugin: MagicMock, mocker: MockerFixture) -> MagicMock:
         """Create an LLMService instance."""
         from llm.service import LLMService
 
-        with patch("llm.service.log"):
-            return LLMService(mock_plugin)
+        mocker.patch("llm.service.log")
+        return LLMService(mock_plugin)
 
     def test_parse_reminder_empty_text(self, service: MagicMock) -> None:
         """GIVEN empty text WHEN parsing THEN returns clarify without API call."""
@@ -237,40 +241,42 @@ class TestParseReminderService:
         assert result.action == "clarify"
         assert "too long" in result.confirmation.lower()
 
-    def test_parse_reminder_exactly_500_chars_accepted(self, service: MagicMock) -> None:
+    def test_parse_reminder_exactly_500_chars_accepted(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
         """GIVEN text at exactly 500 chars WHEN parsing THEN proceeds to API call."""
         text = "x" * 500
-        with patch("llm.service.litellm.completion") as mock_completion:
-            mock_response = MagicMock()
-            mock_response.choices = [MagicMock()]
-            mock_response.choices[
-                0
-            ].message.content = (
-                '{"action": "schedule", "seconds": 60, "message": "test", "confirmation": "Set!"}'
-            )
-            mock_completion.return_value = mock_response
-            result = service.parse_reminder(text)
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[
+            0
+        ].message.content = (
+            '{"action": "schedule", "seconds": 60, "message": "test", "confirmation": "Set!"}'
+        )
+        mock_completion.return_value = mock_response
+        result = service.parse_reminder(text)
         assert result.action == "schedule"
 
-    def test_parse_reminder_no_api_key(self, mock_plugin: MagicMock) -> None:
+    def test_parse_reminder_no_api_key(self, mock_plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN no API key WHEN parsing THEN returns clarify with error."""
         from llm.service import LLMService
 
         mock_plugin.registryValue.side_effect = lambda key, *args: ""
-        with patch("llm.service.log"):
-            service = LLMService(mock_plugin)
+        mocker.patch("llm.service.log")
+        service = LLMService(mock_plugin)
 
         result = service.parse_reminder("in 30 minutes test")
         assert result.action == "clarify"
         assert "API key" in result.confirmation
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_schedule_success(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN valid LLM response WHEN parsing THEN returns schedule result."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = (
             '{"action": "schedule", "seconds": 1800, '
             '"message": "check build", "confirmation": "Reminder set for 30m."}'
@@ -284,13 +290,13 @@ class TestParseReminderService:
         assert result.message == "check build"
         assert "30m" in result.confirmation
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_clarify_response(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN clarify LLM response WHEN parsing THEN returns clarify result."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = '{"action": "clarify", "confirmation": "When should I remind you?"}'
@@ -301,13 +307,11 @@ class TestParseReminderService:
         assert result.action == "clarify"
         assert "When" in result.confirmation
 
-    @patch("llm.service.litellm.completion")
-    def test_parse_reminder_invalid_json(
-        self, mock_completion: MagicMock, service: MagicMock
-    ) -> None:
+    def test_parse_reminder_invalid_json(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN invalid JSON WHEN parsing THEN returns clarify with error."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = "not valid json"
         mock_completion.return_value = mock_response
 
@@ -316,13 +320,13 @@ class TestParseReminderService:
         assert result.action == "clarify"
         assert "couldn't understand" in result.confirmation.lower()
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_strips_markdown_fences(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN JSON with markdown fences WHEN parsing THEN strips them."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = (
             '```json\n{"action": "schedule", "seconds": 60, '
             '"message": "test", "confirmation": "Set!"}\n```'
@@ -334,11 +338,11 @@ class TestParseReminderService:
         assert result.action == "schedule"
         assert result.seconds == 60
 
-    @patch("llm.service.litellm.completion")
-    def test_parse_reminder_with_note(self, mock_completion: MagicMock, service: MagicMock) -> None:
+    def test_parse_reminder_with_note(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN response with note WHEN parsing THEN includes note."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = (
             '{"action": "schedule", "seconds": 3600, "message": "meeting", '
             '"confirmation": "Reminder set for 3pm.", "note": "Assuming EST"}'
@@ -350,13 +354,13 @@ class TestParseReminderService:
         assert result.action == "schedule"
         assert result.note == "Assuming EST"
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_negative_seconds_rejected(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN negative seconds WHEN parsing THEN returns clarify."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = (
@@ -368,9 +372,9 @@ class TestParseReminderService:
 
         assert result.action == "clarify"
 
-    @patch("llm.service.litellm.completion")
-    def test_parse_reminder_api_error(self, mock_completion: MagicMock, service: MagicMock) -> None:
+    def test_parse_reminder_api_error(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN API error WHEN parsing THEN returns clarify with error."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_completion.side_effect = Exception("API error")
 
         result = service.parse_reminder("in 30 minutes test")
@@ -378,13 +382,13 @@ class TestParseReminderService:
         assert result.action == "clarify"
         assert "couldn't parse" in result.confirmation.lower()
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_zero_seconds_rejected(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN zero seconds WHEN parsing THEN returns clarify."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = (
@@ -396,13 +400,13 @@ class TestParseReminderService:
 
         assert result.action == "clarify"
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_missing_seconds(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN missing seconds field WHEN parsing THEN returns clarify."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = '{"action": "schedule", "message": "test", "confirmation": "Set!"}'
@@ -412,13 +416,13 @@ class TestParseReminderService:
 
         assert result.action == "clarify"
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_uses_text_as_fallback_message(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN no message in response WHEN parsing THEN uses input text."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = '{"action": "schedule", "seconds": 60, "confirmation": "Set!"}'
@@ -429,23 +433,23 @@ class TestParseReminderService:
         assert result.action == "schedule"
         assert result.message == "in 1 minute original text"
 
-    @patch("llm.service.litellm.completion")
-    def test_parse_reminder_with_non_gemini_model(self, mock_completion: MagicMock) -> None:
+    def test_parse_reminder_with_non_gemini_model(self, mocker: MockerFixture) -> None:
         """GIVEN non-Gemini model WHEN parsing THEN works without Gemini tools."""
         from llm.service import LLMService
 
-        mock_plugin = MagicMock()
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
             "askApiKey": "test-api-key",
             "askModel": "openai/gpt-4",  # Non-Gemini model
             "timeout": 30,
         }.get(key, "")
 
-        with patch("llm.service.log"):
-            service = LLMService(mock_plugin)
+        mocker.patch("llm.service.log")
+        service = LLMService(mock_plugin)
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
         ].message.content = (
@@ -462,13 +466,13 @@ class TestParseReminderService:
         assert "tools" not in call_kwargs
         assert "safety_settings" not in call_kwargs
 
-    @patch("llm.service.litellm.completion")
     def test_parse_reminder_strips_fences_without_trailing_backticks(
-        self, mock_completion: MagicMock, service: MagicMock
+        self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN markdown fence without closing WHEN parsing THEN handles gracefully."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
         # Fence without proper closing
         mock_response.choices[
             0
@@ -485,17 +489,15 @@ class TestReminderEventNaming:
     """Tests for uuid-based reminder event naming (Fix 3)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
         """Create a plugin instance."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
 
         return plugin
 
@@ -519,24 +521,22 @@ class TestReminderDeliveryClosure:
     """Tests for _make_reminder_delivery_closure (Fix 6)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
         """Create a plugin instance."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
 
         return plugin
 
-    @patch("llm.plugin.world")
-    def test_delivery_cleans_up_on_success(self, mock_world: MagicMock, plugin: MagicMock) -> None:
+    def test_delivery_cleans_up_on_success(self, plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN delivery closure WHEN queueMsg succeeds THEN cleans up reminder."""
-        mock_irc = MagicMock()
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test123"
@@ -549,12 +549,12 @@ class TestReminderDeliveryClosure:
         plugin.db.delete_reminder.assert_called_with(event_name)
         mock_irc.queueMsg.assert_called_once()
 
-    @patch("llm.plugin.world")
     def test_delivery_cleans_up_even_on_error(
-        self, mock_world: MagicMock, plugin: MagicMock
+        self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN delivery closure WHEN queueMsg raises THEN still cleans up reminder."""
-        mock_irc = MagicMock()
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
         mock_irc.queueMsg.side_effect = RuntimeError("send failed")
         mock_world.ircs = [mock_irc]
 

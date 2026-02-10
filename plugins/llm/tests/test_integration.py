@@ -8,26 +8,29 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
+    from pytest_mock import MockerFixture
 
 
 class TestPluginContextIntegration:
     """Test plugin context management integration."""
 
     @pytest.fixture
-    def plugin_with_context(self, mock_irc: MagicMock) -> tuple:
+    def plugin_with_context(self, mock_irc: MagicMock, mocker: MockerFixture) -> tuple:
         """Create plugin with initialized context."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=make_registry_side_effect()),
-            plugin_init_patches(mock_database=False),
-        ):
-            plugin = LLM(mock_irc)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker, mock_database=False)
+        plugin = LLM(mock_irc)
 
         return plugin, mock_irc
 
@@ -56,7 +59,7 @@ class TestDoPrivmsgIntegration:
     """Test doPrivmsg message tracking integration."""
 
     @pytest.fixture
-    def plugin_for_tracking(self, mock_irc: MagicMock) -> tuple:
+    def plugin_for_tracking(self, mock_irc: MagicMock, mocker: MockerFixture) -> tuple:
         """Create plugin configured for message tracking."""
         from llm.plugin import LLM
 
@@ -64,53 +67,51 @@ class TestDoPrivmsgIntegration:
 
         registry_side_effect = make_registry_side_effect({"contextTrackAllMessages": True})
 
-        with (
-            patch.object(LLM, "registryValue", side_effect=registry_side_effect),
-            plugin_init_patches(),
-        ):
-            plugin = LLM(mock_irc)
-            plugin.registryValue = MagicMock(side_effect=registry_side_effect)
+        mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry_side_effect)
 
         return plugin, mock_irc
 
-    def test_doprivmsg_tracks_channel_messages(self, plugin_for_tracking: tuple) -> None:
+    def test_doprivmsg_tracks_channel_messages(
+        self, plugin_for_tracking: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN tracking enabled WHEN channel message received THEN tracked."""
         plugin, mock_irc = plugin_for_tracking
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.prefix = "user1!user@host"
         mock_msg.args = ("#channel", "Hello world")
         mock_msg.channel = "#channel"
         mock_msg.nick = "user1"
         mock_msg.time = time.time() + 100  # Future time (not playback)
 
-        with (
-            patch("supybot.ircmsgs.isCtcp", return_value=False),
-            patch("supybot.ircutils.strEqual", return_value=False),
-        ):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircmsgs.isCtcp", return_value=False)
+        mocker.patch("supybot.ircutils.strEqual", return_value=False)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         # Should have tracked the message
         messages = plugin.context.get_messages("user1", "#channel")
         assert len(messages) >= 1
 
-    def test_doprivmsg_tracks_action_messages(self, plugin_for_tracking: tuple) -> None:
+    def test_doprivmsg_tracks_action_messages(
+        self, plugin_for_tracking: tuple, mocker: MockerFixture
+    ) -> None:
         """GIVEN ACTION message WHEN received THEN tracked normally."""
         plugin, mock_irc = plugin_for_tracking
 
-        mock_msg = MagicMock()
+        mock_msg = mocker.MagicMock()
         mock_msg.prefix = "user1!user@host"
         mock_msg.args = ("#channel", "\x01ACTION does something\x01")
         mock_msg.channel = "#channel"
         mock_msg.nick = "user1"
         mock_msg.time = time.time() + 100
 
-        with (
-            patch("supybot.ircmsgs.isCtcp", return_value=True),
-            patch("supybot.ircmsgs.isAction", return_value=True),
-            patch("supybot.ircutils.strEqual", return_value=False),
-        ):
-            plugin.doPrivmsg(mock_irc, mock_msg)
+        mocker.patch("supybot.ircmsgs.isCtcp", return_value=True)
+        mocker.patch("supybot.ircmsgs.isAction", return_value=True)
+        mocker.patch("supybot.ircutils.strEqual", return_value=False)
+        plugin.doPrivmsg(mock_irc, mock_msg)
 
         # Should have tracked the message
         messages = plugin.context.get_messages("user1", "#channel")
@@ -121,21 +122,22 @@ class TestHTTPCallbackIntegration:
     """Test HTTP callback integration with plugin."""
 
     @pytest.fixture
-    def http_callback_with_plugin(self) -> tuple:
+    def http_callback_with_plugin(self, mocker: MockerFixture) -> tuple:
         """Create HTTP callback with mock plugin."""
         from llm.plugin import LLMHTTPCallback
 
-        mock_plugin = MagicMock()
+        mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.return_value = ""
         callback = LLMHTTPCallback(mock_plugin)
         return callback, mock_plugin
 
     def test_http_callback_serves_multiple_content_types(
-        self, http_callback_with_plugin: tuple, tmp_path
+        self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN various file types WHEN served THEN correct content types."""
 
         callback, _ = http_callback_with_plugin
+        mocker.patch.object(callback, "_get_web_dir", return_value=str(tmp_path))
 
         # Create test files
         files = {
@@ -151,19 +153,19 @@ class TestHTTPCallbackIntegration:
             filepath = tmp_path / filename
             filepath.write_bytes(content)
 
-            mock_handler = MagicMock()
-            mock_handler.wfile = MagicMock()
+            mock_handler = mocker.MagicMock()
+            mock_handler.wfile = mocker.MagicMock()
 
-            with patch.object(callback, "_get_web_dir", return_value=str(tmp_path)):
-                callback.doGet(mock_handler, filename)
+            callback.doGet(mock_handler, filename)
 
             mock_handler.send_response.assert_called_with(200)
 
     def test_http_callback_handles_concurrent_requests(
-        self, http_callback_with_plugin: tuple, tmp_path
+        self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
     ) -> None:
         """GIVEN multiple concurrent requests WHEN served THEN no race conditions."""
         callback, _ = http_callback_with_plugin
+        mocker.patch.object(callback, "_get_web_dir", return_value=str(tmp_path))
 
         # Create test file
         test_file = tmp_path / "concurrent.txt"
@@ -174,11 +176,10 @@ class TestHTTPCallbackIntegration:
 
         def make_request(request_id: int) -> None:
             try:
-                mock_handler = MagicMock()
-                mock_handler.wfile = MagicMock()
+                mock_handler = mocker.MagicMock()
+                mock_handler.wfile = mocker.MagicMock()
 
-                with patch.object(callback, "_get_web_dir", return_value=str(tmp_path)):
-                    callback.doGet(mock_handler, "concurrent.txt")
+                callback.doGet(mock_handler, "concurrent.txt")
 
                 mock_handler.send_response.assert_called_with(200)
             except Exception as e:

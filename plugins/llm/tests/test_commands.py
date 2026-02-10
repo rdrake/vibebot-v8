@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING
 
 import pytest
 from llm.persistence import UsageBreakdown, UsageSummary
@@ -22,48 +22,50 @@ from llm.service import CompletionResult, ImageResult, ReminderParseResult
 
 from .conftest import make_registry_side_effect
 
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def plugin_env():
+def plugin_env(mocker: MockerFixture):
     """Create an LLM plugin instance wired to mocked dependencies.
 
     Returns (plugin, mock_irc, mock_msg) ready for command invocation.
     """
     registry = make_registry_side_effect()
 
-    mock_irc = MagicMock()
+    mock_irc = mocker.MagicMock()
     mock_irc.nick = "testbot"
-    mock_irc.state = MagicMock()
-    mock_irc.state.channels = {"#test": MagicMock(topic="Test topic")}
+    mock_irc.state = mocker.MagicMock()
+    mock_irc.state.channels = {"#test": mocker.MagicMock(topic="Test topic")}
     mock_irc.state.capabilities_ack = set()
     # Default: no NickServ account (nick fallback)
-    mock_irc.state.nickToAccount = MagicMock(return_value=None)
+    mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
 
-    mock_msg = MagicMock()
+    mock_msg = mocker.MagicMock()
     mock_msg.prefix = "testnick!user@host"
     mock_msg.args = ("#test", "test message")
     mock_msg.time = time.time() + 100  # future time -- not ZNC playback
     mock_msg.channel = "#test"
     mock_msg.nick = "testnick"
 
-    with (
-        patch.object(LLM, "registryValue", side_effect=registry),
-        patch("llm.plugin.LLMService"),
-        patch("llm.plugin.LLMDatabase"),
-        patch("llm.plugin.log"),
-        patch("llm.plugin.httpserver"),
-        patch("llm.plugin.schedule.addPeriodicEvent"),
-        patch("llm.plugin.schedule.removeEvent"),
-        patch("llm.plugin.schedule.addEvent"),
-    ):
-        plugin = LLM(mock_irc)
-        # After __init__, swap registryValue to a plain MagicMock so
-        # each test can override specific keys while keeping defaults.
-        plugin.registryValue = MagicMock(side_effect=registry)
+    mocker.patch.object(LLM, "registryValue", side_effect=registry)
+    mocker.patch("llm.plugin.LLMService")
+    mocker.patch("llm.plugin.LLMDatabase")
+    mocker.patch("llm.plugin.log")
+    mocker.patch("llm.plugin.httpserver")
+    mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+    mocker.patch("llm.plugin.schedule.removeEvent")
+    mocker.patch("llm.plugin.schedule.addEvent")
+
+    plugin = LLM(mock_irc)
+    # After __init__, swap registryValue to a plain MagicMock so
+    # each test can override specific keys while keeping defaults.
+    plugin.registryValue = mocker.MagicMock(side_effect=registry)
 
     # Provide the MetaSynchronized RLock that _allow_concurrent expects.
     plugin._MetaSynchronized_rlock = threading.RLock()
@@ -85,7 +87,7 @@ def plugin_env():
 class TestAskCommand:
     """Tests for the real LLM.ask method."""
 
-    def test_ask_replies_with_completion_content(self, plugin_env):
+    def test_ask_replies_with_completion_content(self, plugin_env, mocker: MockerFixture):
         """GIVEN a normal prompt WHEN ask is called THEN irc.reply receives the completion content."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -98,12 +100,12 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["What", "is", "Python?"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["What", "is", "Python?"])
 
         mock_irc.reply.assert_called_once_with("Hello from AI", prefixNick=False)
 
-    def test_ask_stores_context_on_success(self, plugin_env):
+    def test_ask_stores_context_on_success(self, plugin_env, mocker: MockerFixture):
         """GIVEN a successful completion WHEN ask is called THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -115,8 +117,8 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Context should have both user and assistant messages
         messages = plugin.context.get_messages("testnick", "#test")
@@ -125,7 +127,7 @@ class TestAskCommand:
         assert messages[1]["role"] == "assistant"
         assert messages[1]["content"] == "response text"
 
-    def test_ask_logs_usage(self, plugin_env):
+    def test_ask_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN completion with cost WHEN ask completes THEN usage is logged in db."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -137,24 +139,24 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "ask", "gpt-4", 100, 50, 0.005
         )
 
-    def test_ask_skips_znc_playback(self, plugin_env):
+    def test_ask_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
         """GIVEN a message older than startup WHEN ask called THEN no reply is sent."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100  # before startup
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_not_called()
 
-    def test_ask_prepends_grounding_icon_when_used(self, plugin_env):
+    def test_ask_prepends_grounding_icon_when_used(self, plugin_env, mocker: MockerFixture):
         """GIVEN grounding_used is True WHEN ask completes THEN reply has globe icon prefix."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -167,14 +169,14 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["search", "something"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["search", "something"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310")
         assert "searched result" in reply_text
 
-    def test_ask_with_images_sends_processing_message(self, plugin_env):
+    def test_ask_with_images_sends_processing_message(self, plugin_env, mocker: MockerFixture):
         """GIVEN prompt with image URL WHEN ask is called THEN processing message is sent first."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = ["http://img.example/pic.jpg"]
@@ -186,15 +188,15 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["describe", "http://img.example/pic.jpg"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["describe", "http://img.example/pic.jpg"])
 
         # First call is the "Processing with N image(s)..." message
         assert mock_irc.reply.call_count == 2
         first_reply = mock_irc.reply.call_args_list[0]
         assert "image" in first_reply[0][0].lower()
 
-    def test_ask_does_not_store_context_on_error(self, plugin_env):
+    def test_ask_does_not_store_context_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN completion returns an error WHEN ask completes THEN context is NOT stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -203,14 +205,14 @@ class TestAskCommand:
             error="Error: something went wrong",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # No context should be stored because result has an error
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
-    def test_ask_skips_context_when_disabled(self, plugin_env):
+    def test_ask_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN ask completes THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -222,12 +224,12 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        plugin.registryValue = MagicMock(
+        plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
         messages = plugin.context.get_messages("testnick", "#test")
@@ -242,7 +244,7 @@ class TestAskCommand:
 class TestCodeCommand:
     """Tests for the real LLM.code method."""
 
-    def test_code_replies_with_url_and_preview(self, plugin_env):
+    def test_code_replies_with_url_and_preview(self, plugin_env, mocker: MockerFixture):
         """GIVEN code generation succeeds WHEN code called THEN reply has preview and URL."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -258,13 +260,13 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = None  # fallback to truncation
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["Python", "hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["Python", "hello"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "http://localhost:8080/llm/code_abc.html" in reply_text
 
-    def test_code_uses_ai_summary_when_available(self, plugin_env):
+    def test_code_uses_ai_summary_when_available(self, plugin_env, mocker: MockerFixture):
         """GIVEN summarize returns a summary WHEN code called THEN reply uses AI summary."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -278,13 +280,13 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = "Recursive Fibonacci function"
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["fibonacci"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["fibonacci"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Recursive Fibonacci function" in reply_text
 
-    def test_code_falls_back_to_irc_on_save_failure(self, plugin_env):
+    def test_code_falls_back_to_irc_on_save_failure(self, plugin_env, mocker: MockerFixture):
         """GIVEN save_code_to_http returns None WHEN code called THEN raw response is sent."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -296,13 +298,13 @@ class TestCodeCommand:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["print", "hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["print", "hello"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "print('hello')" in reply_text
 
-    def test_code_stores_context(self, plugin_env):
+    def test_code_stores_context(self, plugin_env, mocker: MockerFixture):
         """GIVEN code command succeeds WHEN executed THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -316,15 +318,15 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = None
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["generate", "something"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["generate", "something"])
 
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
 
-    def test_code_logs_usage(self, plugin_env):
+    def test_code_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN code completion with cost WHEN code completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -336,24 +338,24 @@ class TestCodeCommand:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["assign"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "code", "gpt-4", 50, 20, 0.003
         )
 
-    def test_code_skips_znc_playback(self, plugin_env):
+    def test_code_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
         """GIVEN an old message WHEN code called THEN nothing happens."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_not_called()
 
-    def test_code_grounding_icon_in_reply(self, plugin_env):
+    def test_code_grounding_icon_in_reply(self, plugin_env, mocker: MockerFixture):
         """GIVEN grounding_used is True WHEN code saved to URL THEN reply has globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -368,8 +370,8 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = "summary"
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310")
@@ -383,7 +385,7 @@ class TestCodeCommand:
 class TestDrawCommand:
     """Tests for the real LLM.draw method."""
 
-    def test_draw_replies_with_image_url(self, plugin_env):
+    def test_draw_replies_with_image_url(self, plugin_env, mocker: MockerFixture):
         """GIVEN image generation succeeds WHEN draw called THEN irc.reply has image URL."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -394,12 +396,12 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
         mock_irc.reply.assert_called_once_with("http://img.example/gen.png")
 
-    def test_draw_shows_rewritten_prompt_when_present(self, plugin_env):
+    def test_draw_shows_rewritten_prompt_when_present(self, plugin_env, mocker: MockerFixture):
         """GIVEN image result has rewritten_prompt WHEN draw called THEN reply includes it."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -411,15 +413,15 @@ class TestDrawCommand:
             rewritten_prompt="A beautiful sunset over mountains",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Rewritten" in reply_text
         assert "A beautiful sunset over mountains" in reply_text
         assert "http://img.example/gen.png" in reply_text
 
-    def test_draw_truncates_long_rewritten_prompt(self, plugin_env):
+    def test_draw_truncates_long_rewritten_prompt(self, plugin_env, mocker: MockerFixture):
         """GIVEN rewritten_prompt is >200 chars WHEN draw called THEN prompt is truncated."""
         plugin, mock_irc, mock_msg = plugin_env
         long_prompt = "A" * 250
@@ -432,13 +434,13 @@ class TestDrawCommand:
             rewritten_prompt=long_prompt,
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "..." in reply_text
 
-    def test_draw_logs_usage(self, plugin_env):
+    def test_draw_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -449,14 +451,14 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["a", "cat"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "draw", "dall-e-3", 10, 0, 0.04
         )
 
-    def test_draw_logs_usage_even_with_zero_cost(self, plugin_env):
+    def test_draw_logs_usage_even_with_zero_cost(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with zero cost/tokens WHEN draw succeeds THEN usage is still logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -467,14 +469,14 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "draw", "dall-e-3", 0, 0, 0.0
         )
 
-    def test_draw_skips_usage_logging_on_error(self, plugin_env):
+    def test_draw_skips_usage_logging_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw that errors WHEN draw completes THEN no usage logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -486,22 +488,22 @@ class TestDrawCommand:
             error="Error: content blocked",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_not_called()
 
-    def test_draw_skips_znc_playback(self, plugin_env):
+    def test_draw_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
         """GIVEN old message WHEN draw called THEN no reply."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         mock_irc.reply.assert_not_called()
 
-    def test_draw_stores_context_on_success(self, plugin_env):
+    def test_draw_stores_context_on_success(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw succeeds WHEN executed THEN personal and channel context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -512,8 +514,8 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 2
@@ -522,7 +524,7 @@ class TestDrawCommand:
         assert messages[1]["role"] == "assistant"
         assert "[Generated image:" in messages[1]["content"]
 
-    def test_draw_does_not_store_context_on_error(self, plugin_env):
+    def test_draw_does_not_store_context_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw returns error WHEN executed THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -530,13 +532,13 @@ class TestDrawCommand:
             error="Error: something went wrong",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
 
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
-    def test_draw_skips_context_when_disabled(self, plugin_env):
+    def test_draw_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -547,12 +549,12 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        plugin.registryValue = MagicMock(
+        plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
@@ -621,13 +623,13 @@ class TestForgetCommand:
 class TestLlmkeysCommand:
     """Tests for the real LLM.llmkeys method."""
 
-    def test_llmkeys_shows_key_status_privately(self, plugin_env):
+    def test_llmkeys_shows_key_status_privately(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin user WHEN llmkeys called THEN key status sent as private reply."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.safe_key_display.return_value = "tes...(10 chars hidden)"
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.llmkeys(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.llmkeys(mock_irc, mock_msg, [])
 
         # Should be sent privately
         mock_irc.reply.assert_called_once()
@@ -636,13 +638,13 @@ class TestLlmkeysCommand:
         # Should call safe_key_display for all 3 keys
         assert plugin.llm_service.safe_key_display.call_count == 3
 
-    def test_llmkeys_response_contains_all_key_types(self, plugin_env):
+    def test_llmkeys_response_contains_all_key_types(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin WHEN llmkeys called THEN response mentions ask, code, draw."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.safe_key_display.return_value = "abc...(5 chars hidden)"
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.llmkeys(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.llmkeys(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "ask=" in reply_text
@@ -659,14 +661,13 @@ class TestUsageCommand:
     """Tests for the real LLM.usage method (dual-mode: channel + PM)."""
 
     @pytest.fixture(autouse=True)
-    def _mock_addressed(self):
+    def _mock_addressed(self, mocker: MockerFixture):
         """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
-        with patch("llm.plugin.callbacks.addressed", return_value=None):
-            yield
+        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
 
     # -- PM mode (global stats, admin only) --
 
-    def test_usage_pm_shows_today_and_month_stats(self, plugin_env):
+    def test_usage_pm_shows_today_and_month_stats(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin via PM WHEN usage called THEN response includes today and monthly stats."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.channel = None  # PM mode
@@ -695,8 +696,8 @@ class TestUsageCommand:
             )
         ]
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
@@ -707,7 +708,7 @@ class TestUsageCommand:
         # Sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
-    def test_usage_pm_with_no_top_users_or_channels(self, plugin_env):
+    def test_usage_pm_with_no_top_users_or_channels(self, plugin_env, mocker: MockerFixture):
         """GIVEN no usage data via PM WHEN usage called THEN response omits top users/channels."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.channel = None  # PM mode
@@ -720,20 +721,20 @@ class TestUsageCommand:
         plugin.db.get_usage_by_nick.return_value = []
         plugin.db.get_usage_by_channel.return_value = []
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Top users:" not in reply_text
         assert "Top channels:" not in reply_text
 
-    def test_usage_pm_requires_admin(self, plugin_env):
+    def test_usage_pm_requires_admin(self, plugin_env, mocker: MockerFixture):
         """GIVEN non-admin via PM WHEN usage called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.channel = None  # PM mode
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
@@ -778,7 +779,7 @@ class TestUsageCommand:
         assert mock_irc.reply.call_args.kwargs.get("private") is not True
         assert mock_irc.reply.call_args.kwargs.get("prefixNick") is False
 
-    def test_usage_channel_works_without_admin(self, plugin_env):
+    def test_usage_channel_works_without_admin(self, plugin_env, mocker: MockerFixture):
         """GIVEN non-admin in channel WHEN usage called THEN stats shown (no error)."""
         from llm.persistence import UsageRank
 
@@ -789,8 +790,8 @@ class TestUsageCommand:
         plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=0)
 
         # No admin capability needed — should still work
-        with patch("llm.plugin.ircdb.checkCapability", return_value=False):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
         mock_irc.error.assert_not_called()
@@ -815,7 +816,7 @@ class TestUsageCommand:
 
     # -- Target nick mode --
 
-    def test_usage_strips_irc_status_prefix_from_nick(self, plugin_env):
+    def test_usage_strips_irc_status_prefix_from_nick(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick with @ prefix WHEN usage called THEN prefix stripped before lookup."""
         from llm.persistence import UsageRank
 
@@ -823,14 +824,14 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(7, 800, 400, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage @Larry"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage @Larry")
+        plugin.usage(mock_irc, mock_msg, [])
 
         # Should query for "Larry", not "@Larry"
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
         assert "Larry" in mock_irc.reply.call_args[0][0]
 
-    def test_usage_handles_nick_with_brackets(self, plugin_env):
+    def test_usage_handles_nick_with_brackets(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick with brackets WHEN usage called THEN raw arg parsed correctly."""
         from llm.persistence import UsageRank
 
@@ -839,25 +840,25 @@ class TestUsageCommand:
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=4)
 
         # Mock the raw message extraction to return the bracket nick intact
-        with patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]")
+        plugin.usage(mock_irc, mock_msg, [])
 
         # Should query DB with the full bracket nick
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Rubin[F]"
         assert "Rubin[F]" in mock_irc.reply.call_args[0][0]
 
-    def test_usage_resolves_target_nick_to_account(self, plugin_env):
+    def test_usage_resolves_target_nick_to_account(self, plugin_env, mocker: MockerFixture):
         """GIVEN target nick with NickServ account WHEN usage called THEN queries by account."""
         from llm.persistence import UsageRank
 
         plugin, mock_irc, mock_msg = plugin_env
         # Target nick "OldNick" resolves to account "RealAccount"
-        mock_irc.state.nickToAccount = MagicMock(return_value="RealAccount")
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="RealAccount")
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 500, 250, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=2, total=6)
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage OldNick"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage OldNick")
+        plugin.usage(mock_irc, mock_msg, [])
 
         # DB should be queried with the account name
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "RealAccount"
@@ -865,7 +866,7 @@ class TestUsageCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "OldNick" in reply_text
 
-    def test_usage_with_nick_in_channel(self, plugin_env):
+    def test_usage_with_nick_in_channel(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick target in channel WHEN usage called THEN shows that nick's channel stats."""
         from llm.persistence import UsageRank
 
@@ -878,8 +879,8 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=3, total=10)
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
+        plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
@@ -893,7 +894,7 @@ class TestUsageCommand:
         assert call_kwargs[0][0] == "othernick"
         assert call_kwargs[1]["channel"] == "#test"
 
-    def test_usage_with_nick_via_pm(self, plugin_env):
+    def test_usage_with_nick_via_pm(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick target via PM WHEN usage called THEN shows that nick's global stats."""
         from llm.persistence import UsageRank
 
@@ -907,8 +908,8 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage othernick"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "othernick" in reply_text
@@ -917,7 +918,7 @@ class TestUsageCommand:
 
     # -- Target channel mode --
 
-    def test_usage_with_channel_target(self, plugin_env):
+    def test_usage_with_channel_target(self, plugin_env, mocker: MockerFixture):
         """GIVEN channel target WHEN usage called THEN shows that channel's stats."""
         from llm.persistence import UsageRank
 
@@ -930,11 +931,9 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=2, total=8)
 
-        with (
-            patch("llm.plugin.callbacks.addressed", return_value="usage #other"),
-            patch("llm.plugin.ircutils.isChannel", return_value=True),
-        ):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #other")
+        mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#other this month:" in reply_text
@@ -943,7 +942,7 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_channel.assert_called_once()
         assert plugin.db.get_usage_summary_for_channel.call_args[0][0] == "#other"
 
-    def test_usage_with_channel_target_via_pm(self, plugin_env):
+    def test_usage_with_channel_target_via_pm(self, plugin_env, mocker: MockerFixture):
         """GIVEN channel target via PM WHEN usage called THEN shows channel stats."""
         from llm.persistence import UsageRank
 
@@ -957,11 +956,9 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
 
-        with (
-            patch("llm.plugin.callbacks.addressed", return_value="usage #somechan"),
-            patch("llm.plugin.ircutils.isChannel", return_value=True),
-        ):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #somechan")
+        mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#somechan this month:" in reply_text
@@ -976,7 +973,7 @@ class TestUsageCommand:
 class TestRemindmeCommand:
     """Tests for the real LLM.remindme method."""
 
-    def test_remindme_schedules_reminder_on_success(self, plugin_env):
+    def test_remindme_schedules_reminder_on_success(self, plugin_env, mocker: MockerFixture):
         """GIVEN valid reminder WHEN remindme called THEN reminder is scheduled and persisted."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -987,11 +984,9 @@ class TestRemindmeCommand:
             note=None,
         )
 
-        with (
-            patch("llm.plugin.ircdb.checkCapability", return_value=True),
-            patch("llm.plugin.schedule.addEvent") as mock_add_event,
-        ):
-            plugin.remindme(mock_irc, mock_msg, ["in", "30m", "check", "the", "build"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin.remindme(mock_irc, mock_msg, ["in", "30m", "check", "the", "build"])
 
         # Should schedule the event
         mock_add_event.assert_called_once()
@@ -1001,7 +996,7 @@ class TestRemindmeCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Reminder set" in reply_text
 
-    def test_remindme_includes_note_in_reply(self, plugin_env):
+    def test_remindme_includes_note_in_reply(self, plugin_env, mocker: MockerFixture):
         """GIVEN reminder with timezone note WHEN remindme called THEN reply includes note."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1012,16 +1007,14 @@ class TestRemindmeCommand:
             note="Assuming UTC timezone",
         )
 
-        with (
-            patch("llm.plugin.ircdb.checkCapability", return_value=True),
-            patch("llm.plugin.schedule.addEvent"),
-        ):
-            plugin.remindme(mock_irc, mock_msg, ["in", "1h", "meeting"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin.remindme(mock_irc, mock_msg, ["in", "1h", "meeting"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Assuming UTC timezone" in reply_text
 
-    def test_remindme_handles_clarification(self, plugin_env):
+    def test_remindme_handles_clarification(self, plugin_env, mocker: MockerFixture):
         """GIVEN parse returns clarify WHEN remindme called THEN asks for clarification."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1029,13 +1022,13 @@ class TestRemindmeCommand:
             confirmation="When should I remind you?",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.remindme(mock_irc, mock_msg, ["something", "vague"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.remindme(mock_irc, mock_msg, ["something", "vague"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "When should I remind you?" in reply_text
 
-    def test_remindme_rejects_too_short_duration(self, plugin_env):
+    def test_remindme_rejects_too_short_duration(self, plugin_env, mocker: MockerFixture):
         """GIVEN duration < 10 seconds WHEN remindme called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1045,14 +1038,14 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.remindme(mock_irc, mock_msg, ["in", "5s", "test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.remindme(mock_irc, mock_msg, ["in", "5s", "test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "10 seconds" in error_text
 
-    def test_remindme_rejects_too_long_duration(self, plugin_env):
+    def test_remindme_rejects_too_long_duration(self, plugin_env, mocker: MockerFixture):
         """GIVEN duration > 7 days WHEN remindme called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1062,14 +1055,14 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.remindme(mock_irc, mock_msg, ["in", "8d", "test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.remindme(mock_irc, mock_msg, ["in", "8d", "test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "7 days" in error_text
 
-    def test_remindme_rejects_none_seconds(self, plugin_env):
+    def test_remindme_rejects_none_seconds(self, plugin_env, mocker: MockerFixture):
         """GIVEN parse result has seconds=None WHEN remindme called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1079,13 +1072,13 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.remindme(mock_irc, mock_msg, ["test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.remindme(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "couldn't determine" in reply_text.lower()
 
-    def test_remindme_handles_schedule_failure(self, plugin_env):
+    def test_remindme_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
         """GIVEN schedule.addEvent raises WHEN remindme called THEN error is reported."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1095,11 +1088,9 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        with (
-            patch("llm.plugin.ircdb.checkCapability", return_value=True),
-            patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke")),
-        ):
-            plugin.remindme(mock_irc, mock_msg, ["in", "1m", "test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
+        plugin.remindme(mock_irc, mock_msg, ["in", "1m", "test"])
 
         mock_irc.error.assert_called_once()
 
@@ -1157,15 +1148,15 @@ class TestRemindersCommand:
 class TestUnremindCommand:
     """Tests for the real LLM.unremind method."""
 
-    def test_unremind_cancels_own_reminder(self, plugin_env):
+    def test_unremind_cancels_own_reminder(self, plugin_env, mocker: MockerFixture):
         """GIVEN user owns a reminder WHEN unremind called with ID THEN reminder is cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
         with plugin._reminders_lock:
             plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
 
-        with patch("llm.plugin.schedule.removeEvent") as mock_remove:
-            plugin.unremind(mock_irc, mock_msg, ["42"])
+        mock_remove = mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin.unremind(mock_irc, mock_msg, ["42"])
 
         # Should remove from schedule
         mock_remove.assert_called_once_with(event_name)
@@ -1197,16 +1188,18 @@ class TestUnremindCommand:
 
         mock_irc.error.assert_called_once()
 
-    def test_unremind_handles_missing_schedule_event_gracefully(self, plugin_env):
+    def test_unremind_handles_missing_schedule_event_gracefully(
+        self, plugin_env, mocker: MockerFixture
+    ):
         """GIVEN reminder exists but schedule event is gone WHEN unremind called THEN no crash."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_7"
         with plugin._reminders_lock:
             plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
 
-        with patch("llm.plugin.schedule.removeEvent", side_effect=KeyError("gone")):
-            # Should not raise
-            plugin.unremind(mock_irc, mock_msg, ["7"])
+        mocker.patch("llm.plugin.schedule.removeEvent", side_effect=KeyError("gone"))
+        # Should not raise
+        plugin.unremind(mock_irc, mock_msg, ["7"])
 
         # Still confirmed
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1222,15 +1215,15 @@ class TestAccountBasedIdentity:
     """Tests for NickServ account-based identity resolution across commands."""
 
     @pytest.fixture
-    def account_env(self, plugin_env):
+    def account_env(self, plugin_env, mocker: MockerFixture):
         """Extend plugin_env so the calling user has a NickServ account."""
         plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = MagicMock(return_value="MyAccount")
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="MyAccount")
         return plugin, mock_irc, mock_msg
 
     # -- Usage logging under account --
 
-    def test_ask_logs_usage_under_account(self, account_env):
+    def test_ask_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN ask completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.detect_images.return_value = []
@@ -1242,14 +1235,14 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
             "MyAccount", "#test", "ask", "gpt-4", 10, 5, 0.001
         )
 
-    def test_code_logs_usage_under_account(self, account_env):
+    def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -1261,14 +1254,14 @@ class TestAccountBasedIdentity:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["assign"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
             "MyAccount", "#test", "code", "gpt-4", 50, 20, 0.003
         )
 
-    def test_draw_logs_usage_under_account(self, account_env):
+    def test_draw_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -1279,8 +1272,8 @@ class TestAccountBasedIdentity:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["a", "cat"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
             "MyAccount", "#test", "draw", "dall-e-3", 10, 0, 0.04
@@ -1288,7 +1281,7 @@ class TestAccountBasedIdentity:
 
     # -- Context storage under account --
 
-    def test_ask_stores_context_under_account(self, account_env):
+    def test_ask_stores_context_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN ask completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.detect_images.return_value = []
@@ -1300,8 +1293,8 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Context keyed by account, not nick
         messages = plugin.context.get_messages("MyAccount", "#test")
@@ -1312,7 +1305,7 @@ class TestAccountBasedIdentity:
         # No context under the raw nick
         assert len(plugin.context.get_messages("testnick", "#test")) == 0
 
-    def test_draw_stores_context_under_account(self, account_env):
+    def test_draw_stores_context_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -1323,8 +1316,8 @@ class TestAccountBasedIdentity:
             model="dall-e-3",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.draw(mock_irc, mock_msg, ["sunset"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         messages = plugin.context.get_messages("MyAccount", "#test")
         assert len(messages) == 2
@@ -1332,7 +1325,7 @@ class TestAccountBasedIdentity:
 
     # -- Usage query resolves calling user to account --
 
-    def test_usage_channel_resolves_caller_to_account(self, account_env):
+    def test_usage_channel_resolves_caller_to_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with account WHEN usage called in channel THEN queries by account."""
         from llm.persistence import UsageRank
 
@@ -1342,8 +1335,8 @@ class TestAccountBasedIdentity:
         plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        with patch("llm.plugin.callbacks.addressed", return_value=None):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
+        plugin.usage(mock_irc, mock_msg, [])
 
         # Personal stats should query by account name
         plugin.db.get_usage_summary_for_nick.assert_called_once()
@@ -1351,7 +1344,7 @@ class TestAccountBasedIdentity:
 
     # -- Fallback when no account --
 
-    def test_ask_falls_back_to_nick_when_no_account(self, plugin_env):
+    def test_ask_falls_back_to_nick_when_no_account(self, plugin_env, mocker: MockerFixture):
         """GIVEN user without NickServ account WHEN ask completes THEN usage logged under nick."""
         plugin, mock_irc, mock_msg = plugin_env
         # nickToAccount returns None (default in plugin_env fixture)
@@ -1364,17 +1357,17 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
         )
 
-    def test_ask_falls_back_to_nick_on_keyerror(self, plugin_env):
+    def test_ask_falls_back_to_nick_on_keyerror(self, plugin_env, mocker: MockerFixture):
         """GIVEN nickToAccount raises KeyError WHEN ask completes THEN usage logged under nick."""
         plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = MagicMock(side_effect=KeyError("unknown"))
+        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("unknown"))
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.completion.return_value = CompletionResult(
             content="ok",
@@ -1384,14 +1377,14 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
             "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
         )
 
-    def test_context_stored_under_nick_when_no_account(self, plugin_env):
+    def test_context_stored_under_nick_when_no_account(self, plugin_env, mocker: MockerFixture):
         """GIVEN user without account WHEN ask completes THEN context stored under nick."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
@@ -1403,8 +1396,8 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.ask(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["hello"])
 
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 2
@@ -1435,10 +1428,10 @@ class TestAccountBasedIdentity:
         assert identity == "MyAccount"
         plugin.db.migrate_nick.assert_called_once_with("testnick", "MyAccount")
 
-    def test_migrate_not_called_when_nick_matches_account(self, plugin_env):
+    def test_migrate_not_called_when_nick_matches_account(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick == account (case-insensitive) WHEN resolved THEN no migration."""
         plugin, mock_irc, _ = plugin_env
-        mock_irc.state.nickToAccount = MagicMock(return_value="testnick")
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="testnick")
 
         identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
 
@@ -1474,12 +1467,11 @@ class TestUsageEdgeCases:
     """Additional edge-case tests for usage command flows."""
 
     @pytest.fixture(autouse=True)
-    def _mock_addressed(self):
+    def _mock_addressed(self, mocker: MockerFixture):
         """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
-        with patch("llm.plugin.callbacks.addressed", return_value=None):
-            yield
+        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
 
-    def test_usage_for_nick_with_zero_rank(self, plugin_env):
+    def test_usage_for_nick_with_zero_rank(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick target with no usage WHEN usage called THEN rank is omitted."""
         from llm.persistence import UsageRank
 
@@ -1487,14 +1479,14 @@ class TestUsageEdgeCases:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=5)
 
-        with patch("llm.plugin.callbacks.addressed", return_value="usage somenick"):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage somenick")
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "somenick" in reply_text
         assert "rank" not in reply_text
 
-    def test_usage_for_channel_with_zero_rank(self, plugin_env):
+    def test_usage_for_channel_with_zero_rank(self, plugin_env, mocker: MockerFixture):
         """GIVEN channel target with no usage WHEN usage called THEN rank is omitted."""
         from llm.persistence import UsageRank
 
@@ -1502,11 +1494,9 @@ class TestUsageEdgeCases:
         plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
         plugin.db.get_channel_rank.return_value = UsageRank(rank=0, total=0)
 
-        with (
-            patch("llm.plugin.callbacks.addressed", return_value="usage #empty"),
-            patch("llm.plugin.ircutils.isChannel", return_value=True),
-        ):
-            plugin.usage(mock_irc, mock_msg, [])
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #empty")
+        mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
+        plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#empty this month:" in reply_text
@@ -1516,15 +1506,15 @@ class TestUsageEdgeCases:
 class TestExtractRawArgEdgeCases:
     """Tests for _extract_raw_arg edge cases."""
 
-    def test_extract_raw_arg_command_not_in_payload(self):
+    def test_extract_raw_arg_command_not_in_payload(self, mocker: MockerFixture):
         """GIVEN payload without the command WHEN _extract_raw_arg THEN returns None."""
         from llm.plugin import LLM
 
-        mock_irc = MagicMock()
-        mock_msg = MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_msg = mocker.MagicMock()
 
-        with patch("llm.plugin.callbacks.addressed", return_value="help something"):
-            result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
+        mocker.patch("llm.plugin.callbacks.addressed", return_value="help something")
+        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
 
         assert result is None
 
@@ -1532,7 +1522,9 @@ class TestExtractRawArgEdgeCases:
 class TestRemindmeEdgeCases:
     """Additional edge-case tests for remindme command."""
 
-    def test_remindme_rejects_negative_seconds_via_min_check(self, plugin_env):
+    def test_remindme_rejects_negative_seconds_via_min_check(
+        self, plugin_env, mocker: MockerFixture
+    ):
         """GIVEN duration < 0 WHEN remindme called THEN caught by the <10s check."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1542,14 +1534,14 @@ class TestRemindmeEdgeCases:
             confirmation="ok",
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.remindme(mock_irc, mock_msg, ["yesterday", "test"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.remindme(mock_irc, mock_msg, ["yesterday", "test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "10 seconds" in error_text
 
-    def test_remindme_uses_input_text_when_no_message(self, plugin_env):
+    def test_remindme_uses_input_text_when_no_message(self, plugin_env, mocker: MockerFixture):
         """GIVEN parse result with no message WHEN remindme called THEN uses original text."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1559,11 +1551,9 @@ class TestRemindmeEdgeCases:
             confirmation="Reminder set for 1 minute.",
         )
 
-        with (
-            patch("llm.plugin.ircdb.checkCapability", return_value=True),
-            patch("llm.plugin.schedule.addEvent"),
-        ):
-            plugin.remindme(mock_irc, mock_msg, ["in", "1m", "something"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin.remindme(mock_irc, mock_msg, ["in", "1m", "something"])
 
         # The save_reminder call should use the original text as fallback
         save_call = plugin.db.save_reminder.call_args
@@ -1573,7 +1563,7 @@ class TestRemindmeEdgeCases:
 class TestReloadRemindersEdgeCases:
     """Tests for _reload_reminders error handling."""
 
-    def test_reload_reminders_handles_schedule_failure(self, plugin_env):
+    def test_reload_reminders_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
         """GIVEN future reminder WHEN schedule.addEvent fails THEN reminder cleaned from DB."""
         import time as time_module
 
@@ -1593,8 +1583,8 @@ class TestReloadRemindersEdgeCases:
 
         plugin.db.load_pending_reminders.return_value = [reminder]
 
-        with patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke")):
-            plugin._reload_reminders(mock_irc)
+        mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
+        plugin._reload_reminders(mock_irc)
 
         # Failed reminder should be deleted from DB
         plugin.db.delete_reminder.assert_called_with("llm_remind_broken_1")
@@ -1605,7 +1595,7 @@ class TestReloadRemindersEdgeCases:
 class TestCodeEdgeCases:
     """Additional edge-case tests for code command."""
 
-    def test_code_skips_context_when_disabled(self, plugin_env):
+    def test_code_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN code called THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -1617,18 +1607,18 @@ class TestCodeEdgeCases:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        plugin.registryValue = MagicMock(
+        plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["hello"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
-    def test_code_truncates_long_preview_without_summary(self, plugin_env):
+    def test_code_truncates_long_preview_without_summary(self, plugin_env, mocker: MockerFixture):
         """GIVEN long code and no AI summary WHEN code called THEN preview is truncated."""
         plugin, mock_irc, mock_msg = plugin_env
         long_code = "x" * 200  # > CODE_PREVIEW_MAX_LEN (60)
@@ -1643,8 +1633,8 @@ class TestCodeEdgeCases:
         plugin.llm_service.summarize.return_value = None  # no AI summary
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        with patch("llm.plugin.ircdb.checkCapability", return_value=True):
-            plugin.code(mock_irc, mock_msg, ["generate"])
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["generate"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "..." in reply_text

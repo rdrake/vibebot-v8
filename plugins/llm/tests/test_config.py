@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import threading
 from io import StringIO
-from unittest.mock import patch
+from typing import TYPE_CHECKING
 
 import pytest
 import supybot.registry as registry
 from llm.config import ValidatedModelName
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 
 
 class TestValidatedModelName:
@@ -119,31 +122,27 @@ class TestValidatedModelName:
 class TestConfigure:
     """Test plugin configuration wizard."""
 
-    def test_configure_prints_setup_info(self) -> None:
+    def test_configure_prints_setup_info(self, mocker: MockerFixture) -> None:
         """GIVEN configure function WHEN called THEN prints setup information."""
         from llm.config import configure
 
         output = StringIO()
-        with (
-            patch("sys.stdout", output),
-            patch("supybot.conf.registerPlugin"),
-        ):
-            configure(advanced=False)
+        mocker.patch("sys.stdout", output)
+        mocker.patch("supybot.conf.registerPlugin")
+        configure(advanced=False)
 
         result = output.getvalue()
         assert "LLM Plugin Configuration" in result
         assert "API keys" in result
         assert "config plugins.LLM.askApiKey" in result
 
-    def test_configure_registers_plugin(self) -> None:
+    def test_configure_registers_plugin(self, mocker: MockerFixture) -> None:
         """GIVEN configure function WHEN called THEN registers plugin."""
         from llm.config import configure
 
-        with (
-            patch("sys.stdout", StringIO()),
-            patch("supybot.conf.registerPlugin") as mock_register,
-        ):
-            configure(advanced=True)
+        mocker.patch("sys.stdout", StringIO())
+        mock_register = mocker.patch("supybot.conf.registerPlugin")
+        configure(advanced=True)
 
         mock_register.assert_called_with("LLM", True)
 
@@ -199,7 +198,7 @@ class TestValidatedModelNameThreadSafety:
         """Clear warned-models cache between tests."""
         ValidatedModelName._warned.clear()
 
-    def test_concurrent_set_value_no_duplicate_warnings(self) -> None:
+    def test_concurrent_set_value_no_duplicate_warnings(self, mocker: MockerFixture) -> None:
         """GIVEN many threads setting the same unknown model WHEN concurrent THEN warns at most once."""
         warnings_logged: list[str] = []
         lock = threading.Lock()
@@ -214,14 +213,16 @@ class TestValidatedModelNameThreadSafety:
             v = ValidatedModelName("", "test")
             v.setValue(model)
 
-        with patch.object(
-            logging.getLogger("supybot.plugins.LLM.config"), "warning", side_effect=capture_warning
-        ):
-            threads = [threading.Thread(target=set_model) for _ in range(20)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        mocker.patch.object(
+            logging.getLogger("supybot.plugins.LLM.config"),
+            "warning",
+            side_effect=capture_warning,
+        )
+        threads = [threading.Thread(target=set_model) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         # Should warn exactly once despite 20 concurrent threads
         assert len(warnings_logged) == 1
