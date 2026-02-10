@@ -1802,8 +1802,12 @@ Rules:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-            except Exception:
-                self.log.debug("Pending video poll failed for request_id=%s", entry["request_id"])
+            except Exception as poll_exc:
+                self.log.info(
+                    "Pending video poll failed for request_id=%s: %s",
+                    entry["request_id"],
+                    poll_exc,
+                )
                 still_pending.append(entry)
                 continue
 
