@@ -974,6 +974,10 @@ class LLM(callbacks.Plugin):
 
                 # Format response with grounding icon if search was used
                 response = result.content
+                if not response or not response.strip():
+                    irc.error(_("The model returned an empty response. Please try again."))
+                    return
+
                 display_response = (
                     f"{GROUNDING_ICON} {response}" if result.grounding_used else response
                 )
