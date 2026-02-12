@@ -39,7 +39,7 @@ preflight: format check
 
 ci:
 	uv sync --locked
-	uv run pre-commit run --all-files
+	uv run prek run --all-files
 	$(MAKE) syntax-check
 	$(MAKE) test
 
