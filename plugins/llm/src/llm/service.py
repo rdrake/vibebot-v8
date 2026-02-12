@@ -1602,7 +1602,7 @@ Rules:
 
             resp = session.post(
                 submit_url,
-                json={"model": model, "prompt": prompt},
+                json={"model": model, "prompt": prompt, "duration": 10},
                 timeout=30,
             )
             resp.raise_for_status()
@@ -1618,7 +1618,7 @@ Rules:
             # Step 2: Poll for result
             poll_url = f"https://api.x.ai/v1/videos/{request_id}"
             start_time = time.time()
-            poll_interval = 3  # seconds
+            poll_interval = 60  # seconds
 
             while True:
                 elapsed = time.time() - start_time
