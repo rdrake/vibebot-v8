@@ -739,6 +739,8 @@ class TestPluginInitialization:
                 return ""
             if key == "databasePath":
                 return ""
+            if key == "logLevel":
+                return "WARNING"
             return mocker.MagicMock()
 
         mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
@@ -1226,6 +1228,29 @@ class TestAllowConcurrent:
             lock.release()
 
 
+class TestPluginInit:
+    """Test plugin initialization paths using full init patches."""
+
+    def test_init_applies_custom_log_level(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN logLevel=DEBUG in config WHEN plugin initialized THEN logger level is DEBUG."""
+        import logging
+
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        mocks = plugin_init_patches(mocker)
+        # Use a real logger so setLevel() actually changes the level attribute
+        real_logger = logging.getLogger("test.LLM.init_log_level")
+        mocks["log"].getPluginLogger.return_value = real_logger
+        side_effect = make_registry_side_effect({"logLevel": "DEBUG"})
+        mocker.patch.object(LLM, "registryValue", side_effect=side_effect)
+        plugin = LLM(mock_irc)
+        assert plugin.log.level == logging.DEBUG
+
+
 class TestPluginDatabaseWiring:
     """Test database persistence wiring in plugin lifecycle."""
 
@@ -1377,3 +1402,158 @@ class TestCompletionResultUsageData:
         assert result.completion_tokens == 0
         assert result.cost == 0.04
         assert result.model == "vertex/imagen-3"
+
+
+class TestPendingTaskScheduler:
+    """Test pending task scheduler event naming and lifecycle."""
+
+    def test_init_schedules_pending_tasks_event(self, mocker: MockerFixture) -> None:
+        """GIVEN plugin init WHEN started THEN schedules llm_pending_tasks event."""
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+
+        mocker.patch.object(LLM, "registryValue", return_value="")
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver.hook")
+        mock_add = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+
+        LLM(mock_irc)
+
+        # Check that llm_pending_tasks was scheduled
+        event_names = [call[1].get("name", "") for call in mock_add.call_args_list]
+        assert "llm_pending_tasks" in event_names
+
+    def test_die_removes_pending_tasks_event(self, mocker: MockerFixture) -> None:
+        """GIVEN plugin WHEN die called THEN removes llm_pending_tasks event."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._http_callback = None
+
+        mock_remove = mocker.patch("supybot.schedule.removeEvent")
+        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
+        plugin.die()
+
+        mock_remove.assert_any_call("llm_pending_tasks")
+
+
+class TestDeliverPendingResult:
+    """Test _deliver_pending_result sends messages to correct targets."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for delivery testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.llm_service.save_code_to_http.return_value = None
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+        return plugin
+
+    def _make_result(self, **overrides):
+        """Create a PendingTaskResult with defaults."""
+        from llm.service import PendingTaskResult
+
+        defaults = {
+            "status": "completed",
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": True,
+            "prompt_preview": "hello world",
+            "model": "gpt-4",
+            "content": "The answer is 42",
+            "reason": "",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cost": 0.01,
+        }
+        defaults.update(overrides)
+        return PendingTaskResult(**defaults)
+
+    def test_delivers_completed_ask_to_channel(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN completed ask result WHEN delivered THEN sends to channel."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result()
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg = mock_irc.queueMsg.call_args[0][0]
+        assert "alice" in str(msg)
+
+    def test_delivers_expired_notification(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN expired result WHEN delivered THEN sends apology."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(status="expired", content="", reason="expired")
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg_text = str(mock_irc.queueMsg.call_args[0][0])
+        assert "expired" in msg_text.lower()
+
+    def test_delivers_terminal_failure_notification(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN terminal failure WHEN delivered THEN sends failure message."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(status="failed_terminal", content="", reason="API key not configured")
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg_text = str(mock_irc.queueMsg.call_args[0][0])
+        assert "failed" in msg_text.lower()
+
+    def test_delivers_to_pm_target(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN PM result WHEN delivered THEN sends to nick."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(reply_target="alice", is_channel=False)
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+
+    def test_logs_usage_for_completed_task(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN completed result with cost WHEN delivered THEN usage logged."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice_account"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(cost=0.01, prompt_tokens=100, completion_tokens=50)
+        plugin._deliver_pending_result(r)
+
+        plugin.db.log_usage.assert_called_once()
+        call_args = plugin.db.log_usage.call_args[0]
+        assert call_args[2] == "ask"  # command
+        assert call_args[3] == "gpt-4"  # model
+        assert call_args[4] == 100  # prompt_tokens
+        assert call_args[5] == 50  # completion_tokens
+        assert call_args[6] == 0.01  # cost

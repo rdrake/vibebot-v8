@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import mimetypes
 import subprocess
 import threading
@@ -284,6 +285,10 @@ class LLM(callbacks.Plugin):
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.log.addFilter(TraceFilter())
+
+        # Apply configured log level to plugin and service loggers
+        self._apply_log_level()
+
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
         self.build_info = self._get_build_info()
 
@@ -295,9 +300,6 @@ class LLM(callbacks.Plugin):
         if not db_path:
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
-
-        # Load pending video requests that survived a restart
-        self.llm_service.load_pending_videos(str(conf.supybot.directories.data()))
 
         # Track nicks already migrated to account-based identity this session
         self._migrated_nicks: set[str] = set()
@@ -334,16 +336,30 @@ class LLM(callbacks.Plugin):
             now=False,  # Don't run immediately on startup
         )
 
-        # Schedule periodic check for timed-out video requests (every 30s)
+        # Schedule periodic check for pending tasks (every 30s)
         with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_pending_videos")
+            schedule.removeEvent("llm_pending_tasks")
 
         schedule.addPeriodicEvent(
-            self._check_pending_videos,
+            self._check_pending_tasks,
             30,
-            name="llm_pending_videos",
+            name="llm_pending_tasks",
             now=False,
         )
+
+        # Register callback for live log level changes
+        conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
+
+    def _apply_log_level(self) -> None:
+        """Set plugin logger levels from the logLevel config value."""
+        level_name = self.registryValue("logLevel")
+        level = getattr(logging, level_name, logging.WARNING)
+        self.log.setLevel(level)
+        self.llm_service.log.setLevel(level)
+
+    def _on_log_level_change(self, *args: object) -> None:
+        """Called when logLevel config changes at runtime."""
+        self._apply_log_level()
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
@@ -355,7 +371,7 @@ class LLM(callbacks.Plugin):
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_file_cleanup")
         with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_pending_videos")
+            schedule.removeEvent("llm_pending_tasks")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
 
@@ -380,38 +396,83 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Scheduled file cleanup failed: %s", e)
 
-    def _check_pending_videos(self) -> None:
-        """Poll timed-out video requests and deliver any that completed."""
+    def _check_pending_tasks(self) -> None:
+        """Poll pending tasks and deliver completed/failed/expired results."""
         try:
-            results = self.llm_service.check_pending_videos()
+            # Build set of channels the bot is currently in
+            deliverable_channels: set[str] = set()
+            for irc_conn in world.ircs:
+                deliverable_channels.update(irc_conn.state.channels.keys())
+
+            results = self.llm_service.check_pending_tasks(deliverable_channels)
+
             for r in results:
-                channel = r["channel"]
-                nick = r["nick"]
-                url = r["url"]
-                prompt = r["prompt"]
-                if channel and nick:
-                    for irc in world.ircs:
-                        if channel in irc.state.channels:
-                            irc.queueMsg(
-                                ircmsgs.privmsg(
-                                    channel,
-                                    f'{nick}: your video is ready! "{prompt}" \u2192 {url}',
-                                )
-                            )
-                            # Log usage
-                            identity = self._resolve_nick_to_identity(irc, nick)
-                            self.db.log_usage(
-                                identity,
-                                channel,
-                                "animate",
-                                r["model"],
-                                0,
-                                0,
-                                r["cost"],
-                            )
-                            break
+                self._deliver_pending_result(r)
         except Exception as e:
-            self.log.error("Pending video check failed: %s", e)
+            self.log.error("Pending task check failed: %s", e)
+
+    def _deliver_pending_result(self, r) -> None:
+        """Deliver a single pending task result to the correct target.
+
+        Sends the message to the original channel or PM nick. Logs usage
+        for completed tasks.
+
+        Args:
+            r: PendingTaskResult from check_pending_tasks.
+        """
+        target = r.reply_target
+        nick = r.nick
+        prompt_preview = self.llm_service.sanitize_output(r.prompt_preview)
+
+        if r.status == "expired":
+            text = f'{nick}: sorry, your {r.task_type} request "{prompt_preview}" expired.'
+        elif r.status == "failed_terminal":
+            reason = self.llm_service.sanitize_output(r.reason)[:200]
+            text = f'{nick}: sorry, your {r.task_type} request "{prompt_preview}" failed: {reason}'
+        elif r.status == "completed":
+            content = self.llm_service.sanitize_output(r.content)
+            if r.task_type == "code":
+                # Try to save code to HTTP URL
+                url = self.llm_service.save_code_to_http(r.content)
+                if url:
+                    text = f'{nick}: your code is ready! "{prompt_preview}" \u2192 {url}'
+                else:
+                    text = f"{nick}: {content}"
+            elif r.task_type == "draw":
+                text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
+            elif r.task_type == "animate":
+                text = f'{nick}: your video is ready! "{prompt_preview}" \u2192 {content}'
+            else:
+                # ask or fallback
+                text = f"{nick}: {content}"
+        else:
+            return
+
+        # Find an IRC connection that can reach the target and deliver
+        for irc_conn in world.ircs:
+            if r.is_channel:
+                if target in irc_conn.state.channels:
+                    irc_conn.queueMsg(ircmsgs.privmsg(target, text))
+                    break
+            else:
+                # PM delivery — use first available connection
+                irc_conn.queueMsg(ircmsgs.privmsg(target, text))
+                break
+
+        # Log usage for completed tasks
+        if r.status == "completed" and (r.cost > 0 or r.prompt_tokens > 0):
+            for irc_conn in world.ircs:
+                identity = self._resolve_nick_to_identity(irc_conn, nick)
+                self.db.log_usage(
+                    identity,
+                    target,
+                    r.task_type,
+                    r.model,
+                    r.prompt_tokens,
+                    r.completion_tokens,
+                    r.cost,
+                )
+                break
 
     def doPrivmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Monitor channel messages for enhanced context (opt-in feature).
