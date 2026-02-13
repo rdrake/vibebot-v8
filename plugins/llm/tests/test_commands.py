@@ -385,9 +385,23 @@ class TestCodeCommand:
 class TestDrawCommand:
     """Tests for the real LLM.draw method."""
 
+    def test_draw_requires_nickserv_auth(self, plugin_env, mocker: MockerFixture):
+        """GIVEN unidentified user WHEN draw called THEN error about NickServ identification."""
+        plugin, mock_irc, mock_msg = plugin_env
+        # nickToAccount returns None (default in plugin_env)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["a", "cat"])
+
+        mock_irc.error.assert_called_once()
+        error_text = mock_irc.error.call_args[0][0]
+        assert "NickServ" in error_text
+        plugin.llm_service.image_generation.assert_not_called()
+
     def test_draw_replies_with_image_url(self, plugin_env, mocker: MockerFixture):
         """GIVEN image generation succeeds WHEN draw called THEN irc.reply has image URL."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=5,
@@ -404,6 +418,7 @@ class TestDrawCommand:
     def test_draw_shows_rewritten_prompt_when_present(self, plugin_env, mocker: MockerFixture):
         """GIVEN image result has rewritten_prompt WHEN draw called THEN reply includes it."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=5,
@@ -424,6 +439,7 @@ class TestDrawCommand:
     def test_draw_truncates_long_rewritten_prompt(self, plugin_env, mocker: MockerFixture):
         """GIVEN rewritten_prompt is >200 chars WHEN draw called THEN prompt is truncated."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         long_prompt = "A" * 250
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
@@ -443,6 +459,7 @@ class TestDrawCommand:
     def test_draw_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=10,
@@ -455,12 +472,13 @@ class TestDrawCommand:
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "draw", "dall-e-3", 10, 0, 0.04
+            "test_account", "#test", "draw", "dall-e-3", 10, 0, 0.04
         )
 
     def test_draw_logs_usage_even_with_zero_cost(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with zero cost/tokens WHEN draw succeeds THEN usage is still logged."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=0,
@@ -473,12 +491,13 @@ class TestDrawCommand:
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "draw", "dall-e-3", 0, 0, 0.0
+            "test_account", "#test", "draw", "dall-e-3", 0, 0, 0.0
         )
 
     def test_draw_skips_usage_logging_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw that errors WHEN draw completes THEN no usage logged."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="Error: content blocked",
             prompt_tokens=0,
@@ -506,6 +525,7 @@ class TestDrawCommand:
     def test_draw_stores_context_on_success(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw succeeds WHEN executed THEN personal and channel context stored."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=5,
@@ -517,7 +537,7 @@ class TestDrawCommand:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("test_account", "#test")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "a sunset"
@@ -527,6 +547,7 @@ class TestDrawCommand:
     def test_draw_does_not_store_context_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw returns error WHEN executed THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="Error: something went wrong",
             error="Error: something went wrong",
@@ -535,12 +556,13 @@ class TestDrawCommand:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("test_account", "#test")
         assert len(messages) == 0
 
     def test_draw_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=5,
@@ -556,7 +578,7 @@ class TestDrawCommand:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["sunset"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("test_account", "#test")
         assert len(messages) == 0
 
 

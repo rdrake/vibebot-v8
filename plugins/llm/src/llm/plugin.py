@@ -856,6 +856,22 @@ class LLM(callbacks.Plugin):
         nick = ircutils.nickFromHostmask(msg.prefix)
         return self._resolve_nick_to_identity(irc, nick)
 
+    def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
+        """Require NickServ identification. Returns account name or None.
+
+        If the user is not identified, sends an error reply and returns None.
+        Callers should ``return`` immediately when None is returned.
+        """
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            account = irc.state.nickToAccount(raw_nick)
+        except (KeyError, AttributeError):
+            account = None
+        if not account:
+            irc.error(_("You must be identified with NickServ to use this command."))
+            return None
+        return account
+
     def _get_channel(self, msg: IrcMsg) -> str:
         """Extract channel from IRC message.
 
@@ -1149,6 +1165,11 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
+        # Require NickServ identification
+        account = self._require_account(irc, msg)
+        if account is None:
+            return
+
         nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
@@ -1224,14 +1245,10 @@ class LLM(callbacks.Plugin):
             return
 
         # Require NickServ identification
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
-        try:
-            account = irc.state.nickToAccount(raw_nick)
-        except (KeyError, AttributeError):
-            account = None
-        if not account:
-            irc.error(_("You must be identified with NickServ to use this command."))
+        account = self._require_account(irc, msg)
+        if account is None:
             return
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
 
         nick = self._resolve_nick_to_identity(irc, raw_nick)
         channel = self._get_channel(msg)

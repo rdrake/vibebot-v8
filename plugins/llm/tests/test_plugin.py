@@ -1557,3 +1557,78 @@ class TestDeliverPendingResult:
         assert call_args[4] == 100  # prompt_tokens
         assert call_args[5] == 50  # completion_tokens
         assert call_args[6] == 0.01  # cost
+
+
+class TestRequireAccount:
+    """Test _require_account NickServ gate helper."""
+
+    def test_returns_account_when_identified(self, mocker: MockerFixture) -> None:
+        """GIVEN identified user WHEN _require_account called THEN returns account name."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="alice_account")
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "alice!user@host"
+
+        result = plugin._require_account(mock_irc, mock_msg)
+        assert result == "alice_account"
+        mock_irc.error.assert_not_called()
+
+    def test_returns_none_and_errors_when_unidentified(self, mocker: MockerFixture) -> None:
+        """GIVEN unidentified user WHEN _require_account called THEN returns None and errors."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "alice!user@host"
+
+        result = plugin._require_account(mock_irc, mock_msg)
+        assert result is None
+        mock_irc.error.assert_called_once()
+        assert "NickServ" in mock_irc.error.call_args[0][0]
+
+    def test_returns_none_on_key_error(self, mocker: MockerFixture) -> None:
+        """GIVEN nickToAccount raises KeyError WHEN called THEN returns None."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("no such nick"))
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "alice!user@host"
+
+        result = plugin._require_account(mock_irc, mock_msg)
+        assert result is None
+        mock_irc.error.assert_called_once()
+
+    def test_returns_none_on_attribute_error(self, mocker: MockerFixture) -> None:
+        """GIVEN nickToAccount raises AttributeError WHEN called THEN returns None."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(
+            side_effect=AttributeError("no nickToAccount")
+        )
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "alice!user@host"
+
+        result = plugin._require_account(mock_irc, mock_msg)
+        assert result is None
+        mock_irc.error.assert_called_once()
