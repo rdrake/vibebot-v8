@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import json
 import re
 import threading
 import time
@@ -26,7 +27,7 @@ from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
 from .context import Role
-from .tracing import TraceFilter, request_id
+from .tracing import TraceFilter, extract_server_headers, request_id
 
 # MUST be set before any LiteLLM calls create HTTPHandler
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
@@ -51,6 +52,12 @@ CLEANUP_INTERVAL_SECONDS = 3600
 CHANNEL_MSG_TRUNCATE_LEN = 150
 CODE_PREVIEW_MAX_LEN = 60
 CODE_PREVIEW_TRUNCATE_LEN = 57  # 60 - len("...")
+
+# Pending task retry constants
+PENDING_INITIAL_BACKOFF_SECONDS = 30
+PENDING_MAX_BACKOFF_SECONDS = 300
+PENDING_CLAIM_LIMIT = 8
+PENDING_LEASE_SECONDS = 120
 
 
 class ValidationResult(NamedTuple):
@@ -95,6 +102,23 @@ class VideoResult(NamedTuple):
     error: str | None = None
 
 
+class PendingTaskResult(NamedTuple):
+    """Result from checking a single pending task."""
+
+    status: str  # completed, failed_terminal, expired
+    task_type: str  # ask, code, draw, animate
+    nick: str
+    reply_target: str
+    is_channel: bool
+    prompt_preview: str
+    model: str
+    content: str = ""  # response text or URL
+    reason: str = ""  # failure/expiry reason
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+
+
 class ReminderParseResult(NamedTuple):
     """Result of parsing a natural language reminder request."""
 
@@ -137,8 +161,6 @@ class LLMService:
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
         self._cleanup_lock = threading.Lock()
-        self._pending_videos: list[dict] = []
-        self._pending_videos_path: Path | None = None
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -172,6 +194,12 @@ class LLMService:
             if key and isinstance(key, str):
                 result = result.replace(key, "[REDACTED]")
         return result
+
+    def _log_server_headers(self, source: object | None) -> None:
+        """Log server-identifying headers from a response or exception at DEBUG level."""
+        headers = extract_server_headers(source)
+        if headers:
+            self.log.debug("server headers: %s", headers)
 
     def sanitize_output(self, text: str | None) -> str:
         """Sanitize output to prevent IRC command injection.
@@ -657,6 +685,7 @@ class LLMService:
                 **optional_kwargs,
             )
         except litellm.BadRequestError as e:
+            self._log_server_headers(e)
             # If we have tools and got INVALID_ARGUMENT, retry without tools
             if "tools" in optional_kwargs and "invalid" in str(e).lower():
                 self.log.warning(
@@ -884,6 +913,452 @@ class LLMService:
             % operation
         )
 
+    # ------------------------------------------------------------------
+    # Pending task stashing and retry engine
+    # ------------------------------------------------------------------
+
+    def _stash_timeout(
+        self,
+        task_type: str,
+        nick: str,
+        reply_target: str,
+        is_channel: bool,
+        prompt: str,
+        model: str,
+        request_data: dict,
+        submitted_at: float,
+    ) -> bool:
+        """Stash a timed-out request for background retry.
+
+        Reads the per-command expiry config. If 0, stashing is disabled and
+        returns False. Otherwise, persists the request to the pending_tasks
+        table for later retry by the scheduler.
+
+        Args:
+            task_type: Command type (ask, code, draw, animate).
+            nick: IRC nick of the requester.
+            reply_target: Channel or PM nick for delivery.
+            is_channel: True if reply_target is a channel.
+            prompt: Original prompt text.
+            model: Model identifier.
+            request_data: Serializable request payload.
+            submitted_at: Unix timestamp of original submission.
+
+        Returns:
+            True if the task was stashed, False if stashing is disabled.
+        """
+        expiry = self.plugin.registryValue(f"{task_type}Expiry")
+        if not expiry:
+            return False
+
+        db = getattr(self.plugin, "db", None)
+        if db is None:
+            self.log.warning("No database available for pending task stashing")
+            return False
+
+        prompt_preview = prompt[:100]
+        expires_at = submitted_at + expiry
+        data_json = json.dumps(request_data)
+
+        task_id = db.save_pending_task(
+            task_type=task_type,
+            nick=nick,
+            reply_target=reply_target,
+            is_channel=is_channel,
+            prompt_preview=prompt_preview,
+            model=model,
+            request_data=data_json,
+            submitted_at=submitted_at,
+            expires_at=expires_at,
+            next_attempt_at=submitted_at,
+        )
+        self.log.info(
+            "Stashed timed-out %s request as pending_task id=%d (expires in %ds)",
+            task_type,
+            task_id,
+            expiry,
+        )
+        return True
+
+    @staticmethod
+    def _is_terminal_error(error: Exception) -> bool:
+        """Classify an exception as terminal (no retry) or transient.
+
+        Terminal: auth errors, content policy violations, bad requests.
+        Transient: timeouts, rate limits, network failures, 5xx.
+
+        Args:
+            error: The exception to classify.
+
+        Returns:
+            True if the error is terminal and should not be retried.
+        """
+        # Transient errors: Timeout, RateLimitError, APIConnectionError, InternalServerError
+        return isinstance(
+            error,
+            (
+                litellm.AuthenticationError,
+                litellm.ContentPolicyViolationError,
+                litellm.BadRequestError,
+                litellm.NotFoundError,
+            ),
+        )
+
+    @staticmethod
+    def _compute_backoff(attempt_count: int) -> float:
+        """Compute next retry delay with exponential backoff.
+
+        Args:
+            attempt_count: Number of attempts already made.
+
+        Returns:
+            Delay in seconds before next retry.
+        """
+        return min(
+            PENDING_INITIAL_BACKOFF_SECONDS * (2**attempt_count),
+            PENDING_MAX_BACKOFF_SECONDS,
+        )
+
+    def _retry_completion(self, task, request_data: dict) -> PendingTaskResult:
+        """Retry a stashed ask/code completion request.
+
+        Args:
+            task: PendingTaskRow from the database.
+            request_data: Parsed request payload with 'messages' key.
+
+        Returns:
+            PendingTaskResult with status and content.
+        """
+        messages = request_data.get("messages")
+        if not isinstance(messages, list):
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="Malformed request data: missing messages",
+            )
+
+        api_key = self.plugin.registryValue(f"{task.task_type}ApiKey")
+        if not api_key:
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="API key not configured",
+            )
+
+        timeout = self.plugin.registryValue("timeout")
+        optional_kwargs = self._get_provider_kwargs(task.model)
+
+        response = self._completion_with_tool_fallback(
+            model=task.model,
+            messages=messages,
+            api_key=api_key,
+            timeout=timeout,
+            optional_kwargs=optional_kwargs,
+        )
+
+        raw_content = response.choices[0].message.content
+        content = self.sanitize_output(raw_content)
+        prompt_tokens, completion_tokens, cost = self._extract_usage(response, task.model)
+
+        return PendingTaskResult(
+            status="completed",
+            task_type=task.task_type,
+            nick=task.nick,
+            reply_target=task.reply_target,
+            is_channel=bool(task.is_channel),
+            prompt_preview=task.prompt_preview,
+            model=task.model,
+            content=content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost=cost,
+        )
+
+    def _retry_image(self, task, request_data: dict) -> PendingTaskResult:
+        """Retry a stashed draw request.
+
+        Args:
+            task: PendingTaskRow from the database.
+            request_data: Parsed request payload with 'prompt' key.
+
+        Returns:
+            PendingTaskResult with status and content.
+        """
+        prompt = request_data.get("prompt")
+        if not isinstance(prompt, str):
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="Malformed request data: missing prompt",
+            )
+
+        if not self.plugin.registryValue("drawApiKey"):
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="API key not configured",
+            )
+
+        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        result = self._attempt_image_generation(prompt, task.model, timeout)
+        if result is None:
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="Content blocked by safety filters",
+            )
+
+        return PendingTaskResult(
+            status="completed",
+            task_type=task.task_type,
+            nick=task.nick,
+            reply_target=task.reply_target,
+            is_channel=bool(task.is_channel),
+            prompt_preview=task.prompt_preview,
+            model=task.model,
+            content=result.content,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cost=result.cost,
+        )
+
+    def _retry_video(self, task, request_data: dict) -> PendingTaskResult:
+        """Retry a stashed animate request by polling for completion.
+
+        Args:
+            task: PendingTaskRow from the database.
+            request_data: Parsed request payload with 'request_id' key.
+
+        Returns:
+            PendingTaskResult with status and content.
+        """
+        import requests as _requests
+
+        request_id_val = request_data.get("request_id")
+        if not isinstance(request_id_val, str):
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="Malformed request data: missing request_id",
+            )
+
+        api_key = self.plugin.registryValue("animateApiKey")
+        if not api_key:
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="API key not configured",
+            )
+
+        resp = _requests.get(
+            f"https://api.x.ai/v1/videos/{request_id_val}",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "VibeBot/8",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        status = data.get("status")
+        video_url = self._extract_video_url(data)
+
+        if status == "expired":
+            return PendingTaskResult(
+                status="failed_terminal",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                reason="Video generation request expired on provider",
+            )
+
+        if status == "done" or video_url:
+            if video_url:
+                local_url = self._download_and_save_video(video_url, api_key)
+                url = local_url or video_url
+            else:
+                url = "?"
+            cost = VIDEO_COST_PER_VIDEO.get(task.model, 0.0)
+            return PendingTaskResult(
+                status="completed",
+                task_type=task.task_type,
+                nick=task.nick,
+                reply_target=task.reply_target,
+                is_channel=bool(task.is_channel),
+                prompt_preview=task.prompt_preview,
+                model=task.model,
+                content=url,
+                cost=cost,
+            )
+
+        # Still pending — raise to trigger release with backoff
+        raise litellm.Timeout(  # noqa: TRY301
+            message=f"Video still pending: status={status}",
+            model=task.model,
+            llm_provider="xai",
+        )
+
+    def check_pending_tasks(self, deliverable_channels: set[str]) -> list[PendingTaskResult]:
+        """Poll and retry pending tasks, returning results for delivery.
+
+        Called by the plugin scheduler every 30 seconds.
+
+        Args:
+            deliverable_channels: Set of channel names the bot is currently in.
+
+        Returns:
+            List of PendingTaskResult for the plugin to deliver.
+        """
+        from .persistence import PendingTaskRow  # noqa: F811
+
+        db = getattr(self.plugin, "db", None)
+        if db is None:
+            return []
+
+        now = time.time()
+        results: list[PendingTaskResult] = []
+
+        # 1. Collect and emit expired tasks
+        expired_rows: list[PendingTaskRow] = db.delete_expired_pending_tasks(now)
+        for row in expired_rows:
+            results.append(
+                PendingTaskResult(
+                    status="expired",
+                    task_type=row.task_type,
+                    nick=row.nick,
+                    reply_target=row.reply_target,
+                    is_channel=bool(row.is_channel),
+                    prompt_preview=row.prompt_preview,
+                    model=row.model,
+                    reason="Request expired after retry timeout",
+                )
+            )
+
+        # 2. Claim due tasks
+        claimed = db.claim_due_pending_tasks(now, PENDING_CLAIM_LIMIT, PENDING_LEASE_SECONDS)
+
+        for task in claimed:
+            # Skip if channel is not deliverable (bot not in channel)
+            if task.is_channel and task.reply_target not in deliverable_channels:
+                defer_at = now + 30  # try again next tick
+                db.release_pending_task(
+                    task.id, defer_at, "Channel not available", increment_attempt=False
+                )
+                continue
+
+            # Parse request_data
+            try:
+                request_data = json.loads(task.request_data)
+            except (json.JSONDecodeError, TypeError):
+                db.delete_pending_task(task.id)
+                results.append(
+                    PendingTaskResult(
+                        status="failed_terminal",
+                        task_type=task.task_type,
+                        nick=task.nick,
+                        reply_target=task.reply_target,
+                        is_channel=bool(task.is_channel),
+                        prompt_preview=task.prompt_preview,
+                        model=task.model,
+                        reason="Malformed request data",
+                    )
+                )
+                continue
+
+            # Dispatch by task_type
+            try:
+                if task.task_type in ("ask", "code"):
+                    result = self._retry_completion(task, request_data)
+                elif task.task_type == "draw":
+                    result = self._retry_image(task, request_data)
+                elif task.task_type == "animate":
+                    result = self._retry_video(task, request_data)
+                else:
+                    db.delete_pending_task(task.id)
+                    results.append(
+                        PendingTaskResult(
+                            status="failed_terminal",
+                            task_type=task.task_type,
+                            nick=task.nick,
+                            reply_target=task.reply_target,
+                            is_channel=bool(task.is_channel),
+                            prompt_preview=task.prompt_preview,
+                            model=task.model,
+                            reason=f"Unknown task type: {task.task_type}",
+                        )
+                    )
+                    continue
+
+                # Handle result
+                if result.status in ("completed", "failed_terminal"):
+                    db.delete_pending_task(task.id)
+                    results.append(result)
+
+            except Exception as exc:
+                if self._is_terminal_error(exc):
+                    db.delete_pending_task(task.id)
+                    results.append(
+                        PendingTaskResult(
+                            status="failed_terminal",
+                            task_type=task.task_type,
+                            nick=task.nick,
+                            reply_target=task.reply_target,
+                            is_channel=bool(task.is_channel),
+                            prompt_preview=task.prompt_preview,
+                            model=task.model,
+                            reason=self._sanitize(str(exc))[:200],
+                        )
+                    )
+                else:
+                    # Transient error — release with backoff
+                    delay = self._compute_backoff(task.attempt_count)
+                    db.release_pending_task(
+                        task.id,
+                        now + delay,
+                        self._sanitize(str(exc))[:200],
+                    )
+
+        return results
+
     def completion(
         self,
         prompt: str,
@@ -918,6 +1393,9 @@ class LLMService:
         target = None
         if irc and msg and msg.args:
             target = msg.args[0]
+
+        model = ""
+        messages: list[dict[str, Any]] = []
 
         try:
             if irc and target:
@@ -1003,7 +1481,40 @@ class LLMService:
                 model=model,
             )
 
+        except litellm.Timeout as e:
+            self._log_server_headers(e)
+            self.log.warning("Completion timed out: %s", self._sanitize(str(e)))
+            nick = ""
+            reply_target = ""
+            is_channel = False
+            if msg:
+                nick = msg.nick or ""
+                reply_target = msg.args[0] if msg.args else ""
+                is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+            stashed = self._stash_timeout(
+                task_type=command,
+                nick=nick,
+                reply_target=reply_target,
+                is_channel=is_channel,
+                prompt=prompt,
+                model=model,
+                request_data={"messages": messages},
+                submitted_at=time.time(),
+            )
+            if stashed:
+                error_content = _(
+                    "Timed out, but I'll keep trying and deliver the answer when ready."
+                )
+            else:
+                error_content = self._handle_llm_error(e, "completion")
+            return CompletionResult(
+                content=error_content,
+                grounding_used=False,
+                error=error_content,
+            )
+
         except Exception as e:
+            self._log_server_headers(e)
             self.log.exception("Completion failed: %s", self._sanitize(str(e)))
             if self._is_content_safety_error(e):
                 error_content = _(
@@ -1034,8 +1545,6 @@ class LLMService:
         Returns:
             ReminderParseResult with action, seconds, message, confirmation, note
         """
-        import json
-
         # Validate input before making API call
         if not text or not text.strip():
             return ReminderParseResult(
@@ -1427,10 +1936,40 @@ Rules:
                 # Empty data = content blocked (Google Imagen)
                 content_blocked = True
                 block_reason = "Content blocked by safety filters (empty response)"
+            except litellm.Timeout as e:
+                self._log_server_headers(e)
+                # Stash for background retry on first-attempt timeout only
+                self.log.warning("Image generation timed out: %s", self._sanitize(str(e)))
+                nick = ""
+                reply_target = ""
+                is_channel_flag = False
+                if msg:
+                    nick = msg.nick or ""
+                    reply_target = msg.args[0] if msg.args else ""
+                    is_channel_flag = bool(reply_target) and ircutils.isChannel(reply_target)
+                stashed = self._stash_timeout(
+                    task_type="draw",
+                    nick=nick,
+                    reply_target=reply_target,
+                    is_channel=is_channel_flag,
+                    prompt=original_prompt,
+                    model=model,
+                    request_data={"prompt": original_prompt},
+                    submitted_at=time.time(),
+                )
+                if stashed:
+                    error_content = _(
+                        "Timed out, but I'll keep trying and deliver the image when ready."
+                    )
+                else:
+                    error_content = self._handle_llm_error(e, "image generation")
+                return ImageResult(content=error_content, error=error_content)
             except litellm.ContentPolicyViolationError as e:
+                self._log_server_headers(e)
                 content_blocked = True
                 block_reason = self._sanitize(str(e))[:200]
             except Exception as e:
+                self._log_server_headers(e)
                 if self._is_content_safety_error(e):
                     content_blocked = True
                     block_reason = self._sanitize(str(e))[:200]
@@ -1487,9 +2026,11 @@ Rules:
                     block_reason = "Content blocked by safety filters (empty response)"
                     prior_rewrites.append((current_prompt, block_reason))
                 except litellm.ContentPolicyViolationError as e:
+                    self._log_server_headers(e)
                     block_reason = self._sanitize(str(e))[:200]
                     prior_rewrites.append((current_prompt, block_reason))
                 except Exception as e:
+                    self._log_server_headers(e)
                     if self._is_content_safety_error(e):
                         block_reason = self._sanitize(str(e))[:200]
                         prior_rewrites.append((current_prompt, block_reason))
@@ -1516,6 +2057,7 @@ Rules:
             )
 
         except Exception as e:
+            self._log_server_headers(e)
             error_content = self._handle_llm_error(e, "image generation")
             return ImageResult(content=error_content, error=error_content)
         finally:
@@ -1624,30 +2166,40 @@ Rules:
                 elapsed = time.time() - start_time
                 if elapsed > timeout:
                     # Stash for background recovery — the video may still complete
-                    self._pending_videos.append(
-                        {
-                            "request_id": request_id,
-                            "api_key": api_key,
-                            "model": model,
-                            "channel": target,
-                            "nick": msg.nick if msg else None,
-                            "prompt": prompt[:100],
-                            "submitted_at": time.time() - elapsed,
-                        }
+                    nick = msg.nick if msg else ""
+                    reply_target = target or ""
+                    is_channel_flag = bool(reply_target) and ircutils.isChannel(reply_target)
+                    stashed = self._stash_timeout(
+                        task_type="animate",
+                        nick=nick,
+                        reply_target=reply_target,
+                        is_channel=is_channel_flag,
+                        prompt=prompt,
+                        model=model,
+                        request_data={"request_id": request_id},
+                        submitted_at=time.time() - elapsed,
                     )
-                    self._save_pending_videos()
                     self.log.info(
                         "video_generation timed out after %ds, stashed request_id=%s for recovery",
                         timeout,
                         request_id,
                     )
-                    error_content = (
-                        _(
-                            "Error: Video generation timed out after %d seconds. "
-                            "I'll keep checking and deliver it if it finishes."
+                    if stashed:
+                        error_content = (
+                            _(
+                                "Video generation timed out after %d seconds. "
+                                "I'll keep checking and deliver it when ready."
+                            )
+                            % timeout
                         )
-                        % timeout
-                    )
+                    else:
+                        error_content = (
+                            _(
+                                "Error: Video generation timed out after %d seconds. "
+                                "Please try again later."
+                            )
+                            % timeout
+                        )
                     return VideoResult(content=error_content, model=model, error=error_content)
 
                 time.sleep(poll_interval)
@@ -1698,6 +2250,7 @@ Rules:
             )
 
         except requests.HTTPError as e:
+            self._log_server_headers(e.response)
             body = ""
             with contextlib.suppress(Exception):
                 body = e.response.text[:200] if e.response is not None else ""
@@ -1724,6 +2277,7 @@ Rules:
             return VideoResult(content=error_content, error=error_content)
 
         except Exception as e:
+            self._log_server_headers(e)
             sanitized = self._sanitize(str(e))
             self.log.exception("Video generation failed: %s", sanitized)
             error_content = _(
@@ -1736,113 +2290,6 @@ Rules:
             session.close()
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
-
-    def load_pending_videos(self, data_dir: str) -> None:
-        """Load pending video requests from disk.
-
-        Args:
-            data_dir: Limnoria data directory path
-        """
-        import json
-
-        self._pending_videos_path = Path(data_dir) / "llm_pending_videos.json"
-        if self._pending_videos_path.exists():
-            try:
-                self._pending_videos = json.loads(self._pending_videos_path.read_text())
-                self.log.info("Loaded %d pending video requests", len(self._pending_videos))
-            except Exception:
-                self.log.warning("Failed to load pending videos, starting fresh")
-                self._pending_videos = []
-
-    def _save_pending_videos(self) -> None:
-        """Persist pending video requests to disk."""
-        import json
-
-        if self._pending_videos_path is None:
-            return
-        try:
-            self._pending_videos_path.write_text(json.dumps(self._pending_videos))
-        except Exception:
-            self.log.warning("Failed to save pending videos to disk")
-
-    def check_pending_videos(self) -> list[dict]:
-        """Poll stashed video requests that previously timed out.
-
-        Returns a list of completed results, each with keys:
-        ``channel``, ``nick``, ``prompt``, ``url``, ``model``, ``cost``.
-        Removes completed or expired entries from the pending list.
-        """
-        import requests as _requests
-
-        if not self._pending_videos:
-            return []
-
-        completed: list[dict] = []
-        still_pending: list[dict] = []
-        max_age = 3600  # drop requests older than 1 hour
-
-        for entry in self._pending_videos:
-            age = time.time() - entry["submitted_at"]
-            if age > max_age:
-                self.log.info(
-                    "Dropping stale pending video request_id=%s (age=%.0fs)",
-                    entry["request_id"],
-                    age,
-                )
-                continue
-
-            try:
-                resp = _requests.get(
-                    f"https://api.x.ai/v1/videos/{entry['request_id']}",
-                    headers={
-                        "Authorization": f"Bearer {entry['api_key']}",
-                        "User-Agent": "VibeBot/8",
-                    },
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as poll_exc:
-                self.log.info(
-                    "Pending video poll failed for request_id=%s: %s",
-                    entry["request_id"],
-                    poll_exc,
-                )
-                still_pending.append(entry)
-                continue
-
-            status = data.get("status")
-            video_url = self._extract_video_url(data)
-            if status == "done" or video_url:
-                local_url = None
-                if video_url:
-                    local_url = self._download_and_save_video(video_url, entry["api_key"])
-
-                url = local_url or video_url or "?"
-                model = entry["model"]
-                completed.append(
-                    {
-                        "channel": entry["channel"],
-                        "nick": entry["nick"],
-                        "prompt": entry["prompt"],
-                        "url": url,
-                        "model": model,
-                        "cost": VIDEO_COST_PER_VIDEO.get(model, 0.0),
-                    }
-                )
-                self.log.info(
-                    "Pending video completed: request_id=%s url=%s",
-                    entry["request_id"],
-                    url[:100],
-                )
-            elif status == "expired":
-                self.log.info("Pending video expired: request_id=%s", entry["request_id"])
-            else:
-                still_pending.append(entry)
-
-        self._pending_videos = still_pending
-        self._save_pending_videos()
-        return completed
 
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
         """Strip markdown code fences and extract language if present.

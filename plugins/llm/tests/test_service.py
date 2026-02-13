@@ -2354,7 +2354,7 @@ class TestDrawAutoRewrite:
         mock_completion = self.mocker.patch("llm.service.litellm.completion")
         result = self.service.image_generation("test prompt")
 
-        assert "timed out" in result.content
+        assert "timed out" in result.content.lower()
         mock_completion.assert_not_called()
 
     def test_auth_error_does_not_trigger_rewrite(self) -> None:
@@ -2462,3 +2462,397 @@ class TestDrawAutoRewrite:
 
         assert "Error" in result.content
         mock_completion.assert_not_called()
+
+
+class TestTimeoutStashing:
+    """Test that timed-out requests are stashed for background retry."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with a mock database for stashing."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+        # Attach a mock db to the plugin
+        self.mock_db = mocker.MagicMock()
+        self.mock_db.save_pending_task.return_value = 42
+        self.mock_plugin.db = self.mock_db
+
+    def test_completion_timeout_stashes_ask(self) -> None:
+        """GIVEN ask completion times out WHEN called THEN stashes with messages."""
+        import litellm as litellm_module
+
+        mock_msg = self.mocker.MagicMock()
+        mock_msg.nick = "alice"
+        mock_msg.args = ("#general", ".ask hello")
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="Request timed out",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        )
+
+        result = self.service.completion("hello", command="ask", msg=mock_msg)
+
+        self.mock_db.save_pending_task.assert_called_once()
+        call_kwargs = self.mock_db.save_pending_task.call_args
+        assert call_kwargs[1]["task_type"] == "ask"
+        assert call_kwargs[1]["nick"] == "alice"
+        assert call_kwargs[1]["reply_target"] == "#general"
+        assert call_kwargs[1]["is_channel"] is True
+        assert "timed out" in result.content.lower() or "retry" in result.content.lower()
+
+    def test_completion_timeout_stashes_code(self) -> None:
+        """GIVEN code completion times out WHEN called THEN stashes with messages."""
+        import litellm as litellm_module
+
+        mock_msg = self.mocker.MagicMock()
+        mock_msg.nick = "bob"
+        mock_msg.args = ("bob", ".code sort")
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="Request timed out",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        )
+
+        self.service.completion("sort", command="code", msg=mock_msg)
+
+        self.mock_db.save_pending_task.assert_called_once()
+        call_kwargs = self.mock_db.save_pending_task.call_args
+        assert call_kwargs[1]["task_type"] == "code"
+        assert call_kwargs[1]["is_channel"] is False
+
+    def test_image_generation_timeout_stashes_draw(self) -> None:
+        """GIVEN first-attempt image generation times out WHEN called THEN stashes prompt."""
+        import litellm as litellm_module
+
+        mock_msg = self.mocker.MagicMock()
+        mock_msg.nick = "charlie"
+        mock_msg.args = ("#art", ".draw cat")
+
+        self.mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=litellm_module.Timeout(
+                message="Request timed out",
+                model="dall-e-3",
+                llm_provider="openai",
+            ),
+        )
+
+        result = self.service.image_generation("a cat", msg=mock_msg)
+
+        self.mock_db.save_pending_task.assert_called_once()
+        call_kwargs = self.mock_db.save_pending_task.call_args
+        assert call_kwargs[1]["task_type"] == "draw"
+        assert "retry" in result.content.lower() or "timed out" in result.content.lower()
+
+    def test_stashing_disabled_when_expiry_zero(self) -> None:
+        """GIVEN askExpiry=0 WHEN completion times out THEN not stashed."""
+        import litellm as litellm_module
+
+        from .conftest import make_registry_side_effect
+
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=make_registry_side_effect({"askExpiry": 0})
+        )
+        service = LLMService(self.mock_plugin)
+        self.mock_plugin.db = self.mock_db
+
+        mock_msg = self.mocker.MagicMock()
+        mock_msg.nick = "alice"
+        mock_msg.args = ("#test", ".ask hello")
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="Request timed out",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        )
+
+        service.completion("hello", command="ask", msg=mock_msg)
+
+        self.mock_db.save_pending_task.assert_not_called()
+
+
+class TestCheckPendingTasks:
+    """Test check_pending_tasks behavior: expired, claim, retry, terminal."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with mock database and time."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+        self.mock_db = mocker.MagicMock()
+        self.mock_plugin.db = self.mock_db
+        self.now = 1000000.0
+        mocker.patch("llm.service.time.time", return_value=self.now)
+
+    def _make_task_row(self, **overrides):
+        """Create a PendingTaskRow with sensible defaults."""
+        from llm.persistence import PendingTaskRow
+
+        defaults = {
+            "id": 1,
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": 1,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "request_data": '{"messages": [{"role": "user", "content": "hello"}]}',
+            "submitted_at": self.now - 30,
+            "expires_at": self.now + 30,
+            "attempt_count": 0,
+            "next_attempt_at": self.now - 5,
+            "claimed_until": 0,
+            "last_error": "",
+        }
+        defaults.update(overrides)
+        return PendingTaskRow(**defaults)
+
+    def test_expired_tasks_returned(self) -> None:
+        """GIVEN expired pending tasks WHEN check_pending_tasks THEN expired results emitted."""
+        expired_row = self._make_task_row(expires_at=self.now - 10)
+        self.mock_db.delete_expired_pending_tasks.return_value = [expired_row]
+        self.mock_db.claim_due_pending_tasks.return_value = []
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 1
+        assert results[0].status == "expired"
+        assert results[0].nick == "alice"
+
+    def test_undeliverable_channel_released_without_increment(self) -> None:
+        """GIVEN a task for a channel not in deliverable set WHEN checked THEN released."""
+        task = self._make_task_row(reply_target="#offline")
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = [task]
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 0
+        self.mock_db.release_pending_task.assert_called_once()
+        call_kwargs = self.mock_db.release_pending_task.call_args
+        assert call_kwargs[1]["increment_attempt"] is False
+
+    def test_malformed_request_data_is_terminal(self) -> None:
+        """GIVEN task with invalid JSON WHEN checked THEN terminal failure."""
+        task = self._make_task_row(request_data="not json {{{")
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = [task]
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 1
+        assert results[0].status == "failed_terminal"
+        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+
+    def test_terminal_error_deletes_task(self) -> None:
+        """GIVEN retry raises AuthenticationError WHEN checked THEN task deleted."""
+        import litellm as litellm_module
+
+        task = self._make_task_row()
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = [task]
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.AuthenticationError(
+                message="Invalid key",
+                llm_provider="openai",
+                model="gpt-4",
+            ),
+        )
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 1
+        assert results[0].status == "failed_terminal"
+        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+
+    def test_transient_error_releases_with_backoff(self) -> None:
+        """GIVEN retry raises Timeout WHEN checked THEN task released with backoff."""
+        import litellm as litellm_module
+
+        task = self._make_task_row(attempt_count=1)
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = [task]
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="timed out",
+                model="gpt-4",
+                llm_provider="openai",
+            ),
+        )
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        # No results emitted for transient errors
+        assert len(results) == 0
+        self.mock_db.release_pending_task.assert_called_once()
+        call_args = self.mock_db.release_pending_task.call_args
+        # backoff for attempt_count=1: min(30 * 2^1, 300) = 60
+        assert call_args[0][1] == self.now + 60
+
+    def test_successful_retry_returns_completed(self) -> None:
+        """GIVEN retry succeeds WHEN checked THEN completed result with metrics."""
+        task = self._make_task_row()
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = [task]
+
+        mock_response = self.mocker.MagicMock()
+        mock_response.choices = [self.mocker.MagicMock()]
+        mock_response.choices[0].message.content = "The answer is 42"
+        mock_response.usage = self.mocker.MagicMock()
+        mock_response.usage.prompt_tokens = 100
+        mock_response.usage.completion_tokens = 50
+        mock_response.model = "gpt-4"
+
+        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 1
+        assert results[0].status == "completed"
+        assert results[0].content == "The answer is 42"
+        assert results[0].prompt_tokens == 100
+        assert results[0].completion_tokens == 50
+        assert results[0].cost == pytest.approx(0.01)
+        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+
+
+class TestErrorClassification:
+    """Test _is_terminal_error classification."""
+
+    def test_auth_error_is_terminal(self) -> None:
+        """GIVEN AuthenticationError WHEN classified THEN terminal."""
+        import litellm as litellm_module
+
+        err = litellm_module.AuthenticationError(
+            message="bad key", llm_provider="openai", model="gpt-4"
+        )
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_timeout_is_transient(self) -> None:
+        """GIVEN Timeout WHEN classified THEN not terminal."""
+        import litellm as litellm_module
+
+        err = litellm_module.Timeout(message="timeout", model="gpt-4", llm_provider="openai")
+        assert LLMService._is_terminal_error(err) is False
+
+    def test_rate_limit_is_transient(self) -> None:
+        """GIVEN RateLimitError WHEN classified THEN not terminal."""
+        import litellm as litellm_module
+
+        err = litellm_module.RateLimitError(
+            message="rate limited", llm_provider="openai", model="gpt-4"
+        )
+        assert LLMService._is_terminal_error(err) is False
+
+
+class TestComputeBackoff:
+    """Test backoff calculation."""
+
+    def test_initial_backoff(self) -> None:
+        """GIVEN attempt 0 WHEN computing backoff THEN 30 seconds."""
+        assert LLMService._compute_backoff(0) == 30
+
+    def test_first_retry_backoff(self) -> None:
+        """GIVEN attempt 1 WHEN computing backoff THEN 60 seconds."""
+        assert LLMService._compute_backoff(1) == 60
+
+    def test_backoff_capped(self) -> None:
+        """GIVEN high attempt count WHEN computing backoff THEN capped at 300."""
+        assert LLMService._compute_backoff(10) == 300
+
+
+class TestServerHeaderLogging:
+    """Tests for server header extraction in error paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+        # Replace the real logger's debug method with a mock so we can inspect calls
+        self.mock_debug = mocker.patch.object(self.service.log, "debug")
+
+    def test_completion_error_logs_server_headers(self) -> None:
+        """GIVEN completion raises with response headers WHEN error caught THEN headers logged at DEBUG."""
+        import httpx
+        import litellm
+
+        exc = litellm.APIError(
+            status_code=500,
+            message="server error",
+            llm_provider="xai",
+            model="xai/grok-2",
+        )
+        exc.response = httpx.Response(500, headers={"x-request-id": "srv-abc", "cf-ray": "ray-123"})
+
+        self.mocker.patch("llm.service.litellm.completion", side_effect=exc)
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.nick = "testuser"
+        mock_msg.args = ("#test", "%ask hello")
+
+        result = self.service.completion("hello", command="ask", msg=mock_msg)
+        assert result.error is not None
+
+        # Verify debug log was called with header info
+        debug_calls = [str(c) for c in self.mock_debug.call_args_list]
+        header_logged = any("x-request-id" in c for c in debug_calls)
+        assert header_logged, f"Expected server headers in debug log, got: {debug_calls}"
+
+    def test_image_generation_error_logs_server_headers(self) -> None:
+        """GIVEN image_generation raises with response headers WHEN error caught THEN headers logged."""
+        import httpx
+        import litellm
+
+        exc = litellm.BadRequestError(
+            message="moderation_blocked",
+            model="xai/grok-imagine-image",
+            llm_provider="xai",
+            response=httpx.Response(400),
+        )
+        # Set response after construction to preserve headers (the openai SDK
+        # constructor strips headers from the response object).
+        exc.response = httpx.Response(400, headers={"x-request-id": "img-xyz", "cf-ray": "ray-456"})
+
+        self.mocker.patch("llm.service.litellm.image_generation", side_effect=exc)
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.nick = "testuser"
+        mock_msg.args = ("#test", "%draw cat")
+
+        result = self.service.image_generation("a cat", msg=mock_msg)
+        assert result.error is not None
+
+        debug_calls = [str(c) for c in self.mock_debug.call_args_list]
+        header_logged = any("x-request-id" in c for c in debug_calls)
+        assert header_logged, f"Expected server headers in debug log, got: {debug_calls}"
+
+    def test_no_crash_when_exception_has_no_headers(self) -> None:
+        """GIVEN exception without response headers WHEN error caught THEN no crash."""
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=Exception("generic error"),
+        )
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.nick = "testuser"
+        mock_msg.args = ("#test", "%ask hello")
+
+        result = self.service.completion("hello", command="ask", msg=mock_msg)
+        assert result.error is not None  # completed without crash
