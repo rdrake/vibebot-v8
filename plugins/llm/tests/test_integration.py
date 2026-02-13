@@ -197,3 +197,113 @@ class TestHTTPCallbackIntegration:
             t.join()
 
         assert len(errors) == 0, f"Errors during concurrent requests: {errors}"
+
+
+class TestAutoFlagFullFlow:
+    """Integration test for the full auto-flag abuse mitigation flow.
+
+    Uses a real SQLite database to verify that content safety refusals
+    accumulate, trigger auto-flagging, block subsequent requests, and
+    that admin unflagging restores access.
+    """
+
+    @pytest.fixture
+    def plugin_with_real_db(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> tuple:
+        """Create plugin with real database but mocked LLM service."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect(
+            {
+                "databasePath": db_path,
+                "flagThreshold": 3,
+                "flagWindow": 3600,
+            }
+        )
+
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        return plugin, mock_irc
+
+    def test_auto_flag_full_flow(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN user hitting content blocks WHEN threshold reached THEN flagged and blocked.
+
+        Full flow:
+        1. User makes 3 draw requests that all get content_blocked
+        2. After 3rd, auto-flag triggers
+        3. 4th request is blocked by _check_flagged
+        4. Admin unflags user
+        5. User can make requests again
+        """
+        from llm.service import ImageResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        # Set up user identity
+        mock_irc.state.nickToAccount.return_value = "abuser"
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "abuser!user@host"
+        mock_msg.args = ("#test", "draw bad stuff")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#test"
+        mock_msg.nick = "abuser"
+
+        # Mock capability check and owner notifications
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin, "_notify_owners")
+
+        # Mock image_generation to return content_blocked
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: content safety violation",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            model="dall-e-3",
+            error="content safety violation",
+        )
+
+        # Step 1: Three draws that get content_blocked → auto-flag on 3rd
+        for i in range(3):
+            mock_irc.reset_mock()
+            plugin.draw(mock_irc, mock_msg, [f"bad prompt {i}"])
+
+        # Step 2: Verify user is now flagged in the real database
+        assert plugin.db.is_user_flagged("abuser") is True
+        plugin._notify_owners.assert_called()
+
+        # Step 3: Next draw should be blocked by _check_flagged
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.reset_mock()
+        plugin.draw(mock_irc, mock_msg, ["another bad prompt"])
+
+        mock_irc.error.assert_called_once()
+        assert "suspended" in mock_irc.error.call_args[0][0]
+        plugin.llm_service.image_generation.assert_not_called()
+
+        # Step 4: Admin unflags the user via the database
+        plugin.db.unflag_user("abuser", "admin_account")
+        assert plugin.db.is_user_flagged("abuser") is False
+
+        # Step 5: User can draw again
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+        plugin.draw(mock_irc, mock_msg, ["nice prompt"])
+
+        mock_irc.reply.assert_called_once()
+        assert "http://img.example/gen.png" in mock_irc.reply.call_args[0][0]
