@@ -1466,6 +1466,7 @@ class LLMService:
                 optional_kwargs=optional_kwargs,
             )
             self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
+            self._log_server_headers(response)
 
             raw_content = response.choices[0].message.content
             content = self.sanitize_output(raw_content)
@@ -1834,6 +1835,7 @@ Rules:
             metadata=self._get_litellm_metadata(),
         )
         self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
+        self._log_server_headers(response)
 
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
         if cost == 0.0:

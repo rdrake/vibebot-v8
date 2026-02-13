@@ -2856,3 +2856,29 @@ class TestServerHeaderLogging:
 
         result = self.service.completion("hello", command="ask", msg=mock_msg)
         assert result.error is not None  # completed without crash
+
+    def test_completion_success_logs_server_headers(self) -> None:
+        """GIVEN successful completion with _response_headers WHEN returned THEN headers logged."""
+        mock_response = self.mocker.Mock()
+        mock_response.choices = [self.mocker.Mock()]
+        mock_response.choices[0].message.content = "Hello!"
+        mock_response._response_headers = {
+            "x-request-id": "success-abc",
+            "content-type": "application/json",
+        }
+        mock_response.usage = self.mocker.Mock(prompt_tokens=10, completion_tokens=5)
+        mock_response.id = "test-id"
+
+        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.nick = "testuser"
+        mock_msg.args = ("#test", "%ask hello")
+
+        result = self.service.completion("hello", command="ask", msg=mock_msg)
+        assert result.error is None
+
+        debug_calls = [str(c) for c in self.service.log.debug.call_args_list]
+        header_logged = any("x-request-id" in c for c in debug_calls)
+        assert header_logged, f"Expected server headers in debug log, got: {debug_calls}"
