@@ -439,3 +439,28 @@ conf.registerGlobalValue(
         Set to DEBUG for verbose tracing including server response headers."""),
     ),
 )
+
+# ============================================================================
+# Abuse Flagging
+# ============================================================================
+
+conf.registerGlobalValue(
+    LLM,
+    "flagThreshold",
+    registry.PositiveInteger(
+        5,
+        _("""Number of content safety refusals within flagWindow seconds that
+        triggers automatic flagging of a user account. Set high to reduce
+        false positives."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "flagWindow",
+    registry.PositiveInteger(
+        3600,
+        _("""Time window in seconds for counting content safety refusals
+        toward the auto-flag threshold. Default: 3600 (1 hour)."""),
+    ),
+)

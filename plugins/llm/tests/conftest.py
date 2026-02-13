@@ -140,6 +140,9 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
+        # Abuse flagging
+        "flagThreshold": 5,
+        "flagWindow": 3600,
     }
     if overrides:
         defaults.update(overrides)
