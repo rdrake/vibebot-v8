@@ -67,7 +67,6 @@ def extract_server_headers(source: object | None) -> dict[str, str]:
     # raw may be dict, httpx.Headers, or similar mapping
     try:
         items = raw.items() if hasattr(raw, "items") else []
+        return {k.lower(): v for k, v in items if k.lower() in SERVER_ID_HEADERS}
     except Exception:
         return {}
-
-    return {k.lower(): v for k, v in items if k.lower() in SERVER_ID_HEADERS}
