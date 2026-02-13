@@ -872,6 +872,20 @@ class LLM(callbacks.Plugin):
             return None
         return account
 
+    def _check_flagged(self, irc: callbacks.Irc, msg: IrcMsg, account: str | None) -> bool:
+        """Check if a user account is flagged for abuse.
+
+        Returns True (and sends error) if the user should be blocked.
+        Returns False if the user is clear to proceed.
+        Unidentified users (account=None) are not checked.
+        """
+        if account is None:
+            return False
+        if self.db.is_user_flagged(account):
+            irc.error(_("Your account has been suspended. Contact a bot admin."))
+            return True
+        return False
+
     def _get_channel(self, msg: IrcMsg) -> str:
         """Extract channel from IRC message.
 
@@ -972,17 +986,21 @@ class LLM(callbacks.Plugin):
                 channel, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
             )
 
-        # Log usage
-        if result.cost > 0 or result.prompt_tokens > 0:
-            self.db.log_usage(
-                nick,
-                channel,
-                command,
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-            )
+        # Log usage -- always log with prompt and status
+        status = "success" if result.error is None else "error"
+        error_detail = (result.error or "")[:200]
+        self.db.log_usage(
+            nick,
+            channel,
+            command,
+            result.model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            result.cost,
+            prompt=text,
+            status=status,
+            error_detail=error_detail,
+        )
 
     def ask(
         self,
@@ -1007,6 +1025,26 @@ class LLM(callbacks.Plugin):
 
         nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
+
+        # Check if user is flagged (optional -- unidentified users pass through)
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            account = irc.state.nickToAccount(raw_nick)
+        except (KeyError, AttributeError):
+            account = None
+        if self._check_flagged(irc, msg, account):
+            self.db.log_usage(
+                nick,
+                channel,
+                "ask",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="flagged_blocked",
+            )
+            return
 
         with self._trace_request("ask", nick, channel):
             # Detect images for vision
@@ -1093,6 +1131,26 @@ class LLM(callbacks.Plugin):
         nick = self._get_identity(irc, msg)
         channel = self._get_channel(msg)
 
+        # Check if user is flagged (optional -- unidentified users pass through)
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            account = irc.state.nickToAccount(raw_nick)
+        except (KeyError, AttributeError):
+            account = None
+        if self._check_flagged(irc, msg, account):
+            self.db.log_usage(
+                nick,
+                channel,
+                "code",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="flagged_blocked",
+            )
+            return
+
         with self._trace_request("code", nick, channel):
             # Get conversation history (personal + shared channel) if context enabled
             if self._get_context_enabled(channel):
@@ -1168,6 +1226,35 @@ class LLM(callbacks.Plugin):
         # Require NickServ identification
         account = self._require_account(irc, msg)
         if account is None:
+            nick = ircutils.nickFromHostmask(msg.prefix)
+            channel = self._get_channel(msg)
+            self.db.log_usage(
+                nick,
+                channel,
+                "draw",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="auth_failure",
+            )
+            return
+
+        if self._check_flagged(irc, msg, account):
+            nick = self._get_identity(irc, msg)
+            channel = self._get_channel(msg)
+            self.db.log_usage(
+                nick,
+                channel,
+                "draw",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="flagged_blocked",
+            )
             return
 
         nick = self._get_identity(irc, msg)
@@ -1209,18 +1296,21 @@ class LLM(callbacks.Plugin):
                     config=ctx_cfg,
                 )
 
-            # Log usage — always log draw requests even when the image API
-            # returns no token/cost data so the request count stays accurate.
-            if result.error is None:
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    "draw",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
+            # Log usage -- always log draw requests with status
+            status = "success" if result.error is None else "error"
+            error_detail = (result.error or "")[:200]
+            self.db.log_usage(
+                nick,
+                channel,
+                "draw",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+                prompt=text,
+                status=status,
+                error_detail=error_detail,
+            )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
@@ -1247,9 +1337,39 @@ class LLM(callbacks.Plugin):
         # Require NickServ identification
         account = self._require_account(irc, msg)
         if account is None:
+            nick = ircutils.nickFromHostmask(msg.prefix)
+            channel = self._get_channel(msg)
+            self.db.log_usage(
+                nick,
+                channel,
+                "animate",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="auth_failure",
+            )
             return
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
 
+        if self._check_flagged(irc, msg, account):
+            raw_nick = ircutils.nickFromHostmask(msg.prefix)
+            nick = self._resolve_nick_to_identity(irc, raw_nick)
+            channel = self._get_channel(msg)
+            self.db.log_usage(
+                nick,
+                channel,
+                "animate",
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="flagged_blocked",
+            )
+            return
+
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
         nick = self._resolve_nick_to_identity(irc, raw_nick)
         channel = self._get_channel(msg)
 
@@ -1280,17 +1400,21 @@ class LLM(callbacks.Plugin):
                     config=ctx_cfg,
                 )
 
-            # Log usage
-            if result.error is None:
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    "animate",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
+            # Log usage -- always log with status
+            status = "success" if result.error is None else "error"
+            error_detail = (result.error or "")[:200]
+            self.db.log_usage(
+                nick,
+                channel,
+                "animate",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+                prompt=text,
+                status=status,
+                error_detail=error_detail,
+            )
 
     animate = wrap(animate, ["text"])
 

@@ -108,6 +108,9 @@ def plugin_env(mocker: MockerFixture):
     # migrate_nick returns 0 by default
     plugin.db.migrate_nick.return_value = 0
 
+    # is_user_flagged returns False by default (user not flagged)
+    plugin.db.is_user_flagged.return_value = False
+
     return plugin, mock_irc, mock_msg
 
 
@@ -243,6 +246,9 @@ class TestAnimateCommand:
             0,
             0,
             0.10,
+            prompt="a cat",
+            status="success",
+            error_detail="",
         )
 
     def test_animate_skips_znc_playback(self, plugin_env):
@@ -358,6 +364,40 @@ class TestVideoGeneration:
 
         assert result.error is not None
         assert "timed out" in result.content.lower()
+
+    def test_video_generation_timeout_stashes_to_db(
+        self,
+        make_service,
+        mocker: MockerFixture,
+    ):
+        """GIVEN polling times out and DB available WHEN video_generation
+        THEN stashes request_id to pending_tasks via DB.
+        """
+        service, plugin = make_service(animateTimeout=1)
+
+        mock_db = mocker.MagicMock()
+        mock_db.save_pending_task.return_value = 7
+        plugin.db = mock_db
+
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
+
+        submit_resp = _mock_response(mocker, json={"request_id": "req-456"})
+        poll_resp = _mock_response(mocker, json={"status": "pending"})
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
+
+        result = service.video_generation("a cat")
+
+        mock_db.save_pending_task.assert_called_once()
+        call_kwargs = mock_db.save_pending_task.call_args[1]
+        assert call_kwargs["task_type"] == "animate"
+        assert '"request_id"' in call_kwargs["request_data"]
+        assert "req-456" in call_kwargs["request_data"]
+        assert "retry" in result.content.lower() or "timed out" in result.content.lower()
 
     def test_video_generation_expired(
         self,

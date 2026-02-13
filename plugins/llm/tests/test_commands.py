@@ -76,6 +76,9 @@ def plugin_env(mocker: MockerFixture):
     # migrate_nick returns an int (0 = nothing to migrate) by default.
     plugin.db.migrate_nick.return_value = 0
 
+    # is_user_flagged returns False by default (user not flagged)
+    plugin.db.is_user_flagged.return_value = False
+
     return plugin, mock_irc, mock_msg
 
 
@@ -143,7 +146,16 @@ class TestAskCommand:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "ask", "gpt-4", 100, 50, 0.005
+            "testnick",
+            "#test",
+            "ask",
+            "gpt-4",
+            100,
+            50,
+            0.005,
+            prompt="hello",
+            status="success",
+            error_detail="",
         )
 
     def test_ask_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -342,7 +354,16 @@ class TestCodeCommand:
         plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "code", "gpt-4", 50, 20, 0.003
+            "testnick",
+            "#test",
+            "code",
+            "gpt-4",
+            50,
+            20,
+            0.003,
+            prompt="assign",
+            status="success",
+            error_detail="",
         )
 
     def test_code_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -472,7 +493,16 @@ class TestDrawCommand:
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "test_account", "#test", "draw", "dall-e-3", 10, 0, 0.04
+            "test_account",
+            "#test",
+            "draw",
+            "dall-e-3",
+            10,
+            0,
+            0.04,
+            prompt="a cat",
+            status="success",
+            error_detail="",
         )
 
     def test_draw_logs_usage_even_with_zero_cost(self, plugin_env, mocker: MockerFixture):
@@ -491,11 +521,20 @@ class TestDrawCommand:
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "test_account", "#test", "draw", "dall-e-3", 0, 0, 0.0
+            "test_account",
+            "#test",
+            "draw",
+            "dall-e-3",
+            0,
+            0,
+            0.0,
+            prompt="test",
+            status="success",
+            error_detail="",
         )
 
-    def test_draw_skips_usage_logging_on_error(self, plugin_env, mocker: MockerFixture):
-        """GIVEN draw that errors WHEN draw completes THEN no usage logged."""
+    def test_draw_logs_usage_on_error(self, plugin_env, mocker: MockerFixture):
+        """GIVEN draw that errors WHEN draw completes THEN usage logged with status=error."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -510,7 +549,18 @@ class TestDrawCommand:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test"])
 
-        plugin.db.log_usage.assert_not_called()
+        plugin.db.log_usage.assert_called_once_with(
+            "test_account",
+            "#test",
+            "draw",
+            "dall-e-3",
+            0,
+            0,
+            0.0,
+            prompt="test",
+            status="error",
+            error_detail="Error: content blocked",
+        )
 
     def test_draw_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
         """GIVEN old message WHEN draw called THEN no reply."""
@@ -1262,7 +1312,16 @@ class TestAccountBasedIdentity:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "MyAccount", "#test", "ask", "gpt-4", 10, 5, 0.001
+            "MyAccount",
+            "#test",
+            "ask",
+            "gpt-4",
+            10,
+            5,
+            0.001,
+            prompt="hello",
+            status="success",
+            error_detail="",
         )
 
     def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
@@ -1281,7 +1340,16 @@ class TestAccountBasedIdentity:
         plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "MyAccount", "#test", "code", "gpt-4", 50, 20, 0.003
+            "MyAccount",
+            "#test",
+            "code",
+            "gpt-4",
+            50,
+            20,
+            0.003,
+            prompt="assign",
+            status="success",
+            error_detail="",
         )
 
     def test_draw_logs_usage_under_account(self, account_env, mocker: MockerFixture):
@@ -1299,7 +1367,16 @@ class TestAccountBasedIdentity:
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "MyAccount", "#test", "draw", "dall-e-3", 10, 0, 0.04
+            "MyAccount",
+            "#test",
+            "draw",
+            "dall-e-3",
+            10,
+            0,
+            0.04,
+            prompt="a cat",
+            status="success",
+            error_detail="",
         )
 
     # -- Context storage under account --
@@ -1384,7 +1461,16 @@ class TestAccountBasedIdentity:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
+            "testnick",
+            "#test",
+            "ask",
+            "gpt-4",
+            10,
+            5,
+            0.001,
+            prompt="hello",
+            status="success",
+            error_detail="",
         )
 
     def test_ask_falls_back_to_nick_on_keyerror(self, plugin_env, mocker: MockerFixture):
@@ -1404,7 +1490,16 @@ class TestAccountBasedIdentity:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick", "#test", "ask", "gpt-4", 10, 5, 0.001
+            "testnick",
+            "#test",
+            "ask",
+            "gpt-4",
+            10,
+            5,
+            0.001,
+            prompt="hello",
+            status="success",
+            error_detail="",
         )
 
     def test_context_stored_under_nick_when_no_account(self, plugin_env, mocker: MockerFixture):

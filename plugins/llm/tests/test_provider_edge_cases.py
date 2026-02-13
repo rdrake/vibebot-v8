@@ -36,7 +36,7 @@ class TestProviderSpecificErrors:
         result = service.completion("test", command="ask")
 
         assert "timed out" in result.content.lower()
-        assert "Error" in result.content
+        assert result.error is not None
 
     def test_handles_rate_limit_error(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN rate limit error WHEN completing THEN returns user-friendly message."""
