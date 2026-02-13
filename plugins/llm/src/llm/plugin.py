@@ -872,6 +872,79 @@ class LLM(callbacks.Plugin):
             return None
         return account
 
+    def _maybe_auto_flag(self, irc: callbacks.Irc, account: str, channel: str) -> None:
+        """Check if a user should be auto-flagged based on recent refusals.
+
+        Queries the database for content-blocked events within the configured
+        window. If the count meets or exceeds the threshold, the user is
+        flagged and all online bot owners are notified.
+
+        Args:
+            irc: IRC connection (for owner notifications).
+            account: NickServ account name.
+            channel: Channel where the event occurred.
+        """
+        threshold = self.registryValue("flagThreshold")
+        window = self.registryValue("flagWindow")
+        since = time.time() - window
+        count = self.db.count_recent_refusals(account, since)
+        if count >= threshold:
+            created = self.db.flag_user(
+                account,
+                f"{count} content blocks in {window}s",
+                auto_flagged=True,
+            )
+            if created:
+                self._notify_owners(
+                    irc,
+                    f"[LLM] Auto-flagged user {account}: "
+                    f"{count} content blocks in {window // 60}min. "
+                    f"Use %flagged to review.",
+                )
+
+    def _notify_owners(self, irc: callbacks.Irc, message: str) -> None:
+        """Send IRC NOTICE to all online users with owner capability.
+
+        Iterates over all registered bot users, checks for the ``owner``
+        capability, and sends a NOTICE to each matching nick that is
+        currently online.
+
+        Args:
+            irc: IRC connection to queue messages on.
+            message: Notification text to send.
+        """
+        try:
+            for user in ircdb.users.users.values():  # ty: ignore[possibly-missing-attribute]
+                if not user.checkCapability("owner"):
+                    continue
+                for nick in irc.state.nicksToHostmasks:
+                    hostmask = irc.state.nicksToHostmasks[nick]
+                    if user.checkHostmask(hostmask):
+                        irc.queueMsg(ircmsgs.notice(nick, message))
+                        break
+        except Exception:
+            self.log.exception("Failed to notify owners")
+
+    @staticmethod
+    def _is_content_blocked_error(error: str | None) -> bool:
+        """Return True if an error string indicates a content safety block.
+
+        Checks for common keywords that LLM providers use when content
+        is rejected for safety/moderation reasons.
+
+        Args:
+            error: Error message string from the LLM service, or None.
+
+        Returns:
+            True if the error looks like a content safety block.
+        """
+        if not error:
+            return False
+        lower = error.lower()
+        return (
+            "content" in lower or "moderation" in lower or "safety" in lower or "blocked" in lower
+        )
+
     def _check_flagged(self, irc: callbacks.Irc, msg: IrcMsg, account: str | None) -> bool:
         """Check if a user account is flagged for abuse.
 
@@ -1297,7 +1370,12 @@ class LLM(callbacks.Plugin):
                 )
 
             # Log usage -- always log draw requests with status
-            status = "success" if result.error is None else "error"
+            if result.error is None:
+                status = "success"
+            elif self._is_content_blocked_error(result.error):
+                status = "content_blocked"
+            else:
+                status = "error"
             error_detail = (result.error or "")[:200]
             self.db.log_usage(
                 nick,
@@ -1311,6 +1389,10 @@ class LLM(callbacks.Plugin):
                 status=status,
                 error_detail=error_detail,
             )
+
+            # Check for auto-flagging after content blocks
+            if status == "content_blocked" and account:
+                self._maybe_auto_flag(irc, account, channel)
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
@@ -1401,7 +1483,12 @@ class LLM(callbacks.Plugin):
                 )
 
             # Log usage -- always log with status
-            status = "success" if result.error is None else "error"
+            if result.error is None:
+                status = "success"
+            elif self._is_content_blocked_error(result.error):
+                status = "content_blocked"
+            else:
+                status = "error"
             error_detail = (result.error or "")[:200]
             self.db.log_usage(
                 nick,
@@ -1415,6 +1502,10 @@ class LLM(callbacks.Plugin):
                 status=status,
                 error_detail=error_detail,
             )
+
+            # Check for auto-flagging after content blocks
+            if status == "content_blocked" and account:
+                self._maybe_auto_flag(irc, account, channel)
 
     animate = wrap(animate, ["text"])
 
@@ -1482,6 +1573,98 @@ class LLM(callbacks.Plugin):
         irc.reply(response, private=True)
 
     llmkeys = wrap(llmkeys, ["admin"])
+
+    def flag(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        nick: str,
+        reason: str,
+    ) -> None:
+        """<nick> <reason>
+
+        Flag a user account for abuse. Resolves nick to NickServ account.
+        Flagged users are blocked from using bot commands.
+        """
+        try:
+            target_account = irc.state.nickToAccount(nick)
+        except (KeyError, AttributeError):
+            target_account = None
+        if not target_account:
+            irc.error(
+                _("Cannot resolve %s to a NickServ account. User must be online and identified.")
+                % nick
+            )
+            return
+
+        admin_account = self._get_identity(irc, msg)
+        created = self.db.flag_user(target_account, reason, auto_flagged=False)
+        if created:
+            self._notify_owners(
+                irc,
+                f"[LLM] {admin_account} flagged user {target_account}: {reason}",
+            )
+            irc.reply(_("Flagged %s (%s).") % (nick, target_account), private=True)
+        else:
+            irc.reply(_("%s is already flagged.") % target_account, private=True)
+
+    flag = wrap(flag, ["admin", "nick", "text"])
+
+    def unflag(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        nick: str,
+    ) -> None:
+        """<nick>
+
+        Remove the abuse flag from a user account.
+        """
+        try:
+            target_account = irc.state.nickToAccount(nick)
+        except (KeyError, AttributeError):
+            target_account = None
+        if not target_account:
+            irc.error(_("Cannot resolve %s to a NickServ account.") % nick)
+            return
+
+        admin_account = self._get_identity(irc, msg)
+        result = self.db.unflag_user(target_account, admin_account)
+        if result:
+            self._notify_owners(
+                irc,
+                f"[LLM] {admin_account} unflagged user {target_account}.",
+            )
+            irc.reply(_("Unflagged %s (%s).") % (nick, target_account), private=True)
+        else:
+            irc.reply(_("%s is not currently flagged.") % target_account, private=True)
+
+    unflag = wrap(unflag, ["admin", "nick"])
+
+    def flagged(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """(takes no arguments)
+
+        List all currently flagged user accounts.
+        """
+        users = self.db.get_flagged_users()
+        if not users:
+            irc.reply(_("No flagged users."), private=True)
+            return
+
+        lines = []
+        for u in users:
+            flag_type = "auto" if u.auto_flagged else "manual"
+            lines.append(f"{u.account} ({flag_type}): {u.reason}")
+        irc.reply(" | ".join(lines), private=True)
+
+    flagged = wrap(flagged, ["admin"])
 
     def usage(
         self,

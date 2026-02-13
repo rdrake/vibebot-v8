@@ -1632,3 +1632,232 @@ class TestRequireAccount:
         result = plugin._require_account(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
+
+
+class TestAutoFlag:
+    """Test _maybe_auto_flag logic."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for auto-flag testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        p = LLM.__new__(LLM)
+        p.db = mocker.MagicMock()
+        p.log = mocker.MagicMock()
+        p.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {"flagThreshold": 5, "flagWindow": 3600}.get(key, "")
+        )
+        return p
+
+    def test_auto_flags_after_threshold(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN refusals at threshold WHEN _maybe_auto_flag THEN user flagged and owners notified."""
+        mock_irc = mocker.MagicMock()
+        plugin.db.count_recent_refusals.return_value = 5
+        plugin.db.flag_user.return_value = True
+        mocker.patch.object(plugin, "_notify_owners")
+
+        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
+
+        plugin.db.flag_user.assert_called_once_with(
+            "alice", "5 content blocks in 3600s", auto_flagged=True
+        )
+        plugin._notify_owners.assert_called_once()
+        notice_text = plugin._notify_owners.call_args[0][1]
+        assert "Auto-flagged" in notice_text
+        assert "alice" in notice_text
+
+    def test_no_flag_below_threshold(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN refusals below threshold WHEN _maybe_auto_flag THEN no flag."""
+        mock_irc = mocker.MagicMock()
+        plugin.db.count_recent_refusals.return_value = 3
+
+        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
+
+        plugin.db.flag_user.assert_not_called()
+
+    def test_no_notification_when_already_flagged(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN flag_user returns False (already flagged) WHEN _maybe_auto_flag THEN no notification."""
+        mock_irc = mocker.MagicMock()
+        plugin.db.count_recent_refusals.return_value = 10
+        plugin.db.flag_user.return_value = False
+        mocker.patch.object(plugin, "_notify_owners")
+
+        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
+
+        plugin.db.flag_user.assert_called_once()
+        plugin._notify_owners.assert_not_called()
+
+
+class TestNotifyOwners:
+    """Test _notify_owners helper."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for notification testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        p = LLM.__new__(LLM)
+        p.log = mocker.MagicMock()
+        return p
+
+    def test_sends_notice_to_online_owner(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN online owner WHEN _notify_owners THEN NOTICE sent."""
+        from llm import plugin as plugin_module
+
+        mock_irc = mocker.MagicMock()
+
+        # Mock user with owner capability
+        mock_user = mocker.MagicMock()
+        mock_user.checkCapability.return_value = True
+        mock_user.checkHostmask.return_value = True
+
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [mock_user]
+
+        mock_irc.state.nicksToHostmasks = {"OwnerNick": "OwnerNick!admin@host"}
+
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
+        try:
+            plugin._notify_owners(mock_irc, "Test notification")
+        finally:
+            plugin_module.ircdb = original_ircdb
+
+        mock_irc.queueMsg.assert_called_once()
+        queued_msg = mock_irc.queueMsg.call_args[0][0]
+        assert queued_msg.command == "NOTICE"
+        assert "Test notification" in queued_msg.args[1]
+
+    def test_no_crash_when_no_owners_online(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN no owners online WHEN _notify_owners THEN no error."""
+        from llm import plugin as plugin_module
+
+        mock_irc = mocker.MagicMock()
+
+        # Mock user with owner capability but no matching hostmask
+        mock_user = mocker.MagicMock()
+        mock_user.checkCapability.return_value = True
+        mock_user.checkHostmask.return_value = False
+
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [mock_user]
+
+        mock_irc.state.nicksToHostmasks = {"SomeUser": "SomeUser!user@host"}
+
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
+        try:
+            plugin._notify_owners(mock_irc, "Test notification")
+        finally:
+            plugin_module.ircdb = original_ircdb
+
+        mock_irc.queueMsg.assert_not_called()
+
+    def test_no_crash_when_no_users(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN no registered users WHEN _notify_owners THEN no error."""
+        from llm import plugin as plugin_module
+
+        mock_irc = mocker.MagicMock()
+
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = []
+
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
+        try:
+            plugin._notify_owners(mock_irc, "Test notification")
+        finally:
+            plugin_module.ircdb = original_ircdb
+
+        mock_irc.queueMsg.assert_not_called()
+
+    def test_handles_exception_gracefully(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN ircdb raises exception WHEN _notify_owners THEN logs exception."""
+        from llm import plugin as plugin_module
+
+        mock_irc = mocker.MagicMock()
+
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.side_effect = RuntimeError("DB error")
+
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
+        try:
+            # Should not raise
+            plugin._notify_owners(mock_irc, "Test notification")
+        finally:
+            plugin_module.ircdb = original_ircdb
+
+        plugin.log.exception.assert_called_once()
+
+    def test_skips_non_owner_users(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN non-owner user online WHEN _notify_owners THEN no NOTICE sent."""
+        from llm import plugin as plugin_module
+
+        mock_irc = mocker.MagicMock()
+
+        mock_user = mocker.MagicMock()
+        mock_user.checkCapability.return_value = False  # Not an owner
+
+        mock_ircdb = mocker.MagicMock()
+        mock_ircdb.users.users.values.return_value = [mock_user]
+
+        mock_irc.state.nicksToHostmasks = {"RegularUser": "RegularUser!user@host"}
+
+        original_ircdb = plugin_module.ircdb
+        plugin_module.ircdb = mock_ircdb
+        try:
+            plugin._notify_owners(mock_irc, "Test notification")
+        finally:
+            plugin_module.ircdb = original_ircdb
+
+        mock_irc.queueMsg.assert_not_called()
+
+
+class TestIsContentBlockedError:
+    """Test _is_content_blocked_error static method."""
+
+    def test_detects_content_keyword(self) -> None:
+        """GIVEN error with 'content' WHEN checked THEN returns True."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("content policy violation") is True
+
+    def test_detects_moderation_keyword(self) -> None:
+        """GIVEN error with 'moderation' WHEN checked THEN returns True."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("moderation_blocked") is True
+
+    def test_detects_safety_keyword(self) -> None:
+        """GIVEN error with 'safety' WHEN checked THEN returns True."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("Triggered safety filter") is True
+
+    def test_detects_blocked_keyword(self) -> None:
+        """GIVEN error with 'blocked' WHEN checked THEN returns True."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("Request was blocked") is True
+
+    def test_returns_false_for_generic_error(self) -> None:
+        """GIVEN generic error WHEN checked THEN returns False."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("timeout exceeded") is False
+
+    def test_returns_false_for_none(self) -> None:
+        """GIVEN None WHEN checked THEN returns False."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error(None) is False
+
+    def test_returns_false_for_empty_string(self) -> None:
+        """GIVEN empty string WHEN checked THEN returns False."""
+        from llm.plugin import LLM
+
+        assert LLM._is_content_blocked_error("") is False

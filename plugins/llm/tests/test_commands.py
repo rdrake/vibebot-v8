@@ -79,6 +79,9 @@ def plugin_env(mocker: MockerFixture):
     # is_user_flagged returns False by default (user not flagged)
     plugin.db.is_user_flagged.return_value = False
 
+    # count_recent_refusals returns 0 by default (no recent blocks)
+    plugin.db.count_recent_refusals.return_value = 0
+
     return plugin, mock_irc, mock_msg
 
 
@@ -533,8 +536,8 @@ class TestDrawCommand:
             error_detail="",
         )
 
-    def test_draw_logs_usage_on_error(self, plugin_env, mocker: MockerFixture):
-        """GIVEN draw that errors WHEN draw completes THEN usage logged with status=error."""
+    def test_draw_logs_usage_on_content_blocked(self, plugin_env, mocker: MockerFixture):
+        """GIVEN draw content blocked WHEN draw completes THEN usage logged with status=content_blocked."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -558,8 +561,37 @@ class TestDrawCommand:
             0,
             0.0,
             prompt="test",
-            status="error",
+            status="content_blocked",
             error_detail="Error: content blocked",
+        )
+
+    def test_draw_logs_usage_on_generic_error(self, plugin_env, mocker: MockerFixture):
+        """GIVEN draw that errors (non-content) WHEN draw completes THEN usage logged with status=error."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: timeout exceeded",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            model="dall-e-3",
+            error="Error: timeout exceeded",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test"])
+
+        plugin.db.log_usage.assert_called_once_with(
+            "test_account",
+            "#test",
+            "draw",
+            "dall-e-3",
+            0,
+            0,
+            0.0,
+            prompt="test",
+            status="error",
+            error_detail="Error: timeout exceeded",
         )
 
     def test_draw_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -1760,3 +1792,236 @@ class TestCodeEdgeCases:
         # Preview should be truncated to ~60 chars
         preview_part = reply_text.split(" — ")[0]
         assert len(preview_part) <= 61  # 57 + "..."
+
+
+# ---------------------------------------------------------------------------
+# flag / unflag / flagged admin commands
+# ---------------------------------------------------------------------------
+
+
+class TestFlagCommands:
+    """Tests for the flag, unflag, and flagged admin commands."""
+
+    def test_flag_flags_user(self, plugin_env, mocker: MockerFixture):
+        """GIVEN identified target WHEN flag called THEN db.flag_user called and reply sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
+        plugin.db.flag_user.return_value = True
+        mocker.patch.object(plugin, "_notify_owners")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
+
+        plugin.db.flag_user.assert_called_once_with(
+            "target_account", "spamming", auto_flagged=False
+        )
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "Flagged" in reply_text
+        assert "baduser" in reply_text
+        assert mock_irc.reply.call_args.kwargs.get("private") is True
+        plugin._notify_owners.assert_called_once()
+
+    def test_flag_rejects_unidentified_target(self, plugin_env, mocker: MockerFixture):
+        """GIVEN nickToAccount returns None WHEN flag called THEN error sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flag(mock_irc, mock_msg, ["unknown", "testing"])
+
+        mock_irc.error.assert_called_once()
+        error_text = mock_irc.error.call_args[0][0]
+        assert "NickServ" in error_text
+        plugin.db.flag_user.assert_not_called()
+
+    def test_flag_handles_already_flagged(self, plugin_env, mocker: MockerFixture):
+        """GIVEN already flagged user WHEN flag called THEN reply says already flagged."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
+        plugin.db.flag_user.return_value = False
+        mocker.patch.object(plugin, "_notify_owners")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "already flagged" in reply_text
+        plugin._notify_owners.assert_not_called()
+
+    def test_flag_handles_nick_to_account_keyerror(self, plugin_env, mocker: MockerFixture):
+        """GIVEN nickToAccount raises KeyError WHEN flag called THEN error sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("not found"))
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flag(mock_irc, mock_msg, ["ghost", "testing"])
+
+        mock_irc.error.assert_called_once()
+        plugin.db.flag_user.assert_not_called()
+
+    def test_unflag_unflags_user(self, plugin_env, mocker: MockerFixture):
+        """GIVEN flagged user WHEN unflag called THEN db.unflag_user called and reply sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        def nick_to_account(nick):
+            if nick == "baduser":
+                return "target_account"
+            return "admin_account"
+
+        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=nick_to_account)
+        plugin.db.unflag_user.return_value = True
+        mocker.patch.object(plugin, "_notify_owners")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.unflag(mock_irc, mock_msg, ["baduser"])
+
+        plugin.db.unflag_user.assert_called_once_with("target_account", "admin_account")
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "Unflagged" in reply_text
+        assert mock_irc.reply.call_args.kwargs.get("private") is True
+        plugin._notify_owners.assert_called_once()
+
+    def test_unflag_rejects_unidentified(self, plugin_env, mocker: MockerFixture):
+        """GIVEN nickToAccount returns None WHEN unflag called THEN error sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.unflag(mock_irc, mock_msg, ["unknown"])
+
+        mock_irc.error.assert_called_once()
+        error_text = mock_irc.error.call_args[0][0]
+        assert "NickServ" in error_text
+        plugin.db.unflag_user.assert_not_called()
+
+    def test_unflag_handles_not_flagged(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user not flagged WHEN unflag called THEN reply says not flagged."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
+        plugin.db.unflag_user.return_value = False
+        mocker.patch.object(plugin, "_notify_owners")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.unflag(mock_irc, mock_msg, ["gooduser"])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "not currently flagged" in reply_text
+        plugin._notify_owners.assert_not_called()
+
+    def test_flagged_lists_users(self, plugin_env, mocker: MockerFixture):
+        """GIVEN flagged users exist WHEN flagged called THEN lists them."""
+        from llm.persistence import FlaggedUserRow
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_flagged_users.return_value = [
+            FlaggedUserRow(
+                id=1,
+                account="alice",
+                flagged_at=time.time(),
+                reason="spamming",
+                auto_flagged=1,
+                resolved_at=None,
+                resolved_by=None,
+            ),
+            FlaggedUserRow(
+                id=2,
+                account="bob",
+                flagged_at=time.time(),
+                reason="abuse",
+                auto_flagged=0,
+                resolved_at=None,
+                resolved_by=None,
+            ),
+        ]
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flagged(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "alice (auto): spamming" in reply_text
+        assert "bob (manual): abuse" in reply_text
+        assert " | " in reply_text
+        assert mock_irc.reply.call_args.kwargs.get("private") is True
+
+    def test_flagged_empty(self, plugin_env, mocker: MockerFixture):
+        """GIVEN no flagged users WHEN flagged called THEN reports no flagged users."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_flagged_users.return_value = []
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.flagged(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "No flagged users" in reply_text
+        assert mock_irc.reply.call_args.kwargs.get("private") is True
+
+
+# ---------------------------------------------------------------------------
+# Auto-flag integration: draw + animate content_blocked triggers auto-flag
+# ---------------------------------------------------------------------------
+
+
+class TestAutoFlagIntegration:
+    """Test that content_blocked errors in draw/animate trigger auto-flag check."""
+
+    def test_draw_content_blocked_triggers_auto_flag(self, plugin_env, mocker: MockerFixture):
+        """GIVEN content blocked draw error WHEN draw completes THEN _maybe_auto_flag called."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: content policy violation",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            model="dall-e-3",
+            error="content policy violation",
+        )
+        mocker.patch.object(plugin, "_maybe_auto_flag")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
+
+        plugin._maybe_auto_flag.assert_called_once_with(mock_irc, "test_account", "#test")
+
+    def test_draw_generic_error_does_not_trigger_auto_flag(self, plugin_env, mocker: MockerFixture):
+        """GIVEN generic draw error WHEN draw completes THEN _maybe_auto_flag NOT called."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: timeout",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            model="dall-e-3",
+            error="timeout",
+        )
+        mocker.patch.object(plugin, "_maybe_auto_flag")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test"])
+
+        plugin._maybe_auto_flag.assert_not_called()
+
+    def test_draw_success_does_not_trigger_auto_flag(self, plugin_env, mocker: MockerFixture):
+        """GIVEN successful draw WHEN draw completes THEN _maybe_auto_flag NOT called."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+        mocker.patch.object(plugin, "_maybe_auto_flag")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
+
+        plugin._maybe_auto_flag.assert_not_called()
