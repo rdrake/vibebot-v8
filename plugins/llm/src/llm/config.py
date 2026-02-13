@@ -84,6 +84,21 @@ class ValidatedModelName(registry.String):
         return []
 
 
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+class ValidatedLogLevel(registry.String):
+    """A log level name validated against Python's standard levels."""
+
+    def setValue(self, v: str) -> None:  # noqa: N802
+        v = v.strip().upper()
+        if v not in _VALID_LOG_LEVELS:
+            raise registry.InvalidRegistryValue(
+                f"Invalid log level: {v!r}. Must be one of: {', '.join(sorted(_VALID_LOG_LEVELS))}"
+            )
+        super().setValue(v)
+
+
 def configure(advanced: bool) -> None:
     """Plugin configuration wizard."""
     from supybot.questions import yn  # noqa: F401
@@ -234,6 +249,50 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
+# Pending Task Retry (per-command expiry)
+# ============================================================================
+
+conf.registerGlobalValue(
+    LLM,
+    "askExpiry",
+    registry.NonNegativeInteger(
+        60,
+        _("""Maximum seconds to keep retrying timed-out ask requests.
+        Set to 0 to disable background retry for ask."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeExpiry",
+    registry.NonNegativeInteger(
+        60,
+        _("""Maximum seconds to keep retrying timed-out code requests.
+        Set to 0 to disable background retry for code."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "drawExpiry",
+    registry.NonNegativeInteger(
+        60,
+        _("""Maximum seconds to keep retrying timed-out draw requests.
+        Set to 0 to disable background retry for draw."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateExpiry",
+    registry.NonNegativeInteger(
+        3600,
+        _("""Maximum seconds to keep retrying timed-out animate requests.
+        Set to 0 to disable background retry for animate."""),
+    ),
+)
+
+# ============================================================================
 # HTTP Server Settings (for code/image output)
 # ============================================================================
 
@@ -368,5 +427,15 @@ conf.registerGlobalValue(
         "",
         _("""Path to SQLite database file for persistence (reminders, usage tracking).
         If empty, uses Limnoria's data directory (data/LLM.db)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "logLevel",
+    ValidatedLogLevel(
+        "WARNING",
+        _("""Log level for LLM plugin (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        Set to DEBUG for verbose tracing including server response headers."""),
     ),
 )
