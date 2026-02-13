@@ -127,6 +127,11 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "animateApiKey": TEST_API_KEY,
         "animateModel": "grok-imagine-video",
         "animateTimeout": 600,
+        # Expiry (pending task retry)
+        "askExpiry": 60,
+        "codeExpiry": 60,
+        "drawExpiry": 60,
+        "animateExpiry": 3600,
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,
@@ -134,6 +139,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "httpUrlBase": TEST_URL_BASE,
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
+        "logLevel": "WARNING",
     }
     if overrides:
         defaults.update(overrides)
