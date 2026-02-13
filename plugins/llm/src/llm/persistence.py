@@ -77,6 +77,18 @@ class PendingTaskRow(NamedTuple):
     last_error: str
 
 
+class FlaggedUserRow(NamedTuple):
+    """A flagged user loaded from the database."""
+
+    id: int
+    account: str
+    flagged_at: float
+    reason: str
+    auto_flagged: int  # 1 = auto-flagged, 0 = manual
+    resolved_at: float | None
+    resolved_by: str | None
+
+
 class LLMDatabase:
     """SQLite database for LLM plugin persistence.
 
@@ -579,6 +591,9 @@ class LLMDatabase:
         prompt_tokens: int,
         completion_tokens: int,
         cost: float,
+        prompt: str = "",
+        status: str = "success",
+        error_detail: str = "",
     ) -> None:
         """Log a usage event.
 
@@ -590,13 +605,17 @@ class LLMDatabase:
             prompt_tokens: Number of prompt tokens consumed.
             completion_tokens: Number of completion tokens generated.
             cost: Estimated cost in USD.
+            prompt: The user's prompt text (for audit/flagging).
+            status: Outcome status (e.g. ``"success"``, ``"content_blocked"``).
+            error_detail: Additional error context when status is not success.
         """
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO usage "
-                "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(timestamp, nick, channel, command, model, prompt_tokens, "
+                "completion_tokens, cost, prompt, status, error_detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     time.time(),
                     nick,
@@ -606,6 +625,9 @@ class LLMDatabase:
                     prompt_tokens,
                     completion_tokens,
                     cost,
+                    prompt,
+                    status,
+                    error_detail,
                 ),
             )
             conn.commit()
@@ -910,5 +932,143 @@ class LLMDatabase:
             rank = (rank_row[0] + 1) if rank_row else 1
 
             return UsageRank(rank=rank, total=total)
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Flagged user operations
+    # ------------------------------------------------------------------
+
+    def flag_user(self, account: str, reason: str, auto_flagged: bool) -> bool:
+        """Flag a user account for review.
+
+        Idempotent: if the account already has an active (unresolved) flag,
+        this is a no-op and returns False. If the account was previously
+        flagged but resolved, the flag is re-activated with the new reason.
+
+        Args:
+            account: NickServ account name.
+            reason: Human-readable reason for the flag.
+            auto_flagged: True if the flag was set automatically.
+
+        Returns:
+            True if a new flag was created or a resolved flag was reactivated,
+            False if the account already has an active flag.
+        """
+        now = time.time()
+        auto_int = 1 if auto_flagged else 0
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT id, resolved_at FROM flagged_users WHERE account = ?",
+                (account,),
+            ).fetchone()
+
+            if row is None:
+                # No existing row — insert new flag
+                conn.execute(
+                    "INSERT INTO flagged_users "
+                    "(account, flagged_at, reason, auto_flagged) "
+                    "VALUES (?, ?, ?, ?)",
+                    (account, now, reason, auto_int),
+                )
+                conn.commit()
+                return True
+
+            if row[1] is not None:
+                # Resolved flag — reactivate with new details
+                conn.execute(
+                    "UPDATE flagged_users SET "
+                    "flagged_at = ?, reason = ?, auto_flagged = ?, "
+                    "resolved_at = NULL, resolved_by = NULL "
+                    "WHERE id = ?",
+                    (now, reason, auto_int, row[0]),
+                )
+                conn.commit()
+                return True
+
+            # Active flag already exists — no-op
+            return False
+        finally:
+            conn.close()
+
+    def unflag_user(self, account: str, resolved_by: str) -> bool:
+        """Resolve an active flag on a user account.
+
+        Args:
+            account: NickServ account name.
+            resolved_by: Identity of the person or system resolving the flag.
+
+        Returns:
+            True if an active flag was resolved, False if none existed.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE flagged_users SET resolved_at = ?, resolved_by = ? "
+                "WHERE account = ? AND resolved_at IS NULL",
+                (time.time(), resolved_by, account),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def is_user_flagged(self, account: str) -> bool:
+        """Check whether a user account has an active (unresolved) flag.
+
+        Args:
+            account: NickServ account name.
+
+        Returns:
+            True if the account has an active flag.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM flagged_users WHERE account = ? AND resolved_at IS NULL",
+                (account,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def get_flagged_users(self) -> list[FlaggedUserRow]:
+        """Return all actively flagged users.
+
+        Returns:
+            List of FlaggedUserRow ordered by flagged_at descending
+            (most recently flagged first).
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, account, flagged_at, reason, auto_flagged, "
+                "resolved_at, resolved_by "
+                "FROM flagged_users WHERE resolved_at IS NULL "
+                "ORDER BY flagged_at DESC",
+            ).fetchall()
+            return [FlaggedUserRow(*row) for row in rows]
+        finally:
+            conn.close()
+
+    def count_recent_refusals(self, nick: str, since: float) -> int:
+        """Count content-blocked usage events for a nick since a timestamp.
+
+        Args:
+            nick: IRC nick (or account name) to query.
+            since: Unix timestamp; only events at or after this time are counted.
+
+        Returns:
+            Number of usage rows with status ``"content_blocked"`` for the nick.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM usage "
+                "WHERE nick = ? AND status = 'content_blocked' AND timestamp >= ?",
+                (nick, since),
+            ).fetchone()
+            return row[0] if row else 0
         finally:
             conn.close()

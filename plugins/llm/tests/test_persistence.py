@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from llm.persistence import LLMDatabase, PendingTaskRow, ReminderRow, UsageRank
+from llm.persistence import FlaggedUserRow, LLMDatabase, PendingTaskRow, ReminderRow, UsageRank
 
 
 class TestDatabaseInit:
@@ -909,3 +909,208 @@ class TestPendingTasks:
         assert tasks[0].task_type == "animate"
         assert tasks[0].is_channel == 0
         db2.close()
+
+
+class TestLogUsageExtended:
+    """Test the extended log_usage parameters (prompt, status, error_detail)."""
+
+    def test_log_usage_stores_prompt_and_status(self, tmp_path: Path) -> None:
+        """GIVEN new log_usage params WHEN logging with prompt/status/error_detail THEN stored."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage(
+            "alice",
+            "#test",
+            "ask",
+            "gpt-4",
+            100,
+            50,
+            0.01,
+            prompt="tell me a joke",
+            status="content_blocked",
+            error_detail="moderation filter triggered",
+        )
+
+        conn = db._connect()
+        try:
+            row = conn.execute(
+                "SELECT prompt, status, error_detail FROM usage WHERE nick = 'alice'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "tell me a joke"
+            assert row[1] == "content_blocked"
+            assert row[2] == "moderation filter triggered"
+        finally:
+            conn.close()
+
+    def test_log_usage_defaults_to_success(self, tmp_path: Path) -> None:
+        """GIVEN no new params WHEN logging usage THEN defaults applied."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.log_usage("bob", "#test", "code", "gpt-4", 200, 100, 0.02)
+
+        conn = db._connect()
+        try:
+            row = conn.execute(
+                "SELECT prompt, status, error_detail FROM usage WHERE nick = 'bob'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == ""
+            assert row[1] == "success"
+            assert row[2] == ""
+        finally:
+            conn.close()
+
+
+class TestFlaggedUsers:
+    """Test flagged user CRUD operations and refusal counting."""
+
+    def test_flag_user_creates_record(self, tmp_path: Path) -> None:
+        """GIVEN no flags WHEN flagging a user THEN record appears in get_flagged_users."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        result = db.flag_user("alice", "repeated abuse", auto_flagged=True)
+        assert result is True
+
+        flagged = db.get_flagged_users()
+        assert len(flagged) == 1
+        assert isinstance(flagged[0], FlaggedUserRow)
+        assert flagged[0].account == "alice"
+        assert flagged[0].reason == "repeated abuse"
+        assert flagged[0].auto_flagged == 1
+        assert flagged[0].resolved_at is None
+        assert flagged[0].resolved_by is None
+
+    def test_flag_user_idempotent(self, tmp_path: Path) -> None:
+        """GIVEN an already-flagged user WHEN flagging again THEN no-op, original reason preserved."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "first reason", auto_flagged=False)
+        result = db.flag_user("alice", "second reason", auto_flagged=True)
+        assert result is False
+
+        flagged = db.get_flagged_users()
+        assert len(flagged) == 1
+        assert flagged[0].reason == "first reason"
+        assert flagged[0].auto_flagged == 0
+
+    def test_is_user_flagged_returns_true(self, tmp_path: Path) -> None:
+        """GIVEN a flagged user WHEN checking is_user_flagged THEN returns True."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "test", auto_flagged=False)
+        assert db.is_user_flagged("alice") is True
+
+    def test_is_user_flagged_returns_false_when_not_flagged(self, tmp_path: Path) -> None:
+        """GIVEN no flags WHEN checking is_user_flagged THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.is_user_flagged("nobody") is False
+
+    def test_is_user_flagged_returns_false_after_unflag(self, tmp_path: Path) -> None:
+        """GIVEN a flagged then unflagged user WHEN checking THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "test", auto_flagged=False)
+        db.unflag_user("alice", resolved_by="admin")
+        assert db.is_user_flagged("alice") is False
+
+    def test_unflag_sets_resolved_fields(self, tmp_path: Path) -> None:
+        """GIVEN a flagged user WHEN unflagging THEN resolved_at and resolved_by are set."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "test", auto_flagged=True)
+        before = time.time()
+        result = db.unflag_user("alice", resolved_by="admin")
+        after = time.time()
+        assert result is True
+
+        # Read the raw row to check resolved fields
+        conn = db._connect()
+        try:
+            row = conn.execute(
+                "SELECT resolved_at, resolved_by FROM flagged_users WHERE account = 'alice'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] is not None
+            assert before <= row[0] <= after
+            assert row[1] == "admin"
+        finally:
+            conn.close()
+
+    def test_unflag_nonexistent_returns_false(self, tmp_path: Path) -> None:
+        """GIVEN no flags WHEN unflagging a user THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        result = db.unflag_user("nobody", resolved_by="admin")
+        assert result is False
+
+    def test_get_flagged_users_excludes_resolved(self, tmp_path: Path) -> None:
+        """GIVEN two flagged users, one resolved WHEN listing THEN only active returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "reason a", auto_flagged=False)
+        db.flag_user("bob", "reason b", auto_flagged=True)
+        db.unflag_user("alice", resolved_by="admin")
+
+        flagged = db.get_flagged_users()
+        assert len(flagged) == 1
+        assert flagged[0].account == "bob"
+
+    def test_count_recent_refusals(self, tmp_path: Path) -> None:
+        """GIVEN mixed usage statuses WHEN counting refusals THEN only content_blocked counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        since = time.time() - 10
+        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
+        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
+        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="success")
+        db.log_usage("bob", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
+
+        count = db.count_recent_refusals("alice", since)
+        assert count == 2
+
+    def test_count_recent_refusals_respects_time_window(self, tmp_path: Path) -> None:
+        """GIVEN old and recent refusals WHEN counting with since THEN only recent counted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+
+        # Insert an old refusal directly (timestamp 2 hours ago)
+        conn = db._connect()
+        try:
+            old_time = time.time() - 7200
+            conn.execute(
+                "INSERT INTO usage "
+                "(timestamp, nick, channel, command, model, prompt_tokens, "
+                "completion_tokens, cost, prompt, status, error_detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    old_time,
+                    "alice",
+                    "#test",
+                    "ask",
+                    "gpt-4",
+                    10,
+                    5,
+                    0.01,
+                    "",
+                    "content_blocked",
+                    "",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Insert a recent refusal via log_usage
+        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
+
+        since = time.time() - 3600  # 1 hour window
+        count = db.count_recent_refusals("alice", since)
+        assert count == 1
+
+    def test_reflag_after_unflag_creates_new_flag(self, tmp_path: Path) -> None:
+        """GIVEN a flagged-then-unflagged user WHEN re-flagging THEN active again."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.flag_user("alice", "first offense", auto_flagged=False)
+        db.unflag_user("alice", resolved_by="admin")
+        assert db.is_user_flagged("alice") is False
+
+        result = db.flag_user("alice", "second offense", auto_flagged=True)
+        assert result is True
+        assert db.is_user_flagged("alice") is True
+
+        flagged = db.get_flagged_users()
+        assert len(flagged) == 1
+        assert flagged[0].account == "alice"
+        assert flagged[0].reason == "second offense"
+        assert flagged[0].auto_flagged == 1
+        assert flagged[0].resolved_at is None
