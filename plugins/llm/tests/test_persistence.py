@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from llm.persistence import LLMDatabase, ReminderRow, UsageRank
+from llm.persistence import LLMDatabase, PendingTaskRow, ReminderRow, UsageRank
 
 
 class TestDatabaseInit:
@@ -55,6 +55,51 @@ class TestDatabaseInit:
         finally:
             conn.close()
 
+    def test_usage_table_has_prompt_column(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN usage table has prompt column."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
+            column_names = [col[1] for col in columns]
+            assert "prompt" in column_names
+        finally:
+            conn.close()
+
+    def test_usage_table_has_status_column(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN usage table has status column."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
+            column_names = [col[1] for col in columns]
+            assert "status" in column_names
+        finally:
+            conn.close()
+
+    def test_usage_table_has_error_detail_column(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN usage table has error_detail column."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
+            column_names = [col[1] for col in columns]
+            assert "error_detail" in column_names
+        finally:
+            conn.close()
+
+    def test_creates_flagged_users_table(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN flagged_users table exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='flagged_users'"
+            )
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
     def test_idempotent_init(self, tmp_path: Path) -> None:
         """GIVEN an existing database WHEN opened again THEN no error."""
         db_path = str(tmp_path / "test.db")
@@ -66,6 +111,74 @@ class TestDatabaseInit:
         reminders = db2.load_pending_reminders()
         assert len(reminders) == 1
         assert reminders[0].event_name == "evt1"
+
+
+class TestSchemaMigration:
+    """Test schema version migration from v1 to v2."""
+
+    def test_migration_preserves_existing_usage_data(self, tmp_path: Path) -> None:
+        """GIVEN a v1 database with usage data WHEN opened with v2 code THEN data preserved with defaults."""
+        db_path = str(tmp_path / "test.db")
+
+        # Manually create a v1 database (no prompt/status/error_detail columns)
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript("""
+            CREATE TABLE usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                nick TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                command TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0
+            );
+        """)
+        conn.execute(
+            "INSERT INTO usage "
+            "(timestamp, nick, channel, command, model, prompt_tokens, completion_tokens, cost) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1000000.0, "alice", "#general", "ask", "gpt-4", 100, 50, 0.01),
+        )
+        conn.commit()
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        conn.close()
+
+        # Open with LLMDatabase — should run v2 migration
+        db = LLMDatabase(db_path)
+
+        # Verify original data is preserved
+        summary = db.get_usage_summary()
+        assert summary.total_requests == 1
+        assert summary.total_prompt_tokens == 100
+        assert summary.total_completion_tokens == 50
+        assert summary.total_cost == pytest.approx(0.01)
+
+        # Verify new columns exist with defaults
+        conn = db._connect()
+        try:
+            row = conn.execute(
+                "SELECT prompt, status, error_detail FROM usage WHERE nick = 'alice'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == ""  # prompt default
+            assert row[1] == "success"  # status default
+            assert row[2] == ""  # error_detail default
+        finally:
+            conn.close()
+
+        # Verify flagged_users table was also created
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='flagged_users'"
+            )
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
 
 
 class TestReminderPersistence:
@@ -586,3 +699,213 @@ class TestMigrateNick:
         assert db.get_usage_summary_for_nick("AliceAccount").total_requests == 1
         # bob's rows untouched
         assert db.get_usage_summary_for_nick("bob").total_requests == 1
+
+
+class TestPendingTasks:
+    """Test pending task CRUD operations and claim/release semantics."""
+
+    def test_save_and_load_pending_task(self, tmp_path: Path) -> None:
+        """GIVEN a database WHEN a pending task is saved THEN it can be loaded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#general",
+            is_channel=True,
+            prompt_preview="What is the weather?",
+            model="gpt-4",
+            request_data='{"messages": []}',
+            submitted_at=now,
+            expires_at=now + 60,
+            next_attempt_at=now,
+        )
+
+        assert isinstance(task_id, int)
+        assert task_id > 0
+
+        tasks = db.load_pending_tasks()
+        assert len(tasks) == 1
+
+        t = tasks[0]
+        assert isinstance(t, PendingTaskRow)
+        assert t.id == task_id
+        assert t.task_type == "ask"
+        assert t.nick == "alice"
+        assert t.reply_target == "#general"
+        assert t.is_channel == 1
+        assert t.prompt_preview == "What is the weather?"
+        assert t.model == "gpt-4"
+        assert t.request_data == '{"messages": []}'
+        assert t.attempt_count == 0
+        assert t.last_error == ""
+
+    def test_claim_due_tasks_sets_lease(self, tmp_path: Path) -> None:
+        """GIVEN a due task WHEN claimed THEN claimed_until is set."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        db.save_pending_task(
+            task_type="code",
+            nick="bob",
+            reply_target="#dev",
+            is_channel=True,
+            prompt_preview="Write a sort",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now - 10,
+            expires_at=now + 50,
+            next_attempt_at=now - 5,
+        )
+
+        claimed = db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
+        assert len(claimed) == 1
+        assert claimed[0].task_type == "code"
+
+        # After claiming, the task should not be claimable again
+        claimed_again = db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
+        assert len(claimed_again) == 0
+
+    def test_claim_skips_not_due_and_claimed(self, tmp_path: Path) -> None:
+        """GIVEN tasks not yet due or already claimed WHEN claiming THEN skipped."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        # Not yet due (next_attempt_at in future)
+        db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="future task",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now + 60,
+        )
+
+        claimed = db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
+        assert len(claimed) == 0
+
+    def test_release_increments_attempt_and_sets_backoff(self, tmp_path: Path) -> None:
+        """GIVEN a claimed task WHEN released with increment THEN attempt_count bumped."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = db.save_pending_task(
+            task_type="draw",
+            nick="charlie",
+            reply_target="#art",
+            is_channel=True,
+            prompt_preview="a cat",
+            model="dall-e-3",
+            request_data='{"prompt": "a cat"}',
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        # Claim then release
+        db.claim_due_pending_tasks(now, limit=1, lease_seconds=120)
+        next_at = now + 30
+        result = db.release_pending_task(task_id, next_at, "timeout", increment_attempt=True)
+        assert result is True
+
+        tasks = db.load_pending_tasks()
+        assert len(tasks) == 1
+        assert tasks[0].attempt_count == 1
+        assert tasks[0].next_attempt_at == next_at
+        assert tasks[0].last_error == "timeout"
+        assert tasks[0].claimed_until == 0
+
+    def test_release_without_increment_for_undeliverable_channel(self, tmp_path: Path) -> None:
+        """GIVEN a claimed task WHEN released without increment THEN attempt_count unchanged."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = db.save_pending_task(
+            task_type="ask",
+            nick="dave",
+            reply_target="#offline",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        db.claim_due_pending_tasks(now, limit=1, lease_seconds=120)
+        db.release_pending_task(task_id, now + 30, "Channel not available", increment_attempt=False)
+
+        tasks = db.load_pending_tasks()
+        assert tasks[0].attempt_count == 0
+
+    def test_delete_expired_returns_rows(self, tmp_path: Path) -> None:
+        """GIVEN expired tasks WHEN deleting THEN returns expired rows and removes them."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        # Expired task
+        db.save_pending_task(
+            task_type="ask",
+            nick="eve",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="old question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now - 120,
+            expires_at=now - 10,
+            next_attempt_at=now - 60,
+        )
+
+        # Still valid task
+        db.save_pending_task(
+            task_type="code",
+            nick="frank",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="new code",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        expired = db.delete_expired_pending_tasks(now)
+        assert len(expired) == 1
+        assert expired[0].nick == "eve"
+
+        # Only the valid task remains
+        remaining = db.load_pending_tasks()
+        assert len(remaining) == 1
+        assert remaining[0].nick == "frank"
+
+    def test_survives_reopen(self, tmp_path: Path) -> None:
+        """GIVEN saved pending task WHEN DB reopened THEN task loadable."""
+        db_path = str(tmp_path / "test.db")
+        now = time.time()
+
+        db1 = LLMDatabase(db_path)
+        db1.save_pending_task(
+            task_type="animate",
+            nick="grace",
+            reply_target="grace",
+            is_channel=False,
+            prompt_preview="dancing cat",
+            model="grok-imagine-video",
+            request_data='{"request_id": "req-999"}',
+            submitted_at=now,
+            expires_at=now + 3600,
+            next_attempt_at=now,
+        )
+        db1.close()
+
+        db2 = LLMDatabase(db_path)
+        tasks = db2.load_pending_tasks()
+        assert len(tasks) == 1
+        assert tasks[0].nick == "grace"
+        assert tasks[0].task_type == "animate"
+        assert tasks[0].is_channel == 0
+        db2.close()

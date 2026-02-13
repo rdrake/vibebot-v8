@@ -1,7 +1,7 @@
 """SQLite persistence layer for LLM plugin.
 
-Provides thread-safe database operations for reminders and usage tracking
-using a connection-per-call pattern with WAL mode.
+Provides thread-safe database operations for reminders, usage tracking,
+and pending task queue using a connection-per-call pattern with WAL mode.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -58,6 +58,25 @@ class UsageRank(NamedTuple):
     total: int  # total entries in the leaderboard
 
 
+class PendingTaskRow(NamedTuple):
+    """A pending task loaded from the database."""
+
+    id: int
+    task_type: str  # ask|code|draw|animate
+    nick: str
+    reply_target: str  # channel name or PM nick
+    is_channel: int  # 1 channel, 0 PM
+    prompt_preview: str
+    model: str
+    request_data: str  # JSON blob
+    submitted_at: float
+    expires_at: float
+    attempt_count: int
+    next_attempt_at: float
+    claimed_until: float
+    last_error: str
+
+
 class LLMDatabase:
     """SQLite database for LLM plugin persistence.
 
@@ -86,9 +105,16 @@ class LLMDatabase:
         return conn
 
     def _migrate(self) -> None:
-        """Run schema migration to create tables and indexes."""
+        """Run schema migration to create tables and indexes.
+
+        Uses SQLite's ``PRAGMA user_version`` to track which migrations have
+        been applied.  New tables are created with ``CREATE TABLE IF NOT EXISTS``
+        so the initial DDL is always safe to re-run, and incremental column /
+        table additions are guarded by version checks.
+        """
         conn = self._connect()
         try:
+            # --- v1 baseline: create core tables ---------------------------
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,7 +145,60 @@ class LLMDatabase:
                     ON usage(nick);
                 CREATE INDEX IF NOT EXISTS idx_usage_channel
                     ON usage(channel);
+
+                CREATE TABLE IF NOT EXISTS pending_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type TEXT NOT NULL,
+                    nick TEXT NOT NULL,
+                    reply_target TEXT NOT NULL,
+                    is_channel INTEGER NOT NULL,
+                    prompt_preview TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    request_data TEXT NOT NULL DEFAULT '{}',
+                    submitted_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL,
+                    claimed_until REAL NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_pending_tasks_expires_at
+                    ON pending_tasks(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_pending_tasks_due
+                    ON pending_tasks(next_attempt_at, claimed_until);
+                CREATE INDEX IF NOT EXISTS idx_pending_tasks_type
+                    ON pending_tasks(task_type);
             """)
+            conn.commit()
+
+            # --- version-gated migrations ----------------------------------
+            row = conn.execute("PRAGMA user_version").fetchone()
+            current_version = row[0] if row else 0
+
+            if current_version < 2:
+                conn.executescript("""
+                    ALTER TABLE usage ADD COLUMN prompt TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE usage ADD COLUMN status TEXT NOT NULL DEFAULT 'success';
+                    ALTER TABLE usage ADD COLUMN error_detail TEXT NOT NULL DEFAULT '';
+
+                    CREATE INDEX IF NOT EXISTS idx_usage_nick_status
+                        ON usage(nick, status);
+
+                    CREATE TABLE IF NOT EXISTS flagged_users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account TEXT UNIQUE NOT NULL,
+                        flagged_at REAL NOT NULL,
+                        reason TEXT NOT NULL DEFAULT '',
+                        auto_flagged INTEGER NOT NULL DEFAULT 0,
+                        resolved_at REAL,
+                        resolved_by TEXT
+                    );
+                """)
+                conn.commit()
+
+            # Stamp the schema version so future opens skip completed migrations.
+            # PRAGMA statements cannot be part of executescript, so use execute.
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
         finally:
             conn.close()
@@ -227,6 +306,231 @@ class LLMDatabase:
             )
             conn.commit()
             return cursor.rowcount
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Pending task operations
+    # ------------------------------------------------------------------
+
+    _PENDING_TASK_COLUMNS = (
+        "id, task_type, nick, reply_target, is_channel, prompt_preview, model, "
+        "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
+        "claimed_until, last_error"
+    )
+
+    def save_pending_task(
+        self,
+        task_type: str,
+        nick: str,
+        reply_target: str,
+        is_channel: bool,
+        prompt_preview: str,
+        model: str,
+        request_data: str,
+        submitted_at: float,
+        expires_at: float,
+        next_attempt_at: float,
+    ) -> int:
+        """Save a pending task to the database.
+
+        Args:
+            task_type: Command type (ask, code, draw, animate).
+            nick: IRC nick that initiated the command.
+            reply_target: Channel or PM nick for delivery.
+            is_channel: True if reply_target is a channel.
+            prompt_preview: Truncated prompt for display.
+            model: Model identifier.
+            request_data: JSON-serialized request payload.
+            submitted_at: Unix timestamp when originally submitted.
+            expires_at: Unix timestamp after which to stop retrying.
+            next_attempt_at: Unix timestamp for first retry.
+
+        Returns:
+            The row ID of the inserted task.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO pending_tasks "
+                "(task_type, nick, reply_target, is_channel, prompt_preview, model, "
+                "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
+                "claimed_until, last_error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '')",
+                (
+                    task_type,
+                    nick,
+                    reply_target,
+                    1 if is_channel else 0,
+                    prompt_preview,
+                    model,
+                    request_data,
+                    submitted_at,
+                    expires_at,
+                    next_attempt_at,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+        finally:
+            conn.close()
+
+    def claim_due_pending_tasks(
+        self, now: float, limit: int, lease_seconds: int
+    ) -> list[PendingTaskRow]:
+        """Atomically claim pending tasks that are due for retry.
+
+        Uses BEGIN IMMEDIATE for exclusive write access so concurrent
+        callers cannot claim the same rows.
+
+        Args:
+            now: Current Unix timestamp.
+            limit: Maximum number of tasks to claim.
+            lease_seconds: How long to hold the claim (seconds).
+
+        Returns:
+            List of claimed PendingTaskRow objects.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
+                "WHERE next_attempt_at <= ? AND claimed_until <= ? "
+                "ORDER BY next_attempt_at LIMIT ?",
+                (now, now, limit),
+            ).fetchall()
+
+            if not rows:
+                conn.commit()
+                return []
+
+            claimed_until = now + lease_seconds
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE pending_tasks SET claimed_until = ? WHERE id IN ({placeholders})",
+                [claimed_until, *ids],
+            )
+            conn.commit()
+            return [PendingTaskRow(*row) for row in rows]
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def release_pending_task(
+        self,
+        task_id: int,
+        next_attempt_at: float,
+        last_error: str,
+        increment_attempt: bool = True,
+    ) -> bool:
+        """Release a claimed task back to the queue for later retry.
+
+        Args:
+            task_id: ID of the task to release.
+            next_attempt_at: When to retry next.
+            last_error: Error message from this attempt.
+            increment_attempt: Whether to bump attempt_count.
+
+        Returns:
+            True if the task was updated, False if not found.
+        """
+        conn = self._connect()
+        try:
+            if increment_attempt:
+                cursor = conn.execute(
+                    "UPDATE pending_tasks SET "
+                    "next_attempt_at = ?, claimed_until = 0, "
+                    "last_error = ?, attempt_count = attempt_count + 1 "
+                    "WHERE id = ?",
+                    (next_attempt_at, last_error, task_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE pending_tasks SET "
+                    "next_attempt_at = ?, claimed_until = 0, last_error = ? "
+                    "WHERE id = ?",
+                    (next_attempt_at, last_error, task_id),
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def delete_pending_task(self, task_id: int) -> bool:
+        """Delete a pending task by ID.
+
+        Args:
+            task_id: ID of the task to delete.
+
+        Returns:
+            True if a task was deleted, False if not found.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM pending_tasks WHERE id = ?",
+                (task_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def delete_expired_pending_tasks(self, now: float) -> list[PendingTaskRow]:
+        """Delete pending tasks whose expires_at has passed.
+
+        Args:
+            now: Current Unix timestamp.
+
+        Returns:
+            List of expired PendingTaskRow objects (before deletion).
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks WHERE expires_at <= ?",
+                (now,),
+            ).fetchall()
+            if rows:
+                ids = [row[0] for row in rows]
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"DELETE FROM pending_tasks WHERE id IN ({placeholders})",
+                    ids,
+                )
+                conn.commit()
+            return [PendingTaskRow(*row) for row in rows]
+        finally:
+            conn.close()
+
+    def load_pending_tasks(self, task_type: str | None = None) -> list[PendingTaskRow]:
+        """Load pending tasks, optionally filtered by type.
+
+        Intended for debugging and tests.
+
+        Args:
+            task_type: Optional filter (ask, code, draw, animate).
+
+        Returns:
+            List of PendingTaskRow ordered by submitted_at ascending.
+        """
+        conn = self._connect()
+        try:
+            if task_type is not None:
+                rows = conn.execute(
+                    f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
+                    "WHERE task_type = ? ORDER BY submitted_at",
+                    (task_type,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks ORDER BY submitted_at",
+                ).fetchall()
+            return [PendingTaskRow(*row) for row in rows]
         finally:
             conn.close()
 
