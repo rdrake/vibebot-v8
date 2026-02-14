@@ -32,7 +32,9 @@ from .service import (
     CODE_PREVIEW_MAX_LEN,
     CODE_PREVIEW_TRUNCATE_LEN,
     CompletionResult,
+    ImageResult,
     LLMService,
+    VideoResult,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
@@ -1097,6 +1099,13 @@ class LLM(callbacks.Plugin):
             "content" in lower or "moderation" in lower or "safety" in lower or "blocked" in lower
         )
 
+    @staticmethod
+    def _month_start_ts() -> float:
+        """Return the UNIX timestamp for midnight UTC on the 1st of the current month."""
+        return (
+            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+
     def _check_flagged(self, irc: callbacks.Irc, msg: IrcMsg, account: str | None) -> bool:
         """Check if a user account is flagged for abuse.
 
@@ -1180,39 +1189,42 @@ class LLM(callbacks.Plugin):
         command: str,
         text: str,
         response: str,
-        result: CompletionResult,
+        result: CompletionResult | ImageResult | VideoResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
     ) -> None:
         """Store conversation context and log API usage for a command.
 
-        Shared between ask and code commands to avoid duplication.
+        Shared between all commands (ask, code, draw, animate).
 
         Args:
             nick: User's nick
             channel: Channel name
-            command: Command name ("ask" or "code")
+            command: Command name ("ask", "code", "draw", or "animate")
             text: Original user input
-            response: LLM response content (without display decorations)
-            result: Full completion result with usage metadata
+            response: Text to store in context (e.g. LLM response or
+                ``"[Generated image: <url>]"``)
+            result: Result with usage metadata
             irc: IRC connection instance
             msg: IRC message
         """
         # Store conversation context if enabled and no error occurred
         if result.error is None and self._get_context_enabled(channel):
             ctx_cfg = self._get_context_config(channel)
-            # Store in personal context (without icon for clean history)
             self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
             self.context.add_message(nick, channel, Role.ASSISTANT, response, config=ctx_cfg)
-
-            # Store in shared channel context (allows group conversation flow)
             self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
             self.context.add_channel_message(
                 channel, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
             )
 
-        # Log usage -- always log with prompt and status
-        status = "success" if result.error is None else "error"
+        # Determine status
+        if result.error is None:
+            status = "success"
+        elif self._is_content_blocked_error(result.error):
+            status = "content_blocked"
+        else:
+            status = "error"
         error_detail = (result.error or "")[:200]
         self.db.log_usage(
             nick,
@@ -1454,45 +1466,15 @@ class LLM(callbacks.Plugin):
                 else:
                     irc.reply(sanitized_content)
 
-            # Store conversation context if enabled and no error
-            if result.error is None and self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
-                self.context.add_message(
-                    nick,
-                    channel,
-                    Role.ASSISTANT,
-                    f"[Generated image: {result.content}]",
-                    config=ctx_cfg,
-                )
-                self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
-                self.context.add_channel_message(
-                    channel,
-                    irc.nick,
-                    Role.ASSISTANT,
-                    f"[Generated image: {result.content}]",
-                    config=ctx_cfg,
-                )
-
-            # Log usage -- always log draw requests with status
-            if result.error is None:
-                status = "success"
-            elif self._is_content_blocked_error(result.error):
-                status = "content_blocked"
-            else:
-                status = "error"
-            error_detail = (result.error or "")[:200]
-            self.db.log_usage(
+            self._store_context_and_log_usage(
                 nick,
                 channel,
                 "draw",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-                prompt=text,
-                status=status,
-                error_detail=error_detail,
+                text,
+                f"[Generated image: {result.content}]",
+                result,
+                irc,
+                msg,
             )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
@@ -1536,45 +1518,15 @@ class LLM(callbacks.Plugin):
                 sanitized_content = self.llm_service.sanitize_output(result.content)
                 irc.reply(sanitized_content)
 
-            # Store conversation context if enabled and no error
-            if result.error is None and self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
-                self.context.add_message(
-                    nick,
-                    channel,
-                    Role.ASSISTANT,
-                    f"[Generated video: {result.content}]",
-                    config=ctx_cfg,
-                )
-                self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
-                self.context.add_channel_message(
-                    channel,
-                    irc.nick,
-                    Role.ASSISTANT,
-                    f"[Generated video: {result.content}]",
-                    config=ctx_cfg,
-                )
-
-            # Log usage -- always log with status
-            if result.error is None:
-                status = "success"
-            elif self._is_content_blocked_error(result.error):
-                status = "content_blocked"
-            else:
-                status = "error"
-            error_detail = (result.error or "")[:200]
-            self.db.log_usage(
+            self._store_context_and_log_usage(
                 nick,
                 channel,
                 "animate",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-                prompt=text,
-                status=status,
-                error_detail=error_detail,
+                text,
+                f"[Generated video: {result.content}]",
+                result,
+                irc,
+                msg,
             )
 
     animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
@@ -1773,9 +1725,7 @@ class LLM(callbacks.Plugin):
         )
 
         # This month: first of month midnight UTC
-        month_start = (
-            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-        )
+        month_start = self._month_start_ts()
 
         today = self.db.get_usage_summary(since=today_midnight)
         month = self.db.get_usage_summary(since=month_start)
@@ -1803,9 +1753,7 @@ class LLM(callbacks.Plugin):
         nick = self._get_identity(irc, msg)
 
         # This month: first of month midnight UTC
-        month_start = (
-            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-        )
+        month_start = self._month_start_ts()
 
         chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
         nick_summary = self.db.get_usage_summary_for_nick(nick, since=month_start, channel=channel)
@@ -1840,9 +1788,7 @@ class LLM(callbacks.Plugin):
         # Resolve target nick → account for the DB query
         identity = self._resolve_nick_to_identity(irc, nick)
 
-        month_start = (
-            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-        )
+        month_start = self._month_start_ts()
 
         nick_summary = self.db.get_usage_summary_for_nick(
             identity, since=month_start, channel=channel
@@ -1860,9 +1806,7 @@ class LLM(callbacks.Plugin):
 
     def _usage_for_channel(self, irc: callbacks.Irc, msg: IrcMsg, channel: str) -> None:
         """Show usage stats for a specific channel."""
-        month_start = (
-            datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-        )
+        month_start = self._month_start_ts()
 
         chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
         chan_rank = self.db.get_channel_rank(channel, since=month_start)
