@@ -636,6 +636,28 @@ class LLMDatabase:
         finally:
             conn.close()
 
+    def get_next_due_time(self) -> float | None:
+        """Return the earliest next_attempt_at for actionable unclaimed tasks.
+
+        Only considers tasks that could be processed by the scheduler:
+        unclaimed rows with delivery_state in (pending, ready, retrying).
+
+        Returns:
+            Earliest next_attempt_at timestamp, or None if the queue is empty.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT MIN(next_attempt_at) FROM pending_tasks "
+                "WHERE claimed_until <= 0 "
+                "AND delivery_state IN ('pending', 'ready', 'retrying')",
+            ).fetchone()
+            if row is None or row[0] is None:
+                return None
+            return row[0]
+        finally:
+            conn.close()
+
     def load_pending_tasks(self, task_type: str | None = None) -> list[PendingTaskRow]:
         """Load pending tasks, optionally filtered by type.
 

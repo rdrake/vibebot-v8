@@ -1203,6 +1203,78 @@ class TestSchemaV3Migration:
             conn.close()
 
 
+class TestGetNextDueTime:
+    """Test get_next_due_time() for event-driven queue wakeups (Phase 2)."""
+
+    def _save_task(self, db, now, **overrides):
+        """Helper to save a pending task with sensible defaults."""
+        defaults = {
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": True,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "request_data": "{}",
+            "submitted_at": now,
+            "expires_at": now + 120,
+            "next_attempt_at": now,
+        }
+        defaults.update(overrides)
+        return db.save_pending_task(**defaults)
+
+    def test_empty_queue_returns_none(self, tmp_path: Path) -> None:
+        """GIVEN no pending tasks WHEN get_next_due_time called THEN returns None."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.get_next_due_time() is None
+
+    def test_returns_earliest_next_attempt_at(self, tmp_path: Path) -> None:
+        """GIVEN multiple pending tasks WHEN get_next_due_time called THEN returns the earliest."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        self._save_task(db, now, nick="later", next_attempt_at=now + 60)
+        self._save_task(db, now, nick="sooner", next_attempt_at=now + 10)
+        self._save_task(db, now, nick="middle", next_attempt_at=now + 30)
+
+        result = db.get_next_due_time()
+        assert result == now + 10
+
+    def test_excludes_claimed_tasks(self, tmp_path: Path) -> None:
+        """GIVEN a claimed task WHEN get_next_due_time called THEN it is excluded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        self._save_task(db, now, nick="claimed", next_attempt_at=now + 5)
+        db.claim_due_pending_tasks(now + 10, limit=10, lease_seconds=120)
+        # The only task is now claimed — should return None
+        assert db.get_next_due_time() is None
+
+    def test_includes_pending_and_delivery_states(self, tmp_path: Path) -> None:
+        """GIVEN tasks in pending, ready, and retrying states WHEN get_next_due_time THEN all considered."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        # pending task due later
+        self._save_task(db, now, nick="pending", next_attempt_at=now + 60)
+        # ready task due sooner
+        ready_id = self._save_task(db, now, nick="ready", next_attempt_at=now + 20)
+        db.update_task_for_delivery(ready_id, "ready", '{"content": "r1"}')
+        # retrying task due soonest
+        retrying_id = self._save_task(db, now, nick="retrying", next_attempt_at=now + 10)
+        db.update_task_for_delivery(retrying_id, "retrying", '{"content": "r2"}')
+
+        assert db.get_next_due_time() == now + 10
+
+    def test_excludes_terminal_delivery_states(self, tmp_path: Path) -> None:
+        """GIVEN tasks in delivery_failed state WHEN get_next_due_time THEN excluded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        failed_id = self._save_task(db, now, nick="failed", next_attempt_at=now + 5)
+        db.update_task_for_delivery(failed_id, "delivery_failed", '{"content": "r1"}')
+
+        assert db.get_next_due_time() is None
+
+
 class TestLogUsageExtended:
     """Test the extended log_usage parameters (prompt, status, error_detail)."""
 

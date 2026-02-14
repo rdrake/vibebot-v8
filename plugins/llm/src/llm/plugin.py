@@ -355,16 +355,20 @@ class LLM(callbacks.Plugin):
             now=False,  # Don't run immediately on startup
         )
 
-        # Schedule periodic check for pending tasks (every 30s)
+        # Safety poll for pending tasks (5-minute fallback for event-driven wakeups)
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_pending_tasks")
 
         schedule.addPeriodicEvent(
             self._check_pending_tasks,
-            30,
+            self._SAFETY_POLL_INTERVAL,
             name="llm_pending_tasks",
             now=False,
         )
+
+        # Event-driven queue wakeup state
+        self._next_wakeup_time: float | None = None
+        self._schedule_queue_wakeup()  # rebuild from DB on startup
 
         # Register callback for live log level changes
         conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
@@ -393,6 +397,8 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_pending_tasks")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_queue_wakeup")
 
         # Remove all reminder events (guard for tests that mock __init__)
         if hasattr(self, "_reminders"):
@@ -415,6 +421,46 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Scheduled file cleanup failed: %s", e)
 
+    def _schedule_queue_wakeup(self, at_time: float | None = None) -> None:
+        """Schedule a one-shot wakeup for the next due queue task.
+
+        If *at_time* is given it is used directly; otherwise the earliest
+        ``next_attempt_at`` is queried from the database.  A wakeup is only
+        scheduled when it would fire earlier than any existing one.
+
+        Args:
+            at_time: Optional explicit wakeup timestamp.  When provided the
+                database is not queried.
+        """
+        if at_time is None:
+            at_time = self.db.get_next_due_time()
+        if not isinstance(at_time, (int, float)):
+            return
+
+        now = time.time()
+
+        # Clamp past-due timestamps to now + 1 so Limnoria doesn't discard them
+        effective = max(at_time, now + 1)
+
+        # Skip if an existing wakeup is already earlier and still in the future
+        if (
+            self._next_wakeup_time is not None
+            and self._next_wakeup_time <= effective
+            and self._next_wakeup_time > now
+        ):
+            return
+
+        # Replace any existing wakeup
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_queue_wakeup")
+
+        schedule.addEvent(
+            self._check_pending_tasks,
+            effective,
+            name="llm_queue_wakeup",
+        )
+        self._next_wakeup_time = effective
+
     def _check_pending_tasks(self) -> None:
         """Poll pending tasks and deliver completed/failed/expired results.
 
@@ -422,6 +468,10 @@ class LLM(callbacks.Plugin):
         does not cascade to the rest of the batch.
         """
         try:
+            # The wakeup that triggered this call has fired; clear it so
+            # _schedule_queue_wakeup can schedule the next one.
+            self._next_wakeup_time = None
+
             # Build set of channels the bot is currently in
             deliverable_channels: set[str] = set()
             for irc_conn in world.ircs:
@@ -439,8 +489,14 @@ class LLM(callbacks.Plugin):
                         r.nick,
                         e,
                     )
+
+            # Schedule the next wakeup based on remaining queue state
+            self._schedule_queue_wakeup()
         except Exception as e:
             self.log.error("Pending task check failed: %s", e)
+
+    # Safety poll interval (seconds) — fallback for event-driven wakeups
+    _SAFETY_POLL_INTERVAL = 300  # 5 minutes
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15
@@ -529,13 +585,15 @@ class LLM(callbacks.Plugin):
                     self._DELIVERY_MAX_BACKOFF,
                 )
                 state = "delivery_failed" if attempt >= self._DELIVERY_MAX_ATTEMPTS else "retrying"
+                retry_at = now + delay
                 self.db.update_delivery_attempt(
                     task_id=r.task_id,
                     delivery_state=state,
                     last_delivery_error="IRC delivery failed",
                     delivery_attempt_count=attempt,
-                    next_attempt_at=now + delay,
+                    next_attempt_at=retry_at,
                 )
+                self._schedule_queue_wakeup(at_time=retry_at)
 
         # Log usage for completed tasks
         if r.status == "completed" and delivered and (r.cost > 0 or r.prompt_tokens > 0):

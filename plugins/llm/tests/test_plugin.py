@@ -1621,6 +1621,7 @@ class TestDeliveryRetry:
         plugin.llm_service.save_code_to_http.return_value = None
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
+        plugin._next_wakeup_time = None
         return plugin
 
     def _make_result(self, **overrides):
@@ -1774,6 +1775,253 @@ class TestDeliveryRetry:
         mock_irc.queueMsg.assert_called_once()
         plugin.db.delete_pending_task.assert_not_called()
         plugin.db.update_delivery_attempt.assert_not_called()
+
+
+class TestScheduleQueueWakeup:
+    """Test event-driven queue wakeup scheduling (Phase 2)."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for wakeup testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+        plugin._next_wakeup_time = None
+        return plugin
+
+    def test_no_tasks_does_nothing(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN empty queue WHEN _schedule_queue_wakeup called THEN no event scheduled."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        plugin.db.get_next_due_time.return_value = None
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.addEvent.assert_not_called()
+        assert plugin._next_wakeup_time is None
+
+    def test_schedules_at_next_due_time(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN task due at T WHEN _schedule_queue_wakeup called THEN one-shot event at T."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        plugin.db.get_next_due_time.return_value = 1060.0
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.addEvent.assert_called_once()
+        call_args = mock_schedule.addEvent.call_args
+        assert call_args[1]["name"] == "llm_queue_wakeup"
+        assert call_args[0][1] == 1060.0  # at= parameter
+        assert plugin._next_wakeup_time == 1060.0
+
+    def test_replaces_if_earlier(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN scheduled wakeup at T=100 WHEN new due time T=50 THEN reschedule to T=50."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=10.0)
+        plugin._next_wakeup_time = 100.0
+        plugin.db.get_next_due_time.return_value = 50.0
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.removeEvent.assert_any_call("llm_queue_wakeup")
+        mock_schedule.addEvent.assert_called_once()
+        assert plugin._next_wakeup_time == 50.0
+
+    def test_keeps_earlier_existing(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN scheduled wakeup at T=50 WHEN new due time T=100 THEN keep T=50."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=10.0)
+        plugin._next_wakeup_time = 50.0
+        plugin.db.get_next_due_time.return_value = 100.0
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.addEvent.assert_not_called()
+        assert plugin._next_wakeup_time == 50.0
+
+    def test_past_due_schedules_immediately(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN task due in the past WHEN _schedule_queue_wakeup called THEN schedule at now+1."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        plugin.db.get_next_due_time.return_value = 900.0  # in the past
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.addEvent.assert_called_once()
+        call_args = mock_schedule.addEvent.call_args
+        # Should schedule at now + 1, not in the past
+        assert call_args[0][1] == 1001.0
+
+    def test_explicit_at_time_bypasses_db(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN explicit at_time WHEN _schedule_queue_wakeup(at_time=T) THEN uses T, no DB query."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+
+        plugin._schedule_queue_wakeup(at_time=1030.0)
+
+        plugin.db.get_next_due_time.assert_not_called()
+        mock_schedule.addEvent.assert_called_once()
+        assert plugin._next_wakeup_time == 1030.0
+
+    def test_clears_stale_wakeup_in_past(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN existing wakeup already in the past WHEN new due time THEN replace it."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        plugin._next_wakeup_time = 900.0  # already past
+        plugin.db.get_next_due_time.return_value = 1060.0
+
+        plugin._schedule_queue_wakeup()
+
+        mock_schedule.removeEvent.assert_any_call("llm_queue_wakeup")
+        mock_schedule.addEvent.assert_called_once()
+        assert plugin._next_wakeup_time == 1060.0
+
+
+class TestSafetyPollInterval:
+    """Test that the safety poll runs at 5-minute intervals (Phase 2)."""
+
+    def test_safety_poll_interval_is_300_seconds(self, mocker: MockerFixture) -> None:
+        """GIVEN plugin init WHEN addPeriodicEvent called for pending tasks THEN interval is 300."""
+        from llm.plugin import LLM
+
+        mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.conf")
+        mocker.patch("llm.plugin.world")
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+        plugin.registryValue = mocker.MagicMock(return_value="")
+        plugin._http_callback = None
+        plugin._reminders = {}
+        plugin._reminders_lock = mocker.MagicMock()
+        plugin.llm_service = mocker.MagicMock()
+        plugin._apply_log_level = mocker.MagicMock()
+        plugin._next_wakeup_time = None
+
+        # Check that the constant is defined
+        assert hasattr(LLM, "_SAFETY_POLL_INTERVAL")
+        assert LLM._SAFETY_POLL_INTERVAL == 300
+
+
+class TestWakeupTriggers:
+    """Test that wakeup is triggered from all queue mutation points (Phase 2)."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for wakeup trigger testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.llm_service.save_code_to_http.return_value = None
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+        plugin._next_wakeup_time = None
+        return plugin
+
+    def _make_result(self, **overrides):
+        """Create a PendingTaskResult with defaults."""
+        from llm.service import PendingTaskResult
+
+        defaults = {
+            "status": "completed",
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": True,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "content": "answer",
+            "reason": "",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cost": 0.01,
+            "task_id": 42,
+        }
+        defaults.update(overrides)
+        return PendingTaskResult(**defaults)
+
+    def test_check_pending_tasks_reschedules_after_batch(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """GIVEN batch completes WHEN _check_pending_tasks finishes THEN _schedule_queue_wakeup called."""
+        import supybot.world as world_mod
+
+        mocker.patch.object(world_mod, "ircs", [])
+        plugin.llm_service.check_pending_tasks.return_value = []
+        mock_wakeup = mocker.patch.object(plugin, "_schedule_queue_wakeup")
+
+        plugin._check_pending_tasks()
+
+        mock_wakeup.assert_called_once()
+
+    def test_check_pending_tasks_clears_stale_wakeup(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN active wakeup WHEN _check_pending_tasks runs THEN _next_wakeup_time cleared first."""
+        import supybot.world as world_mod
+
+        mocker.patch.object(world_mod, "ircs", [])
+        plugin.llm_service.check_pending_tasks.return_value = []
+        plugin._next_wakeup_time = 999.0
+
+        # Use real _schedule_queue_wakeup but mock schedule module
+        mocker.patch("llm.plugin.schedule")
+        plugin.db.get_next_due_time.return_value = None
+
+        plugin._check_pending_tasks()
+
+        # Wakeup time should be cleared since no pending tasks
+        assert plugin._next_wakeup_time is None
+
+    def test_delivery_retry_triggers_wakeup(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN delivery fails WHEN _deliver_pending_result retries THEN wakeup scheduled at retry time."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.queueMsg.side_effect = Exception("IRC send failed")
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        mock_wakeup = mocker.patch.object(plugin, "_schedule_queue_wakeup")
+
+        r = self._make_result(task_id=42)
+        plugin._deliver_pending_result(r)
+
+        # Should schedule wakeup at the retry time (now + backoff)
+        mock_wakeup.assert_called_once_with(at_time=1000.0 + 15)
+
+    def test_stash_triggers_wakeup(self, mocker: MockerFixture) -> None:
+        """GIVEN a request times out WHEN _stash_timeout succeeds THEN wakeup scheduled."""
+        from llm.service import LLMService
+
+        mock_plugin = mocker.MagicMock()
+        mock_plugin.registryValue.return_value = 3600  # expiry
+        mock_plugin.db.save_pending_task.return_value = 1
+
+        service = LLMService.__new__(LLMService)
+        service.plugin = mock_plugin
+        service.log = mocker.MagicMock()
+
+        now = 1000.0
+        result = service._stash_timeout(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt="hello",
+            model="gpt-4",
+            request_data={"messages": []},
+            submitted_at=now,
+        )
+
+        assert result is True
+        mock_plugin._schedule_queue_wakeup.assert_called_once_with(at_time=now)
 
 
 class TestRequireAccount:

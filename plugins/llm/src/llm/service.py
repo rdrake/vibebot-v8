@@ -979,6 +979,12 @@ class LLMService:
             task_id,
             expiry,
         )
+
+        # Trigger an event-driven wakeup so the scheduler picks this up quickly
+        schedule_wakeup = getattr(self.plugin, "_schedule_queue_wakeup", None)
+        if schedule_wakeup is not None:
+            schedule_wakeup(at_time=submitted_at)
+
         return True
 
     @staticmethod
