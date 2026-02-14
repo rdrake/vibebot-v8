@@ -2615,6 +2615,11 @@ class TestCheckPendingTasks:
             "next_attempt_at": self.now - 5,
             "claimed_until": 0,
             "last_error": "",
+            "delivery_state": "pending",
+            "result_payload": "",
+            "last_delivery_error": "",
+            "delivery_attempt_count": 0,
+            "origin_request_id": "",
         }
         defaults.update(overrides)
         return PendingTaskRow(**defaults)
@@ -2635,7 +2640,10 @@ class TestCheckPendingTasks:
         """GIVEN a task for a channel not in deliverable set WHEN checked THEN released."""
         task = self._make_task_row(reply_target="#offline")
         self.mock_db.delete_expired_pending_tasks.return_value = []
-        self.mock_db.claim_due_pending_tasks.return_value = [task]
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
 
         results = self.service.check_pending_tasks({"#test"})
 
@@ -2644,25 +2652,33 @@ class TestCheckPendingTasks:
         call_kwargs = self.mock_db.release_pending_task.call_args
         assert call_kwargs[1]["increment_attempt"] is False
 
-    def test_malformed_request_data_is_terminal(self) -> None:
-        """GIVEN task with invalid JSON WHEN checked THEN terminal failure."""
+    def test_malformed_request_data_stored_for_delivery(self) -> None:
+        """GIVEN task with invalid JSON WHEN checked THEN stored as terminal failure for delivery."""
         task = self._make_task_row(request_data="not json {{{")
         self.mock_db.delete_expired_pending_tasks.return_value = []
-        self.mock_db.claim_due_pending_tasks.return_value = [task]
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
 
-        results = self.service.check_pending_tasks({"#test"})
+        self.service.check_pending_tasks({"#test"})
 
-        assert len(results) == 1
-        assert results[0].status == "failed_terminal"
-        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        call_args = self.mock_db.update_task_for_delivery.call_args
+        assert call_args[0][0] == task.id
+        assert call_args[0][1] == "ready"
+        self.mock_db.delete_pending_task.assert_not_called()
 
-    def test_terminal_error_deletes_task(self) -> None:
-        """GIVEN retry raises AuthenticationError WHEN checked THEN task deleted."""
+    def test_terminal_error_stored_for_delivery(self) -> None:
+        """GIVEN retry raises AuthenticationError WHEN checked THEN stored for delivery."""
         import litellm as litellm_module
 
         task = self._make_task_row()
         self.mock_db.delete_expired_pending_tasks.return_value = []
-        self.mock_db.claim_due_pending_tasks.return_value = [task]
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
 
         self.mocker.patch(
             "llm.service.litellm.completion",
@@ -2673,11 +2689,10 @@ class TestCheckPendingTasks:
             ),
         )
 
-        results = self.service.check_pending_tasks({"#test"})
+        self.service.check_pending_tasks({"#test"})
 
-        assert len(results) == 1
-        assert results[0].status == "failed_terminal"
-        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        self.mock_db.delete_pending_task.assert_not_called()
 
     def test_transient_error_releases_with_backoff(self) -> None:
         """GIVEN retry raises Timeout WHEN checked THEN task released with backoff."""
@@ -2685,7 +2700,10 @@ class TestCheckPendingTasks:
 
         task = self._make_task_row(attempt_count=1)
         self.mock_db.delete_expired_pending_tasks.return_value = []
-        self.mock_db.claim_due_pending_tasks.return_value = [task]
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
 
         self.mocker.patch(
             "llm.service.litellm.completion",
@@ -2705,11 +2723,14 @@ class TestCheckPendingTasks:
         # backoff for attempt_count=1: min(30 * 2^1, 300) = 60
         assert call_args[0][1] == self.now + 60
 
-    def test_successful_retry_returns_completed(self) -> None:
-        """GIVEN retry succeeds WHEN checked THEN completed result with metrics."""
+    def test_successful_retry_stores_result_for_delivery(self) -> None:
+        """GIVEN retry succeeds WHEN checked THEN result stored for delivery phase."""
         task = self._make_task_row()
         self.mock_db.delete_expired_pending_tasks.return_value = []
-        self.mock_db.claim_due_pending_tasks.return_value = [task]
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
 
         mock_response = self.mocker.MagicMock()
         mock_response.choices = [self.mocker.MagicMock()]
@@ -2722,15 +2743,167 @@ class TestCheckPendingTasks:
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
 
+        self.service.check_pending_tasks({"#test"})
+
+        # Provider stores result, does not delete
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        self.mock_db.delete_pending_task.assert_not_called()
+
+
+class TestProviderDeliverySplit:
+    """Test Phase 1b split of check_pending_tasks into provider + delivery phases."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with mock database and time."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+        self.mock_db = mocker.MagicMock()
+        self.mock_plugin.db = self.mock_db
+        self.now = 1000000.0
+        mocker.patch("llm.service.time.time", return_value=self.now)
+
+    def _make_task_row(self, **overrides):
+        """Create a PendingTaskRow with sensible defaults."""
+        from llm.persistence import PendingTaskRow
+
+        defaults = {
+            "id": 1,
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": 1,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "request_data": '{"messages": [{"role": "user", "content": "hello"}]}',
+            "submitted_at": self.now - 30,
+            "expires_at": self.now + 30,
+            "attempt_count": 0,
+            "next_attempt_at": self.now - 5,
+            "claimed_until": 0,
+            "last_error": "",
+            "delivery_state": "pending",
+            "result_payload": "",
+            "last_delivery_error": "",
+            "delivery_attempt_count": 0,
+            "origin_request_id": "",
+        }
+        defaults.update(overrides)
+        return PendingTaskRow(**defaults)
+
+    def test_provider_success_stores_result_instead_of_deleting(self) -> None:
+        """GIVEN provider retry succeeds WHEN checked THEN update_task_for_delivery called, not delete."""
+        task = self._make_task_row()
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        # Provider phase claims pending tasks
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
+
+        mock_response = self.mocker.MagicMock()
+        mock_response.choices = [self.mocker.MagicMock()]
+        mock_response.choices[0].message.content = "The answer is 42"
+        mock_response.usage = self.mocker.MagicMock()
+        mock_response.usage.prompt_tokens = 100
+        mock_response.usage.completion_tokens = 50
+        mock_response.model = "gpt-4"
+
+        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+
+        self.service.check_pending_tasks({"#test"})
+
+        # Should store result, not delete
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        call_args = self.mock_db.update_task_for_delivery.call_args
+        assert call_args[0][0] == task.id
+        assert call_args[0][1] == "ready"
+        self.mock_db.delete_pending_task.assert_not_called()
+
+    def test_terminal_error_stores_result_for_delivery(self) -> None:
+        """GIVEN provider raises terminal error WHEN checked THEN stores failure result for delivery."""
+        import litellm as litellm_module
+
+        task = self._make_task_row()
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
+
+        self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.AuthenticationError(
+                message="Invalid key",
+                llm_provider="openai",
+                model="gpt-4",
+            ),
+        )
+
+        self.service.check_pending_tasks({"#test"})
+
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        call_args = self.mock_db.update_task_for_delivery.call_args
+        assert call_args[0][1] == "ready"  # still 'ready' — plugin delivers failure message
+        self.mock_db.delete_pending_task.assert_not_called()
+
+    def test_provider_phase_claims_only_pending(self) -> None:
+        """GIVEN tasks WHEN provider phase runs THEN claims with delivery_state_filter='pending'."""
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = []
+
+        self.service.check_pending_tasks({"#test"})
+
+        # First call should filter for 'pending' (provider phase)
+        calls = self.mock_db.claim_due_pending_tasks.call_args_list
+        assert len(calls) >= 1
+        assert calls[0][1].get("delivery_state_filter") == "pending"
+
+    def test_delivery_phase_claims_ready_and_retrying(self) -> None:
+        """GIVEN tasks WHEN delivery phase runs THEN claims ready/retrying with attempt limit."""
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.return_value = []
+
+        self.service.check_pending_tasks({"#test"})
+
+        # Second call should filter for ready/retrying (delivery phase)
+        calls = self.mock_db.claim_due_pending_tasks.call_args_list
+        assert len(calls) >= 2
+        delivery_filter = calls[1][1].get("delivery_state_filter")
+        assert set(delivery_filter) == {"ready", "retrying"}
+
+    def test_delivery_phase_returns_results_with_task_id(self) -> None:
+        """GIVEN ready tasks in delivery phase WHEN checked THEN results include task_id."""
+        ready_task = self._make_task_row(
+            id=42,
+            delivery_state="ready",
+            result_payload='{"status": "completed", "content": "hello", '
+            '"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001}',
+        )
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [],  # provider phase
+            [ready_task],  # delivery phase
+        ]
+
         results = self.service.check_pending_tasks({"#test"})
 
         assert len(results) == 1
+        assert results[0].task_id == 42
         assert results[0].status == "completed"
-        assert results[0].content == "The answer is 42"
-        assert results[0].prompt_tokens == 100
-        assert results[0].completion_tokens == 50
-        assert results[0].cost == pytest.approx(0.01)
-        self.mock_db.delete_pending_task.assert_called_once_with(task.id)
+
+    def test_expired_still_ephemeral_and_deleted(self) -> None:
+        """GIVEN expired tasks WHEN checked THEN deleted (ephemeral delivery, no task_id)."""
+        expired_row = self._make_task_row(expires_at=self.now - 10)
+        self.mock_db.delete_expired_pending_tasks.return_value = [expired_row]
+        self.mock_db.claim_due_pending_tasks.return_value = []
+
+        results = self.service.check_pending_tasks({"#test"})
+
+        assert len(results) == 1
+        assert results[0].status == "expired"
+        assert results[0].task_id is None
 
 
 class TestErrorClassification:

@@ -416,7 +416,11 @@ class LLM(callbacks.Plugin):
             self.log.error("Scheduled file cleanup failed: %s", e)
 
     def _check_pending_tasks(self) -> None:
-        """Poll pending tasks and deliver completed/failed/expired results."""
+        """Poll pending tasks and deliver completed/failed/expired results.
+
+        Each result is delivered independently so that one delivery failure
+        does not cascade to the rest of the batch.
+        """
         try:
             # Build set of channels the bot is currently in
             deliverable_channels: set[str] = set()
@@ -426,15 +430,30 @@ class LLM(callbacks.Plugin):
             results = self.llm_service.check_pending_tasks(deliverable_channels)
 
             for r in results:
-                self._deliver_pending_result(r)
+                try:
+                    self._deliver_pending_result(r)
+                except Exception as e:
+                    self.log.error(
+                        "Delivery failed for task_id=%s nick=%s: %s",
+                        r.task_id,
+                        r.nick,
+                        e,
+                    )
         except Exception as e:
             self.log.error("Pending task check failed: %s", e)
+
+    # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
+    _DELIVERY_BASE_BACKOFF = 15
+    _DELIVERY_MAX_BACKOFF = 120
+    _DELIVERY_MAX_ATTEMPTS = 10
 
     def _deliver_pending_result(self, r) -> None:
         """Deliver a single pending task result to the correct target.
 
-        Sends the message to the original channel or PM nick. Logs usage
-        for completed tasks.
+        Sends the message to the original channel or PM nick.  For results
+        with a ``task_id`` (from the durable delivery queue), acknowledges
+        successful delivery by deleting the row, or retries with bounded
+        exponential backoff on failure.
 
         Args:
             r: PendingTaskResult from check_pending_tasks.
@@ -481,19 +500,45 @@ class LLM(callbacks.Plugin):
         else:
             return
 
-        # Find an IRC connection that can reach the target and deliver
-        for irc_conn in world.ircs:
-            if r.is_channel:
-                if target in irc_conn.state.channels:
+        # Try to deliver via IRC
+        delivered = False
+        try:
+            for irc_conn in world.ircs:
+                if r.is_channel:
+                    if target in irc_conn.state.channels:
+                        irc_conn.queueMsg(ircmsgs.privmsg(target, text))
+                        delivered = True
+                        break
+                else:
+                    # PM delivery — use first available connection
                     irc_conn.queueMsg(ircmsgs.privmsg(target, text))
+                    delivered = True
                     break
+        except Exception:
+            delivered = False
+
+        # Acknowledge or retry delivery for durable results
+        if r.task_id is not None:
+            if delivered:
+                self.db.delete_pending_task(r.task_id)
             else:
-                # PM delivery — use first available connection
-                irc_conn.queueMsg(ircmsgs.privmsg(target, text))
-                break
+                now = time.time()
+                attempt = 1  # first failure
+                delay = min(
+                    self._DELIVERY_BASE_BACKOFF * (2 ** (attempt - 1)),
+                    self._DELIVERY_MAX_BACKOFF,
+                )
+                state = "delivery_failed" if attempt >= self._DELIVERY_MAX_ATTEMPTS else "retrying"
+                self.db.update_delivery_attempt(
+                    task_id=r.task_id,
+                    delivery_state=state,
+                    last_delivery_error="IRC delivery failed",
+                    delivery_attempt_count=attempt,
+                    next_attempt_at=now + delay,
+                )
 
         # Log usage for completed tasks
-        if r.status == "completed" and (r.cost > 0 or r.prompt_tokens > 0):
+        if r.status == "completed" and delivered and (r.cost > 0 or r.prompt_tokens > 0):
             for irc_conn in world.ircs:
                 identity = self._resolve_nick_to_identity(irc_conn, nick)
                 self.db.log_usage(

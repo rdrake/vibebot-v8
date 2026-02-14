@@ -911,6 +911,298 @@ class TestPendingTasks:
         db2.close()
 
 
+class TestDeliveryStatePersistence:
+    """Test delivery state transitions and filtered queries for Phase 1b."""
+
+    def _save_task(self, db, now, **overrides):
+        """Helper to save a pending task with sensible defaults."""
+        defaults = {
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": True,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "request_data": "{}",
+            "submitted_at": now,
+            "expires_at": now + 120,
+            "next_attempt_at": now,
+        }
+        defaults.update(overrides)
+        return db.save_pending_task(**defaults)
+
+    def test_update_task_for_delivery_sets_ready(self, tmp_path: Path) -> None:
+        """GIVEN a pending task WHEN update_task_for_delivery called THEN delivery_state='ready'."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = self._save_task(db, now)
+
+        db.update_task_for_delivery(
+            task_id,
+            delivery_state="ready",
+            result_payload='{"content": "hello world"}',
+        )
+
+        tasks = db.load_pending_tasks()
+        assert len(tasks) == 1
+        assert tasks[0].delivery_state == "ready"
+        assert tasks[0].result_payload == '{"content": "hello world"}'
+
+    def test_update_task_for_delivery_sets_failed_terminal(self, tmp_path: Path) -> None:
+        """GIVEN a pending task WHEN provider fails terminally THEN delivery_state='ready' with failure reason."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = self._save_task(db, now)
+
+        db.update_task_for_delivery(
+            task_id,
+            delivery_state="ready",
+            result_payload='{"status": "failed_terminal", "reason": "auth error"}',
+        )
+
+        tasks = db.load_pending_tasks()
+        assert tasks[0].delivery_state == "ready"
+        assert "failed_terminal" in tasks[0].result_payload
+
+    def test_claim_filters_by_delivery_state(self, tmp_path: Path) -> None:
+        """GIVEN tasks with different delivery_states WHEN claiming with filter THEN only matching tasks returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        # pending task (provider phase)
+        self._save_task(db, now, nick="pending_nick", next_attempt_at=now - 5)
+        # ready task (delivery phase)
+        ready_id = self._save_task(db, now, nick="ready_nick", next_attempt_at=now - 5)
+        db.update_task_for_delivery(ready_id, "ready", '{"content": "result"}')
+
+        # Provider claim: should only get pending
+        provider_claimed = db.claim_due_pending_tasks(
+            now, limit=10, lease_seconds=120, delivery_state_filter="pending"
+        )
+        assert len(provider_claimed) == 1
+        assert provider_claimed[0].nick == "pending_nick"
+
+    def test_claim_delivery_ready_and_retrying(self, tmp_path: Path) -> None:
+        """GIVEN ready and retrying tasks WHEN delivery claim THEN both returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        ready_id = self._save_task(db, now, nick="ready_nick", next_attempt_at=now - 5)
+        db.update_task_for_delivery(ready_id, "ready", '{"content": "r1"}')
+
+        retrying_id = self._save_task(db, now, nick="retrying_nick", next_attempt_at=now - 5)
+        db.update_task_for_delivery(retrying_id, "retrying", '{"content": "r2"}')
+
+        delivery_claimed = db.claim_due_pending_tasks(
+            now,
+            limit=10,
+            lease_seconds=120,
+            delivery_state_filter=("ready", "retrying"),
+        )
+        assert len(delivery_claimed) == 2
+
+    def test_update_delivery_attempt(self, tmp_path: Path) -> None:
+        """GIVEN a ready task WHEN delivery fails THEN retrying with incremented attempt count."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = self._save_task(db, now)
+        db.update_task_for_delivery(task_id, "ready", '{"content": "result"}')
+
+        db.update_delivery_attempt(
+            task_id,
+            delivery_state="retrying",
+            last_delivery_error="queueMsg failed",
+            delivery_attempt_count=1,
+            next_attempt_at=now + 15,
+        )
+
+        tasks = db.load_pending_tasks()
+        assert tasks[0].delivery_state == "retrying"
+        assert tasks[0].last_delivery_error == "queueMsg failed"
+        assert tasks[0].delivery_attempt_count == 1
+        assert tasks[0].next_attempt_at == now + 15
+
+    def test_delivery_failed_not_auto_claimed(self, tmp_path: Path) -> None:
+        """GIVEN a delivery_failed task WHEN claiming for delivery THEN not returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = self._save_task(db, now, next_attempt_at=now - 5)
+        db.update_task_for_delivery(task_id, "delivery_failed", '{"content": "result"}')
+
+        claimed = db.claim_due_pending_tasks(
+            now,
+            limit=10,
+            lease_seconds=120,
+            delivery_state_filter=("ready", "retrying"),
+        )
+        assert len(claimed) == 0
+
+    def test_expired_only_deletes_pending_delivery_state(self, tmp_path: Path) -> None:
+        """GIVEN expired tasks with delivery_state='ready' WHEN expiry sweep THEN NOT deleted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        # Expired pending task — should be deleted
+        self._save_task(
+            db,
+            now,
+            nick="expired_pending",
+            submitted_at=now - 120,
+            expires_at=now - 10,
+            next_attempt_at=now - 60,
+        )
+
+        # Expired but delivery_state='ready' — should NOT be deleted
+        ready_id = self._save_task(
+            db,
+            now,
+            nick="expired_ready",
+            submitted_at=now - 120,
+            expires_at=now - 10,
+            next_attempt_at=now - 60,
+        )
+        db.update_task_for_delivery(ready_id, "ready", '{"content": "result"}')
+
+        expired = db.delete_expired_pending_tasks(now)
+        assert len(expired) == 1
+        assert expired[0].nick == "expired_pending"
+
+        remaining = db.load_pending_tasks()
+        assert len(remaining) == 1
+        assert remaining[0].nick == "expired_ready"
+
+
+class TestSchemaV3Migration:
+    """Test schema v3 migration adds delivery columns to pending_tasks."""
+
+    def test_migration_from_v2_adds_delivery_columns(self, tmp_path: Path) -> None:
+        """GIVEN a v2 database with pending_tasks WHEN opened with v3 code THEN new columns exist with defaults."""
+        db_path = str(tmp_path / "test.db")
+        now = time.time()
+
+        # Create a v2-schema database manually
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT UNIQUE NOT NULL,
+                nick TEXT NOT NULL, channel TEXT NOT NULL,
+                message TEXT NOT NULL, fire_at REAL NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL, nick TEXT NOT NULL, channel TEXT NOT NULL,
+                command TEXT NOT NULL, model TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0,
+                prompt TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'success',
+                error_detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS pending_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL, nick TEXT NOT NULL,
+                reply_target TEXT NOT NULL, is_channel INTEGER NOT NULL,
+                prompt_preview TEXT NOT NULL, model TEXT NOT NULL,
+                request_data TEXT NOT NULL DEFAULT '{}',
+                submitted_at REAL NOT NULL, expires_at REAL NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                claimed_until REAL NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS flagged_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account TEXT UNIQUE NOT NULL,
+                flagged_at REAL NOT NULL, reason TEXT NOT NULL DEFAULT '',
+                auto_flagged INTEGER NOT NULL DEFAULT 0,
+                resolved_at REAL, resolved_by TEXT
+            );
+        """)
+        # Insert a pending task with v2 schema
+        conn.execute(
+            "INSERT INTO pending_tasks "
+            "(task_type, nick, reply_target, is_channel, prompt_preview, model, "
+            "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
+            "claimed_until, last_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '')",
+            (
+                "animate",
+                "alice",
+                "#test",
+                1,
+                "dancing cat",
+                "grok-imagine-video",
+                '{"request_id": "req-1"}',
+                now,
+                now + 3600,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+        # Open with v3-capable LLMDatabase
+        db = LLMDatabase(db_path)
+
+        # Verify new columns exist with correct defaults
+        conn = db._connect()
+        try:
+            row = conn.execute(
+                "SELECT delivery_state, result_payload, last_delivery_error, "
+                "delivery_attempt_count, origin_request_id FROM pending_tasks WHERE nick = 'alice'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "pending"  # delivery_state default
+            assert row[1] == ""  # result_payload default
+            assert row[2] == ""  # last_delivery_error default
+            assert row[3] == 0  # delivery_attempt_count default
+            assert row[4] == ""  # origin_request_id default
+        finally:
+            conn.close()
+
+    def test_pending_task_row_includes_delivery_fields(self, tmp_path: Path) -> None:
+        """GIVEN a v3 database WHEN loading pending tasks THEN PendingTaskRow has delivery fields."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        db.save_pending_task(
+            task_type="ask",
+            nick="bob",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 60,
+            next_attempt_at=now,
+        )
+
+        tasks = db.load_pending_tasks()
+        assert len(tasks) == 1
+        t = tasks[0]
+        assert t.delivery_state == "pending"
+        assert t.result_payload == ""
+        assert t.last_delivery_error == ""
+        assert t.delivery_attempt_count == 0
+        assert t.origin_request_id == ""
+
+    def test_schema_version_is_3(self, tmp_path: Path) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 3."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            assert row is not None
+            assert row[0] == 3
+        finally:
+            conn.close()
+
+
 class TestLogUsageExtended:
     """Test the extended log_usage parameters (prompt, status, error_detail)."""
 

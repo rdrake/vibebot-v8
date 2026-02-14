@@ -117,6 +117,7 @@ class PendingTaskResult(NamedTuple):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
+    task_id: int | None = None  # DB row ID for delivery acknowledgment
 
 
 class ReminderParseResult(NamedTuple):
@@ -1267,7 +1268,15 @@ class LLMService:
     def check_pending_tasks(self, deliverable_channels: set[str]) -> list[PendingTaskResult]:
         """Poll and retry pending tasks, returning results for delivery.
 
-        Called by the plugin scheduler every 30 seconds.
+        Called by the plugin scheduler every 30 seconds.  Operates in two phases:
+
+        1. **Provider phase** — claims ``delivery_state='pending'`` tasks, calls
+           the upstream provider, and stores the result in the DB
+           (``delivery_state='ready'``).
+        2. **Delivery phase** — claims ``delivery_state IN ('ready','retrying')``
+           tasks and returns them as ``PendingTaskResult`` for the plugin to
+           deliver via IRC.  Each result carries a ``task_id`` so the plugin can
+           acknowledge or retry delivery.
 
         Args:
             deliverable_channels: Set of channel names the bot is currently in.
@@ -1284,7 +1293,7 @@ class LLMService:
         now = time.time()
         results: list[PendingTaskResult] = []
 
-        # 1. Collect and emit expired tasks
+        # ── Expiry sweep (delivery_state='pending' only) ──────────────
         expired_rows: list[PendingTaskRow] = db.delete_expired_pending_tasks(now)
         for row in expired_rows:
             results.append(
@@ -1300,8 +1309,13 @@ class LLMService:
                 )
             )
 
-        # 2. Claim due tasks
-        claimed = db.claim_due_pending_tasks(now, PENDING_CLAIM_LIMIT, PENDING_LEASE_SECONDS)
+        # ── Phase 1: Provider processing ──────────────────────────────
+        claimed = db.claim_due_pending_tasks(
+            now,
+            PENDING_CLAIM_LIMIT,
+            PENDING_LEASE_SECONDS,
+            delivery_state_filter="pending",
+        )
 
         for task in claimed:
             # Skip if channel is not deliverable (bot not in channel)
@@ -1316,18 +1330,10 @@ class LLMService:
             try:
                 request_data = json.loads(task.request_data)
             except (json.JSONDecodeError, TypeError):
-                db.delete_pending_task(task.id)
-                results.append(
-                    PendingTaskResult(
-                        status="failed_terminal",
-                        task_type=task.task_type,
-                        nick=task.nick,
-                        reply_target=task.reply_target,
-                        is_channel=bool(task.is_channel),
-                        prompt_preview=task.prompt_preview,
-                        model=task.model,
-                        reason="Malformed request data",
-                    )
+                db.update_task_for_delivery(
+                    task.id,
+                    "ready",
+                    json.dumps({"status": "failed_terminal", "reason": "Malformed request data"}),
                 )
                 continue
 
@@ -1340,40 +1346,46 @@ class LLMService:
                 elif task.task_type == "animate":
                     result = self._retry_video(task, request_data)
                 else:
-                    db.delete_pending_task(task.id)
-                    results.append(
-                        PendingTaskResult(
-                            status="failed_terminal",
-                            task_type=task.task_type,
-                            nick=task.nick,
-                            reply_target=task.reply_target,
-                            is_channel=bool(task.is_channel),
-                            prompt_preview=task.prompt_preview,
-                            model=task.model,
-                            reason=f"Unknown task type: {task.task_type}",
-                        )
+                    db.update_task_for_delivery(
+                        task.id,
+                        "ready",
+                        json.dumps(
+                            {
+                                "status": "failed_terminal",
+                                "reason": f"Unknown task type: {task.task_type}",
+                            }
+                        ),
                     )
                     continue
 
-                # Handle result
+                # Store result for delivery phase
                 if result.status in ("completed", "failed_terminal"):
-                    db.delete_pending_task(task.id)
-                    results.append(result)
+                    db.update_task_for_delivery(
+                        task.id,
+                        "ready",
+                        json.dumps(
+                            {
+                                "status": result.status,
+                                "content": result.content,
+                                "reason": result.reason,
+                                "prompt_tokens": result.prompt_tokens,
+                                "completion_tokens": result.completion_tokens,
+                                "cost": result.cost,
+                            }
+                        ),
+                    )
 
             except Exception as exc:
                 if self._is_terminal_error(exc):
-                    db.delete_pending_task(task.id)
-                    results.append(
-                        PendingTaskResult(
-                            status="failed_terminal",
-                            task_type=task.task_type,
-                            nick=task.nick,
-                            reply_target=task.reply_target,
-                            is_channel=bool(task.is_channel),
-                            prompt_preview=task.prompt_preview,
-                            model=task.model,
-                            reason=self._sanitize(str(exc))[:200],
-                        )
+                    db.update_task_for_delivery(
+                        task.id,
+                        "ready",
+                        json.dumps(
+                            {
+                                "status": "failed_terminal",
+                                "reason": self._sanitize(str(exc))[:200],
+                            }
+                        ),
                     )
                 else:
                     # Transient error — release with backoff
@@ -1383,6 +1395,46 @@ class LLMService:
                         now + delay,
                         self._sanitize(str(exc))[:200],
                     )
+
+        # ── Phase 2: Delivery ─────────────────────────────────────────
+        delivery_tasks = db.claim_due_pending_tasks(
+            now,
+            PENDING_CLAIM_LIMIT,
+            PENDING_LEASE_SECONDS,
+            delivery_state_filter=("ready", "retrying"),
+        )
+
+        for task in delivery_tasks:
+            # Skip if channel is not deliverable
+            if task.is_channel and task.reply_target not in deliverable_channels:
+                defer_at = now + 30
+                db.release_pending_task(
+                    task.id, defer_at, "Channel not available", increment_attempt=False
+                )
+                continue
+
+            try:
+                payload = json.loads(task.result_payload) if task.result_payload else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+
+            results.append(
+                PendingTaskResult(
+                    status=payload.get("status", "completed"),
+                    task_type=task.task_type,
+                    nick=task.nick,
+                    reply_target=task.reply_target,
+                    is_channel=bool(task.is_channel),
+                    prompt_preview=task.prompt_preview,
+                    model=task.model,
+                    content=payload.get("content", ""),
+                    reason=payload.get("reason", ""),
+                    prompt_tokens=payload.get("prompt_tokens", 0),
+                    completion_tokens=payload.get("completion_tokens", 0),
+                    cost=payload.get("cost", 0.0),
+                    task_id=task.id,
+                )
+            )
 
         return results
 

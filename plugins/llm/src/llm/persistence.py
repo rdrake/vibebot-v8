@@ -11,7 +11,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -75,6 +75,11 @@ class PendingTaskRow(NamedTuple):
     next_attempt_at: float
     claimed_until: float
     last_error: str
+    delivery_state: str  # pending|ready|retrying|delivered|delivery_failed|expired|failed_terminal
+    result_payload: str  # JSON blob of delivery content
+    last_delivery_error: str
+    delivery_attempt_count: int
+    origin_request_id: str
 
 
 class FlaggedUserRow(NamedTuple):
@@ -208,6 +213,24 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 3:
+                conn.executescript("""
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending';
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN result_payload TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN last_delivery_error TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN delivery_attempt_count INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT '';
+
+                    CREATE INDEX IF NOT EXISTS idx_pending_tasks_delivery_state
+                        ON pending_tasks(delivery_state);
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -328,7 +351,8 @@ class LLMDatabase:
     _PENDING_TASK_COLUMNS = (
         "id, task_type, nick, reply_target, is_channel, prompt_preview, model, "
         "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
-        "claimed_until, last_error"
+        "claimed_until, last_error, delivery_state, result_payload, "
+        "last_delivery_error, delivery_attempt_count, origin_request_id"
     )
 
     def save_pending_task(
@@ -388,7 +412,11 @@ class LLMDatabase:
             conn.close()
 
     def claim_due_pending_tasks(
-        self, now: float, limit: int, lease_seconds: int
+        self,
+        now: float,
+        limit: int,
+        lease_seconds: int,
+        delivery_state_filter: str | tuple[str, ...] | None = None,
     ) -> list[PendingTaskRow]:
         """Atomically claim pending tasks that are due for retry.
 
@@ -399,6 +427,8 @@ class LLMDatabase:
             now: Current Unix timestamp.
             limit: Maximum number of tasks to claim.
             lease_seconds: How long to hold the claim (seconds).
+            delivery_state_filter: Optional filter on delivery_state. Can be a
+                single state string or a tuple of states to match.
 
         Returns:
             List of claimed PendingTaskRow objects.
@@ -406,11 +436,24 @@ class LLMDatabase:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+
+            if delivery_state_filter is not None:
+                if isinstance(delivery_state_filter, str):
+                    state_clause = "AND delivery_state = ?"
+                    state_params: tuple[object, ...] = (delivery_state_filter,)
+                else:
+                    placeholders = ",".join("?" for _ in delivery_state_filter)
+                    state_clause = f"AND delivery_state IN ({placeholders})"
+                    state_params = tuple(delivery_state_filter)
+            else:
+                state_clause = ""
+                state_params = ()
+
             rows = conn.execute(
                 f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
-                "WHERE next_attempt_at <= ? AND claimed_until <= ? "
+                f"WHERE next_attempt_at <= ? AND claimed_until <= ? {state_clause} "
                 "ORDER BY next_attempt_at LIMIT ?",
-                (now, now, limit),
+                (now, now, *state_params, limit),
             ).fetchall()
 
             if not rows:
@@ -492,8 +535,81 @@ class LLMDatabase:
         finally:
             conn.close()
 
+    def update_task_for_delivery(
+        self,
+        task_id: int,
+        delivery_state: str,
+        result_payload: str,
+    ) -> bool:
+        """Transition a task to a delivery state with its result payload.
+
+        Args:
+            task_id: ID of the task to update.
+            delivery_state: New delivery state (ready, failed_terminal, etc.).
+            result_payload: JSON-serialized result for delivery.
+
+        Returns:
+            True if the task was updated, False if not found.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE pending_tasks SET "
+                "delivery_state = ?, result_payload = ?, claimed_until = 0 "
+                "WHERE id = ?",
+                (delivery_state, result_payload, task_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def update_delivery_attempt(
+        self,
+        task_id: int,
+        delivery_state: str,
+        last_delivery_error: str,
+        delivery_attempt_count: int,
+        next_attempt_at: float,
+    ) -> bool:
+        """Record a delivery attempt outcome (success or failure).
+
+        Args:
+            task_id: ID of the task to update.
+            delivery_state: New delivery state (retrying, delivery_failed).
+            last_delivery_error: Error message from the delivery attempt.
+            delivery_attempt_count: Updated delivery attempt count.
+            next_attempt_at: When to retry delivery next.
+
+        Returns:
+            True if the task was updated, False if not found.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE pending_tasks SET "
+                "delivery_state = ?, last_delivery_error = ?, "
+                "delivery_attempt_count = ?, next_attempt_at = ?, claimed_until = 0 "
+                "WHERE id = ?",
+                (
+                    delivery_state,
+                    last_delivery_error,
+                    delivery_attempt_count,
+                    next_attempt_at,
+                    task_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     def delete_expired_pending_tasks(self, now: float) -> list[PendingTaskRow]:
         """Delete pending tasks whose expires_at has passed.
+
+        Only deletes tasks still in the provider phase (delivery_state='pending').
+        Tasks that already have results (ready/retrying) are preserved for
+        delivery retry.
 
         Args:
             now: Current Unix timestamp.
@@ -504,7 +620,8 @@ class LLMDatabase:
         conn = self._connect()
         try:
             rows = conn.execute(
-                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks WHERE expires_at <= ?",
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
+                "WHERE expires_at <= ? AND delivery_state = 'pending'",
                 (now,),
             ).fetchall()
             if rows:
