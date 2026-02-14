@@ -441,26 +441,57 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# Abuse Flagging
+# Rate Limiting (expensive commands only)
 # ============================================================================
 
 conf.registerGlobalValue(
     LLM,
-    "flagThreshold",
-    registry.PositiveInteger(
-        5,
-        _("""Number of content safety refusals within flagWindow seconds that
-        triggers automatic flagging of a user account. Set high to reduce
-        false positives."""),
+    "enforceRateLimits",
+    registry.Boolean(
+        False,
+        _("""Enable per-user rate limiting for expensive commands (draw, animate).
+        When False, limits are tracked and logged but not enforced (monitor mode).
+        Set to True to actively block requests that exceed the limit."""),
     ),
 )
 
 conf.registerGlobalValue(
     LLM,
-    "flagWindow",
+    "drawRateLimitCount",
     registry.PositiveInteger(
-        3600,
-        _("""Time window in seconds for counting content safety refusals
-        toward the auto-flag threshold. Default: 3600 (1 hour)."""),
+        3,
+        _("""Maximum number of draw requests per user within drawRateLimitWindow
+        seconds. Only applies when enforceRateLimits is True."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "drawRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting draw requests toward the
+        per-user rate limit. Default: 60 (1 minute)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateRateLimitCount",
+    registry.PositiveInteger(
+        2,
+        _("""Maximum number of animate requests per user within
+        animateRateLimitWindow seconds. Only applies when enforceRateLimits
+        is True."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateRateLimitWindow",
+    registry.PositiveInteger(
+        600,
+        _("""Time window in seconds for counting animate requests toward the
+        per-user rate limit. Default: 600 (10 minutes)."""),
     ),
 )

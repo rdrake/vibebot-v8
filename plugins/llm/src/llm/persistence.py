@@ -606,7 +606,9 @@ class LLMDatabase:
             completion_tokens: Number of completion tokens generated.
             cost: Estimated cost in USD.
             prompt: The user's prompt text (for audit/flagging).
-            status: Outcome status (e.g. ``"success"``, ``"content_blocked"``).
+            status: Outcome status.  Known values: ``"success"``,
+                ``"error"``, ``"content_blocked"``, ``"flagged_blocked"``,
+                ``"auth_failure"``, ``"rate_limited"``.
             error_detail: Additional error context when status is not success.
         """
         conn = self._connect()
@@ -1049,26 +1051,5 @@ class LLMDatabase:
                 "ORDER BY flagged_at DESC",
             ).fetchall()
             return [FlaggedUserRow(*row) for row in rows]
-        finally:
-            conn.close()
-
-    def count_recent_refusals(self, nick: str, since: float) -> int:
-        """Count content-blocked usage events for a nick since a timestamp.
-
-        Args:
-            nick: IRC nick (or account name) to query.
-            since: Unix timestamp; only events at or after this time are counted.
-
-        Returns:
-            Number of usage rows with status ``"content_blocked"`` for the nick.
-        """
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM usage "
-                "WHERE nick = ? AND status = 'content_blocked' AND timestamp >= ?",
-                (nick, since),
-            ).fetchone()
-            return row[0] if row else 0
         finally:
             conn.close()

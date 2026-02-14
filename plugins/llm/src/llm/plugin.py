@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import logging
 import mimetypes
@@ -11,7 +12,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import supybot.callbacks as callbacks
 import supybot.conf as conf
@@ -42,6 +43,19 @@ _ = PluginInternationalization("LLM")
 
 # Icon shown when Google grounding/search was used in the response
 GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
+
+
+class PreflightResult(NamedTuple):
+    """Result of the shared command preflight check.
+
+    ``blocked`` is True when the command should not proceed (the preflight
+    already sent the appropriate error reply and logged usage).
+    """
+
+    blocked: bool
+    nick: str  # account-resolved identity for logging
+    channel: str
+    account: str | None  # NickServ account, or None if unidentified
 
 
 HELP_HTML_TEMPLATE = """<!DOCTYPE html>
@@ -303,6 +317,9 @@ class LLM(callbacks.Plugin):
 
         # Track nicks already migrated to account-based identity this session
         self._migrated_nicks: set[str] = set()
+
+        # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
+        self._rate_buckets: dict[str, collections.deque[float]] = {}
 
         # Reminder storage: event_name -> (nick, channel, message)
         self._reminders: dict[str, tuple[str, str, str]] = {}
@@ -872,58 +889,193 @@ class LLM(callbacks.Plugin):
             return None
         return account
 
-    def _maybe_auto_flag(self, irc: callbacks.Irc, account: str, channel: str) -> None:
-        """Check if a user should be auto-flagged based on recent refusals.
+    def _run_preflight(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        command: str,
+        *,
+        require_account: bool,
+        apply_rate_limit: bool,
+    ) -> PreflightResult:
+        """Shared preflight check for all commands.
 
-        Queries the database for content-blocked events within the configured
-        window. If the count meets or exceeds the threshold, the user is
-        flagged and all online bot owners are notified.
+        Runs the following sequence:
+        1. Account resolution (required or optional depending on command).
+        2. Flagged-user block check.
+        3. Per-command rate-limit check (draw/animate only).
+
+        When any check fails the method sends the appropriate IRC error,
+        logs usage with the blocked status, and returns ``blocked=True``.
 
         Args:
-            irc: IRC connection (for owner notifications).
-            account: NickServ account name.
-            channel: Channel where the event occurred.
+            irc: IRC connection.
+            msg: IRC message.
+            text: User's prompt text (for usage logging).
+            command: Command name (ask, code, draw, animate).
+            require_account: If True, NickServ identification is mandatory.
+            apply_rate_limit: If True, check per-command rate limit.
+
+        Returns:
+            PreflightResult with blocked=False if the command should proceed.
         """
-        threshold = self.registryValue("flagThreshold")
-        window = self.registryValue("flagWindow")
-        since = time.time() - window
-        count = self.db.count_recent_refusals(account, since)
-        if count >= threshold:
-            created = self.db.flag_user(
-                account,
-                f"{count} content blocks in {window}s",
-                auto_flagged=True,
-            )
-            if created:
-                self._notify_owners(
-                    irc,
-                    f"[LLM] Auto-flagged user {account}: "
-                    f"{count} content blocks in {window // 60}min. "
-                    f"Use %flagged to review.",
+        channel = self._get_channel(msg)
+
+        # --- account resolution ---
+        if require_account:
+            account = self._require_account(irc, msg)
+            if account is None:
+                nick = ircutils.nickFromHostmask(msg.prefix)
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    command,
+                    "",
+                    0,
+                    0,
+                    0.0,
+                    prompt=text,
+                    status="auth_failure",
                 )
+                return PreflightResult(blocked=True, nick=nick, channel=channel, account=None)
+            nick = self._resolve_nick_to_identity(irc, ircutils.nickFromHostmask(msg.prefix))
+        else:
+            raw_nick = ircutils.nickFromHostmask(msg.prefix)
+            try:
+                account = irc.state.nickToAccount(raw_nick)
+            except (KeyError, AttributeError):
+                account = None
+            nick = self._get_identity(irc, msg)
 
-    def _notify_owners(self, irc: callbacks.Irc, message: str) -> None:
-        """Send IRC NOTICE to all online users with owner capability.
+        # --- flagged check ---
+        if self._check_flagged(irc, msg, account):
+            self.db.log_usage(
+                nick,
+                channel,
+                command,
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="flagged_blocked",
+            )
+            return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
 
-        Iterates over all registered bot users, checks for the ``owner``
-        capability, and sends a NOTICE to each matching nick that is
-        currently online.
+        # --- rate limit check (expensive commands only) ---
+        if (
+            apply_rate_limit
+            and account
+            and self._check_rate_limit(irc, command, account, nick, channel, text)
+        ):
+            return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
+
+        return PreflightResult(blocked=False, nick=nick, channel=channel, account=account)
+
+    def _is_rate_limited(self, command: str, account: str, now: float) -> bool:
+        """Check if a user exceeds the per-command rate limit.
+
+        Evicts timestamps outside the configured window before checking.
 
         Args:
-            irc: IRC connection to queue messages on.
-            message: Notification text to send.
+            command: Command name (draw or animate).
+            account: NickServ account name.
+            now: Current time (seconds since epoch).
+
+        Returns:
+            True if the user has exceeded the rate limit.
         """
-        try:
-            for user in ircdb.users.users.values():  # ty: ignore[possibly-missing-attribute]
-                if not user.checkCapability("owner"):
-                    continue
-                for nick in irc.state.nicksToHostmasks:
-                    hostmask = irc.state.nicksToHostmasks[nick]
-                    if user.checkHostmask(hostmask):
-                        irc.queueMsg(ircmsgs.notice(nick, message))
-                        break
-        except Exception:
-            self.log.exception("Failed to notify owners")
+        max_count = self.registryValue(f"{command}RateLimitCount")
+        window = self.registryValue(f"{command}RateLimitWindow")
+        cutoff = now - window
+
+        key = f"{command}:{account}"
+        bucket = self._rate_buckets.get(key)
+        if bucket is None:
+            bucket = collections.deque()
+            self._rate_buckets[key] = bucket
+
+        # Evict expired entries
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+
+        return len(bucket) >= max_count
+
+    def _record_rate_limit_hit(self, command: str, account: str, now: float) -> None:
+        """Record a request timestamp in the rate-limit bucket.
+
+        Args:
+            command: Command name.
+            account: NickServ account name.
+            now: Current time.
+        """
+        key = f"{command}:{account}"
+        bucket = self._rate_buckets.get(key)
+        if bucket is None:
+            bucket = collections.deque()
+            self._rate_buckets[key] = bucket
+        bucket.append(now)
+
+    def _check_rate_limit(
+        self,
+        irc: callbacks.Irc,
+        command: str,
+        account: str,
+        nick: str,
+        channel: str,
+        text: str,
+    ) -> bool:
+        """Check rate limit and send error if exceeded.
+
+        Always records the request timestamp. When enforceRateLimits is True
+        and the user is over the limit, sends an error reply and logs
+        ``status="rate_limited"``.
+
+        Args:
+            irc: IRC connection.
+            command: Command name.
+            account: NickServ account name.
+            nick: Resolved identity for logging.
+            channel: Channel name.
+            text: Prompt text for logging.
+
+        Returns:
+            True if the request should be blocked.
+        """
+        now = time.time()
+        over_limit = self._is_rate_limited(command, account, now)
+
+        # Always record the hit (so the window tracks correctly)
+        self._record_rate_limit_hit(command, account, now)
+
+        if over_limit:
+            enforce = self.registryValue("enforceRateLimits")
+            window = self.registryValue(f"{command}RateLimitWindow")
+            self.log.info(
+                "Rate limit %s for %s on %s (%ss window)",
+                "enforced" if enforce else "logged",
+                account,
+                command,
+                window,
+            )
+            if enforce:
+                irc.error(
+                    _("Rate limit exceeded for %s. Please wait before trying again.") % command
+                )
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    command,
+                    "",
+                    0,
+                    0,
+                    0.0,
+                    prompt=text,
+                    status="rate_limited",
+                )
+                return True
+        return False
 
     @staticmethod
     def _is_content_blocked_error(error: str | None) -> bool:
@@ -1096,28 +1248,17 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        nick = self._get_identity(irc, msg)
-        channel = self._get_channel(msg)
-
-        # Check if user is flagged (optional -- unidentified users pass through)
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
-        try:
-            account = irc.state.nickToAccount(raw_nick)
-        except (KeyError, AttributeError):
-            account = None
-        if self._check_flagged(irc, msg, account):
-            self.db.log_usage(
-                nick,
-                channel,
-                "ask",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="flagged_blocked",
-            )
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "ask",
+            require_account=False,
+            apply_rate_limit=False,
+        )
+        if pf.blocked:
             return
+        nick, channel = pf.nick, pf.channel
 
         with self._trace_request("ask", nick, channel):
             # Detect images for vision
@@ -1201,28 +1342,17 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        nick = self._get_identity(irc, msg)
-        channel = self._get_channel(msg)
-
-        # Check if user is flagged (optional -- unidentified users pass through)
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
-        try:
-            account = irc.state.nickToAccount(raw_nick)
-        except (KeyError, AttributeError):
-            account = None
-        if self._check_flagged(irc, msg, account):
-            self.db.log_usage(
-                nick,
-                channel,
-                "code",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="flagged_blocked",
-            )
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "code",
+            require_account=False,
+            apply_rate_limit=False,
+        )
+        if pf.blocked:
             return
+        nick, channel = pf.nick, pf.channel
 
         with self._trace_request("code", nick, channel):
             # Get conversation history (personal + shared channel) if context enabled
@@ -1296,42 +1426,17 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        # Require NickServ identification
-        account = self._require_account(irc, msg)
-        if account is None:
-            nick = ircutils.nickFromHostmask(msg.prefix)
-            channel = self._get_channel(msg)
-            self.db.log_usage(
-                nick,
-                channel,
-                "draw",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="auth_failure",
-            )
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "draw",
+            require_account=True,
+            apply_rate_limit=True,
+        )
+        if pf.blocked:
             return
-
-        if self._check_flagged(irc, msg, account):
-            nick = self._get_identity(irc, msg)
-            channel = self._get_channel(msg)
-            self.db.log_usage(
-                nick,
-                channel,
-                "draw",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="flagged_blocked",
-            )
-            return
-
-        nick = self._get_identity(irc, msg)
-        channel = self._get_channel(msg)
+        nick, channel = pf.nick, pf.channel
 
         with self._trace_request("draw", nick, channel):
             # Typing indicator sent by service - no "Generating..." message needed
@@ -1390,10 +1495,6 @@ class LLM(callbacks.Plugin):
                 error_detail=error_detail,
             )
 
-            # Check for auto-flagging after content blocks
-            if status == "content_blocked" and account:
-                self._maybe_auto_flag(irc, account, channel)
-
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
     def animate(
@@ -1416,44 +1517,17 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        # Require NickServ identification
-        account = self._require_account(irc, msg)
-        if account is None:
-            nick = ircutils.nickFromHostmask(msg.prefix)
-            channel = self._get_channel(msg)
-            self.db.log_usage(
-                nick,
-                channel,
-                "animate",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="auth_failure",
-            )
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "animate",
+            require_account=True,
+            apply_rate_limit=True,
+        )
+        if pf.blocked:
             return
-
-        if self._check_flagged(irc, msg, account):
-            raw_nick = ircutils.nickFromHostmask(msg.prefix)
-            nick = self._resolve_nick_to_identity(irc, raw_nick)
-            channel = self._get_channel(msg)
-            self.db.log_usage(
-                nick,
-                channel,
-                "animate",
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="flagged_blocked",
-            )
-            return
-
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
-        nick = self._resolve_nick_to_identity(irc, raw_nick)
-        channel = self._get_channel(msg)
+        nick, channel = pf.nick, pf.channel
 
         with self._trace_request("animate", nick, channel):
             with self._allow_concurrent():
@@ -1503,11 +1577,7 @@ class LLM(callbacks.Plugin):
                 error_detail=error_detail,
             )
 
-            # Check for auto-flagging after content blocks
-            if status == "content_blocked" and account:
-                self._maybe_auto_flag(irc, account, channel)
-
-    animate = wrap(animate, ["text"])
+    animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
 
     # Alias: %video works the same as %animate
     video = animate
@@ -1598,13 +1668,8 @@ class LLM(callbacks.Plugin):
             )
             return
 
-        admin_account = self._get_identity(irc, msg)
         created = self.db.flag_user(target_account, reason, auto_flagged=False)
         if created:
-            self._notify_owners(
-                irc,
-                f"[LLM] {admin_account} flagged user {target_account}: {reason}",
-            )
             irc.reply(_("Flagged %s (%s).") % (nick, target_account), private=True)
         else:
             irc.reply(_("%s is already flagged.") % target_account, private=True)
@@ -1633,10 +1698,6 @@ class LLM(callbacks.Plugin):
         admin_account = self._get_identity(irc, msg)
         result = self.db.unflag_user(target_account, admin_account)
         if result:
-            self._notify_owners(
-                irc,
-                f"[LLM] {admin_account} unflagged user {target_account}.",
-            )
             irc.reply(_("Unflagged %s (%s).") % (nick, target_account), private=True)
         else:
             irc.reply(_("%s is not currently flagged.") % target_account, private=True)

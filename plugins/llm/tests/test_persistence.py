@@ -1047,56 +1047,6 @@ class TestFlaggedUsers:
         assert len(flagged) == 1
         assert flagged[0].account == "bob"
 
-    def test_count_recent_refusals(self, tmp_path: Path) -> None:
-        """GIVEN mixed usage statuses WHEN counting refusals THEN only content_blocked counted."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        since = time.time() - 10
-        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
-        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
-        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="success")
-        db.log_usage("bob", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
-
-        count = db.count_recent_refusals("alice", since)
-        assert count == 2
-
-    def test_count_recent_refusals_respects_time_window(self, tmp_path: Path) -> None:
-        """GIVEN old and recent refusals WHEN counting with since THEN only recent counted."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-
-        # Insert an old refusal directly (timestamp 2 hours ago)
-        conn = db._connect()
-        try:
-            old_time = time.time() - 7200
-            conn.execute(
-                "INSERT INTO usage "
-                "(timestamp, nick, channel, command, model, prompt_tokens, "
-                "completion_tokens, cost, prompt, status, error_detail) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    old_time,
-                    "alice",
-                    "#test",
-                    "ask",
-                    "gpt-4",
-                    10,
-                    5,
-                    0.01,
-                    "",
-                    "content_blocked",
-                    "",
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        # Insert a recent refusal via log_usage
-        db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01, status="content_blocked")
-
-        since = time.time() - 3600  # 1 hour window
-        count = db.count_recent_refusals("alice", since)
-        assert count == 1
-
     def test_reflag_after_unflag_creates_new_flag(self, tmp_path: Path) -> None:
         """GIVEN a flagged-then-unflagged user WHEN re-flagging THEN active again."""
         db = LLMDatabase(str(tmp_path / "test.db"))

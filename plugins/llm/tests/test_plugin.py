@@ -1634,187 +1634,175 @@ class TestRequireAccount:
         mock_irc.error.assert_called_once()
 
 
-class TestAutoFlag:
-    """Test _maybe_auto_flag logic."""
+class TestRateLimiter:
+    """Test in-memory rate limiter helpers."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture):
-        """Create a minimal plugin for auto-flag testing."""
+        """Create a minimal plugin for rate-limit testing."""
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         p = LLM.__new__(LLM)
         p.db = mocker.MagicMock()
         p.log = mocker.MagicMock()
+        p._rate_buckets = {}
         p.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: {"flagThreshold": 5, "flagWindow": 3600}.get(key, "")
+            side_effect=lambda key, *a: {
+                "drawRateLimitCount": 3,
+                "drawRateLimitWindow": 60,
+                "animateRateLimitCount": 2,
+                "animateRateLimitWindow": 600,
+                "enforceRateLimits": True,
+            }.get(key, "")
         )
         return p
 
-    def test_auto_flags_after_threshold(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN refusals at threshold WHEN _maybe_auto_flag THEN user flagged and owners notified."""
+    def test_not_limited_under_threshold(self, plugin) -> None:
+        """GIVEN fewer requests than limit WHEN _is_rate_limited THEN False."""
+        now = 1000.0
+        plugin._record_rate_limit_hit("draw", "alice", now - 10)
+        plugin._record_rate_limit_hit("draw", "alice", now - 5)
+        assert plugin._is_rate_limited("draw", "alice", now) is False
+
+    def test_limited_at_threshold(self, plugin) -> None:
+        """GIVEN requests at limit WHEN _is_rate_limited THEN True."""
+        now = 1000.0
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 30 + i)
+        assert plugin._is_rate_limited("draw", "alice", now) is True
+
+    def test_evicts_expired_entries(self, plugin) -> None:
+        """GIVEN old entries outside window WHEN _is_rate_limited THEN evicted and not counted."""
+        now = 1000.0
+        # Three hits from 200s ago (outside 60s window)
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 200 + i)
+        assert plugin._is_rate_limited("draw", "alice", now) is False
+
+    def test_different_commands_isolated(self, plugin) -> None:
+        """GIVEN draw at limit WHEN checking animate THEN not limited."""
+        now = 1000.0
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
+        assert plugin._is_rate_limited("animate", "alice", now) is False
+
+    def test_different_accounts_isolated(self, plugin) -> None:
+        """GIVEN alice at limit WHEN checking bob THEN not limited."""
+        now = 1000.0
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
+        assert plugin._is_rate_limited("draw", "bob", now) is False
+
+    def test_check_rate_limit_blocks_when_enforced(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN enforce=True and over limit WHEN _check_rate_limit THEN blocks and logs."""
         mock_irc = mocker.MagicMock()
-        plugin.db.count_recent_refusals.return_value = 5
-        plugin.db.flag_user.return_value = True
-        mocker.patch.object(plugin, "_notify_owners")
+        now = 1000.0
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
 
-        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
+        mocker.patch("time.time", return_value=now)
+        blocked = plugin._check_rate_limit(mock_irc, "draw", "alice", "alice", "#test", "prompt")
 
-        plugin.db.flag_user.assert_called_once_with(
-            "alice", "5 content blocks in 3600s", auto_flagged=True
+        assert blocked is True
+        mock_irc.error.assert_called_once()
+        plugin.db.log_usage.assert_called_once()
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "rate_limited"
+
+    def test_check_rate_limit_logs_only_when_not_enforced(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """GIVEN enforce=False and over limit WHEN _check_rate_limit THEN logs but does not block."""
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "drawRateLimitCount": 3,
+                "drawRateLimitWindow": 60,
+                "enforceRateLimits": False,
+            }.get(key, "")
         )
-        plugin._notify_owners.assert_called_once()
-        notice_text = plugin._notify_owners.call_args[0][1]
-        assert "Auto-flagged" in notice_text
-        assert "alice" in notice_text
-
-    def test_no_flag_below_threshold(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN refusals below threshold WHEN _maybe_auto_flag THEN no flag."""
         mock_irc = mocker.MagicMock()
-        plugin.db.count_recent_refusals.return_value = 3
+        now = 1000.0
+        for i in range(3):
+            plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
 
-        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
+        mocker.patch("time.time", return_value=now)
+        blocked = plugin._check_rate_limit(mock_irc, "draw", "alice", "alice", "#test", "prompt")
 
-        plugin.db.flag_user.assert_not_called()
-
-    def test_no_notification_when_already_flagged(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN flag_user returns False (already flagged) WHEN _maybe_auto_flag THEN no notification."""
-        mock_irc = mocker.MagicMock()
-        plugin.db.count_recent_refusals.return_value = 10
-        plugin.db.flag_user.return_value = False
-        mocker.patch.object(plugin, "_notify_owners")
-
-        plugin._maybe_auto_flag(mock_irc, "alice", "#test")
-
-        plugin.db.flag_user.assert_called_once()
-        plugin._notify_owners.assert_not_called()
+        assert blocked is False
+        mock_irc.error.assert_not_called()
+        plugin.db.log_usage.assert_not_called()
 
 
-class TestNotifyOwners:
-    """Test _notify_owners helper."""
+class TestRunPreflight:
+    """Test _run_preflight shared preflight logic."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture):
-        """Create a minimal plugin for notification testing."""
+        """Create a minimal plugin for preflight testing."""
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         p = LLM.__new__(LLM)
+        p.db = mocker.MagicMock()
+        p.db.is_user_flagged.return_value = False
         p.log = mocker.MagicMock()
+        p._rate_buckets = {}
+        p._migrated_nicks = set()
+        p.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "drawRateLimitCount": 3,
+                "drawRateLimitWindow": 60,
+                "enforceRateLimits": False,
+            }.get(key, "")
+        )
         return p
 
-    def test_sends_notice_to_online_owner(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN online owner WHEN _notify_owners THEN NOTICE sent."""
-        from llm import plugin as plugin_module
-
+    def test_preflight_passes_for_ask(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN normal user WHEN ask preflight THEN not blocked."""
         mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount.return_value = "alice"
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "alice!user@host"
+        mock_msg.args = ("#test", "hello")
 
-        # Mock user with owner capability
-        mock_user = mocker.MagicMock()
-        mock_user.checkCapability.return_value = True
-        mock_user.checkHostmask.return_value = True
+        result = plugin._run_preflight(
+            mock_irc, mock_msg, "hello", "ask", require_account=False, apply_rate_limit=False
+        )
+        assert result.blocked is False
+        assert result.nick == "alice"
+        assert result.channel == "#test"
 
-        mock_ircdb = mocker.MagicMock()
-        mock_ircdb.users.users.values.return_value = [mock_user]
-
-        mock_irc.state.nicksToHostmasks = {"OwnerNick": "OwnerNick!admin@host"}
-
-        original_ircdb = plugin_module.ircdb
-        plugin_module.ircdb = mock_ircdb
-        try:
-            plugin._notify_owners(mock_irc, "Test notification")
-        finally:
-            plugin_module.ircdb = original_ircdb
-
-        mock_irc.queueMsg.assert_called_once()
-        queued_msg = mock_irc.queueMsg.call_args[0][0]
-        assert queued_msg.command == "NOTICE"
-        assert "Test notification" in queued_msg.args[1]
-
-    def test_no_crash_when_no_owners_online(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN no owners online WHEN _notify_owners THEN no error."""
-        from llm import plugin as plugin_module
-
+    def test_preflight_blocks_flagged_user(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN flagged user WHEN preflight THEN blocked and usage logged."""
         mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount.return_value = "baduser"
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "baduser!user@host"
+        mock_msg.args = ("#test", "test")
+        plugin.db.is_user_flagged.return_value = True
 
-        # Mock user with owner capability but no matching hostmask
-        mock_user = mocker.MagicMock()
-        mock_user.checkCapability.return_value = True
-        mock_user.checkHostmask.return_value = False
+        result = plugin._run_preflight(
+            mock_irc, mock_msg, "test", "ask", require_account=False, apply_rate_limit=False
+        )
+        assert result.blocked is True
+        plugin.db.log_usage.assert_called_once()
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "flagged_blocked"
 
-        mock_ircdb = mocker.MagicMock()
-        mock_ircdb.users.users.values.return_value = [mock_user]
-
-        mock_irc.state.nicksToHostmasks = {"SomeUser": "SomeUser!user@host"}
-
-        original_ircdb = plugin_module.ircdb
-        plugin_module.ircdb = mock_ircdb
-        try:
-            plugin._notify_owners(mock_irc, "Test notification")
-        finally:
-            plugin_module.ircdb = original_ircdb
-
-        mock_irc.queueMsg.assert_not_called()
-
-    def test_no_crash_when_no_users(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN no registered users WHEN _notify_owners THEN no error."""
-        from llm import plugin as plugin_module
-
+    def test_preflight_blocks_unidentified_for_draw(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN unidentified user WHEN draw preflight THEN blocked with auth_failure."""
         mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount.side_effect = KeyError("not found")
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "anon!user@host"
+        mock_msg.args = ("#test", "draw me")
 
-        mock_ircdb = mocker.MagicMock()
-        mock_ircdb.users.users.values.return_value = []
-
-        original_ircdb = plugin_module.ircdb
-        plugin_module.ircdb = mock_ircdb
-        try:
-            plugin._notify_owners(mock_irc, "Test notification")
-        finally:
-            plugin_module.ircdb = original_ircdb
-
-        mock_irc.queueMsg.assert_not_called()
-
-    def test_handles_exception_gracefully(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN ircdb raises exception WHEN _notify_owners THEN logs exception."""
-        from llm import plugin as plugin_module
-
-        mock_irc = mocker.MagicMock()
-
-        mock_ircdb = mocker.MagicMock()
-        mock_ircdb.users.users.values.side_effect = RuntimeError("DB error")
-
-        original_ircdb = plugin_module.ircdb
-        plugin_module.ircdb = mock_ircdb
-        try:
-            # Should not raise
-            plugin._notify_owners(mock_irc, "Test notification")
-        finally:
-            plugin_module.ircdb = original_ircdb
-
-        plugin.log.exception.assert_called_once()
-
-    def test_skips_non_owner_users(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN non-owner user online WHEN _notify_owners THEN no NOTICE sent."""
-        from llm import plugin as plugin_module
-
-        mock_irc = mocker.MagicMock()
-
-        mock_user = mocker.MagicMock()
-        mock_user.checkCapability.return_value = False  # Not an owner
-
-        mock_ircdb = mocker.MagicMock()
-        mock_ircdb.users.users.values.return_value = [mock_user]
-
-        mock_irc.state.nicksToHostmasks = {"RegularUser": "RegularUser!user@host"}
-
-        original_ircdb = plugin_module.ircdb
-        plugin_module.ircdb = mock_ircdb
-        try:
-            plugin._notify_owners(mock_irc, "Test notification")
-        finally:
-            plugin_module.ircdb = original_ircdb
-
-        mock_irc.queueMsg.assert_not_called()
+        result = plugin._run_preflight(
+            mock_irc, mock_msg, "draw me", "draw", require_account=True, apply_rate_limit=True
+        )
+        assert result.blocked is True
+        mock_irc.error.assert_called_once()
+        plugin.db.log_usage.assert_called_once()
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "auth_failure"
 
 
 class TestIsContentBlockedError:

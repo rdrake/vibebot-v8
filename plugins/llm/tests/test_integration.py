@@ -199,12 +199,12 @@ class TestHTTPCallbackIntegration:
         assert len(errors) == 0, f"Errors during concurrent requests: {errors}"
 
 
-class TestAutoFlagFullFlow:
-    """Integration test for the full auto-flag abuse mitigation flow.
+class TestRateLimitFullFlow:
+    """Integration test for rate limiting on expensive commands.
 
-    Uses a real SQLite database to verify that content safety refusals
-    accumulate, trigger auto-flagging, block subsequent requests, and
-    that admin unflagging restores access.
+    Uses a real SQLite database to verify that repeated draw requests
+    trigger rate limiting, that unflagging still works independently,
+    and that normal requests succeed after the window expires.
     """
 
     @pytest.fixture
@@ -218,8 +218,9 @@ class TestAutoFlagFullFlow:
         registry = make_registry_side_effect(
             {
                 "databasePath": db_path,
-                "flagThreshold": 3,
-                "flagWindow": 3600,
+                "enforceRateLimits": True,
+                "drawRateLimitCount": 2,
+                "drawRateLimitWindow": 60,
             }
         )
 
@@ -234,68 +235,31 @@ class TestAutoFlagFullFlow:
 
         return plugin, mock_irc
 
-    def test_auto_flag_full_flow(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
-        """GIVEN user hitting content blocks WHEN threshold reached THEN flagged and blocked.
+    def test_rate_limit_full_flow(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN enforced rate limits WHEN user exceeds threshold THEN blocked then recovers.
 
         Full flow:
-        1. User makes 3 draw requests that all get content_blocked
-        2. After 3rd, auto-flag triggers
-        3. 4th request is blocked by _check_flagged
-        4. Admin unflags user
-        5. User can make requests again
+        1. User makes 2 successful draw requests (at limit)
+        2. 3rd request is rate_limited
+        3. After window expires, user can draw again
+        4. Unflag flow works independently of rate limiting
         """
         from llm.service import ImageResult
 
         plugin, mock_irc = plugin_with_real_db
 
         # Set up user identity
-        mock_irc.state.nickToAccount.return_value = "abuser"
+        mock_irc.state.nickToAccount.return_value = "testuser"
 
         mock_msg = mocker.MagicMock()
-        mock_msg.prefix = "abuser!user@host"
-        mock_msg.args = ("#test", "draw bad stuff")
+        mock_msg.prefix = "testuser!user@host"
+        mock_msg.args = ("#test", "draw something")
         mock_msg.time = time.time() + 100
         mock_msg.channel = "#test"
-        mock_msg.nick = "abuser"
+        mock_msg.nick = "testuser"
 
-        # Mock capability check and owner notifications
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch.object(plugin, "_notify_owners")
 
-        # Mock image_generation to return content_blocked
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="Error: content safety violation",
-            prompt_tokens=0,
-            completion_tokens=0,
-            cost=0.0,
-            model="dall-e-3",
-            error="content safety violation",
-        )
-
-        # Step 1: Three draws that get content_blocked → auto-flag on 3rd
-        for i in range(3):
-            mock_irc.reset_mock()
-            plugin.draw(mock_irc, mock_msg, [f"bad prompt {i}"])
-
-        # Step 2: Verify user is now flagged in the real database
-        assert plugin.db.is_user_flagged("abuser") is True
-        plugin._notify_owners.assert_called()
-
-        # Step 3: Next draw should be blocked by _check_flagged
-        mock_irc.reset_mock()
-        plugin.llm_service.image_generation.reset_mock()
-        plugin.draw(mock_irc, mock_msg, ["another bad prompt"])
-
-        mock_irc.error.assert_called_once()
-        assert "suspended" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.image_generation.assert_not_called()
-
-        # Step 4: Admin unflags the user via the database
-        plugin.db.unflag_user("abuser", "admin_account")
-        assert plugin.db.is_user_flagged("abuser") is False
-
-        # Step 5: User can draw again
-        mock_irc.reset_mock()
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",
             prompt_tokens=5,
@@ -303,7 +267,63 @@ class TestAutoFlagFullFlow:
             cost=0.02,
             model="dall-e-3",
         )
-        plugin.draw(mock_irc, mock_msg, ["nice prompt"])
 
+        # Step 1: Two successful draws fill the bucket
+        for i in range(2):
+            mock_irc.reset_mock()
+            plugin.draw(mock_irc, mock_msg, [f"prompt {i}"])
+            mock_irc.reply.assert_called_once()
+
+        # Step 2: 3rd draw is rate limited
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.reset_mock()
+        plugin.draw(mock_irc, mock_msg, ["one too many"])
+
+        mock_irc.error.assert_called_once()
+        assert "Rate limit" in mock_irc.error.call_args[0][0]
+        plugin.llm_service.image_generation.assert_not_called()
+
+        # Verify rate_limited was logged in the real database
+        usage_rows = (
+            plugin.db._connect()
+            .execute("SELECT status FROM usage WHERE nick = 'testuser' AND status = 'rate_limited'")
+            .fetchall()
+        )
+        assert len(usage_rows) >= 1
+
+        # Step 3: Simulate window expiration by clearing buckets
+        plugin._rate_buckets.clear()
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen2.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+        plugin.draw(mock_irc, mock_msg, ["fresh prompt"])
         mock_irc.reply.assert_called_once()
-        assert "http://img.example/gen.png" in mock_irc.reply.call_args[0][0]
+        assert "http://img.example/gen2.png" in mock_irc.reply.call_args[0][0]
+
+        # Step 4: Unflag flow works independently
+        plugin.db.flag_user("testuser", "manual test", auto_flagged=False)
+        assert plugin.db.is_user_flagged("testuser") is True
+
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.reset_mock()
+        plugin._rate_buckets.clear()  # Clear rate limits
+        plugin.draw(mock_irc, mock_msg, ["flagged draw"])
+        mock_irc.error.assert_called_once()
+        assert "suspended" in mock_irc.error.call_args[0][0]
+
+        plugin.db.unflag_user("testuser", "admin")
+        mock_irc.reset_mock()
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen3.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+        plugin.draw(mock_irc, mock_msg, ["unflagged draw"])
+        mock_irc.reply.assert_called_once()

@@ -140,9 +140,12 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
-        # Abuse flagging
-        "flagThreshold": 5,
-        "flagWindow": 3600,
+        # Rate limiting
+        "enforceRateLimits": False,
+        "drawRateLimitCount": 3,
+        "drawRateLimitWindow": 60,
+        "animateRateLimitCount": 2,
+        "animateRateLimitWindow": 600,
     }
     if overrides:
         defaults.update(overrides)
