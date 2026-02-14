@@ -481,6 +481,139 @@ class TestVideoGeneration:
         assert result.error is not None
         assert "safety" in result.content.lower()
 
+    def test_video_generation_persists_immediately_after_submit(
+        self,
+        make_service,
+        mocker: MockerFixture,
+    ):
+        """GIVEN provider returns request_id WHEN video_generation submits
+        THEN persists job to DB before entering poll loop.
+        """
+        service, plugin = make_service(animateTimeout=1)
+
+        mock_db = mocker.MagicMock()
+        mock_db.save_pending_task.return_value = 42
+        plugin.db = mock_db
+
+        # Time: submit at 100, first poll at 160, exceeds timeout
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
+
+        submit_resp = _mock_response(mocker, json={"request_id": "req-durable"})
+        poll_resp = _mock_response(mocker, json={"status": "pending"})
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
+
+        service.video_generation("a cat")
+
+        # The immediate persist should have been called with next_attempt_at
+        # set to submitted_at + timeout (so background doesn't race foreground)
+        mock_db.save_pending_task.assert_called_once()
+        call_kwargs = mock_db.save_pending_task.call_args[1]
+        assert call_kwargs["task_type"] == "animate"
+        assert '"request_id"' in call_kwargs["request_data"]
+        assert "req-durable" in call_kwargs["request_data"]
+        # next_attempt_at should be submitted_at + timeout, NOT submitted_at
+        assert call_kwargs["next_attempt_at"] > call_kwargs["submitted_at"]
+
+    def test_video_generation_deletes_persisted_row_on_success(
+        self,
+        make_service,
+        mocker: MockerFixture,
+    ):
+        """GIVEN job persisted after submit WHEN foreground poll completes
+        THEN deletes the persisted row.
+        """
+        service, plugin = make_service()
+
+        mock_db = mocker.MagicMock()
+        mock_db.save_pending_task.return_value = 42
+        plugin.db = mock_db
+
+        service._download_and_save_video = mocker.Mock(
+            return_value="https://example.com/llm/vid_abc.mp4",
+        )
+
+        submit_resp = _mock_response(mocker, json={"request_id": "req-success"})
+        poll_resp = _mock_response(
+            mocker, json={"video": {"url": "https://tmp.xai/v.mp4"}, "model": "grok-imagine-video"}
+        )
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
+
+        result = service.video_generation("a cat playing")
+
+        assert result.error is None
+        mock_db.delete_pending_task.assert_called_once_with(42)
+
+    def test_video_generation_deletes_persisted_row_on_terminal_error(
+        self,
+        make_service,
+        mocker: MockerFixture,
+    ):
+        """GIVEN job persisted after submit WHEN provider returns expired status
+        THEN deletes the persisted row.
+        """
+        service, plugin = make_service()
+
+        mock_db = mocker.MagicMock()
+        mock_db.save_pending_task.return_value = 42
+        plugin.db = mock_db
+
+        submit_resp = _mock_response(mocker, json={"request_id": "req-expired"})
+        poll_resp = _mock_response(mocker, json={"status": "expired"})
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
+
+        result = service.video_generation("a cat")
+
+        assert result.error is not None
+        mock_db.delete_pending_task.assert_called_once_with(42)
+
+    def test_video_generation_timeout_updates_existing_row(
+        self,
+        make_service,
+        mocker: MockerFixture,
+    ):
+        """GIVEN job persisted after submit WHEN foreground times out
+        THEN updates existing row for immediate retry (not insert duplicate).
+        """
+        service, plugin = make_service(animateTimeout=1)
+
+        mock_db = mocker.MagicMock()
+        mock_db.save_pending_task.return_value = 42
+        plugin.db = mock_db
+
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 102.0] + [102.0] * 10
+
+        submit_resp = _mock_response(mocker, json={"request_id": "req-timeout"})
+        poll_resp = _mock_response(mocker, json={"status": "pending"})
+
+        mock_session = mocker.MagicMock()
+        mock_session.post.return_value = submit_resp
+        mock_session.get.return_value = poll_resp
+        mocker.patch("requests.Session", return_value=mock_session)
+
+        service.video_generation("a cat")
+
+        # Should NOT insert a second row — save_pending_task called only once
+        # (at submit time, not again at timeout)
+        assert mock_db.save_pending_task.call_count == 1
+        # Should release the existing row for immediate background retry
+        mock_db.release_pending_task.assert_called_once()
+        release_kwargs = mock_db.release_pending_task.call_args
+        assert release_kwargs[0][0] == 42  # task_id
+
 
 # ---------------------------------------------------------------------------
 # TestSaveVideoBytes

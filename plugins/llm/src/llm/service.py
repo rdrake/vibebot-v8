@@ -981,11 +981,28 @@ class LLMService:
         return True
 
     @staticmethod
+    def _delete_stashed_task(db: object | None, task_id: int | None) -> None:
+        """Best-effort delete a stashed pending task row.
+
+        Used by foreground paths to clean up rows persisted for restart safety
+        when the foreground completes successfully or terminally.
+
+        Args:
+            db: Database instance (may be None).
+            task_id: Row ID to delete (may be None if persist failed).
+        """
+        if db is not None and task_id is not None:
+            with contextlib.suppress(Exception):
+                db.delete_pending_task(task_id)
+
+    @staticmethod
     def _is_terminal_error(error: Exception) -> bool:
         """Classify an exception as terminal (no retry) or transient.
 
-        Terminal: auth errors, content policy violations, bad requests.
-        Transient: timeouts, rate limits, network failures, 5xx.
+        Terminal: auth errors, content policy violations, bad requests,
+        and HTTP 400/401/403/404/410 from requests library.
+        Transient: timeouts, rate limits, network failures, 5xx,
+        and HTTP 408/409/425/429/5xx from requests library.
 
         Args:
             error: The exception to classify.
@@ -993,8 +1010,10 @@ class LLMService:
         Returns:
             True if the error is terminal and should not be retried.
         """
-        # Transient errors: Timeout, RateLimitError, APIConnectionError, InternalServerError
-        return isinstance(
+        import requests as _requests
+
+        # LiteLLM terminal errors
+        if isinstance(
             error,
             (
                 litellm.AuthenticationError,
@@ -1002,7 +1021,15 @@ class LLMService:
                 litellm.BadRequestError,
                 litellm.NotFoundError,
             ),
-        )
+        ):
+            return True
+
+        # requests.HTTPError from _retry_video (uses requests, not litellm)
+        if isinstance(error, _requests.HTTPError) and error.response is not None:
+            terminal_http_codes = {400, 401, 403, 404, 410}
+            return error.response.status_code in terminal_http_codes
+
+        return False
 
     @staticmethod
     def _compute_backoff(attempt_count: int) -> float:
@@ -2117,6 +2144,9 @@ Rules:
         session = requests.Session()
         session.headers.update({"User-Agent": "VibeBot/8"})
 
+        stashed_task_id: int | None = None
+        db: object | None = None
+
         try:
             if irc and target:
                 self.send_typing_indicator(irc, target, "active")
@@ -2159,34 +2189,55 @@ Rules:
 
             self.log.info("video_generation submitted: request_id=%s", request_id)
 
+            # Persist immediately for restart safety — schedule background
+            # eligibility after timeout so it doesn't race the foreground poll.
+            submitted_at = time.time()
+            db = getattr(self.plugin, "db", None)
+            expiry = self.plugin.registryValue("animateExpiry")
+            if db is not None and expiry:
+                try:
+                    stashed_task_id = db.save_pending_task(
+                        task_type="animate",
+                        nick=msg.nick if msg else "",
+                        reply_target=target or "",
+                        is_channel=bool(target) and ircutils.isChannel(target),
+                        prompt_preview=prompt[:100],
+                        model=model,
+                        request_data=json.dumps({"request_id": request_id}),
+                        submitted_at=submitted_at,
+                        expires_at=submitted_at + expiry,
+                        next_attempt_at=submitted_at + timeout,
+                    )
+                    self.log.info(
+                        "Persisted animate job immediately: task_id=%d request_id=%s",
+                        stashed_task_id,
+                        request_id,
+                    )
+                except Exception:
+                    self.log.exception("Failed to persist animate job after submit")
+
             # Step 2: Poll for result
             poll_url = f"https://api.x.ai/v1/videos/{request_id}"
-            start_time = time.time()
+            start_time = submitted_at
             poll_interval = 60  # seconds
 
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout:
-                    # Stash for background recovery — the video may still complete
-                    nick = msg.nick if msg else ""
-                    reply_target = target or ""
-                    is_channel_flag = bool(reply_target) and ircutils.isChannel(reply_target)
-                    stashed = self._stash_timeout(
-                        task_type="animate",
-                        nick=nick,
-                        reply_target=reply_target,
-                        is_channel=is_channel_flag,
-                        prompt=prompt,
-                        model=model,
-                        request_data={"request_id": request_id},
-                        submitted_at=time.time() - elapsed,
-                    )
-                    self.log.info(
-                        "video_generation timed out after %ds, stashed request_id=%s for recovery",
-                        timeout,
-                        request_id,
-                    )
-                    if stashed:
+                    # Release persisted row for immediate background retry
+                    if stashed_task_id is not None and db is not None:
+                        with contextlib.suppress(Exception):
+                            db.release_pending_task(
+                                stashed_task_id,
+                                time.time(),  # immediately eligible
+                                "Foreground poll timed out",
+                            )
+                        self.log.info(
+                            "video_generation timed out after %ds, "
+                            "released task_id=%d for background retry",
+                            timeout,
+                            stashed_task_id,
+                        )
                         error_content = (
                             _(
                                 "Video generation timed out after %d seconds. "
@@ -2222,9 +2273,13 @@ Rules:
                 if status == "done" or video_url:
                     break
                 elif status == "expired":
+                    self._delete_stashed_task(db, stashed_task_id)
                     error_content = _("Error: Video generation request expired. Please try again.")
                     return VideoResult(content=error_content, model=model, error=error_content)
                 # status == "pending": continue polling
+
+            # Foreground completed — clean up persisted row
+            self._delete_stashed_task(db, stashed_task_id)
 
             # Step 3: Extract video URL and download
             if not video_url:
@@ -2252,6 +2307,7 @@ Rules:
             )
 
         except requests.HTTPError as e:
+            self._delete_stashed_task(db, stashed_task_id)
             self._log_server_headers(e.response)
             body = ""
             with contextlib.suppress(Exception):
@@ -2279,6 +2335,7 @@ Rules:
             return VideoResult(content=error_content, error=error_content)
 
         except Exception as e:
+            self._delete_stashed_task(db, stashed_task_id)
             self._log_server_headers(e)
             sanitized = self._sanitize(str(e))
             self.log.exception("Video generation failed: %s", sanitized)

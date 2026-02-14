@@ -138,8 +138,7 @@ The plugin layers several protections:
 
 - Capability checks on command wrappers
 - NickServ account requirement for expensive commands (`draw`, `animate`)
-- Manual moderation via `%flag`, `%unflag`, `%flagged`
-- Automatic flagging after repeated content-safety refusals (configurable threshold)
+- Manual moderation via `%flag`, `%unflag`, `%flagged` (no automatic flagging side effects)
 - Optional per-account rate limiter for `draw`/`animate`
 
 Protection matrix:

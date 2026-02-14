@@ -445,9 +445,23 @@ class LLM(callbacks.Plugin):
 
         if r.status == "expired":
             text = f'{nick}: sorry, your {r.task_type} request "{prompt_preview}" expired.'
+            self.log.warning(
+                "Deferred task expired: task_type=%s nick=%s target=%s prompt=%s",
+                r.task_type,
+                nick,
+                target,
+                prompt_preview[:50],
+            )
         elif r.status == "failed_terminal":
             reason = self.llm_service.sanitize_output(r.reason)[:200]
             text = f'{nick}: sorry, your {r.task_type} request "{prompt_preview}" failed: {reason}'
+            self.log.warning(
+                "Deferred task failed_terminal: task_type=%s nick=%s target=%s reason=%s",
+                r.task_type,
+                nick,
+                target,
+                reason[:100],
+            )
         elif r.status == "completed":
             content = self.llm_service.sanitize_output(r.content)
             if r.task_type == "code":

@@ -1558,6 +1558,53 @@ class TestDeliverPendingResult:
         assert call_args[5] == 50  # completion_tokens
         assert call_args[6] == 0.01  # cost
 
+    def test_logs_structured_expired_outcome(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN expired deferred result WHEN delivered THEN logs structured operator entry."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(
+            status="expired",
+            task_type="animate",
+            content="",
+            reason="Request expired after retry timeout",
+        )
+        plugin._deliver_pending_result(r)
+
+        # Should log a structured warning for operator visibility
+        plugin.log.warning.assert_called_once()
+        log_msg = plugin.log.warning.call_args[0][0]
+        assert "expired" in log_msg.lower()
+        # Should include key fields for grep/monitoring
+        assert "animate" in plugin.log.warning.call_args[0][1]
+        assert "alice" in plugin.log.warning.call_args[0][2]
+
+    def test_logs_structured_failed_terminal_outcome(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN terminal-failure deferred result WHEN delivered THEN logs structured operator entry."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(
+            status="failed_terminal",
+            task_type="draw",
+            content="",
+            reason="API key not configured",
+        )
+        plugin._deliver_pending_result(r)
+
+        # Should log a structured warning for operator visibility
+        plugin.log.warning.assert_called_once()
+        log_msg = plugin.log.warning.call_args[0][0]
+        assert "failed_terminal" in log_msg.lower()
+        assert "draw" in plugin.log.warning.call_args[0][1]
+        assert "alice" in plugin.log.warning.call_args[0][2]
+
 
 class TestRequireAccount:
     """Test _require_account NickServ gate helper."""

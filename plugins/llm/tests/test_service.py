@@ -2761,6 +2761,60 @@ class TestErrorClassification:
         )
         assert LLMService._is_terminal_error(err) is False
 
+    def test_requests_http_404_is_terminal(self) -> None:
+        """GIVEN requests.HTTPError with 404 WHEN classified THEN terminal."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 404
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_requests_http_401_is_terminal(self) -> None:
+        """GIVEN requests.HTTPError with 401 WHEN classified THEN terminal."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 401
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_requests_http_410_is_terminal(self) -> None:
+        """GIVEN requests.HTTPError with 410 WHEN classified THEN terminal."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 410
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_requests_http_429_is_transient(self) -> None:
+        """GIVEN requests.HTTPError with 429 WHEN classified THEN transient."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 429
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is False
+
+    def test_requests_http_500_is_transient(self) -> None:
+        """GIVEN requests.HTTPError with 500 WHEN classified THEN transient."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 500
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is False
+
+    def test_requests_http_503_is_transient(self) -> None:
+        """GIVEN requests.HTTPError with 503 WHEN classified THEN transient."""
+        import requests
+
+        resp = requests.models.Response()
+        resp.status_code = 503
+        err = requests.HTTPError(response=resp)
+        assert LLMService._is_terminal_error(err) is False
+
 
 class TestComputeBackoff:
     """Test backoff calculation."""
