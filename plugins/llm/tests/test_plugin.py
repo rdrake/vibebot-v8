@@ -1642,6 +1642,7 @@ class TestDeliveryRetry:
             "completion_tokens": 50,
             "cost": 0.01,
             "task_id": 42,
+            "delivery_attempt_count": 0,
         }
         defaults.update(overrides)
         return PendingTaskResult(**defaults)
@@ -1680,7 +1681,7 @@ class TestDeliveryRetry:
         assert call_args[1]["delivery_attempt_count"] == 1
 
     def test_delivery_backoff_formula(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN delivery attempt 3 WHEN failing THEN backoff is 15*2^3=120 capped at 120."""
+        """GIVEN 3 prior delivery failures WHEN failing THEN next backoff is capped at 120s."""
         import supybot.world as world_mod
 
         mock_irc = mocker.MagicMock()
@@ -1689,16 +1690,14 @@ class TestDeliveryRetry:
         mocker.patch.object(world_mod, "ircs", [mock_irc])
         mocker.patch("llm.plugin.time.time", return_value=1000000.0)
 
-        # Simulate result from a task that already has 3 delivery attempts
-        # The PendingTaskResult doesn't carry delivery_attempt_count, but we
-        # can test via the delivery_attempt_count being read from the DB.
-        # For simplicity, test the first failure (delivery_attempt_count=0→1)
-        r = self._make_result(task_id=42)
+        # 3 prior failures means this failure is attempt 4:
+        # delay = min(15 * 2^(4-1), 120) = 120
+        r = self._make_result(task_id=42, delivery_attempt_count=3)
         plugin._deliver_pending_result(r)
 
         call_args = plugin.db.update_delivery_attempt.call_args[1]
-        # First failure: 15 * 2^0 = 15
-        assert call_args["next_attempt_at"] == 1000000.0 + 15
+        assert call_args["delivery_attempt_count"] == 4
+        assert call_args["next_attempt_at"] == 1000000.0 + 120
 
     def test_delivery_exhaustion_marks_failed(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN 10 delivery failures WHEN delivering THEN set delivery_failed, retain row."""
@@ -1708,19 +1707,18 @@ class TestDeliveryRetry:
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
         mock_irc.queueMsg.side_effect = Exception("persistent failure")
         mocker.patch.object(world_mod, "ircs", [mock_irc])
+        mock_wakeup = mocker.patch.object(plugin, "_schedule_queue_wakeup")
 
         # Task already at delivery_attempt_count = 9 (this is the 10th attempt)
-        r = self._make_result(task_id=42)
-        # We need the plugin to know this is attempt 10. The delivery_attempt_count
-        # comes from the PendingTaskRow, not PendingTaskResult. So the plugin needs
-        # to read from DB or we add it to the result. For now, test the max_attempts
-        # logic by checking that after DELIVERY_MAX_ATTEMPTS failures the state is
-        # set to delivery_failed.
-        # We'll need to pass delivery_attempt_count through somehow...
-        # For the initial test, just verify the retry mechanism works.
+        r = self._make_result(task_id=42, delivery_attempt_count=9)
         plugin._deliver_pending_result(r)
 
         plugin.db.update_delivery_attempt.assert_called_once()
+        call_args = plugin.db.update_delivery_attempt.call_args[1]
+        assert call_args["delivery_attempt_count"] == 10
+        assert call_args["delivery_state"] == "delivery_failed"
+        # Exhausted rows should not schedule another automatic wakeup.
+        mock_wakeup.assert_not_called()
 
     def test_batch_cascade_isolation(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN batch of 3 results WHEN second delivery fails THEN first and third still delivered."""
@@ -1944,6 +1942,7 @@ class TestWakeupTriggers:
             "completion_tokens": 50,
             "cost": 0.01,
             "task_id": 42,
+            "delivery_attempt_count": 0,
         }
         defaults.update(overrides)
         return PendingTaskResult(**defaults)

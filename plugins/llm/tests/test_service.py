@@ -2503,6 +2503,7 @@ class TestTimeoutStashing:
         assert call_kwargs[1]["nick"] == "alice"
         assert call_kwargs[1]["reply_target"] == "#general"
         assert call_kwargs[1]["is_channel"] is True
+        assert "origin_request_id" in call_kwargs[1]
         assert "timed out" in result.content.lower() or "retry" in result.content.lower()
 
     def test_completion_timeout_stashes_code(self) -> None:
@@ -2872,6 +2873,7 @@ class TestProviderDeliverySplit:
         assert len(calls) >= 2
         delivery_filter = calls[1][1].get("delivery_state_filter")
         assert set(delivery_filter) == {"ready", "retrying"}
+        assert calls[1][1].get("max_delivery_attempts") == 10
 
     def test_delivery_phase_returns_results_with_task_id(self) -> None:
         """GIVEN ready tasks in delivery phase WHEN checked THEN results include task_id."""
@@ -2880,6 +2882,7 @@ class TestProviderDeliverySplit:
             delivery_state="ready",
             result_payload='{"status": "completed", "content": "hello", '
             '"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001}',
+            delivery_attempt_count=3,
         )
         self.mock_db.delete_expired_pending_tasks.return_value = []
         self.mock_db.claim_due_pending_tasks.side_effect = [
@@ -2892,6 +2895,7 @@ class TestProviderDeliverySplit:
         assert len(results) == 1
         assert results[0].task_id == 42
         assert results[0].status == "completed"
+        assert results[0].delivery_attempt_count == 3
 
     def test_expired_still_ephemeral_and_deleted(self) -> None:
         """GIVEN expired tasks WHEN checked THEN deleted (ephemeral delivery, no task_id)."""

@@ -516,6 +516,7 @@ class TestVideoGeneration:
         assert call_kwargs["task_type"] == "animate"
         assert '"request_id"' in call_kwargs["request_data"]
         assert "req-durable" in call_kwargs["request_data"]
+        assert "origin_request_id" in call_kwargs
         # next_attempt_at should be submitted_at + timeout, NOT submitted_at
         assert call_kwargs["next_attempt_at"] > call_kwargs["submitted_at"]
 

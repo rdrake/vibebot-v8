@@ -1037,6 +1037,41 @@ class TestDeliveryStatePersistence:
         )
         assert len(claimed) == 0
 
+    def test_delivery_claim_skips_exhausted_attempts(self, tmp_path: Path) -> None:
+        """GIVEN retrying rows at/under cap WHEN claiming THEN exhausted rows are excluded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+
+        retriable_id = self._save_task(db, now, nick="retriable", next_attempt_at=now - 5)
+        db.update_task_for_delivery(retriable_id, "ready", '{"content": "r1"}')
+        db.update_delivery_attempt(
+            retriable_id,
+            delivery_state="retrying",
+            last_delivery_error="net",
+            delivery_attempt_count=9,
+            next_attempt_at=now - 5,
+        )
+
+        exhausted_id = self._save_task(db, now, nick="exhausted", next_attempt_at=now - 5)
+        db.update_task_for_delivery(exhausted_id, "ready", '{"content": "r2"}')
+        db.update_delivery_attempt(
+            exhausted_id,
+            delivery_state="retrying",
+            last_delivery_error="net",
+            delivery_attempt_count=10,
+            next_attempt_at=now - 5,
+        )
+
+        claimed = db.claim_due_pending_tasks(
+            now,
+            limit=10,
+            lease_seconds=120,
+            delivery_state_filter=("ready", "retrying"),
+            max_delivery_attempts=10,
+        )
+        assert len(claimed) == 1
+        assert claimed[0].nick == "retriable"
+
     def test_expired_only_deletes_pending_delivery_state(self, tmp_path: Path) -> None:
         """GIVEN expired tasks with delivery_state='ready' WHEN expiry sweep THEN NOT deleted."""
         db = LLMDatabase(str(tmp_path / "test.db"))
@@ -1247,6 +1282,26 @@ class TestGetNextDueTime:
         db.claim_due_pending_tasks(now + 10, limit=10, lease_seconds=120)
         # The only task is now claimed — should return None
         assert db.get_next_due_time() is None
+
+    def test_includes_lease_expired_claimed_tasks(self, tmp_path: Path) -> None:
+        """GIVEN claim lease already expired WHEN get_next_due_time THEN task is considered."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        now = time.time()
+        task_id = self._save_task(db, now, nick="leased", next_attempt_at=now + 5)
+
+        # Claim the row first, then force claimed_until into the past.
+        db.claim_due_pending_tasks(now + 10, limit=10, lease_seconds=120)
+        conn = db._connect()
+        try:
+            conn.execute(
+                "UPDATE pending_tasks SET claimed_until = ? WHERE id = ?",
+                (time.time() - 1, task_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert db.get_next_due_time() == pytest.approx(now + 5)
 
     def test_includes_pending_and_delivery_states(self, tmp_path: Path) -> None:
         """GIVEN tasks in pending, ready, and retrying states WHEN get_next_due_time THEN all considered."""

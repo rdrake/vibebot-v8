@@ -58,6 +58,7 @@ PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
+DELIVERY_MAX_ATTEMPTS = 10
 
 
 class ValidationResult(NamedTuple):
@@ -118,6 +119,7 @@ class PendingTaskResult(NamedTuple):
     completion_tokens: int = 0
     cost: float = 0.0
     task_id: int | None = None  # DB row ID for delivery acknowledgment
+    delivery_attempt_count: int = 0  # current persisted delivery retry count
 
 
 class ReminderParseResult(NamedTuple):
@@ -972,6 +974,7 @@ class LLMService:
             submitted_at=submitted_at,
             expires_at=expires_at,
             next_attempt_at=submitted_at,
+            origin_request_id=request_id.get(),
         )
         self.log.info(
             "Stashed timed-out %s request as pending_task id=%d (expires in %ds)",
@@ -1408,6 +1411,7 @@ class LLMService:
             PENDING_CLAIM_LIMIT,
             PENDING_LEASE_SECONDS,
             delivery_state_filter=("ready", "retrying"),
+            max_delivery_attempts=DELIVERY_MAX_ATTEMPTS,
         )
 
         for task in delivery_tasks:
@@ -1439,6 +1443,7 @@ class LLMService:
                     completion_tokens=payload.get("completion_tokens", 0),
                     cost=payload.get("cost", 0.0),
                     task_id=task.id,
+                    delivery_attempt_count=task.delivery_attempt_count,
                 )
             )
 
@@ -2240,12 +2245,12 @@ Rules:
             resp.raise_for_status()
             submit_data = resp.json()
 
-            request_id = submit_data.get("request_id")
-            if not request_id:
+            provider_request_id = submit_data.get("request_id")
+            if not provider_request_id:
                 error_content = _("Error: Video generation API returned no request ID")
                 return VideoResult(content=error_content, error=error_content)
 
-            self.log.info("video_generation submitted: request_id=%s", request_id)
+            self.log.info("video_generation submitted: request_id=%s", provider_request_id)
 
             # Persist immediately for restart safety — schedule background
             # eligibility after timeout so it doesn't race the foreground poll.
@@ -2261,21 +2266,22 @@ Rules:
                         is_channel=bool(target) and ircutils.isChannel(target),
                         prompt_preview=prompt[:100],
                         model=model,
-                        request_data=json.dumps({"request_id": request_id}),
+                        request_data=json.dumps({"request_id": provider_request_id}),
                         submitted_at=submitted_at,
                         expires_at=submitted_at + expiry,
                         next_attempt_at=submitted_at + timeout,
+                        origin_request_id=request_id.get(),
                     )
                     self.log.info(
                         "Persisted animate job immediately: task_id=%d request_id=%s",
                         stashed_task_id,
-                        request_id,
+                        provider_request_id,
                     )
                 except Exception:
                     self.log.exception("Failed to persist animate job after submit")
 
             # Step 2: Poll for result
-            poll_url = f"https://api.x.ai/v1/videos/{request_id}"
+            poll_url = f"https://api.x.ai/v1/videos/{provider_request_id}"
             start_time = submitted_at
             poll_interval = 60  # seconds
 
@@ -2284,12 +2290,16 @@ Rules:
                 if elapsed > timeout:
                     # Release persisted row for immediate background retry
                     if stashed_task_id is not None and db is not None:
+                        release_at = time.time()
                         with contextlib.suppress(Exception):
                             db.release_pending_task(
                                 stashed_task_id,
-                                time.time(),  # immediately eligible
+                                release_at,  # immediately eligible
                                 "Foreground poll timed out",
                             )
+                        schedule_wakeup = getattr(self.plugin, "_schedule_queue_wakeup", None)
+                        if schedule_wakeup is not None:
+                            schedule_wakeup(at_time=release_at)
                         self.log.info(
                             "video_generation timed out after %ds, "
                             "released task_id=%d for background retry",

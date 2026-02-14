@@ -367,6 +367,7 @@ class LLMDatabase:
         submitted_at: float,
         expires_at: float,
         next_attempt_at: float,
+        origin_request_id: str = "",
     ) -> int:
         """Save a pending task to the database.
 
@@ -381,6 +382,7 @@ class LLMDatabase:
             submitted_at: Unix timestamp when originally submitted.
             expires_at: Unix timestamp after which to stop retrying.
             next_attempt_at: Unix timestamp for first retry.
+            origin_request_id: Stable trace/request ID captured at request acceptance.
 
         Returns:
             The row ID of the inserted task.
@@ -391,8 +393,8 @@ class LLMDatabase:
                 "INSERT INTO pending_tasks "
                 "(task_type, nick, reply_target, is_channel, prompt_preview, model, "
                 "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
-                "claimed_until, last_error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '')",
+                "claimed_until, last_error, origin_request_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '', ?)",
                 (
                     task_type,
                     nick,
@@ -404,6 +406,7 @@ class LLMDatabase:
                     submitted_at,
                     expires_at,
                     next_attempt_at,
+                    origin_request_id,
                 ),
             )
             conn.commit()
@@ -417,6 +420,7 @@ class LLMDatabase:
         limit: int,
         lease_seconds: int,
         delivery_state_filter: str | tuple[str, ...] | None = None,
+        max_delivery_attempts: int | None = None,
     ) -> list[PendingTaskRow]:
         """Atomically claim pending tasks that are due for retry.
 
@@ -429,6 +433,8 @@ class LLMDatabase:
             lease_seconds: How long to hold the claim (seconds).
             delivery_state_filter: Optional filter on delivery_state. Can be a
                 single state string or a tuple of states to match.
+            max_delivery_attempts: Optional cap used by delivery-phase callers
+                to skip rows that already exhausted retries.
 
         Returns:
             List of claimed PendingTaskRow objects.
@@ -449,11 +455,18 @@ class LLMDatabase:
                 state_clause = ""
                 state_params = ()
 
+            if max_delivery_attempts is not None:
+                attempt_clause = "AND delivery_attempt_count < ?"
+                attempt_params: tuple[object, ...] = (max_delivery_attempts,)
+            else:
+                attempt_clause = ""
+                attempt_params = ()
+
             rows = conn.execute(
                 f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
-                f"WHERE next_attempt_at <= ? AND claimed_until <= ? {state_clause} "
+                f"WHERE next_attempt_at <= ? AND claimed_until <= ? {state_clause} {attempt_clause} "
                 "ORDER BY next_attempt_at LIMIT ?",
-                (now, now, *state_params, limit),
+                (now, now, *state_params, *attempt_params, limit),
             ).fetchall()
 
             if not rows:
@@ -640,17 +653,20 @@ class LLMDatabase:
         """Return the earliest next_attempt_at for actionable unclaimed tasks.
 
         Only considers tasks that could be processed by the scheduler:
-        unclaimed rows with delivery_state in (pending, ready, retrying).
+        unclaimed (or lease-expired) rows with delivery_state in
+        (pending, ready, retrying).
 
         Returns:
             Earliest next_attempt_at timestamp, or None if the queue is empty.
         """
         conn = self._connect()
         try:
+            now = time.time()
             row = conn.execute(
                 "SELECT MIN(next_attempt_at) FROM pending_tasks "
-                "WHERE claimed_until <= 0 "
+                "WHERE claimed_until <= ? "
                 "AND delivery_state IN ('pending', 'ready', 'retrying')",
+                (now,),
             ).fetchone()
             if row is None or row[0] is None:
                 return None

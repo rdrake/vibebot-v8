@@ -579,7 +579,7 @@ class LLM(callbacks.Plugin):
                 self.db.delete_pending_task(r.task_id)
             else:
                 now = time.time()
-                attempt = 1  # first failure
+                attempt = max(r.delivery_attempt_count, 0) + 1
                 delay = min(
                     self._DELIVERY_BASE_BACKOFF * (2 ** (attempt - 1)),
                     self._DELIVERY_MAX_BACKOFF,
@@ -593,7 +593,8 @@ class LLM(callbacks.Plugin):
                     delivery_attempt_count=attempt,
                     next_attempt_at=retry_at,
                 )
-                self._schedule_queue_wakeup(at_time=retry_at)
+                if state != "delivery_failed":
+                    self._schedule_queue_wakeup(at_time=retry_at)
 
         # Log usage for completed tasks
         if r.status == "completed" and delivered and (r.cost > 0 or r.prompt_tokens > 0):
