@@ -9,7 +9,7 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Vision support**: Automatically detects image URLs in prompts
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen
-- **Abuse protection**: Uses Limnoria's built-in flood protection
+- **Abuse controls**: Capability checks, NickServ gating, manual moderation, optional draw/animate limiter
 - **Modern Python**: Python 3.12+ with full type hints
 - **Quality tools**: Ruff for linting/formatting, ty for type checking
 
@@ -93,6 +93,7 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | `%ask <question>` | Ask AI a question (supports vision with image URLs, remembers context) |
 | `%code <request>` | Generate code (remembers context for iterating on code) |
 | `%draw <prompt>` | Generate an image (no context) |
+| `%animate <prompt>` / `%video <prompt>` | Generate a short video (requires NickServ account) |
 | `%forget [channel]` | Clear your conversation context |
 
 ### Admin Commands
@@ -100,6 +101,9 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | Command | Description |
 |---------|-------------|
 | `%llmkeys` | Check API key status (shows first 3 chars only, sent privately) |
+| `%flag <nick> <reason>` | Manually suspend an account from bot commands |
+| `%unflag <nick>` | Remove a manual suspension |
+| `%flagged` | List currently suspended accounts |
 
 ## Configuration
 
@@ -127,6 +131,54 @@ supybot.plugins.LLM.contextTimeoutMinutes: 30
 ```
 
 Context is per-user per-channel. Cleared after 30 minutes of inactivity or when max messages exceeded.
+
+### Abuse Controls
+
+The plugin layers several protections:
+
+- Capability checks on command wrappers
+- NickServ account requirement for expensive commands (`draw`, `animate`)
+- Manual moderation via `%flag`, `%unflag`, `%flagged`
+- Automatic flagging after repeated content-safety refusals (configurable threshold)
+- Optional per-account rate limiter for `draw`/`animate`
+
+Protection matrix:
+
+| Command | Capability | NickServ Required | Rate Limited |
+|---------|------------|-------------------|--------------|
+| `%ask` | `llm.ask` | No | No |
+| `%code` | `llm.code` | No | No |
+| `%draw` | `llm.draw` | Yes | Yes (optional) |
+| `%animate` / `%video` | `llm.animate` | Yes | Yes (optional) |
+
+Rate-limit config (global):
+
+```
+supybot.plugins.LLM.enforceRateLimits: False
+supybot.plugins.LLM.drawRateLimitCount: 3
+supybot.plugins.LLM.drawRateLimitWindow: 60
+supybot.plugins.LLM.animateRateLimitCount: 2
+supybot.plugins.LLM.animateRateLimitWindow: 600
+```
+
+### IRC Staging Smoke Checklist
+
+Run this sequence on a staging bot connected to IRC:
+
+1. Monitor mode (`enforceRateLimits=False`):
+   - Send `draw`/`animate` prompts above configured threshold.
+   - Verify requests still execute (not blocked).
+   - Verify logs include `rate_limit_shadow` entries.
+2. Enforced mode (`enforceRateLimits=True`):
+   - Repeat prompts above threshold.
+   - Verify bot replies with rate-limit error and provider call is not executed.
+   - Verify usage rows include `status=rate_limited`.
+3. Manual moderation:
+   - `%flag <nick> <reason>` then verify `ask/code/draw/animate` are blocked.
+   - `%flagged` shows the account.
+   - `%unflag <nick>` then verify commands work again.
+4. Capability check:
+   - Verify `%animate`/`%video` require `llm.animate`.
 
 ### HTTP Output
 

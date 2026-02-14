@@ -1679,6 +1679,7 @@ class TestRateLimiter:
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 200 + i)
         assert plugin._is_rate_limited("draw", "alice", now) is False
+        assert "draw:alice" not in plugin._rate_buckets
 
     def test_different_commands_isolated(self, plugin) -> None:
         """GIVEN draw at limit WHEN checking animate THEN not limited."""
@@ -1708,11 +1709,12 @@ class TestRateLimiter:
         mock_irc.error.assert_called_once()
         plugin.db.log_usage.assert_called_once()
         assert plugin.db.log_usage.call_args.kwargs["status"] == "rate_limited"
+        assert "rate_limited" in plugin.log.info.call_args.args[0]
 
     def test_check_rate_limit_logs_only_when_not_enforced(
         self, plugin, mocker: MockerFixture
     ) -> None:
-        """GIVEN enforce=False and over limit WHEN _check_rate_limit THEN logs but does not block."""
+        """GIVEN enforce=False and over limit WHEN _check_rate_limit THEN emits shadow log but allows."""
         plugin.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "drawRateLimitCount": 3,
@@ -1731,6 +1733,7 @@ class TestRateLimiter:
         assert blocked is False
         mock_irc.error.assert_not_called()
         plugin.db.log_usage.assert_not_called()
+        assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
 
 
 class TestRunPreflight:

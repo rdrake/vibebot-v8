@@ -7,6 +7,7 @@ AI-powered IRC commands using LiteLLM.
 - Multi-provider support (OpenAI, Anthropic, Google, etc.)
 - Vision support with automatic image URL detection
 - Conversation context (memory between messages)
+- Abuse controls with explicit manual moderation
 - Thread-safe API key handling
 - Comprehensive error handling
 
@@ -71,6 +72,32 @@ Thread-safe conversation history manager.
 ## Configuration
 
 See main README for full configuration options.
+
+### Command Protection Matrix
+
+| Command | Capability | NickServ Required | Rate Limited |
+|---------|------------|-------------------|--------------|
+| `%ask` | `llm.ask` | No | No |
+| `%code` | `llm.code` | No | No |
+| `%draw` | `llm.draw` | Yes | Yes (optional) |
+| `%animate` / `%video` | `llm.animate` | Yes | Yes (optional) |
+
+### Moderation Model
+
+- Manual account moderation only: `%flag`, `%unflag`, `%flagged`
+- Flagged accounts are blocked across user-facing commands
+- No automatic flagging side effects
+- Optional draw/animate limiter controlled by:
+  - `enforceRateLimits`
+  - `drawRateLimitCount`, `drawRateLimitWindow`
+  - `animateRateLimitCount`, `animateRateLimitWindow`
+
+### Staging Smoke Test
+
+1. Set `enforceRateLimits=False`, exceed draw/animate limits, confirm requests still run and logs emit `rate_limit_shadow`.
+2. Set `enforceRateLimits=True`, exceed limits again, confirm requests are blocked and usage status is `rate_limited`.
+3. Validate `%flag`, `%flagged`, `%unflag` flow blocks then restores command access.
+4. Confirm `%animate`/`%video` require `llm.animate` capability.
 
 ## Development
 

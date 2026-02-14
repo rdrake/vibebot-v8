@@ -1985,6 +1985,61 @@ class TestRateLimitIntegration:
         assert "Rate limit" in mock_irc.error.call_args[0][0]
         plugin.llm_service.image_generation.assert_not_called()
 
+    def test_animate_rate_limited_when_enforced(self, plugin_env, mocker: MockerFixture):
+        """GIVEN rate limit exceeded and enforced WHEN animate called THEN blocked."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "enforceRateLimits": True,
+                "animateRateLimitCount": 1,
+                "animateRateLimitWindow": 600,
+            }.get(key, "")
+        )
+
+        now = time.time()
+        plugin._record_rate_limit_hit("animate", "test_account", now - 2)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.animate(mock_irc, mock_msg, ["test prompt"])
+
+        mock_irc.error.assert_called_once()
+        assert "Rate limit" in mock_irc.error.call_args[0][0]
+        plugin.llm_service.video_generation.assert_not_called()
+
+    def test_draw_over_threshold_logs_shadow_when_not_enforced(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN enforce=False and over limit WHEN draw called THEN request runs and shadow log is emitted."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "enforceRateLimits": False,
+                "drawRateLimitCount": 1,
+                "drawRateLimitWindow": 60,
+            }.get(key, "")
+        )
+        plugin._record_rate_limit_hit("draw", "test_account", time.time() - 2)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.draw(mock_irc, mock_msg, ["test prompt"])
+
+        mock_irc.error.assert_not_called()
+        plugin.llm_service.image_generation.assert_called_once()
+        assert any(
+            "rate_limit_shadow" in c.args[0] for c in plugin.log.info.call_args_list if c.args
+        )
+
     def test_ask_not_rate_limited(self, plugin_env, mocker: MockerFixture):
         """GIVEN rate limits enforced WHEN ask called THEN no rate check applied."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -1999,5 +2054,23 @@ class TestRateLimitIntegration:
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        mock_irc.reply.assert_called_once()
+
+    def test_code_not_rate_limited(self, plugin_env, mocker: MockerFixture):
+        """GIVEN rate limits enforced WHEN code called THEN no rate check is applied."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="print('hi')",
+            prompt_tokens=5,
+            completion_tokens=10,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
+        plugin.llm_service.summarize.return_value = "small summary"
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()

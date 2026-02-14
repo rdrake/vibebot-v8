@@ -270,6 +270,13 @@ class TestAnimateCommand:
         assert hasattr(LLM, "video")
         assert LLM.video is LLM.animate
 
+    def test_animate_wrapper_requires_llm_animate_capability(self):
+        """GIVEN plugin source WHEN checking animate wrapper THEN llm.animate capability is required."""
+        import inspect
+
+        source = inspect.getsource(LLM)
+        assert 'animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])' in source
+
 
 # ---------------------------------------------------------------------------
 # TestVideoGeneration

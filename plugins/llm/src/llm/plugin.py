@@ -582,8 +582,10 @@ class LLM(callbacks.Plugin):
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
 
-        # Find users with owner capability
-        owners = [user.name for user in ircdb.users.users.values() if "owner" in user.capabilities]
+        # Find users with owner capability.
+        users_mod = getattr(ircdb, "users", None)
+        users_map = getattr(users_mod, "users", {})
+        owners = [user.name for user in users_map.values() if "owner" in user.capabilities]
         if not owners:
             self.log.warning("No bot owner configured, skipping startup notification")
             return
@@ -995,12 +997,16 @@ class LLM(callbacks.Plugin):
         key = f"{command}:{account}"
         bucket = self._rate_buckets.get(key)
         if bucket is None:
-            bucket = collections.deque()
-            self._rate_buckets[key] = bucket
+            return False
 
         # Evict expired entries
         while bucket and bucket[0] <= cutoff:
             bucket.popleft()
+
+        # Clean up idle keys so bucket map cannot grow forever.
+        if not bucket:
+            self._rate_buckets.pop(key, None)
+            return False
 
         return len(bucket) >= max_count
 
@@ -1053,15 +1059,19 @@ class LLM(callbacks.Plugin):
 
         if over_limit:
             enforce = self.registryValue("enforceRateLimits")
+            max_count = self.registryValue(f"{command}RateLimitCount")
             window = self.registryValue(f"{command}RateLimitWindow")
-            self.log.info(
-                "Rate limit %s for %s on %s (%ss window)",
-                "enforced" if enforce else "logged",
-                account,
-                command,
-                window,
-            )
+            key = f"{command}:{account}"
+            count = len(self._rate_buckets.get(key, ()))
             if enforce:
+                self.log.info(
+                    "rate_limited command=%s account=%s count=%d limit=%d window=%ss",
+                    command,
+                    account,
+                    count,
+                    max_count,
+                    window,
+                )
                 irc.error(
                     _("Rate limit exceeded for %s. Please wait before trying again.") % command
                 )
@@ -1077,6 +1087,14 @@ class LLM(callbacks.Plugin):
                     status="rate_limited",
                 )
                 return True
+            self.log.info(
+                "rate_limit_shadow command=%s account=%s count=%d limit=%d window=%ss",
+                command,
+                account,
+                count,
+                max_count,
+                window,
+            )
         return False
 
     @staticmethod
