@@ -284,11 +284,13 @@ class TestRateLimitFullFlow:
         plugin.llm_service.image_generation.assert_not_called()
 
         # Verify rate_limited was logged in the real database
-        usage_rows = (
-            plugin.db._connect()
-            .execute("SELECT status FROM usage WHERE nick = 'testuser' AND status = 'rate_limited'")
-            .fetchall()
-        )
+        conn = plugin.db._connect()
+        try:
+            usage_rows = conn.execute(
+                "SELECT status FROM usage WHERE nick = 'testuser' AND status = 'rate_limited'"
+            ).fetchall()
+        finally:
+            conn.close()
         assert len(usage_rows) >= 1
 
         # Step 3: Simulate window expiration by clearing buckets
