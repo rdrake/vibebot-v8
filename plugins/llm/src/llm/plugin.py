@@ -7,7 +7,6 @@ import contextlib
 import logging
 import mimetypes
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -656,11 +655,6 @@ class LLM(callbacks.Plugin):
         if ircutils.strEqual(irc.nick, msg.nick):
             channel = msg.args[0]
             self._pending_channels.add(channel)
-            print(
-                f"[startup-diag] doJoin added {channel!r}, pending={self._pending_channels!r}",
-                file=sys.stderr,
-                flush=True,
-            )
 
     def do315(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Handle end of WHO reply (channel sync complete).
@@ -670,14 +664,7 @@ class LLM(callbacks.Plugin):
         notified yet, send the startup notification.
         """
         channel = msg.args[1]
-        before = set(self._pending_channels)
         self._pending_channels.discard(channel)
-        print(
-            f"[startup-diag] do315 channel={channel!r}, before={before!r}, "
-            f"after={self._pending_channels!r}, notified={self._startup_notified}",
-            file=sys.stderr,
-            flush=True,
-        )
 
         if not self._pending_channels and not self._startup_notified:
             self._send_startup_notification(irc)
@@ -689,19 +676,12 @@ class LLM(callbacks.Plugin):
         Reset startup tracking state on reconnection so we send a fresh
         notification. Also handles case where bot has no channels configured.
         """
-        print("[startup-diag] do376 (end of MOTD) received", file=sys.stderr, flush=True)
         self._pending_channels.clear()
         self._startup_notified = False
 
         # If no channels are configured, send notification immediately
         # (we need to check after a short delay to allow channel joins to start)
         def check_no_channels() -> None:
-            print(
-                f"[startup-diag] 2s fallback: pending={self._pending_channels!r}, "
-                f"notified={self._startup_notified}",
-                file=sys.stderr,
-                flush=True,
-            )
             if not self._pending_channels and not self._startup_notified:
                 self._send_startup_notification(irc)
                 self._startup_notified = True
@@ -724,7 +704,6 @@ class LLM(callbacks.Plugin):
         users_mod = getattr(ircdb, "users", None)
         users_map = getattr(users_mod, "users", {})
         owners = [user.name for user in users_map.values() if "owner" in user.capabilities]
-        print(f"[startup-diag] owners found: {owners!r}", file=sys.stderr, flush=True)
         if not owners:
             self.log.warning("No bot owner configured, skipping startup notification")
             return
@@ -736,11 +715,7 @@ class LLM(callbacks.Plugin):
         message = f"VibeBot started | v8 | {channel_count} channel{plural} | {timestamp}"
 
         irc.queueMsg(ircmsgs.privmsg(owner, message))
-        print(
-            f"[startup-diag] notification queued to {owner}: {message}",
-            file=sys.stderr,
-            flush=True,
-        )
+        self.log.info("Startup notification sent to %s", owner)
 
     @staticmethod
     def _get_build_info() -> str:
