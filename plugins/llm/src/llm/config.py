@@ -441,7 +441,15 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# Rate Limiting (expensive commands only)
+# Rate Limiting (per-command, per-tier)
+#
+# Tiers (checked from most to least privileged):
+#   owner/admin  — always exempt (no config needed)
+#   trusted      — relaxed limits (Trusted prefix)
+#   registered   — standard limits (no prefix, backwards-compatible)
+#   unregistered — strictest limits (Unreg prefix)
+#
+# Setting any count to 0 disables rate limiting for that command+tier.
 # ============================================================================
 
 conf.registerGlobalValue(
@@ -449,19 +457,139 @@ conf.registerGlobalValue(
     "enforceRateLimits",
     registry.Boolean(
         False,
-        _("""Enable per-user rate limiting for expensive commands (draw, animate).
+        _("""Enable per-user rate limiting for commands.
         When False, limits are tracked and logged but not enforced (monitor mode).
         Set to True to actively block requests that exceed the limit."""),
     ),
 )
 
+# --- ask (cheapest) ---
+
+conf.registerGlobalValue(
+    LLM,
+    "askRateLimitCount",
+    registry.NonNegativeInteger(
+        15,
+        _("""Max ask requests per registered user within askRateLimitWindow seconds.
+        Set to 0 to disable rate limiting for this tier."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "askRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting ask requests (registered tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "askTrustedRateLimitCount",
+    registry.NonNegativeInteger(
+        0,
+        _("""Max ask requests per trusted user within askTrustedRateLimitWindow seconds.
+        Set to 0 to disable (trusted users unlimited for ask)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "askTrustedRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting ask requests (trusted tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "askUnregRateLimitCount",
+    registry.NonNegativeInteger(
+        5,
+        _("""Max ask requests per unregistered user within askUnregRateLimitWindow seconds.
+        Set to 0 to disable."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "askUnregRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting ask requests (unregistered tier)."""),
+    ),
+)
+
+# --- code ---
+
+conf.registerGlobalValue(
+    LLM,
+    "codeRateLimitCount",
+    registry.NonNegativeInteger(
+        10,
+        _("""Max code requests per registered user within codeRateLimitWindow seconds.
+        Set to 0 to disable."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting code requests (registered tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeTrustedRateLimitCount",
+    registry.NonNegativeInteger(
+        0,
+        _("""Max code requests per trusted user within codeTrustedRateLimitWindow seconds.
+        Set to 0 to disable (trusted users unlimited for code)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeTrustedRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting code requests (trusted tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeUnregRateLimitCount",
+    registry.NonNegativeInteger(
+        3,
+        _("""Max code requests per unregistered user within codeUnregRateLimitWindow seconds.
+        Set to 0 to disable."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "codeUnregRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting code requests (unregistered tier)."""),
+    ),
+)
+
+# --- draw (expensive) ---
+
 conf.registerGlobalValue(
     LLM,
     "drawRateLimitCount",
-    registry.PositiveInteger(
+    registry.NonNegativeInteger(
         3,
-        _("""Maximum number of draw requests per user within drawRateLimitWindow
-        seconds. Only applies when enforceRateLimits is True."""),
+        _("""Max draw requests per registered user within drawRateLimitWindow seconds.
+        Set to 0 to disable."""),
     ),
 )
 
@@ -470,19 +598,58 @@ conf.registerGlobalValue(
     "drawRateLimitWindow",
     registry.PositiveInteger(
         60,
-        _("""Time window in seconds for counting draw requests toward the
-        per-user rate limit. Default: 60 (1 minute)."""),
+        _("""Time window in seconds for counting draw requests (registered tier)."""),
     ),
 )
 
 conf.registerGlobalValue(
     LLM,
-    "animateRateLimitCount",
+    "drawTrustedRateLimitCount",
+    registry.NonNegativeInteger(
+        10,
+        _("""Max draw requests per trusted user within drawTrustedRateLimitWindow seconds.
+        Set to 0 to disable."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "drawTrustedRateLimitWindow",
     registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting draw requests (trusted tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "drawUnregRateLimitCount",
+    registry.NonNegativeInteger(
+        0,
+        _("""Max draw requests per unregistered user within drawUnregRateLimitWindow seconds.
+        Set to 0 to disable. Note: draw already requires NickServ, so unreg users
+        are blocked before this check."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "drawUnregRateLimitWindow",
+    registry.PositiveInteger(
+        60,
+        _("""Time window in seconds for counting draw requests (unregistered tier)."""),
+    ),
+)
+
+# --- animate (most expensive) ---
+
+conf.registerGlobalValue(
+    LLM,
+    "animateRateLimitCount",
+    registry.NonNegativeInteger(
         2,
-        _("""Maximum number of animate requests per user within
-        animateRateLimitWindow seconds. Only applies when enforceRateLimits
-        is True."""),
+        _("""Max animate requests per registered user within animateRateLimitWindow seconds.
+        Set to 0 to disable."""),
     ),
 )
 
@@ -491,7 +658,45 @@ conf.registerGlobalValue(
     "animateRateLimitWindow",
     registry.PositiveInteger(
         600,
-        _("""Time window in seconds for counting animate requests toward the
-        per-user rate limit. Default: 600 (10 minutes)."""),
+        _("""Time window in seconds for counting animate requests (registered tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateTrustedRateLimitCount",
+    registry.NonNegativeInteger(
+        5,
+        _("""Max animate requests per trusted user within animateTrustedRateLimitWindow seconds.
+        Set to 0 to disable."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateTrustedRateLimitWindow",
+    registry.PositiveInteger(
+        600,
+        _("""Time window in seconds for counting animate requests (trusted tier)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateUnregRateLimitCount",
+    registry.NonNegativeInteger(
+        0,
+        _("""Max animate requests per unregistered user within animateUnregRateLimitWindow seconds.
+        Set to 0 to disable. Note: animate already requires NickServ, so unreg users
+        are blocked before this check."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateUnregRateLimitWindow",
+    registry.PositiveInteger(
+        600,
+        _("""Time window in seconds for counting animate requests (unregistered tier)."""),
     ),
 )

@@ -2127,14 +2127,14 @@ class TestRateLimiter:
         now = 1000.0
         plugin._record_rate_limit_hit("draw", "alice", now - 10)
         plugin._record_rate_limit_hit("draw", "alice", now - 5)
-        assert plugin._is_rate_limited("draw", "alice", now) is False
+        assert plugin._is_rate_limited("draw", "alice", now, tier="registered") is False
 
     def test_limited_at_threshold(self, plugin) -> None:
         """GIVEN requests at limit WHEN _is_rate_limited THEN True."""
         now = 1000.0
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 30 + i)
-        assert plugin._is_rate_limited("draw", "alice", now) is True
+        assert plugin._is_rate_limited("draw", "alice", now, tier="registered") is True
 
     def test_evicts_expired_entries(self, plugin) -> None:
         """GIVEN old entries outside window WHEN _is_rate_limited THEN evicted and not counted."""
@@ -2142,7 +2142,7 @@ class TestRateLimiter:
         # Three hits from 200s ago (outside 60s window)
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 200 + i)
-        assert plugin._is_rate_limited("draw", "alice", now) is False
+        assert plugin._is_rate_limited("draw", "alice", now, tier="registered") is False
         assert "draw:alice" not in plugin._rate_buckets
 
     def test_different_commands_isolated(self, plugin) -> None:
@@ -2150,14 +2150,14 @@ class TestRateLimiter:
         now = 1000.0
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
-        assert plugin._is_rate_limited("animate", "alice", now) is False
+        assert plugin._is_rate_limited("animate", "alice", now, tier="registered") is False
 
     def test_different_accounts_isolated(self, plugin) -> None:
         """GIVEN alice at limit WHEN checking bob THEN not limited."""
         now = 1000.0
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
-        assert plugin._is_rate_limited("draw", "bob", now) is False
+        assert plugin._is_rate_limited("draw", "bob", now, tier="registered") is False
 
     def test_check_rate_limit_blocks_when_enforced(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN enforce=True and over limit WHEN _check_rate_limit THEN blocks and logs."""
@@ -2167,7 +2167,9 @@ class TestRateLimiter:
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
 
         mocker.patch("time.time", return_value=now)
-        blocked = plugin._check_rate_limit(mock_irc, "draw", "alice", "alice", "#test", "prompt")
+        blocked = plugin._check_rate_limit(
+            mock_irc, "draw", "alice", "alice", "#test", "prompt", tier="registered"
+        )
 
         assert blocked is True
         mock_irc.error.assert_called_once()
@@ -2192,7 +2194,9 @@ class TestRateLimiter:
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
 
         mocker.patch("time.time", return_value=now)
-        blocked = plugin._check_rate_limit(mock_irc, "draw", "alice", "alice", "#test", "prompt")
+        blocked = plugin._check_rate_limit(
+            mock_irc, "draw", "alice", "alice", "#test", "prompt", tier="registered"
+        )
 
         assert blocked is False
         mock_irc.error.assert_not_called()
@@ -2209,6 +2213,11 @@ class TestRunPreflight:
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        # Default: registered user (no owner/admin/trusted capabilities)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
         p = LLM.__new__(LLM)
         p.db = mocker.MagicMock()
         p.db.is_user_flagged.return_value = False
@@ -2217,6 +2226,8 @@ class TestRunPreflight:
         p._migrated_nicks = set()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
+                "askRateLimitCount": 15,
+                "askRateLimitWindow": 60,
                 "drawRateLimitCount": 3,
                 "drawRateLimitWindow": 60,
                 "enforceRateLimits": False,
@@ -2232,9 +2243,7 @@ class TestRunPreflight:
         mock_msg.prefix = "alice!user@host"
         mock_msg.args = ("#test", "hello")
 
-        result = plugin._run_preflight(
-            mock_irc, mock_msg, "hello", "ask", require_account=False, apply_rate_limit=False
-        )
+        result = plugin._run_preflight(mock_irc, mock_msg, "hello", "ask", require_account=False)
         assert result.blocked is False
         assert result.nick == "alice"
         assert result.channel == "#test"
@@ -2248,9 +2257,7 @@ class TestRunPreflight:
         mock_msg.args = ("#test", "test")
         plugin.db.is_user_flagged.return_value = True
 
-        result = plugin._run_preflight(
-            mock_irc, mock_msg, "test", "ask", require_account=False, apply_rate_limit=False
-        )
+        result = plugin._run_preflight(mock_irc, mock_msg, "test", "ask", require_account=False)
         assert result.blocked is True
         plugin.db.log_usage.assert_called_once()
         assert plugin.db.log_usage.call_args.kwargs["status"] == "flagged_blocked"
@@ -2263,9 +2270,7 @@ class TestRunPreflight:
         mock_msg.prefix = "anon!user@host"
         mock_msg.args = ("#test", "draw me")
 
-        result = plugin._run_preflight(
-            mock_irc, mock_msg, "draw me", "draw", require_account=True, apply_rate_limit=True
-        )
+        result = plugin._run_preflight(mock_irc, mock_msg, "draw me", "draw", require_account=True)
         assert result.blocked is True
         mock_irc.error.assert_called_once()
         plugin.db.log_usage.assert_called_once()

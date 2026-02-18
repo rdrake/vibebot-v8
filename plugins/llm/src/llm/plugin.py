@@ -1019,14 +1019,14 @@ class LLM(callbacks.Plugin):
         command: str,
         *,
         require_account: bool,
-        apply_rate_limit: bool,
     ) -> PreflightResult:
         """Shared preflight check for all commands.
 
         Runs the following sequence:
         1. Account resolution (required or optional depending on command).
         2. Flagged-user block check.
-        3. Per-command rate-limit check (draw/animate only).
+        3. Tier resolution (owner/admin exempt, then trusted/registered/unregistered).
+        4. Per-command, per-tier rate-limit check.
 
         When any check fails the method sends the appropriate IRC error,
         logs usage with the blocked status, and returns ``blocked=True``.
@@ -1037,7 +1037,6 @@ class LLM(callbacks.Plugin):
             text: User's prompt text (for usage logging).
             command: Command name (ask, code, draw, animate).
             require_account: If True, NickServ identification is mandatory.
-            apply_rate_limit: If True, check per-command rate limit.
 
         Returns:
             PreflightResult with blocked=False if the command should proceed.
@@ -1085,31 +1084,36 @@ class LLM(callbacks.Plugin):
             )
             return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
 
-        # --- rate limit check (expensive commands only) ---
-        if (
-            apply_rate_limit
-            and account
-            and self._check_rate_limit(irc, command, account, nick, channel, text)
-        ):
-            return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
+        # --- tier-based rate limit check ---
+        tier = self._resolve_tier(irc, msg)
+        # Owner and admin are always exempt from rate limits
+        if tier not in ("owner", "admin"):
+            identity = account or nick
+            if self._check_rate_limit(irc, command, identity, nick, channel, text, tier=tier):
+                return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
 
         return PreflightResult(blocked=False, nick=nick, channel=channel, account=account)
 
-    def _is_rate_limited(self, command: str, account: str, now: float) -> bool:
+    def _is_rate_limited(self, command: str, account: str, now: float, *, tier: str) -> bool:
         """Check if a user exceeds the per-command rate limit.
 
         Evicts timestamps outside the configured window before checking.
 
         Args:
-            command: Command name (draw or animate).
-            account: NickServ account name.
+            command: Command name (ask, code, draw, or animate).
+            account: NickServ account name or nick-based identity.
             now: Current time (seconds since epoch).
+            tier: User tier (trusted, registered, unregistered).
 
         Returns:
             True if the user has exceeded the rate limit.
         """
-        max_count = self.registryValue(f"{command}RateLimitCount")
-        window = self.registryValue(f"{command}RateLimitWindow")
+        max_count, window = self._get_tier_limits(command, tier)
+
+        # count=0 means rate limiting is disabled for this tier
+        if max_count == 0:
+            return False
+
         cutoff = now - window
 
         key = f"{command}:{account}"
@@ -1151,6 +1155,8 @@ class LLM(callbacks.Plugin):
         nick: str,
         channel: str,
         text: str,
+        *,
+        tier: str,
     ) -> bool:
         """Check rate limit and send error if exceeded.
 
@@ -1161,31 +1167,32 @@ class LLM(callbacks.Plugin):
         Args:
             irc: IRC connection.
             command: Command name.
-            account: NickServ account name.
+            account: NickServ account name or nick-based identity.
             nick: Resolved identity for logging.
             channel: Channel name.
             text: Prompt text for logging.
+            tier: User tier (trusted, registered, unregistered).
 
         Returns:
             True if the request should be blocked.
         """
         now = time.time()
-        over_limit = self._is_rate_limited(command, account, now)
+        over_limit = self._is_rate_limited(command, account, now, tier=tier)
 
         # Always record the hit (so the window tracks correctly)
         self._record_rate_limit_hit(command, account, now)
 
         if over_limit:
             enforce = self.registryValue("enforceRateLimits")
-            max_count = self.registryValue(f"{command}RateLimitCount")
-            window = self.registryValue(f"{command}RateLimitWindow")
+            max_count, window = self._get_tier_limits(command, tier)
             key = f"{command}:{account}"
             count = len(self._rate_buckets.get(key, ()))
             if enforce:
                 self.log.info(
-                    "rate_limited command=%s account=%s count=%d limit=%d window=%ss",
+                    "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
                     command,
                     account,
+                    tier,
                     count,
                     max_count,
                     window,
@@ -1206,9 +1213,10 @@ class LLM(callbacks.Plugin):
                 )
                 return True
             self.log.info(
-                "rate_limit_shadow command=%s account=%s count=%d limit=%d window=%ss",
+                "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
                 command,
                 account,
+                tier,
                 count,
                 max_count,
                 window,
@@ -1241,6 +1249,54 @@ class LLM(callbacks.Plugin):
         return (
             datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
         )
+
+    # Tier config key prefixes: tier -> config infix
+    _TIER_CONFIG_PREFIX = {
+        "trusted": "Trusted",
+        "unregistered": "Unreg",
+        "registered": "",  # base config (no prefix)
+    }
+
+    def _resolve_tier(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
+        """Classify a user into a rate-limit tier based on Limnoria capabilities.
+
+        Checks capabilities from most to least privileged.
+
+        Args:
+            irc: IRC connection (for account lookup).
+            msg: IRC message (uses msg.prefix for capability check).
+
+        Returns:
+            One of: "owner", "admin", "trusted", "registered", "unregistered".
+        """
+        prefix = msg.prefix
+        if ircdb.checkCapability(prefix, "owner"):
+            return "owner"
+        if ircdb.checkCapability(prefix, "admin"):
+            return "admin"
+        if ircdb.checkCapability(prefix, "trusted"):
+            return "trusted"
+        nick = ircutils.nickFromHostmask(prefix)
+        try:
+            account = irc.state.nickToAccount(nick)
+        except (KeyError, AttributeError):
+            account = None
+        return "registered" if account else "unregistered"
+
+    def _get_tier_limits(self, command: str, tier: str) -> tuple[int, int]:
+        """Look up rate limit count and window for a command+tier.
+
+        Args:
+            command: Command name (ask, code, draw, animate).
+            tier: User tier (trusted, registered, unregistered).
+
+        Returns:
+            (max_count, window_seconds). max_count=0 means disabled.
+        """
+        infix = self._TIER_CONFIG_PREFIX.get(tier, "")
+        count_key = f"{command}{infix}RateLimitCount"
+        window_key = f"{command}{infix}RateLimitWindow"
+        return self.registryValue(count_key), self.registryValue(window_key)
 
     def _check_flagged(self, irc: callbacks.Irc, msg: IrcMsg, account: str | None) -> bool:
         """Check if a user account is flagged for abuse.
@@ -1402,7 +1458,6 @@ class LLM(callbacks.Plugin):
             text,
             "ask",
             require_account=False,
-            apply_rate_limit=False,
         )
         if pf.blocked:
             return
@@ -1508,7 +1563,6 @@ class LLM(callbacks.Plugin):
             text,
             "code",
             require_account=False,
-            apply_rate_limit=False,
         )
         if pf.blocked:
             return
@@ -1592,7 +1646,6 @@ class LLM(callbacks.Plugin):
             text,
             "draw",
             require_account=True,
-            apply_rate_limit=True,
         )
         if pf.blocked:
             return
@@ -1653,7 +1706,6 @@ class LLM(callbacks.Plugin):
             text,
             "animate",
             require_account=True,
-            apply_rate_limit=True,
         )
         if pf.blocked:
             return

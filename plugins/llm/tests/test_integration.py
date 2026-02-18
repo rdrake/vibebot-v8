@@ -258,7 +258,10 @@ class TestRateLimitFullFlow:
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
 
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="http://img.example/gen.png",

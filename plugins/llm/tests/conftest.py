@@ -142,10 +142,34 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "logLevel": "WARNING",
         # Rate limiting
         "enforceRateLimits": False,
+        # ask
+        "askRateLimitCount": 15,
+        "askRateLimitWindow": 60,
+        "askTrustedRateLimitCount": 0,
+        "askTrustedRateLimitWindow": 60,
+        "askUnregRateLimitCount": 5,
+        "askUnregRateLimitWindow": 60,
+        # code
+        "codeRateLimitCount": 10,
+        "codeRateLimitWindow": 60,
+        "codeTrustedRateLimitCount": 0,
+        "codeTrustedRateLimitWindow": 60,
+        "codeUnregRateLimitCount": 3,
+        "codeUnregRateLimitWindow": 60,
+        # draw
         "drawRateLimitCount": 3,
         "drawRateLimitWindow": 60,
+        "drawTrustedRateLimitCount": 10,
+        "drawTrustedRateLimitWindow": 60,
+        "drawUnregRateLimitCount": 0,
+        "drawUnregRateLimitWindow": 60,
+        # animate
         "animateRateLimitCount": 2,
         "animateRateLimitWindow": 600,
+        "animateTrustedRateLimitCount": 5,
+        "animateTrustedRateLimitWindow": 600,
+        "animateUnregRateLimitCount": 0,
+        "animateUnregRateLimitWindow": 600,
     }
     if overrides:
         defaults.update(overrides)

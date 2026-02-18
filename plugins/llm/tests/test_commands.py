@@ -61,6 +61,11 @@ def plugin_env(mocker: MockerFixture):
     mocker.patch("llm.plugin.schedule.addPeriodicEvent")
     mocker.patch("llm.plugin.schedule.removeEvent")
     mocker.patch("llm.plugin.schedule.addEvent")
+    # Default: registered user (grant llm.* command caps but not owner/admin/trusted)
+    mocker.patch(
+        "llm.plugin.ircdb.checkCapability",
+        side_effect=lambda prefix, cap: cap.startswith("llm."),
+    )
 
     plugin = LLM(mock_irc)
     # After __init__, swap registryValue to a plain MagicMock so
@@ -103,7 +108,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["What", "is", "Python?"])
 
         mock_irc.reply.assert_called_once_with("Hello from AI", prefixNick=False)
@@ -120,7 +124,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Context should have both user and assistant messages
@@ -142,7 +145,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -163,7 +165,6 @@ class TestAskCommand:
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100  # before startup
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_not_called()
@@ -181,7 +182,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["search", "something"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -200,7 +200,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["describe", "http://img.example/pic.jpg"])
 
         # First call is the "Processing with N image(s)..." message
@@ -217,7 +216,6 @@ class TestAskCommand:
             error="Error: something went wrong",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # No context should be stored because result has an error
@@ -240,7 +238,6 @@ class TestAskCommand:
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
@@ -260,7 +257,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mock_action = mocker.patch("llm.plugin.ircmsgs.action")
 
         plugin.ask(mock_irc, mock_msg, ["how", "are", "you?"])
@@ -282,7 +278,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["what", "is", "the", "capital?"])
 
         mock_irc.reply.assert_called_once_with("The capital is Paris.", prefixNick=False)
@@ -300,7 +295,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.ircmsgs.action")
         plugin.ask(mock_irc, mock_msg, ["hmm"])
 
@@ -322,7 +316,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mock_action = mocker.patch("llm.plugin.ircmsgs.action")
         plugin.ask(mock_irc, mock_msg, ["search", "for", "it"])
 
@@ -341,7 +334,6 @@ class TestAskCommand:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["test"])
 
         mock_irc.reply.assert_called_once_with("/me", prefixNick=False)
@@ -371,7 +363,6 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = None  # fallback to truncation
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["Python", "hello"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -391,7 +382,6 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = "Recursive Fibonacci function"
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["fibonacci"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -409,7 +399,6 @@ class TestCodeCommand:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["print", "hello"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -429,7 +418,6 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = None
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["generate", "something"])
 
         messages = plugin.context.get_messages("testnick", "#test")
@@ -449,7 +437,6 @@ class TestCodeCommand:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -470,7 +457,6 @@ class TestCodeCommand:
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_not_called()
@@ -490,7 +476,6 @@ class TestCodeCommand:
         plugin.llm_service.summarize.return_value = "summary"
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -510,7 +495,6 @@ class TestDrawCommand:
         plugin, mock_irc, mock_msg = plugin_env
         # nickToAccount returns None (default in plugin_env)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         mock_irc.error.assert_called_once()
@@ -530,7 +514,6 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
         mock_irc.reply.assert_called_once_with("http://img.example/gen.png")
@@ -548,7 +531,6 @@ class TestDrawCommand:
             rewritten_prompt="A beautiful sunset over mountains",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -570,7 +552,6 @@ class TestDrawCommand:
             rewritten_prompt=long_prompt,
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -588,7 +569,6 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -616,7 +596,6 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -645,7 +624,6 @@ class TestDrawCommand:
             error="Error: content blocked",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -674,7 +652,6 @@ class TestDrawCommand:
             error="Error: timeout exceeded",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -695,7 +672,6 @@ class TestDrawCommand:
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.time = plugin.startup_time - 100
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         mock_irc.reply.assert_not_called()
@@ -712,7 +688,6 @@ class TestDrawCommand:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
         messages = plugin.context.get_messages("test_account", "#test")
@@ -731,7 +706,6 @@ class TestDrawCommand:
             error="Error: something went wrong",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
 
         messages = plugin.context.get_messages("test_account", "#test")
@@ -753,7 +727,6 @@ class TestDrawCommand:
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         messages = plugin.context.get_messages("test_account", "#test")
@@ -823,12 +796,19 @@ class TestForgetCommand:
 class TestLlmkeysCommand:
     """Tests for the real LLM.llmkeys method."""
 
+    @pytest.fixture(autouse=True)
+    def _grant_admin(self, plugin_env, mocker: MockerFixture):
+        """Grant admin capability so @wrap(['admin']) passes (must run after plugin_env)."""
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
+
     def test_llmkeys_shows_key_status_privately(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin user WHEN llmkeys called THEN key status sent as private reply."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.safe_key_display.return_value = "tes...(10 chars hidden)"
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.llmkeys(mock_irc, mock_msg, [])
 
         # Should be sent privately
@@ -843,7 +823,6 @@ class TestLlmkeysCommand:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.safe_key_display.return_value = "abc...(5 chars hidden)"
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.llmkeys(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -870,6 +849,10 @@ class TestUsageCommand:
 
     def test_usage_pm_shows_today_and_month_stats(self, plugin_env, mocker: MockerFixture):
         """GIVEN admin via PM WHEN usage called THEN response includes today and monthly stats."""
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.channel = None  # PM mode
         plugin.db.get_usage_summary.return_value = UsageSummary(
@@ -897,7 +880,6 @@ class TestUsageCommand:
             )
         ]
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.usage(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
@@ -911,6 +893,10 @@ class TestUsageCommand:
 
     def test_usage_pm_with_no_top_users_or_channels(self, plugin_env, mocker: MockerFixture):
         """GIVEN no usage data via PM WHEN usage called THEN response omits top users/channels."""
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
         plugin, mock_irc, mock_msg = plugin_env
         mock_msg.channel = None  # PM mode
         plugin.db.get_usage_summary.return_value = UsageSummary(
@@ -922,7 +908,6 @@ class TestUsageCommand:
         plugin.db.get_usage_by_nick.return_value = []
         plugin.db.get_usage_by_channel.return_value = []
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.usage(mock_irc, mock_msg, [])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1185,7 +1170,6 @@ class TestRemindmeCommand:
             note=None,
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
         plugin.remindme(mock_irc, mock_msg, ["in", "30m", "check", "the", "build"])
 
@@ -1208,7 +1192,6 @@ class TestRemindmeCommand:
             note="Assuming UTC timezone",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.schedule.addEvent")
         plugin.remindme(mock_irc, mock_msg, ["in", "1h", "meeting"])
 
@@ -1223,7 +1206,6 @@ class TestRemindmeCommand:
             confirmation="When should I remind you?",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.remindme(mock_irc, mock_msg, ["something", "vague"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1239,7 +1221,6 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.remindme(mock_irc, mock_msg, ["in", "5s", "test"])
 
         mock_irc.error.assert_called_once()
@@ -1256,7 +1237,6 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.remindme(mock_irc, mock_msg, ["in", "8d", "test"])
 
         mock_irc.error.assert_called_once()
@@ -1273,7 +1253,6 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.remindme(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1289,7 +1268,6 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
         plugin.remindme(mock_irc, mock_msg, ["in", "1m", "test"])
 
@@ -1436,7 +1414,6 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -1464,7 +1441,6 @@ class TestAccountBasedIdentity:
         )
         plugin.llm_service.save_code_to_http.return_value = None
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -1491,7 +1467,6 @@ class TestAccountBasedIdentity:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -1521,7 +1496,6 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Context keyed by account, not nick
@@ -1544,7 +1518,6 @@ class TestAccountBasedIdentity:
             model="dall-e-3",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         messages = plugin.context.get_messages("MyAccount", "#test")
@@ -1585,7 +1558,6 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -1614,7 +1586,6 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
@@ -1642,7 +1613,6 @@ class TestAccountBasedIdentity:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         messages = plugin.context.get_messages("testnick", "#test")
@@ -1780,7 +1750,6 @@ class TestRemindmeEdgeCases:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.remindme(mock_irc, mock_msg, ["yesterday", "test"])
 
         mock_irc.error.assert_called_once()
@@ -1797,7 +1766,6 @@ class TestRemindmeEdgeCases:
             confirmation="Reminder set for 1 minute.",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.schedule.addEvent")
         plugin.remindme(mock_irc, mock_msg, ["in", "1m", "something"])
 
@@ -1857,7 +1825,6 @@ class TestCodeEdgeCases:
             side_effect=make_registry_side_effect({"contextEnabled": False})
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
@@ -1879,7 +1846,6 @@ class TestCodeEdgeCases:
         plugin.llm_service.summarize.return_value = None  # no AI summary
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["generate"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1898,13 +1864,20 @@ class TestCodeEdgeCases:
 class TestFlagCommands:
     """Tests for the flag, unflag, and flagged admin commands."""
 
+    @pytest.fixture(autouse=True)
+    def _grant_admin(self, plugin_env, mocker: MockerFixture):
+        """Grant admin capability so @wrap(['admin']) passes (must run after plugin_env)."""
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
+
     def test_flag_flags_user(self, plugin_env, mocker: MockerFixture):
         """GIVEN identified target WHEN flag called THEN db.flag_user called and reply sent."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
         plugin.db.flag_user.return_value = True
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
 
         plugin.db.flag_user.assert_called_once_with(
@@ -1921,7 +1894,6 @@ class TestFlagCommands:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flag(mock_irc, mock_msg, ["unknown", "testing"])
 
         mock_irc.error.assert_called_once()
@@ -1935,7 +1907,6 @@ class TestFlagCommands:
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
         plugin.db.flag_user.return_value = False
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
 
         mock_irc.reply.assert_called_once()
@@ -1947,7 +1918,6 @@ class TestFlagCommands:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("not found"))
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flag(mock_irc, mock_msg, ["ghost", "testing"])
 
         mock_irc.error.assert_called_once()
@@ -1965,7 +1935,6 @@ class TestFlagCommands:
         mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=nick_to_account)
         plugin.db.unflag_user.return_value = True
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.unflag(mock_irc, mock_msg, ["baduser"])
 
         plugin.db.unflag_user.assert_called_once_with("target_account", "admin_account")
@@ -1979,7 +1948,6 @@ class TestFlagCommands:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.unflag(mock_irc, mock_msg, ["unknown"])
 
         mock_irc.error.assert_called_once()
@@ -1993,7 +1961,6 @@ class TestFlagCommands:
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
         plugin.db.unflag_user.return_value = False
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.unflag(mock_irc, mock_msg, ["gooduser"])
 
         mock_irc.reply.assert_called_once()
@@ -2026,7 +1993,6 @@ class TestFlagCommands:
             ),
         ]
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flagged(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
@@ -2041,7 +2007,6 @@ class TestFlagCommands:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_flagged_users.return_value = []
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.flagged(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
@@ -2055,8 +2020,53 @@ class TestFlagCommands:
 # ---------------------------------------------------------------------------
 
 
+class TestResolveTier:
+    """Tests for _resolve_tier user classification."""
+
+    def test_owner_tier(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user with owner capability WHEN _resolve_tier THEN returns 'owner'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "owner",
+        )
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "owner"
+
+    def test_admin_tier(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user with admin (not owner) WHEN _resolve_tier THEN returns 'admin'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap in ("admin", "trusted"),
+        )
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "admin"
+
+    def test_trusted_tier(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user with trusted (not admin) WHEN _resolve_tier THEN returns 'trusted'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "trusted",
+        )
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "trusted"
+
+    def test_registered_tier(self, plugin_env, mocker: MockerFixture):
+        """GIVEN identified user without trusted WHEN _resolve_tier THEN returns 'registered'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "some_account"
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "registered"
+
+    def test_unregistered_tier(self, plugin_env, mocker: MockerFixture):
+        """GIVEN unidentified user WHEN _resolve_tier THEN returns 'unregistered'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "unregistered"
+
+
 class TestRateLimitIntegration:
-    """Test that draw/animate commands respect per-command rate limits."""
+    """Test that commands respect per-command, per-tier rate limits."""
 
     def test_draw_rate_limited_when_enforced(self, plugin_env, mocker: MockerFixture):
         """GIVEN rate limit exceeded and enforced WHEN draw called THEN blocked."""
@@ -2077,7 +2087,6 @@ class TestRateLimitIntegration:
         plugin._record_rate_limit_hit("draw", "test_account", now - 5)
         plugin._record_rate_limit_hit("draw", "test_account", now - 2)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_called_once()
@@ -2100,7 +2109,6 @@ class TestRateLimitIntegration:
         now = time.time()
         plugin._record_rate_limit_hit("animate", "test_account", now - 2)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.animate(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_called_once()
@@ -2130,7 +2138,6 @@ class TestRateLimitIntegration:
         )
         plugin._record_rate_limit_hit("draw", "test_account", time.time() - 2)
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
@@ -2139,8 +2146,8 @@ class TestRateLimitIntegration:
             "rate_limit_shadow" in c.args[0] for c in plugin.log.info.call_args_list if c.args
         )
 
-    def test_ask_not_rate_limited(self, plugin_env, mocker: MockerFixture):
-        """GIVEN rate limits enforced WHEN ask called THEN no rate check applied."""
+    def test_ask_succeeds_under_limit(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user under ask rate limit WHEN ask called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -2151,13 +2158,12 @@ class TestRateLimitIntegration:
             model="gpt-4",
         )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
 
-    def test_code_not_rate_limited(self, plugin_env, mocker: MockerFixture):
-        """GIVEN rate limits enforced WHEN code called THEN no rate check is applied."""
+    def test_code_succeeds_under_limit(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user under code rate limit WHEN code called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.completion.return_value = CompletionResult(
             content="print('hi')",
@@ -2169,7 +2175,143 @@ class TestRateLimitIntegration:
         plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
         plugin.llm_service.summarize.return_value = "small summary"
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.code(mock_irc, mock_msg, ["hello"])
 
+        mock_irc.reply.assert_called_once()
+
+    def test_owner_exempt_from_rate_limits(self, plugin_env, mocker: MockerFixture):
+        """GIVEN owner user over limit WHEN draw called THEN not blocked."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "owner_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "enforceRateLimits": True,
+                    "drawRateLimitCount": 1,
+                    "drawRateLimitWindow": 60,
+                }
+            )
+        )
+        # Fill bucket way past limit
+        now = time.time()
+        for _ in range(10):
+            plugin._record_rate_limit_hit("draw", "owner_account", now - 1)
+
+        # Mock: user is owner
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: True,  # owner has all caps
+        )
+        plugin.draw(mock_irc, mock_msg, ["test prompt"])
+
+        mock_irc.error.assert_not_called()
+        plugin.llm_service.image_generation.assert_called_once()
+
+    def test_trusted_gets_relaxed_limits(self, plugin_env, mocker: MockerFixture):
+        """GIVEN trusted user within trusted limit but over registered limit WHEN draw called THEN allowed."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "trusted_account"
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="http://img.example/gen.png",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+            model="dall-e-3",
+        )
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "enforceRateLimits": True,
+                    "drawRateLimitCount": 2,  # registered: 2
+                    "drawRateLimitWindow": 60,
+                    "drawTrustedRateLimitCount": 10,  # trusted: 10
+                    "drawTrustedRateLimitWindow": 60,
+                }
+            )
+        )
+        # 5 hits — over registered limit (2), under trusted limit (10)
+        now = time.time()
+        for _ in range(5):
+            plugin._record_rate_limit_hit("draw", "trusted_account", now - 1)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "trusted" or cap.startswith("llm."),
+        )
+        plugin.draw(mock_irc, mock_msg, ["test prompt"])
+
+        mock_irc.error.assert_not_called()
+        plugin.llm_service.image_generation.assert_called_once()
+
+    def test_ask_rate_limited_for_unregistered(self, plugin_env, mocker: MockerFixture):
+        """GIVEN unregistered user over unreg limit WHEN ask called THEN blocked."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "enforceRateLimits": True,
+                    "askUnregRateLimitCount": 2,
+                    "askUnregRateLimitWindow": 60,
+                }
+            )
+        )
+        now = time.time()
+        # Use nick as bucket key for unregistered users
+        nick = "testnick"
+        for _ in range(3):
+            plugin._record_rate_limit_hit("ask", nick, now - 1)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        mock_irc.error.assert_called_once()
+        assert "Rate limit" in mock_irc.error.call_args[0][0]
+
+    def test_zero_count_disables_rate_limit(self, plugin_env, mocker: MockerFixture):
+        """GIVEN trusted tier with count=0 WHEN ask called many times THEN never blocked."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "trusted_account"
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="hello",
+            prompt_tokens=5,
+            completion_tokens=10,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "enforceRateLimits": True,
+                    "askTrustedRateLimitCount": 0,  # 0 = disabled
+                    "askTrustedRateLimitWindow": 60,
+                }
+            )
+        )
+        now = time.time()
+        for _ in range(100):
+            plugin._record_rate_limit_hit("ask", "trusted_account", now - 1)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "trusted" or cap.startswith("llm."),
+        )
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        mock_irc.error.assert_not_called()
         mock_irc.reply.assert_called_once()
