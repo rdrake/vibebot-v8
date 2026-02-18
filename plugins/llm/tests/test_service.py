@@ -338,7 +338,7 @@ class TestGroundingDetection:
             askSystemPrompt="You are helpful.",
             timeout=30,
             maxPromptLength=10000,
-            commandPrefixes=[".", "/"],
+            commandPrefixes=["."],
         )
 
     def test_check_grounding_used_returns_false_for_no_metadata(self) -> None:
@@ -1339,7 +1339,7 @@ class TestSanitizeOutput:
     def setup(self, make_service, mocker: MockerFixture) -> None:
         """Set up test fixtures."""
         self.mocker = mocker
-        self.service, self.mock_plugin = make_service(commandPrefixes=[".", "/"])
+        self.service, self.mock_plugin = make_service(commandPrefixes=["."])
 
     def test_sanitize_output_empty(self) -> None:
         """GIVEN empty/None input WHEN sanitizing THEN returns empty string."""
@@ -1358,10 +1358,10 @@ class TestSanitizeOutput:
         assert result == " .part #channel"
 
     def test_sanitize_output_slash_prefix(self) -> None:
-        """GIVEN text starting with slash WHEN sanitizing THEN adds space prefix."""
+        """GIVEN text starting with slash WHEN sanitizing THEN passes through unchanged."""
         text = "/msg someone hello"
         result = self.service.sanitize_output(text)
-        assert result == " /msg someone hello"
+        assert result == "/msg someone hello"
 
     def test_sanitize_output_multiline_dot(self) -> None:
         """GIVEN multiline text with dot lines WHEN sanitizing THEN fixes all."""
@@ -1370,16 +1370,16 @@ class TestSanitizeOutput:
         assert result == "Line 1\n .ban user\nLine 3\n .part"
 
     def test_sanitize_output_multiline_slash(self) -> None:
-        """GIVEN multiline text with slash lines WHEN sanitizing THEN fixes all."""
+        """GIVEN multiline text with slash lines WHEN sanitizing THEN passes through unchanged."""
         text = "Line 1\n/quit message\nLine 3"
         result = self.service.sanitize_output(text)
-        assert result == "Line 1\n /quit message\nLine 3"
+        assert result == "Line 1\n/quit message\nLine 3"
 
     def test_sanitize_output_mixed_prefixes(self) -> None:
-        """GIVEN multiline text with both dots and slashes WHEN sanitizing THEN fixes all."""
+        """GIVEN multiline text with dots and slashes WHEN sanitizing THEN only dots sanitized."""
         text = ".dot command\n/slash command\nNormal line"
         result = self.service.sanitize_output(text)
-        assert result == " .dot command\n /slash command\nNormal line"
+        assert result == " .dot command\n/slash command\nNormal line"
 
     def test_sanitize_output_preserves_internal_dots(self) -> None:
         """GIVEN text with dots not at start WHEN sanitizing THEN preserves them."""

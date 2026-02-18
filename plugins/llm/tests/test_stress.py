@@ -287,7 +287,7 @@ class TestConcurrentAPIKeyIsolation:
             mock_plugin.registryValue = mocker.Mock(
                 side_effect=lambda key, channel=None: {
                     "maxPromptLength": 10000,
-                    "commandPrefixes": [".", "/"],
+                    "commandPrefixes": ["."],
                     "askApiKey": unique_key,
                     "askModel": "gpt-4",
                     "askSystemPrompt": "You are helpful.",

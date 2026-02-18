@@ -135,7 +135,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,
-        "commandPrefixes": [".", "/"],
+        "commandPrefixes": ["."],
         "httpUrlBase": TEST_URL_BASE,
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
