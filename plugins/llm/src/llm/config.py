@@ -507,7 +507,7 @@ conf.registerGlobalValue(
     LLM,
     "askUnregRateLimitCount",
     registry.NonNegativeInteger(
-        5,
+        3,
         _("""Max ask requests per unregistered user within askUnregRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
@@ -566,7 +566,7 @@ conf.registerGlobalValue(
     LLM,
     "codeUnregRateLimitCount",
     registry.NonNegativeInteger(
-        3,
+        2,
         _("""Max code requests per unregistered user within codeUnregRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
@@ -587,7 +587,7 @@ conf.registerGlobalValue(
     LLM,
     "drawRateLimitCount",
     registry.NonNegativeInteger(
-        3,
+        1,
         _("""Max draw requests per registered user within drawRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
@@ -606,7 +606,7 @@ conf.registerGlobalValue(
     LLM,
     "drawTrustedRateLimitCount",
     registry.NonNegativeInteger(
-        10,
+        5,
         _("""Max draw requests per trusted user within drawTrustedRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
