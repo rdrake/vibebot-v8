@@ -334,8 +334,9 @@ class LLMService:
             pass  # Config not available (e.g., in test environment)
 
         result += (
-            "\n\nYou may occasionally respond with /me for actions "
-            "when it feels natural (e.g., /me shrugs)."
+            "\n\nWhen performing physical actions or emotes, respond with "
+            "/me (e.g., /me slaps someone with a large trout). "
+            "Use /me for actions, plain text for conversation."
         )
 
         return result
