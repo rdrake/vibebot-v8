@@ -247,6 +247,105 @@ class TestAskCommand:
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
+    def test_ask_sends_action_for_me_response(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds with /me WHEN ask called THEN sends IRC action."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="/me shrugs",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
+
+        plugin.ask(mock_irc, mock_msg, ["how", "are", "you?"])
+
+        mock_irc.reply.assert_not_called()
+        mock_action.assert_called_once_with("#test", "shrugs")
+        mock_irc.queueMsg.assert_called_once_with(mock_action.return_value)
+
+    def test_ask_normal_response_uses_reply(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds normally WHEN ask called THEN uses irc.reply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="The capital is Paris.",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["what", "is", "the", "capital?"])
+
+        mock_irc.reply.assert_called_once_with("The capital is Paris.", prefixNick=False)
+
+    def test_ask_action_stores_context_with_star_prefix(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds with /me WHEN ask called THEN context stores * BotNick text."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="/me thinks about it",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.ircmsgs.action")
+        plugin.ask(mock_irc, mock_msg, ["hmm"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 2
+        assert messages[1]["role"] == "assistant"
+        assert messages[1]["content"] == "* testbot thinks about it"
+
+    def test_ask_action_with_grounding_icon(self, plugin_env, mocker: MockerFixture):
+        """GIVEN /me response with grounding WHEN ask called THEN action includes globe icon."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="/me looks it up",
+            grounding_used=True,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
+        plugin.ask(mock_irc, mock_msg, ["search", "for", "it"])
+
+        mock_action.assert_called_once_with("#test", "\U0001f310 looks it up")
+
+    def test_ask_bare_me_not_treated_as_action(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds with '/me' with no trailing text WHEN ask called THEN uses reply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="/me",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.ask(mock_irc, mock_msg, ["test"])
+
+        mock_irc.reply.assert_called_once_with("/me", prefixNick=False)
+
 
 # ---------------------------------------------------------------------------
 # code

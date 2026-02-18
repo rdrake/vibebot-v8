@@ -1455,13 +1455,25 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                display_response = (
-                    f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                )
-
-                # Reply first, then store context (so user gets response even if context fails)
-                self.log.info("replying to %s/%s", channel, nick)
-                irc.reply(display_response, prefixNick=False)
+                # Detect /me action prefix
+                is_action = response.startswith("/me ") and len(response) > 4
+                if is_action:
+                    action_text = response[4:]
+                    if result.grounding_used:
+                        action_text = f"{GROUNDING_ICON} {action_text}"
+                    self.log.info("sending action to %s/%s", channel, nick)
+                    target = msg.args[0]
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    # Store context as "* BotNick action_text" so follow-ups
+                    # understand the bot emoted rather than said something
+                    response = f"* {irc.nick} {action_text}"
+                else:
+                    display_response = (
+                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                    )
+                    # Reply first, then store context (so user gets response even if context fails)
+                    self.log.info("replying to %s/%s", channel, nick)
+                    irc.reply(display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "ask", text, response, result, irc, msg
