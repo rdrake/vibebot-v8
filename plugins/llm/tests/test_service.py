@@ -638,6 +638,11 @@ class TestBuildSystemPrompt:
         assert "Topic:" not in result
         assert "Caller:" not in result
 
+    def test_build_system_prompt_includes_action_nudge(self) -> None:
+        """GIVEN a base prompt WHEN building system prompt THEN /me nudge is included."""
+        result = self.service._build_system_prompt("Be helpful.")
+        assert "/me" in result
+
 
 class TestGetChannelTopic:
     """Tests for _get_channel_topic helper."""

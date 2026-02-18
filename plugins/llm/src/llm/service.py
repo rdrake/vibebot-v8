@@ -333,6 +333,11 @@ class LLMService:
         except (AttributeError, KeyError, RuntimeError):
             pass  # Config not available (e.g., in test environment)
 
+        result += (
+            "\n\nYou may occasionally respond with /me for actions "
+            "when it feels natural (e.g., /me shrugs)."
+        )
+
         return result
 
     def _get_channel_topic(self, irc: Irc, channel: str) -> str | None:
