@@ -296,6 +296,10 @@ class TestVideoGeneration:
         """
         service, plugin = make_service()
 
+        # Mock time so poll loop doesn't actually sleep 60s
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 100.0] + [100.0] * 10
+
         service._download_and_save_video = mocker.Mock(
             return_value="https://example.com/llm/vid_abc.mp4",
         )
@@ -416,6 +420,9 @@ class TestVideoGeneration:
         """
         service, plugin = make_service()
 
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 100.0] + [100.0] * 10
+
         submit_resp = _mock_response(mocker, json={"request_id": "req-123"})
         poll_resp = _mock_response(mocker, json={"status": "expired"})
 
@@ -530,6 +537,9 @@ class TestVideoGeneration:
         """
         service, plugin = make_service()
 
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 100.0] + [100.0] * 10
+
         mock_db = mocker.MagicMock()
         mock_db.save_pending_task.return_value = 42
         plugin.db = mock_db
@@ -562,6 +572,9 @@ class TestVideoGeneration:
         THEN deletes the persisted row.
         """
         service, plugin = make_service()
+
+        mock_time_mod = mocker.patch("llm.service.time")
+        mock_time_mod.time.side_effect = [100.0, 100.0, 100.0] + [100.0] * 10
 
         mock_db = mocker.MagicMock()
         mock_db.save_pending_task.return_value = 42

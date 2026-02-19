@@ -1,4 +1,4 @@
-.PHONY: install run test lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
+.PHONY: install run test test-all lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
        install-deploy worktree-create worktree-remove wait-ci rebase-pr
 
@@ -16,6 +16,9 @@ run:
 	uv run limnoria bot.conf
 
 test:
+	uv run pytest plugins/llm/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=80
+
+test-all:
 	uv run pytest plugins/llm/tests/ -v --cov --cov-report=term-missing --cov-fail-under=80
 
 lint:
@@ -41,7 +44,7 @@ ci:
 	uv sync --locked
 	uv run prek run --all-files
 	$(MAKE) syntax-check
-	$(MAKE) test
+	$(MAKE) test-all
 
 # Worktree workflow
 WORKTREE_DIR ?= .worktrees

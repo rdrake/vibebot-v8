@@ -141,13 +141,13 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
         # Rate limiting
-        "enforceRateLimits": False,
+        "enforceRateLimits": True,
         # ask
         "askRateLimitCount": 15,
         "askRateLimitWindow": 60,
-        "askTrustedRateLimitCount": 0,
+        "askTrustedRateLimitCount": 15,
         "askTrustedRateLimitWindow": 60,
-        "askUnregRateLimitCount": 3,
+        "askUnregRateLimitCount": 15,
         "askUnregRateLimitWindow": 60,
         # code
         "codeRateLimitCount": 10,
@@ -157,8 +157,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "codeUnregRateLimitCount": 2,
         "codeUnregRateLimitWindow": 60,
         # draw
-        "drawRateLimitCount": 1,
-        "drawRateLimitWindow": 60,
+        "drawRateLimitCount": 2,
+        "drawRateLimitWindow": 300,
         "drawTrustedRateLimitCount": 5,
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,

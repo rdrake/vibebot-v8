@@ -456,7 +456,7 @@ conf.registerGlobalValue(
     LLM,
     "enforceRateLimits",
     registry.Boolean(
-        False,
+        True,
         _("""Enable per-user rate limiting for commands.
         When False, limits are tracked and logged but not enforced (monitor mode).
         Set to True to actively block requests that exceed the limit."""),
@@ -488,9 +488,9 @@ conf.registerGlobalValue(
     LLM,
     "askTrustedRateLimitCount",
     registry.NonNegativeInteger(
-        0,
+        15,
         _("""Max ask requests per trusted user within askTrustedRateLimitWindow seconds.
-        Set to 0 to disable (trusted users unlimited for ask)."""),
+        Set to 0 to disable."""),
     ),
 )
 
@@ -507,7 +507,7 @@ conf.registerGlobalValue(
     LLM,
     "askUnregRateLimitCount",
     registry.NonNegativeInteger(
-        3,
+        15,
         _("""Max ask requests per unregistered user within askUnregRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
@@ -587,7 +587,7 @@ conf.registerGlobalValue(
     LLM,
     "drawRateLimitCount",
     registry.NonNegativeInteger(
-        1,
+        2,
         _("""Max draw requests per registered user within drawRateLimitWindow seconds.
         Set to 0 to disable."""),
     ),
@@ -597,7 +597,7 @@ conf.registerGlobalValue(
     LLM,
     "drawRateLimitWindow",
     registry.PositiveInteger(
-        60,
+        300,
         _("""Time window in seconds for counting draw requests (registered tier)."""),
     ),
 )

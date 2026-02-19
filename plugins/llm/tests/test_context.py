@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 
 from llm.context import ContextConfig, ConversationContext
 
@@ -86,15 +85,14 @@ class TestConversationContext:
 
     def test_context_time_expiry(self) -> None:
         """GIVEN context WHEN timeout expires THEN context cleared."""
-        # Use very short timeout for testing
-        config = ContextConfig(max_messages=20, timeout_minutes=0, enabled=True)
-        # timeout_minutes=0 means immediate expiry (0 seconds)
+        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
 
-        # Small delay to ensure expiry
-        time.sleep(0.1)
+        # Backdate last_activity so it appears expired
+        key = ("user1", "#channel")
+        ctx._conversations[key].last_activity -= 120
 
         messages = ctx.get_messages("user1", "#channel")
         assert len(messages) == 0
@@ -302,14 +300,15 @@ class TestChannelContext:
         """GIVEN channel context WHEN timeout expires THEN cleared."""
         config = ContextConfig(
             max_messages=20,
-            timeout_minutes=0,
-            enabled=True,  # Immediate expiry
+            timeout_minutes=1,
+            enabled=True,
         )
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "Hello")
 
-        time.sleep(0.1)
+        # Backdate last_activity so it appears expired
+        ctx._channel_contexts["#channel"].last_activity -= 120
 
         messages = ctx.get_channel_messages("#channel")
         assert len(messages) == 0
