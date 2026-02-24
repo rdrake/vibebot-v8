@@ -162,7 +162,8 @@ conf.registerChannelValue(
         "yourself, your crew, Starfleet, or the Star Trek universe. Be witty and entertaining. "
         "Speak as Picard would — eloquent, authoritative, occasionally dramatic — but keep it "
         "to 1-3 sentences for IRC. If given a topic, riff on it. If the conversation gives you "
-        "something to work with, use it. Do NOT use /me actions — just talk normally.",
+        "something to work with, use it. Respond in plain text only — no markdown, no quotes, "
+        "no newlines, no /me actions. One continuous line, like normal IRC chat.",
         _("""System prompt for picard command — defines Picard personality"""),
     ),
 )
