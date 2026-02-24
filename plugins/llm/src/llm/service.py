@@ -58,6 +58,25 @@ PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
+
+# Pre-computed Gemini safety settings (all categories BLOCK_NONE)
+_GEMINI_SAFETY_SETTINGS: list[dict[str, str]] = [
+    {"category": cat, "threshold": "BLOCK_NONE"}
+    for cat in (
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "HARM_CATEGORY_CIVIC_INTEGRITY",
+    )
+]
+
+# Pre-compiled regex patterns for markdown fence stripping
+_FENCE_WITH_LANG_RE = re.compile(r"^```(\w+)\n(.*?)\n?```$", re.DOTALL)
+_FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
+
+# Pre-generated Pygments CSS for monokai theme (constant across calls)
+_PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
 DELIVERY_MAX_ATTEMPTS = 10
 
 
@@ -740,21 +759,13 @@ class LLMService:
     def _get_safety_settings(self) -> list[dict[str, str]]:
         """Get Gemini safety settings (all categories set to BLOCK_NONE).
 
-        Disables all content filtering for Gemini models. Note that
-        HARM_CATEGORY_CIVIC_INTEGRITY cannot be set to OFF but can be
-        set to BLOCK_NONE.
+        Returns the pre-computed module-level constant to avoid
+        rebuilding the list on every call.
 
         Returns:
             List of safety setting dictionaries
         """
-        categories = [
-            "HARM_CATEGORY_HARASSMENT",
-            "HARM_CATEGORY_HATE_SPEECH",
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "HARM_CATEGORY_CIVIC_INTEGRITY",
-        ]
-        return [{"category": cat, "threshold": "BLOCK_NONE"} for cat in categories]
+        return _GEMINI_SAFETY_SETTINGS
 
     def _get_gemini_tools(self, model: str) -> list[dict[str, dict]] | None:
         """Get Gemini-specific tools if supported by the model.
@@ -1464,6 +1475,7 @@ class LLMService:
         channel_history: list[dict[str, str]] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
+        system_prompt: str | None = None,
     ) -> CompletionResult:
         """Generate text completion with optional vision and conversation history.
 
@@ -1482,6 +1494,8 @@ class LLMService:
             channel_history: Optional shared channel history (group conversations)
             irc: IRC connection object for context (optional)
             msg: IRC message object for context (optional)
+            system_prompt: Optional override for the system prompt. When provided,
+                this is used instead of the registry ``{command}SystemPrompt`` value.
 
         Returns:
             CompletionResult with content and grounding_used flag
@@ -1526,14 +1540,17 @@ class LLMService:
                     error=error_content,
                 )
             model = self.plugin.registryValue(f"{command}Model", channel)
-            base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
+            if system_prompt is None:
+                base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
+            else:
+                base_system_prompt = system_prompt
 
             # Build system prompt (context now injected as user message in _build_messages)
-            system_prompt = self._build_system_prompt(base_system_prompt)
+            built_system_prompt = self._build_system_prompt(base_system_prompt)
 
             # Build messages with history, system prompt, and context
             messages = self._build_messages(
-                prompt, images, history, channel_history, system_prompt, irc, msg
+                prompt, images, history, channel_history, built_system_prompt, irc, msg
             )
 
             # Get timeout
@@ -2436,13 +2453,12 @@ Rules:
         code = code.strip()
 
         # Check for markdown fence with language (```python)
-        # The \n? before ``` makes the trailing newline optional for empty blocks
-        fence_match = re.match(r"^```(\w+)\n(.*?)\n?```$", code, re.DOTALL)
+        fence_match = _FENCE_WITH_LANG_RE.match(code)
         if fence_match:
             return fence_match.group(2), fence_match.group(1)
 
         # Check for fence without language (```)
-        fence_match = re.match(r"^```\n(.*?)\n?```$", code, re.DOTALL)
+        fence_match = _FENCE_NO_LANG_RE.match(code)
         if fence_match:
             return fence_match.group(1), None
 
@@ -2534,9 +2550,7 @@ Rules:
         # Sanitize HTML to prevent XSS attacks
         rendered = self._sanitize_html(rendered)
 
-        # Generate Pygments CSS for monokai theme
-        formatter = HtmlFormatter(style="monokai")
-        pygments_css = formatter.get_style_defs(".highlight")
+        pygments_css = _PYGMENTS_CSS
 
         # Pastebin-style HTML with syntax highlighting
         html = f"""<!DOCTYPE html>

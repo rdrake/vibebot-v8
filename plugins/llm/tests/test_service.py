@@ -557,6 +557,30 @@ class TestGroundingDetection:
         second_msg = irc.queueMsg.call_args_list[1][0][0]
         assert second_msg.server_tags == {"+typing": "done"}
 
+    def test_completion_uses_system_prompt_override(self) -> None:
+        """GIVEN system_prompt kwarg WHEN completion THEN uses override instead of registry."""
+        messages_sent: list[dict] = []
+
+        def mock_completion(**kwargs: dict) -> Mock:
+            messages_sent.extend(kwargs.get("messages", []))
+            mock_response = self.mocker.Mock()
+            mock_response.choices = [self.mocker.Mock()]
+            mock_response.choices[0].message = self.mocker.Mock()
+            mock_response.choices[0].message.content = "Make it so."
+            return mock_response
+
+        self.mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
+        result = self.service.completion(
+            "What are your orders?",
+            command="ask",
+            system_prompt="You are Captain Picard.",
+        )
+
+        assert result.content == "Make it so."
+        assert messages_sent[0]["role"] == "system"
+        assert "Captain Picard" in messages_sent[0]["content"]
+        assert "You are helpful" not in messages_sent[0]["content"]
+
 
 class TestBuildSystemPrompt:
     """Tests for _build_system_prompt with anti-injection preamble."""
