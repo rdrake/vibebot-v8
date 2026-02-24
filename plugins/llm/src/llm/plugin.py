@@ -1600,19 +1600,14 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                is_action = response.startswith("/me ") and len(response) > 4
-                if is_action:
-                    action_text = response[4:]
-                    if result.grounding_used:
-                        action_text = f"{GROUNDING_ICON} {action_text}"
-                    target = msg.args[0]
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    response = f"* {irc.nick} {action_text}"
-                else:
-                    display_response = (
-                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                    )
-                    irc.reply(display_response, prefixNick=False)
+                # Strip /me prefix if model ignores the "no actions" instruction
+                if response.startswith("/me "):
+                    response = response[4:]
+
+                display_response = (
+                    f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                )
+                irc.reply(display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "picard", text or prompt, response, result, irc, msg
