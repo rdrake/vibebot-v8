@@ -356,7 +356,9 @@ class LLMService:
         result += (
             "\n\nWhen performing physical actions or emotes, respond with "
             "/me (e.g., /me slaps someone with a large trout). "
-            "Use /me for actions, plain text for conversation."
+            "Use /me for actions, plain text for conversation. "
+            "Never use /me twice in a row — if your last message was an action, "
+            "reply with plain text next time."
         )
 
         return result
