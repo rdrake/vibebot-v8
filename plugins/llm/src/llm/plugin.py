@@ -172,6 +172,9 @@ Commands require the appropriate capability (e.g., <code>llm.ask</code>).
 </body>
 </html>"""
 
+# Pre-encoded bytes to avoid re-encoding on every HTTP request
+_HELP_HTML_BYTES = HELP_HTML_TEMPLATE.encode("utf-8")
+
 
 class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
     """HTTP callback to serve LLM-generated files (images, code)."""
@@ -205,9 +208,9 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             try:
                 content = custom_help.read_bytes()
             except OSError:
-                content = HELP_HTML_TEMPLATE.encode("utf-8")
+                content = _HELP_HTML_BYTES
         else:
-            content = HELP_HTML_TEMPLATE.encode("utf-8")
+            content = _HELP_HTML_BYTES
 
         try:
             handler.send_response(200)
@@ -1535,6 +1538,87 @@ class LLM(callbacks.Plugin):
             )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
+
+    def picard(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str = "",
+    ) -> None:
+        """[<topic>]
+
+        Share a random Captain Picard fact. Optionally provide a topic
+        to steer the fact (e.g., %picard tea, %picard diplomacy).
+
+        Examples:
+          %picard
+          %picard the Borg
+          %picard Earl Grey tea
+        """
+        if self._is_old_message(msg):
+            return
+
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text or "random fact",
+            "ask",
+            require_account=False,
+        )
+        if pf.blocked:
+            return
+        nick, channel = pf.nick, pf.channel
+
+        with self._trace_request("picard", nick, channel):
+            prompt = text if text else "Tell me a random Picard fact."
+
+            if self._get_context_enabled(channel):
+                ctx_cfg = self._get_context_config(channel)
+                history = self.context.get_messages(nick, channel, config=ctx_cfg)
+                channel_history = self.context.get_channel_messages(
+                    channel, exclude_nick=nick, config=ctx_cfg
+                )
+            else:
+                history, channel_history = [], []
+
+            picard_prompt = self.registryValue("picardSystemPrompt", channel)
+
+            with self._allow_concurrent():
+                result = self.llm_service.completion(
+                    prompt,
+                    command="ask",
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                    system_prompt=picard_prompt,
+                )
+
+                response = result.content
+                if not response or not response.strip():
+                    irc.error(_("The model returned an empty response. Please try again."))
+                    return
+
+                is_action = response.startswith("/me ") and len(response) > 4
+                if is_action:
+                    action_text = response[4:]
+                    if result.grounding_used:
+                        action_text = f"{GROUNDING_ICON} {action_text}"
+                    target = msg.args[0]
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    response = f"* {irc.nick} {action_text}"
+                else:
+                    display_response = (
+                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                    )
+                    irc.reply(display_response, prefixNick=False)
+
+            self._store_context_and_log_usage(
+                nick, channel, "picard", text or prompt, response, result, irc, msg
+            )
+
+    picard = wrap(picard, [("checkCapability", "llm.ask"), optional("text")])
 
     def code(
         self,

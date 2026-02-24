@@ -340,6 +340,112 @@ class TestAskCommand:
 
 
 # ---------------------------------------------------------------------------
+# picard
+# ---------------------------------------------------------------------------
+
+
+class TestPicardCommand:
+    """Tests for the real LLM.picard method."""
+
+    def test_picard_replies_with_completion_content(self, plugin_env, mocker: MockerFixture):
+        """GIVEN no topic WHEN picard called THEN replies with Picard fact."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Tea, Earl Grey, hot. A fine choice.",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.picard(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once_with(
+            "Tea, Earl Grey, hot. A fine choice.", prefixNick=False
+        )
+
+    def test_picard_with_topic(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a topic WHEN picard called THEN passes topic as prompt."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="The Borg are relentless.",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.picard(mock_irc, mock_msg, ["the Borg"])
+
+        # Verify completion was called with the topic as prompt
+        plugin.llm_service.completion.assert_called_once()
+        call_kwargs = plugin.llm_service.completion.call_args
+        assert "Borg" in call_kwargs.kwargs.get(
+            "prompt", call_kwargs.args[0] if call_kwargs.args else ""
+        )
+
+    def test_picard_passes_system_prompt_override(self, plugin_env, mocker: MockerFixture):
+        """GIVEN picard command WHEN completion called THEN system_prompt kwarg is set."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Make it so.",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.picard(mock_irc, mock_msg, [])
+
+        call_kwargs = plugin.llm_service.completion.call_args.kwargs
+        assert call_kwargs["command"] == "ask"
+        assert "system_prompt" in call_kwargs
+        assert "Picard" in call_kwargs["system_prompt"]
+
+    def test_picard_stores_context(self, plugin_env, mocker: MockerFixture):
+        """GIVEN successful picard response WHEN called THEN context is stored."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Engage!",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.picard(mock_irc, mock_msg, [])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 2
+        assert messages[1]["content"] == "Engage!"
+
+    def test_picard_logs_usage_as_picard(self, plugin_env, mocker: MockerFixture):
+        """GIVEN picard command WHEN usage logged THEN command is 'picard'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Indeed.",
+            prompt_tokens=100,
+            completion_tokens=50,
+            cost=0.005,
+            model="gpt-4",
+        )
+
+        plugin.picard(mock_irc, mock_msg, ["diplomacy"])
+
+        plugin.db.log_usage.assert_called_once()
+        call_kwargs = plugin.db.log_usage.call_args
+        assert call_kwargs.args[2] == "picard"  # command arg
+
+
+# ---------------------------------------------------------------------------
 # code
 # ---------------------------------------------------------------------------
 
