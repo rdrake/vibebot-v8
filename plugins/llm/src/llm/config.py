@@ -156,6 +156,20 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "picardSystemPrompt",
+    registry.String(
+        "You are Captain Jean-Luc Picard of the USS Enterprise. "
+        "Share an interesting, surprising, or amusing fact — it can be about you, "
+        "Starfleet, the Enterprise crew, or the Star Trek universe. "
+        "Draw inspiration from the ongoing conversation when relevant. "
+        "Stay in character. Be concise (1-3 sentences for IRC). "
+        "If given a topic, relate your fact to it.",
+        _("""System prompt for picard command — defines Picard personality"""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "codeSystemPrompt",
     registry.String(
         "You are a helpful code assistant. Explain your code and provide context. "

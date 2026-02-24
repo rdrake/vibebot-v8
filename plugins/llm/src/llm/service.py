@@ -77,6 +77,7 @@ _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 
 # Pre-generated Pygments CSS for monokai theme (constant across calls)
 _PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
+
 DELIVERY_MAX_ATTEMPTS = 10
 
 
