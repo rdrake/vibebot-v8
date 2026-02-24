@@ -1513,8 +1513,21 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                # Detect /me action prefix
-                is_action = response.startswith("/me ") and len(response) > 4
+                # Detect /me action prefix — suppress if last bot message was also an action
+                last_was_action = (
+                    any(
+                        m["content"].startswith("* ")
+                        for m in reversed(history)
+                        if m["role"] == "assistant"
+                    )
+                    if history
+                    else False
+                )
+                is_action = (
+                    response.startswith("/me ") and len(response) > 4 and not last_was_action
+                )
+                if response.startswith("/me ") and last_was_action:
+                    response = response[4:]
                 if is_action:
                     action_text = response[4:]
                     if result.grounding_used:
