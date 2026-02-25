@@ -161,6 +161,40 @@ class TestConversationContext:
         assert stats["timeout_minutes"] == 30
         assert stats["enabled"] is True
 
+    def test_user_stats_with_messages(self) -> None:
+        """GIVEN user with messages WHEN get_user_stats THEN returns count and expiry."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#channel", "user", "Hello")
+        ctx.add_message("user1", "#channel", "assistant", "Hi")
+
+        stats = ctx.get_user_stats("user1", "#channel")
+        assert stats["message_count"] == 2
+        assert stats["max_messages"] == 20
+        assert stats["seconds_until_expiry"] > 0
+        assert stats["enabled"] is True
+
+    def test_user_stats_empty(self) -> None:
+        """GIVEN user with no messages WHEN get_user_stats THEN returns zero count."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        stats = ctx.get_user_stats("user1", "#channel")
+        assert stats["message_count"] == 0
+        assert stats["max_messages"] == 20
+        assert stats["seconds_until_expiry"] == 0
+        assert stats["enabled"] is True
+
+    def test_user_stats_disabled(self) -> None:
+        """GIVEN context disabled WHEN get_user_stats THEN returns disabled."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
+        ctx = ConversationContext(config)
+
+        stats = ctx.get_user_stats("user1", "#channel")
+        assert stats["message_count"] == 0
+        assert stats["enabled"] is False
+
     def test_context_thread_safe(self) -> None:
         """GIVEN context WHEN concurrent operations THEN thread-safe."""
         config = ContextConfig(max_messages=1000, timeout_minutes=30, enabled=True)

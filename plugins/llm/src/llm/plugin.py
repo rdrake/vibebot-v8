@@ -2037,6 +2037,13 @@ class LLM(callbacks.Plugin):
             chan_parts = [f"{c.name} ${c.total_cost:.4f}" for c in top_channels]
             parts.append(f"Top channels: {', '.join(chan_parts)}")
 
+        # Global context stats
+        ctx_global = self.context.get_stats()
+        parts.append(
+            f"Context: {ctx_global['active_conversations']} conversations,"
+            f" {ctx_global['total_messages']} messages"
+        )
+
         irc.reply(" | ".join(parts), private=True)
 
     def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
@@ -2066,7 +2073,20 @@ class LLM(callbacks.Plugin):
             nick_part += f", rank {nick_rank.rank}/{nick_rank.total} users"
         nick_part += ")"
 
-        irc.reply(f"{chan_part} | {nick_part}", prefixNick=False)
+        # Format context part
+        ctx_cfg = self._get_context_config(channel)
+        ctx_stats = self.context.get_user_stats(nick, channel, config=ctx_cfg)
+        if not ctx_stats["enabled"]:
+            ctx_part = "Context: disabled"
+        elif ctx_stats["message_count"] == 0:
+            ctx_part = "Context: empty"
+        else:
+            remaining = ctx_stats["seconds_until_expiry"]
+            minutes = remaining // 60
+            ctx_part = f"Context: {ctx_stats['message_count']}/{ctx_stats['max_messages']} msgs"
+            ctx_part += f", expires in {minutes}m" if minutes > 0 else ", expiring soon"
+
+        irc.reply(f"{chan_part} | {nick_part} | {ctx_part}", prefixNick=False)
 
     def _usage_for_nick(self, irc: callbacks.Irc, msg: IrcMsg, nick: str) -> None:
         """Show usage stats for a specific nick.

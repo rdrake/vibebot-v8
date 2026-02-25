@@ -994,6 +994,8 @@ class TestUsageCommand:
         assert "This month:" in reply_text
         assert "Top users:" in reply_text
         assert "Top channels:" in reply_text
+        assert "Context:" in reply_text
+        assert "conversations" in reply_text
         # Sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
@@ -1067,6 +1069,8 @@ class TestUsageCommand:
         assert "You:" in reply_text
         assert "12 requests" in reply_text
         assert "rank 1/8 users" in reply_text
+        # Context info
+        assert "Context:" in reply_text
         # Not sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is not True
         assert mock_irc.reply.call_args.kwargs.get("prefixNick") is False
@@ -1105,6 +1109,29 @@ class TestUsageCommand:
         assert "You: $0.0000" in reply_text
         # rank should not appear when rank=0
         assert "rank" not in reply_text
+        # Context should show empty when no messages
+        assert "Context: empty" in reply_text
+
+    def test_usage_channel_shows_context_message_count(self, plugin_env):
+        """GIVEN user with active context WHEN usage called THEN shows message count and expiry."""
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(10, 500, 250, 0.01)
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 250, 125, 0.005)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
+
+        # Add some messages to the user's context
+        plugin.context.add_message("testnick", "#test", "user", "Hello")
+        plugin.context.add_message("testnick", "#test", "assistant", "Hi there")
+
+        plugin.usage(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "Context: 2/" in reply_text
+        assert "msgs" in reply_text
+        assert "expires in" in reply_text
 
     # -- Target nick mode --
 

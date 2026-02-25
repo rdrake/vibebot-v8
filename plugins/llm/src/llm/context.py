@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
+# Minimum interval between full prune sweeps (seconds).
+_PRUNE_INTERVAL = 30.0
+
 
 class Role:
     """Message role constants for LLM conversations."""
@@ -65,6 +68,8 @@ class ConversationContext:
         self._conversations: dict[tuple[str, str], Conversation] = {}
         # Key: channel -> Conversation (shared across all users)
         self._channel_contexts: dict[str, Conversation] = {}
+        # Timestamp of last prune sweep (throttled to _PRUNE_INTERVAL)
+        self._last_prune: float = 0.0
 
     def update_config(self, config: ContextConfig) -> None:
         """Update default configuration without losing conversation data.
@@ -113,8 +118,18 @@ class ConversationContext:
         timeout_seconds = cfg.timeout_minutes * 60
         return time.time() - conversation.last_activity > timeout_seconds
 
-    def _prune_expired(self, cfg: ContextConfig) -> None:
-        """Remove expired conversations. Must be called with lock held."""
+    def _prune_expired(self, cfg: ContextConfig, *, force: bool = False) -> None:
+        """Remove expired conversations. Must be called with lock held.
+
+        Pruning is throttled to at most once per ``_PRUNE_INTERVAL`` seconds
+        to avoid O(n) scans on every add/get call.  Pass ``force=True`` to
+        bypass the throttle (used by ``get_stats``).
+        """
+        now = time.time()
+        if not force and now - self._last_prune < _PRUNE_INTERVAL:
+            return
+        self._last_prune = now
+
         expired_keys = [
             key for key, conv in self._conversations.items() if self._is_expired(conv, cfg)
         ]
@@ -310,6 +325,56 @@ class ConversationContext:
             self._channel_contexts.clear()
             return count
 
+    def get_user_stats(
+        self,
+        nick: str,
+        channel: str,
+        *,
+        config: ContextConfig | None = None,
+    ) -> dict[str, Any]:
+        """Get context statistics for a specific user in a channel.
+
+        Args:
+            nick: User's IRC nick
+            channel: IRC channel
+            config: Per-channel config override (uses instance default if None)
+
+        Returns:
+            Dictionary with message_count, max_messages, seconds_until_expiry,
+            and enabled.  seconds_until_expiry is 0 if no active conversation.
+        """
+        with self._lock:
+            cfg = self._effective(config)
+            if not cfg.enabled:
+                return {
+                    "message_count": 0,
+                    "max_messages": cfg.max_messages,
+                    "seconds_until_expiry": 0,
+                    "enabled": False,
+                }
+
+            key = self._get_key(nick, channel)
+            conv = self._conversations.get(key)
+
+            if conv is None or self._is_expired(conv, cfg):
+                return {
+                    "message_count": 0,
+                    "max_messages": cfg.max_messages,
+                    "seconds_until_expiry": 0,
+                    "enabled": True,
+                }
+
+            timeout_seconds = cfg.timeout_minutes * 60
+            elapsed = time.time() - conv.last_activity
+            remaining = max(0, timeout_seconds - elapsed)
+
+            return {
+                "message_count": len(conv.messages),
+                "max_messages": cfg.max_messages,
+                "seconds_until_expiry": int(remaining),
+                "enabled": True,
+            }
+
     def get_stats(self) -> dict[str, Any]:
         """Get context manager statistics.
 
@@ -317,7 +382,7 @@ class ConversationContext:
             Dictionary with current statistics
         """
         with self._lock:
-            self._prune_expired(self.config)
+            self._prune_expired(self.config, force=True)
 
             total_messages = sum(len(conv.messages) for conv in self._conversations.values())
             channel_messages = sum(len(ctx.messages) for ctx in self._channel_contexts.values())
