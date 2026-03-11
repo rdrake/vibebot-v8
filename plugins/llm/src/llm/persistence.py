@@ -1,17 +1,19 @@
 """SQLite persistence layer for LLM plugin.
 
 Provides thread-safe database operations for reminders, usage tracking,
-and pending task queue using a connection-per-call pattern with WAL mode.
+and pending task queue.  Uses thread-local connections with WAL mode for
+concurrent read performance without the overhead of reconnecting on every call.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -97,9 +99,9 @@ class FlaggedUserRow(NamedTuple):
 class LLMDatabase:
     """SQLite database for LLM plugin persistence.
 
-    Uses a connection-per-call pattern for thread safety: each public method
-    opens its own connection, executes the query, and closes it. WAL mode is
-    enabled on every connection for concurrent read performance.
+    Uses thread-local connections for thread safety: each thread gets its
+    own long-lived connection (created lazily on first use).  WAL mode is
+    set once per connection for concurrent read performance.
     """
 
     def __init__(self, db_path: str) -> None:
@@ -109,16 +111,35 @@ class LLMDatabase:
             db_path: Path to the SQLite database file.
         """
         self.db_path = db_path
+        self._local = threading.local()
         self._migrate()
 
     def _connect(self) -> sqlite3.Connection:
-        """Open a new connection with WAL mode enabled.
+        """Return a thread-local connection, creating one if needed.
+
+        Reuses connections within the same thread to avoid the overhead of
+        opening a new connection (and re-setting WAL mode) on every call.
+        WAL mode is persistent on the database file so it only needs to be
+        set once per connection.
+
+        If the cached connection was closed externally (e.g. by a caller
+        that obtained it via ``_connect()`` and called ``conn.close()``),
+        a fresh connection is created transparently.
 
         Returns:
-            A new sqlite3.Connection with WAL journal mode.
+            A sqlite3.Connection with WAL journal mode.
         """
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                # Cheapest possible liveness probe — never hits disk.
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.ProgrammingError:
+                self._local.conn = None
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
+        self._local.conn = conn
         return conn
 
     def _migrate(self) -> None:
@@ -231,19 +252,35 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 4:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        nick TEXT NOT NULL,
+                        channel TEXT NOT NULL,
+                        messages TEXT NOT NULL,
+                        last_activity REAL NOT NULL,
+                        PRIMARY KEY (nick, channel)
+                    );
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def close(self) -> None:
-        """Close the database (no-op for connection-per-call pattern).
+        """Close the current thread's connection if open."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
-        Kept for API consistency so callers can treat this like a resource
-        that needs cleanup.
-        """
+    def __del__(self) -> None:
+        """Best-effort cleanup of the current thread's connection."""
+        self.close()
 
     # ------------------------------------------------------------------
     # Reminder operations
@@ -282,7 +319,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.lastrowid or 0
         finally:
-            conn.close()
+            pass
 
     def delete_reminder(self, event_name: str) -> bool:
         """Delete a reminder by event name.
@@ -302,7 +339,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def load_pending_reminders(self) -> list[ReminderRow]:
         """Load reminders that are still pending delivery.
@@ -324,7 +361,7 @@ class LLMDatabase:
             ).fetchall()
             return [ReminderRow(*row) for row in rows]
         finally:
-            conn.close()
+            pass
 
     def delete_expired_reminders(self) -> int:
         """Delete reminders that are more than 24 hours overdue.
@@ -342,7 +379,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount
         finally:
-            conn.close()
+            pass
 
     # ------------------------------------------------------------------
     # Pending task operations
@@ -412,7 +449,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.lastrowid or 0
         finally:
-            conn.close()
+            pass
 
     def claim_due_pending_tasks(
         self,
@@ -486,7 +523,7 @@ class LLMDatabase:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            pass
 
     def release_pending_task(
         self,
@@ -526,7 +563,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def delete_pending_task(self, task_id: int) -> bool:
         """Delete a pending task by ID.
@@ -546,7 +583,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def update_task_for_delivery(
         self,
@@ -575,7 +612,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def update_delivery_attempt(
         self,
@@ -615,7 +652,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def delete_expired_pending_tasks(self, now: float) -> list[PendingTaskRow]:
         """Delete pending tasks whose expires_at has passed.
@@ -647,7 +684,7 @@ class LLMDatabase:
                 conn.commit()
             return [PendingTaskRow(*row) for row in rows]
         finally:
-            conn.close()
+            pass
 
     def get_next_due_time(self) -> float | None:
         """Return the earliest next_attempt_at for actionable unclaimed tasks.
@@ -672,7 +709,7 @@ class LLMDatabase:
                 return None
             return row[0]
         finally:
-            conn.close()
+            pass
 
     def load_pending_tasks(self, task_type: str | None = None) -> list[PendingTaskRow]:
         """Load pending tasks, optionally filtered by type.
@@ -699,7 +736,7 @@ class LLMDatabase:
                 ).fetchall()
             return [PendingTaskRow(*row) for row in rows]
         finally:
-            conn.close()
+            pass
 
     # ------------------------------------------------------------------
     # Usage migration
@@ -731,7 +768,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount
         finally:
-            conn.close()
+            pass
 
     # ------------------------------------------------------------------
     # Usage operations
@@ -789,7 +826,7 @@ class LLMDatabase:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def get_usage_summary(self, since: float | None = None) -> UsageSummary:
         """Get aggregated usage statistics.
@@ -830,7 +867,7 @@ class LLMDatabase:
                 total_cost=row[3],
             )
         finally:
-            conn.close()
+            pass
 
     def get_usage_by_nick(self, since: float | None = None, limit: int = 5) -> list[UsageBreakdown]:
         """Get usage statistics grouped by nick, sorted by cost descending.
@@ -903,7 +940,7 @@ class LLMDatabase:
                 for row in rows
             ]
         finally:
-            conn.close()
+            pass
 
     def get_usage_summary_for_channel(
         self, channel: str, since: float | None = None
@@ -942,7 +979,7 @@ class LLMDatabase:
                 total_cost=row[3],
             )
         finally:
-            conn.close()
+            pass
 
     def get_usage_summary_for_nick(
         self, nick: str, since: float | None = None, channel: str | None = None
@@ -983,7 +1020,7 @@ class LLMDatabase:
                 total_cost=row[3],
             )
         finally:
-            conn.close()
+            pass
 
     def get_channel_rank(self, channel: str, since: float | None = None) -> UsageRank:
         """Get the cost rank of a channel among all channels.
@@ -1090,7 +1127,7 @@ class LLMDatabase:
 
             return UsageRank(rank=rank, total=total)
         finally:
-            conn.close()
+            pass
 
     # ------------------------------------------------------------------
     # Flagged user operations
@@ -1147,7 +1184,7 @@ class LLMDatabase:
             # Active flag already exists — no-op
             return False
         finally:
-            conn.close()
+            pass
 
     def unflag_user(self, account: str, resolved_by: str) -> bool:
         """Resolve an active flag on a user account.
@@ -1169,7 +1206,7 @@ class LLMDatabase:
             conn.commit()
             return cursor.rowcount > 0
         finally:
-            conn.close()
+            pass
 
     def is_user_flagged(self, account: str) -> bool:
         """Check whether a user account has an active (unresolved) flag.
@@ -1188,7 +1225,7 @@ class LLMDatabase:
             ).fetchone()
             return row is not None
         finally:
-            conn.close()
+            pass
 
     def get_flagged_users(self) -> list[FlaggedUserRow]:
         """Return all actively flagged users.
@@ -1207,4 +1244,4 @@ class LLMDatabase:
             ).fetchall()
             return [FlaggedUserRow(*row) for row in rows]
         finally:
-            conn.close()
+            pass

@@ -100,6 +100,18 @@ class TestDatabaseInit:
         finally:
             conn.close()
 
+    def test_creates_conversations_table(self, tmp_path: Path) -> None:
+        """GIVEN a new database WHEN initialized THEN conversations table exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+            )
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
     def test_idempotent_init(self, tmp_path: Path) -> None:
         """GIVEN an existing database WHEN opened again THEN no error."""
         db_path = str(tmp_path / "test.db")
@@ -1226,14 +1238,14 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_3(self, tmp_path: Path) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 3."""
+    def test_schema_version_is_4(self, tmp_path: Path) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 4."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         conn = db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 3
+            assert row[0] == 4
         finally:
             conn.close()
 
