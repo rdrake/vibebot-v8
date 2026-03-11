@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
@@ -22,13 +23,20 @@ class TestPluginContextIntegration:
     """Test plugin context management integration."""
 
     @pytest.fixture
-    def plugin_with_context(self, mock_irc: MagicMock, mocker: MockerFixture) -> tuple:
+    def plugin_with_context(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> tuple:
         """Create plugin with initialized context."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        db_path = str(tmp_path / "test.db")
+        mocker.patch.object(
+            LLM,
+            "registryValue",
+            side_effect=make_registry_side_effect({"databasePath": db_path}),
+        )
         plugin_init_patches(mocker, mock_database=False)
         plugin = LLM(mock_irc)
 
@@ -288,12 +296,9 @@ class TestRateLimitFullFlow:
 
         # Verify rate_limited was logged in the real database
         conn = plugin.db._connect()
-        try:
-            usage_rows = conn.execute(
-                "SELECT status FROM usage WHERE nick = 'testuser' AND status = 'rate_limited'"
-            ).fetchall()
-        finally:
-            conn.close()
+        usage_rows = conn.execute(
+            "SELECT status FROM usage WHERE nick = 'testuser' AND status = 'rate_limited'"
+        ).fetchall()
         assert len(usage_rows) >= 1
 
         # Step 3: Simulate window expiration by clearing buckets

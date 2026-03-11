@@ -311,14 +311,14 @@ class LLM(callbacks.Plugin):
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
         self.build_info = self._get_build_info()
 
-        # Initialize conversation context
-        self._init_context()
-
-        # Initialize database for persistence
+        # Initialize database for persistence (before context, which loads from DB)
         db_path = self.registryValue("databasePath")
         if not db_path:
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
+
+        # Initialize conversation context (loads persisted conversations from DB)
+        self._init_context()
 
         # Track nicks already migrated to account-based identity this session
         self._migrated_nicks: set[str] = set()
@@ -646,7 +646,9 @@ class LLM(callbacks.Plugin):
 
         # Store in conversation context for richer follow-up questions
         ctx_cfg = self._get_context_config(channel)
-        self.context.add_message(nick, channel, Role.USER, message_text, config=ctx_cfg)
+        self.context.add_message(
+            nick, channel, Role.USER, message_text, config=ctx_cfg, persist=False
+        )
         self.context.add_channel_message(channel, nick, Role.USER, message_text, config=ctx_cfg)
 
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
@@ -750,7 +752,7 @@ class LLM(callbacks.Plugin):
             enabled=self.registryValue("contextEnabled"),
             channel_max_messages=self.registryValue("channelContextMaxMessages"),
         )
-        self.context = ConversationContext(config)
+        self.context = ConversationContext(config, db=self.db)
 
     def _get_context_config(self, channel: str) -> ContextConfig:
         """Read channel-specific context configuration.

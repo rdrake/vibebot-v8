@@ -700,6 +700,7 @@ class TestInitContext:
         plugin = LLM.__new__(LLM)
         # Returns: contextMaxMessages, contextTimeoutMinutes, contextEnabled, channelContextMaxMessages
         plugin.registryValue = mocker.MagicMock(side_effect=[20, 30, True, 10])
+        plugin.db = None  # _init_context now passes db=self.db to ConversationContext
 
         plugin._init_context()
 
