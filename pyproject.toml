@@ -49,6 +49,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:supybot",  # currentThread(), codecs.open()
     "ignore::ResourceWarning:supybot",     # Unclosed conf/*.conf files
     "ignore::ResourceWarning:tempfile",    # HTTPError cleanup on Python 3.14
+    "ignore::ResourceWarning:sqlite3",     # Thread-local connection pool cleanup
+    "ignore::pytest.PytestUnraisableExceptionWarning",  # GC-triggered ResourceWarning from thread-local conns
     "ignore::SyntaxWarning:supybot",       # return-in-finally (PEP 765)
 ]
 
