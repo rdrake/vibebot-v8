@@ -1513,21 +1513,7 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                # Detect /me action prefix — suppress if last bot message was also an action
-                last_was_action = (
-                    any(
-                        m["content"].startswith("* ")
-                        for m in reversed(history)
-                        if m["role"] == "assistant"
-                    )
-                    if history
-                    else False
-                )
-                is_action = (
-                    response.startswith("/me ") and len(response) > 4 and not last_was_action
-                )
-                if response.startswith("/me ") and last_was_action:
-                    response = response[4:]
+                is_action = response.startswith("/me ") and len(response) > 4
                 if is_action:
                     action_text = response[4:]
                     if result.grounding_used:
@@ -1613,9 +1599,19 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                # Strip /me prefix if model ignores the "no actions" instruction
-                if response.startswith("/me "):
-                    response = response[4:]
+                is_action = response.startswith("/me ") and len(response) > 4
+                if is_action:
+                    action_text = response[4:]
+                    if result.grounding_used:
+                        action_text = f"{GROUNDING_ICON} {action_text}"
+                    self.log.info("sending action to %s/%s", channel, nick)
+                    target = msg.args[0]
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    response = f"* {irc.nick} {action_text}"
+                    self._store_context_and_log_usage(
+                        nick, channel, "picard", prompt, response, result, irc, msg
+                    )
+                    return
 
                 display_response = (
                     f"{GROUNDING_ICON} {response}" if result.grounding_used else response
