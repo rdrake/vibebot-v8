@@ -7,6 +7,8 @@ concurrent read performance without the overhead of reconnecting on every call.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 import time
@@ -281,6 +283,81 @@ class LLMDatabase:
     def __del__(self) -> None:
         """Best-effort cleanup of the current thread's connection."""
         self.close()
+
+    # ------------------------------------------------------------------
+    # Conversation persistence
+    # ------------------------------------------------------------------
+
+    def save_conversation(
+        self,
+        nick: str,
+        channel: str,
+        messages: list[dict[str, str]],
+        last_activity: float,
+    ) -> None:
+        """Persist a conversation's messages to the database.
+
+        Args:
+            nick: User's IRC nick (lowercased before storage).
+            channel: IRC channel (lowercased before storage).
+            messages: List of message dicts (role + content).
+            last_activity: Timestamp of last activity.
+        """
+        conn = self._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
+            "VALUES (?, ?, ?, ?)",
+            (nick.lower(), channel.lower(), json.dumps(messages), last_activity),
+        )
+        conn.commit()
+
+    def delete_conversation(self, nick: str, channel: str) -> None:
+        """Delete a conversation from the database.
+
+        Args:
+            nick: User's IRC nick.
+            channel: IRC channel.
+        """
+        conn = self._connect()
+        conn.execute(
+            "DELETE FROM conversations WHERE nick = ? AND channel = ?",
+            (nick.lower(), channel.lower()),
+        )
+        conn.commit()
+
+    def delete_all_conversations(self) -> None:
+        """Delete all conversations from the database."""
+        conn = self._connect()
+        conn.execute("DELETE FROM conversations")
+        conn.commit()
+
+    def load_conversations(self) -> list[tuple[str, str, list[dict[str, str]], float]]:
+        """Load all conversations from the database.
+
+        Returns:
+            List of (nick, channel, messages, last_activity) tuples.
+            Rows with corrupt JSON are logged and skipped.
+        """
+        log = logging.getLogger("supybot.plugins.LLM")
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT nick, channel, messages, last_activity FROM conversations"
+        ).fetchall()
+
+        result: list[tuple[str, str, list[dict[str, str]], float]] = []
+        for nick, channel, messages_json, last_activity in rows:
+            try:
+                messages = json.loads(messages_json)
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Skipping corrupt conversation for %s/%s", nick, channel)
+                conn.execute(
+                    "DELETE FROM conversations WHERE nick = ? AND channel = ?",
+                    (nick, channel),
+                )
+                conn.commit()
+                continue
+            result.append((nick, channel, messages, last_activity))
+        return result
 
     # ------------------------------------------------------------------
     # Reminder operations

@@ -1495,3 +1495,85 @@ class TestFlaggedUsers:
         assert flagged[0].reason == "second offense"
         assert flagged[0].auto_flagged == 1
         assert flagged[0].resolved_at is None
+
+
+class TestConversationPersistence:
+    """Test conversation persistence methods."""
+
+    def test_save_and_load_conversation(self, tmp_path: Path) -> None:
+        """GIVEN a saved conversation WHEN load_conversations THEN it is returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        messages = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
+        db.save_conversation("User1", "#Channel", messages, 1000.0)
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 1
+        nick, channel, msgs, last_activity = loaded[0]
+        assert nick == "user1"
+        assert channel == "#channel"
+        assert msgs == messages
+        assert last_activity == 1000.0
+
+    def test_save_conversation_upserts(self, tmp_path: Path) -> None:
+        """GIVEN an existing conversation WHEN saved again THEN it is replaced."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation("user1", "#chan", [{"role": "user", "content": "first"}], 1000.0)
+        db.save_conversation("user1", "#chan", [{"role": "user", "content": "second"}], 2000.0)
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 1
+        assert loaded[0][2] == [{"role": "user", "content": "second"}]
+        assert loaded[0][3] == 2000.0
+
+    def test_save_lowercases_nick_and_channel(self, tmp_path: Path) -> None:
+        """GIVEN mixed-case nick/channel WHEN saved THEN stored lowercased."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation("UserName", "#MyChannel", [], 1000.0)
+
+        loaded = db.load_conversations()
+        assert loaded[0][0] == "username"
+        assert loaded[0][1] == "#mychannel"
+
+    def test_delete_conversation(self, tmp_path: Path) -> None:
+        """GIVEN a saved conversation WHEN deleted THEN load returns empty."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation("user1", "#chan", [{"role": "user", "content": "hi"}], 1000.0)
+        db.delete_conversation("user1", "#chan")
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 0
+
+    def test_delete_conversation_lowercases(self, tmp_path: Path) -> None:
+        """GIVEN a saved conversation WHEN deleted with different case THEN still deleted."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation("user1", "#chan", [], 1000.0)
+        db.delete_conversation("User1", "#Chan")
+
+        assert len(db.load_conversations()) == 0
+
+    def test_delete_all_conversations(self, tmp_path: Path) -> None:
+        """GIVEN multiple conversations WHEN delete_all THEN all are removed."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation("user1", "#chan", [], 1000.0)
+        db.save_conversation("user2", "#chan", [], 1000.0)
+        db.delete_all_conversations()
+
+        assert len(db.load_conversations()) == 0
+
+    def test_load_skips_corrupt_json(self, tmp_path: Path) -> None:
+        """GIVEN a row with invalid JSON WHEN load THEN it is skipped."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        # Insert valid row
+        db.save_conversation("good", "#chan", [{"role": "user", "content": "ok"}], 1000.0)
+        # Manually insert corrupt row
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
+            "VALUES (?, ?, ?, ?)",
+            ("bad", "#chan", "NOT VALID JSON{{{", 1000.0),
+        )
+        conn.commit()
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 1
+        assert loaded[0][0] == "good"
