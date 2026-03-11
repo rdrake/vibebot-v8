@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import threading
+import time
+from pathlib import Path
 
 from llm.context import ContextConfig, ConversationContext
+from llm.persistence import LLMDatabase
 
 
 class TestConversationContext:
@@ -408,3 +411,96 @@ class TestChannelContext:
         messages1[0]["content"] = "Modified"
         messages3 = ctx.get_channel_messages("#channel")
         assert messages3[0]["content"] == "Hello"
+
+
+class TestPersistentContext:
+    """Test conversation context with SQLite persistence."""
+
+    def _make_ctx(self, tmp_path: Path) -> tuple[ConversationContext, LLMDatabase]:
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config, db=db)
+        return ctx, db
+
+    def test_add_message_persists_to_db(self, tmp_path: Path) -> None:
+        """GIVEN context with db WHEN add_message THEN conversation is in SQLite."""
+        ctx, db = self._make_ctx(tmp_path)
+        ctx.add_message("user1", "#chan", "user", "Hello")
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 1
+        assert loaded[0][2] == [{"role": "user", "content": "Hello"}]
+
+    def test_add_message_persist_false_skips_db(self, tmp_path: Path) -> None:
+        """GIVEN context with db WHEN add_message(persist=False) THEN not in SQLite."""
+        ctx, db = self._make_ctx(tmp_path)
+        ctx.add_message("user1", "#chan", "user", "Hello", persist=False)
+
+        loaded = db.load_conversations()
+        assert len(loaded) == 0
+
+        # But still in memory
+        msgs = ctx.get_messages("user1", "#chan")
+        assert len(msgs) == 1
+
+    def test_clear_deletes_from_db(self, tmp_path: Path) -> None:
+        """GIVEN persisted conversation WHEN clear THEN removed from SQLite."""
+        ctx, db = self._make_ctx(tmp_path)
+        ctx.add_message("user1", "#chan", "user", "Hello")
+        ctx.clear("user1", "#chan")
+
+        assert len(db.load_conversations()) == 0
+
+    def test_clear_all_deletes_from_db(self, tmp_path: Path) -> None:
+        """GIVEN persisted conversations WHEN clear_all THEN all removed from SQLite."""
+        ctx, db = self._make_ctx(tmp_path)
+        ctx.add_message("user1", "#chan", "user", "Hello")
+        ctx.add_message("user2", "#chan", "user", "Hi")
+        ctx.clear_all()
+
+        assert len(db.load_conversations()) == 0
+
+    def test_startup_loads_from_db(self, tmp_path: Path) -> None:
+        """GIVEN conversations in db WHEN new ConversationContext THEN loaded into memory."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_conversation(
+            "user1",
+            "#chan",
+            [{"role": "user", "content": "Hello"}],
+            time.time(),
+        )
+
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config, db=db)
+
+        msgs = ctx.get_messages("user1", "#chan")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "Hello"
+
+    def test_startup_skips_expired(self, tmp_path: Path) -> None:
+        """GIVEN expired conversation in db WHEN new ConversationContext THEN not loaded."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        old_time = time.time() - 7200  # 2 hours ago
+        db.save_conversation(
+            "user1",
+            "#chan",
+            [{"role": "user", "content": "Hello"}],
+            old_time,
+        )
+
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config, db=db)
+
+        msgs = ctx.get_messages("user1", "#chan")
+        assert len(msgs) == 0
+
+    def test_without_db_works_unchanged(self, tmp_path: Path) -> None:
+        """GIVEN context without db WHEN operations THEN works as before."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#chan", "user", "Hello")
+        msgs = ctx.get_messages("user1", "#chan")
+        assert len(msgs) == 1
+        ctx.clear("user1", "#chan")
+        assert ctx.get_messages("user1", "#chan") == []

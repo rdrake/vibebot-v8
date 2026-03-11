@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .persistence import LLMDatabase
 
 # Minimum interval between full prune sweeps (seconds).
 _PRUNE_INTERVAL = 30.0
@@ -55,14 +59,16 @@ class ConversationContext:
     per-channel configuration without having to mutate shared state.
     """
 
-    def __init__(self, config: ContextConfig) -> None:
+    def __init__(self, config: ContextConfig, *, db: LLMDatabase | None = None) -> None:
         """Initialize context manager.
 
         Args:
             config: Default context configuration (used when callers
                 do not supply a per-call override)
+            db: Optional database for persistence (None = in-memory only)
         """
         self.config = config
+        self._db = db
         self._lock = Lock()
         # Key: (nick, channel) -> Conversation
         self._conversations: dict[tuple[str, str], Conversation] = {}
@@ -70,6 +76,27 @@ class ConversationContext:
         self._channel_contexts: dict[str, Conversation] = {}
         # Timestamp of last prune sweep (throttled to _PRUNE_INTERVAL)
         self._last_prune: float = 0.0
+
+        if self._db is not None:
+            self._load_from_db()
+
+    def _load_from_db(self) -> None:
+        """Load persisted conversations from the database at startup."""
+        assert self._db is not None
+        log = logging.getLogger("supybot.plugins.LLM")
+        rows = self._db.load_conversations()
+        timeout_seconds = self.config.timeout_minutes * 60
+        now = time.time()
+        loaded = 0
+        for nick, channel, messages, last_activity in rows:
+            if now - last_activity > timeout_seconds:
+                self._db.delete_conversation(nick, channel)
+                continue
+            key = (nick, channel)  # already lowercased by load_conversations
+            self._conversations[key] = Conversation(messages=messages, last_activity=last_activity)
+            loaded += 1
+        if loaded:
+            log.info("Loaded %d conversation(s) from database", loaded)
 
     def update_config(self, config: ContextConfig) -> None:
         """Update default configuration without losing conversation data.
@@ -130,15 +157,20 @@ class ConversationContext:
             return
         self._last_prune = now
 
+        # Use instance default config for prune sweep to avoid
+        # cross-channel config mismatch (see design doc).
+        prune_cfg = self.config
         expired_keys = [
-            key for key, conv in self._conversations.items() if self._is_expired(conv, cfg)
+            key for key, conv in self._conversations.items() if self._is_expired(conv, prune_cfg)
         ]
         for key in expired_keys:
             del self._conversations[key]
+            if self._db is not None:
+                self._db.delete_conversation(key[0], key[1])
 
         # Also prune expired channel contexts
         expired_channels = [
-            ch for ch, ctx in self._channel_contexts.items() if self._is_expired(ctx, cfg)
+            ch for ch, ctx in self._channel_contexts.items() if self._is_expired(ctx, prune_cfg)
         ]
         for ch in expired_channels:
             del self._channel_contexts[ch]
@@ -151,6 +183,7 @@ class ConversationContext:
         content: str,
         *,
         config: ContextConfig | None = None,
+        persist: bool = True,
     ) -> None:
         """Add a message to conversation history.
 
@@ -160,6 +193,7 @@ class ConversationContext:
             role: Message role ("user" or "assistant")
             content: Message content
             config: Per-channel config override (uses instance default if None)
+            persist: Whether to persist to database (default True)
         """
         with self._lock:
             cfg = self._effective(config)
@@ -180,6 +214,9 @@ class ConversationContext:
             if len(conv.messages) > cfg.max_messages:
                 # Remove oldest messages, keeping most recent
                 conv.messages = conv.messages[-cfg.max_messages :]
+
+            if persist and self._db is not None:
+                self._db.save_conversation(nick, channel, conv.messages, conv.last_activity)
 
     def get_messages(
         self,
@@ -310,6 +347,8 @@ class ConversationContext:
             key = self._get_key(nick, channel)
             if key in self._conversations:
                 del self._conversations[key]
+                if self._db is not None:
+                    self._db.delete_conversation(nick, channel)
                 return True
             return False
 
@@ -323,6 +362,8 @@ class ConversationContext:
             count = len(self._conversations)
             self._conversations.clear()
             self._channel_contexts.clear()
+            if self._db is not None:
+                self._db.delete_all_conversations()
             return count
 
     def get_user_stats(
