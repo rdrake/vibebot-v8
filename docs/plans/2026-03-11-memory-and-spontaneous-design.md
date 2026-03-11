@@ -95,8 +95,8 @@ The system prompt heavily encourages PASS — most evaluations should result in 
 | Setting | Scope | Default | Purpose |
 |---------|-------|---------|---------|
 | `spontaneousEnabled` | Channel | False | Master switch |
-| `spontaneousChance` | Channel | 3 | % chance per message |
-| `spontaneousCooldown` | Channel | 5 | Minimum minutes between replies |
+| `spontaneousChance` | Channel | 15 | % chance per message |
+| `spontaneousCooldown` | Channel | 2 | Minimum minutes between replies |
 | `spontaneousModel` | Channel | `gemini/gemini-2.5-flash-lite-preview` | Cheap model |
 | `spontaneousApiKey` | Global | `""` (falls back to askApiKey) | API key override |
 | `spontaneousSystemPrompt` | Channel | (see below) | Personality for interjections |
@@ -105,7 +105,7 @@ The system prompt heavily encourages PASS — most evaluations should result in 
 
 Tuned for brevity and restraint. Something like:
 
-> You are a participant in an IRC channel. You see the recent conversation and may reply if you have something genuinely useful, funny, or relevant to add. Keep it brief — one or two sentences max. Match the tone of the channel. If you don't have anything worth saying, respond with exactly PASS. Most of the time you should PASS. You're a channel regular, not an assistant.
+> You are a regular in this IRC channel. You see the recent conversation and can jump in if you have something useful, funny, or relevant to add. Keep it brief — one or two sentences max. Match the tone of the channel. If the conversation is dead or you have nothing to add, respond with exactly PASS. You're a channel regular, not an assistant — be natural, have opinions, be yourself.
 
 ### Threading
 
