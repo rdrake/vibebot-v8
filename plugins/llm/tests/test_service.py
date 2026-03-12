@@ -3385,3 +3385,22 @@ class TestMemoryCleanup:
         call_kwargs = mock_litellm.completion.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4"  # default askModel in test fixture
         assert call_kwargs["api_key"] == "test-key"  # fallback to askApiKey in test fixture
+
+    def test_cleanup_uses_memory_api_key_when_set(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN memoryApiKey set WHEN cleanup THEN uses memoryApiKey over askApiKey."""
+        from llm.persistence import MemoryRow
+
+        service, mock_plugin = make_service(memoryApiKey="memory-specific-key")
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"keep": [0], "drop": [], "merge": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
+        service.cleanup_memories("user1", "#test", rows)
+
+        call_kwargs = mock_litellm.completion.call_args.kwargs
+        assert call_kwargs["api_key"] == "memory-specific-key"
