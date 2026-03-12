@@ -6,6 +6,7 @@ import collections
 import contextlib
 import logging
 import mimetypes
+import random
 import subprocess
 import threading
 import time
@@ -333,6 +334,9 @@ class LLM(callbacks.Plugin):
         self._reminders: dict[str, tuple[str, str, str]] = {}
         self._reminders_lock = threading.Lock()
 
+        # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
+        self._spontaneous_cooldowns: dict[str, float] = {}
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -653,6 +657,76 @@ class LLM(callbacks.Plugin):
             nick, channel, Role.USER, message_text, config=ctx_cfg, persist=False
         )
         self.context.add_channel_message(channel, nick, Role.USER, message_text, config=ctx_cfg)
+
+        # Spontaneous participation
+        if self.registryValue("spontaneousEnabled", channel):
+            cooldown_minutes = self.registryValue("spontaneousCooldown", channel)
+            last_spontaneous = self._spontaneous_cooldowns.get(channel, 0)
+            if time.time() - last_spontaneous >= cooldown_minutes * 60:
+                chance = self.registryValue("spontaneousChance", channel)
+                if random.randint(1, 100) <= chance:
+                    self._spontaneous_cooldowns[channel] = time.time()
+                    self._schedule_spontaneous(irc, channel)
+
+    def _schedule_spontaneous(self, irc: callbacks.Irc, channel: str) -> None:
+        """Schedule a spontaneous reply evaluation.
+
+        Queues a short-delayed event that reads channel history, asks the LLM
+        whether it wants to participate, and sends a message if the LLM does
+        not PASS.
+
+        Args:
+            irc: IRC connection object
+            channel: Channel to potentially respond in
+        """
+
+        def _evaluate() -> None:
+            try:
+                channel_msgs = self.context.get_channel_messages(channel)
+                if not channel_msgs:
+                    return
+
+                api_key = self.registryValue("spontaneousApiKey")
+                if not api_key:
+                    api_key = self.registryValue("askApiKey")
+                if not api_key:
+                    return
+
+                model = self.registryValue("spontaneousModel", channel)
+                system_prompt = self.registryValue("spontaneousSystemPrompt", channel)
+
+                prompt = "Respond to the conversation above, or say PASS."
+                result = self.llm_service.completion(
+                    prompt,
+                    command="ask",
+                    channel_history=channel_msgs,
+                    system_prompt=system_prompt,
+                    api_key=api_key,
+                    model_override=model,
+                )
+
+                if result.error or "PASS" in result.content.strip().upper():
+                    return
+
+                response = self.llm_service.sanitize_output(result.content)
+                irc.queueMsg(ircmsgs.privmsg(channel, response))
+
+                self.db.log_usage(
+                    irc.nick,
+                    channel,
+                    "spontaneous",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                    prompt="[spontaneous]",
+                    status="success",
+                )
+            except Exception:
+                log.exception("Spontaneous evaluation failed for %s", channel)
+
+        event_name = f"llm_spontaneous_{uuid.uuid4().hex[:8]}"
+        schedule.addEvent(_evaluate, time.time() + 0.5, name=event_name)
 
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Track channels the bot is joining for startup notification.

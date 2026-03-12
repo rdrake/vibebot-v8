@@ -1499,6 +1499,8 @@ class LLMService:
         msg: IrcMsg | None = None,
         system_prompt: str | None = None,
         memories: list[str] | None = None,
+        api_key: str | None = None,
+        model_override: str | None = None,
     ) -> CompletionResult:
         """Generate text completion with optional vision and conversation history.
 
@@ -1522,6 +1524,10 @@ class LLMService:
             memories: Optional list of remembered facts about the user.
                 When provided and non-empty, these are appended to the system
                 prompt so the LLM can personalize its responses.
+            api_key: Optional API key override. When provided, this is used
+                instead of the registry ``{command}ApiKey`` value.
+            model_override: Optional model override. When provided, this is used
+                instead of the registry ``{command}Model`` value.
 
         Returns:
             CompletionResult with content and grounding_used flag
@@ -1557,15 +1563,16 @@ class LLMService:
 
             # Get configuration (channel-specific for model/prompt, global for api key)
             channel = msg.args[0] if msg and msg.args else None
-            # Validate API key exists (don't store in local var to avoid logging in traces)
-            if not self.plugin.registryValue(f"{command}ApiKey"):
+            # Use override if provided, otherwise fall back to config
+            effective_api_key = api_key or self.plugin.registryValue(f"{command}ApiKey")
+            if not effective_api_key:
                 error_content = _("Error: API key not configured for %s command") % command
                 return CompletionResult(
                     content=error_content,
                     grounding_used=False,
                     error=error_content,
                 )
-            model = self.plugin.registryValue(f"{command}Model", channel)
+            model = model_override or self.plugin.registryValue(f"{command}Model", channel)
             if system_prompt is None:
                 base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
             else:
@@ -1608,7 +1615,7 @@ class LLMService:
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
-                api_key=self.plugin.registryValue(f"{command}ApiKey"),
+                api_key=effective_api_key,
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
             )
