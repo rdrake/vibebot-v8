@@ -225,7 +225,13 @@ class LLMService:
         if not text:
             return ""
         result = str(text)
-        for key_name in ("askApiKey", "codeApiKey", "drawApiKey", "animateApiKey"):
+        for key_name in (
+            "askApiKey",
+            "codeApiKey",
+            "drawApiKey",
+            "animateApiKey",
+            "spontaneousApiKey",
+        ):
             key = self.plugin.registryValue(key_name)
             if key and isinstance(key, str):
                 result = result.replace(key, "[REDACTED]")

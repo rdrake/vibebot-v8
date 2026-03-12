@@ -138,6 +138,13 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "memoryEnabled": True,
         "memoryExtractionModel": "gemini/gemini-2.0-flash-lite",
         "memoryMaxPerUser": 50,
+        # Spontaneous participation
+        "spontaneousEnabled": False,
+        "spontaneousChance": 15,
+        "spontaneousCooldown": 2,
+        "spontaneousModel": "gemini/gemini-2.0-flash-lite",
+        "spontaneousApiKey": "",
+        "spontaneousSystemPrompt": "You are a regular in this IRC channel.",
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,

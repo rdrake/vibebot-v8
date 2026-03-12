@@ -292,6 +292,55 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
+# Spontaneous Participation
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "spontaneousEnabled",
+    registry.Boolean(False, _("""Enable spontaneous channel participation.""")),
+)
+conf.registerChannelValue(
+    LLM,
+    "spontaneousChance",
+    registry.PositiveInteger(
+        15, _("""Percent chance (1-100) of evaluating a spontaneous reply per message.""")
+    ),
+)
+conf.registerChannelValue(
+    LLM,
+    "spontaneousCooldown",
+    registry.PositiveInteger(2, _("""Minimum minutes between spontaneous replies per channel.""")),
+)
+conf.registerChannelValue(
+    LLM,
+    "spontaneousModel",
+    ValidatedModelName(
+        "gemini/gemini-2.0-flash-lite",
+        _("""Model for spontaneous participation (cheap flash-tier recommended)."""),
+    ),
+)
+conf.registerGlobalValue(
+    LLM,
+    "spontaneousApiKey",
+    registry.String(
+        "", _("""API key for spontaneous model. Falls back to askApiKey if empty."""), private=True
+    ),
+)
+conf.registerChannelValue(
+    LLM,
+    "spontaneousSystemPrompt",
+    registry.String(
+        "You are a regular in this IRC channel. You see the recent conversation "
+        "and can jump in if you have something useful, funny, or relevant to add. "
+        "Keep it brief — one or two sentences max. Match the tone of the channel. "
+        "If the conversation is dead or you have nothing to add, respond with exactly PASS. "
+        "You're a channel regular, not an assistant — be natural, have opinions, be yourself.",
+        _("""System prompt for spontaneous channel participation."""),
+    ),
+)
+
+# ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================
 
