@@ -8,7 +8,14 @@ import time
 from pathlib import Path
 
 import pytest
-from llm.persistence import FlaggedUserRow, LLMDatabase, PendingTaskRow, ReminderRow, UsageRank
+from llm.persistence import (
+    FlaggedUserRow,
+    LLMDatabase,
+    MemoryRow,
+    PendingTaskRow,
+    ReminderRow,
+    UsageRank,
+)
 
 
 class TestDatabaseInit:
@@ -109,6 +116,59 @@ class TestDatabaseInit:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
             )
             assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_creates_memories_table(self, tmp_path: Path) -> None:
+        """GIVEN fresh database WHEN initialized THEN memories table exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            assert "memories" in tables
+        finally:
+            conn.close()
+
+    def test_memories_table_has_nick_index(self, tmp_path: Path) -> None:
+        """GIVEN fresh database WHEN initialized THEN idx_memories_nick exists."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            indexes = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+            assert "idx_memories_nick" in indexes
+        finally:
+            conn.close()
+
+    def test_memories_table_columns_match_namedtuple(self, tmp_path: Path) -> None:
+        """GIVEN fresh database WHEN row inserted THEN MemoryRow unpacks correctly."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        conn = db._connect()
+        try:
+            conn.execute(
+                "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
+                ("alice", "likes Python", "#dev", 1700000000.0),
+            )
+            conn.commit()
+            row = MemoryRow(
+                *conn.execute(
+                    "SELECT id, nick, fact, source_channel, created_at FROM memories"
+                ).fetchone()
+            )
+            assert row.nick == "alice"
+            assert row.fact == "likes Python"
+            assert row.source_channel == "#dev"
+            assert row.created_at == 1700000000.0
+            assert isinstance(row.id, int)
         finally:
             conn.close()
 
@@ -1238,14 +1298,14 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_4(self, tmp_path: Path) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 4."""
+    def test_schema_version_is_5(self, tmp_path: Path) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 5."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         conn = db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 4
+            assert row[0] == 5
         finally:
             conn.close()
 

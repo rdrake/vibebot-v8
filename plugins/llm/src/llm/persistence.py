@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -96,6 +96,16 @@ class FlaggedUserRow(NamedTuple):
     auto_flagged: int  # 1 = auto-flagged, 0 = manual
     resolved_at: float | None
     resolved_by: str | None
+
+
+class MemoryRow(NamedTuple):
+    """A long-term memory (fact) about a user."""
+
+    id: int
+    nick: str
+    fact: str
+    source_channel: str
+    created_at: float
 
 
 class LLMDatabase:
@@ -263,6 +273,20 @@ class LLMDatabase:
                         last_activity REAL NOT NULL,
                         PRIMARY KEY (nick, channel)
                     );
+                """)
+                conn.commit()
+
+            if current_version < 5:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS memories (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nick TEXT NOT NULL,
+                        fact TEXT NOT NULL,
+                        source_channel TEXT NOT NULL,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_memories_nick
+                        ON memories(nick);
                 """)
                 conn.commit()
 
