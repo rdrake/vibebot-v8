@@ -194,7 +194,6 @@ class TestSpontaneousEvaluate:
             cost=0.001,
             model="gemini/gemini-2.0-flash-lite",
         )
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         callback()
 
@@ -230,10 +229,10 @@ class TestSpontaneousEvaluate:
 
         mock_irc.queueMsg.assert_not_called()
 
-    def test_discards_pass_in_sentence(
+    def test_sends_pass_in_sentence(
         self, plugin_with_spontaneous: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN completion returns text containing PASS WHEN _evaluate runs THEN no message."""
+        """GIVEN completion returns text containing PASS WHEN _evaluate runs THEN message sent."""
         from llm.service import CompletionResult
 
         plugin, mock_irc, callback, _ = plugin_with_spontaneous
@@ -248,7 +247,7 @@ class TestSpontaneousEvaluate:
 
         callback()
 
-        mock_irc.queueMsg.assert_not_called()
+        mock_irc.queueMsg.assert_called_once()
 
     def test_uses_ask_api_key_as_fallback(self, mock_irc: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN spontaneousApiKey empty WHEN _evaluate runs THEN askApiKey used."""
@@ -282,7 +281,6 @@ class TestSpontaneousEvaluate:
             cost=0.001,
             model="gemini/gemini-2.0-flash-lite",
         )
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin._schedule_spontaneous(mock_irc, "#test")
         callback = mock_add_event.call_args[0][0]
@@ -325,7 +323,6 @@ class TestSpontaneousEvaluate:
             cost=0.001,
             model="gemini/gemini-2.0-flash-lite",
         )
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin._schedule_spontaneous(mock_irc, "#test")
         callback = mock_add_event.call_args[0][0]
@@ -412,7 +409,6 @@ class TestSpontaneousEvaluate:
             cost=0.001,
             model="gemini/gemini-2.0-flash-lite",
         )
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         callback()
 

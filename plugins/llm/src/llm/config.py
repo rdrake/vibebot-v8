@@ -298,7 +298,10 @@ conf.registerGlobalValue(
 conf.registerChannelValue(
     LLM,
     "spontaneousEnabled",
-    registry.Boolean(False, _("""Enable spontaneous channel participation.""")),
+    registry.Boolean(
+        False,
+        _("""Enable spontaneous channel participation. Requires contextTrackAllMessages."""),
+    ),
 )
 conf.registerChannelValue(
     LLM,

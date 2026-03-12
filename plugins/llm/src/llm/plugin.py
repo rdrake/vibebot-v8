@@ -709,11 +709,10 @@ class LLM(callbacks.Plugin):
                     model_override=model,
                 )
 
-                if result.error or "PASS" in result.content.strip().upper():
+                if result.error or result.content.strip().upper() == "PASS":
                     return
 
-                response = self.llm_service.sanitize_output(result.content)
-                irc.queueMsg(ircmsgs.privmsg(channel, response))
+                irc.queueMsg(ircmsgs.privmsg(channel, result.content))
 
                 self.db.log_usage(
                     irc.nick,
