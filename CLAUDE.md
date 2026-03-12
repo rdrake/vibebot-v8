@@ -185,10 +185,17 @@ class ValidationResult(NamedTuple):
 | Command | Description |
 |---------|-------------|
 | `%ask <question>` | Ask with context & vision support |
+| `%picard [topic]` | Captain Picard facts, optionally steered by topic |
 | `%code <request>` | Generate code |
 | `%draw <prompt>` | Generate image |
+| `%animate <prompt>` / `%video` | Generate short video (requires NickServ) |
+| `%memories [delete <id> \| clear]` | View or manage stored long-term memories |
+| `%usage [nick or #channel]` | Show API usage statistics |
 | `%forget [channel]` | Clear conversation context |
 | `%llmkeys` | Check API key status (admin, PM only) |
+| `%flag <nick> <reason>` | Suspend account from bot commands (admin) |
+| `%unflag <nick>` | Remove account suspension (admin) |
+| `%flagged` | List suspended accounts (admin) |
 
 ## Testing Guidelines
 

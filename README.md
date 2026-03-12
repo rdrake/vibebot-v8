@@ -9,7 +9,9 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Vision support**: Automatically detects image URLs in prompts
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen
-- **Abuse controls**: Capability checks, NickServ gating, manual moderation, optional draw/animate limiter
+- **Long-term memory**: Automatically extracts and remembers facts about users across conversations
+- **Spontaneous participation**: Optionally joins channel conversations based on probability and cooldown (disabled by default)
+- **Abuse controls**: Capability checks, NickServ gating, manual moderation, tiered rate limiting
 - **Modern Python**: Python 3.12+ with full type hints
 - **Quality tools**: Ruff for linting/formatting, ty for type checking
 
@@ -91,9 +93,12 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | Command | Description |
 |---------|-------------|
 | `%ask <question>` | Ask AI a question (supports vision with image URLs, remembers context) |
+| `%picard [topic]` | Share a random Captain Picard fact, optionally steered by topic |
 | `%code <request>` | Generate code (remembers context for iterating on code) |
 | `%draw <prompt>` | Generate an image (no context) |
 | `%animate <prompt>` / `%video <prompt>` | Generate a short video (requires NickServ account) |
+| `%memories [delete <id> \| clear]` | View or manage your stored long-term memories |
+| `%usage [nick or #channel]` | Show API usage statistics |
 | `%forget [channel]` | Clear your conversation context |
 
 ### Admin Commands
@@ -132,6 +137,26 @@ supybot.plugins.LLM.contextTimeoutMinutes: 30
 
 Context is per-user per-channel. Cleared after 30 minutes of inactivity or when max messages exceeded.
 
+### Long-term Memory
+
+```
+supybot.plugins.LLM.memoryEnabled: True
+supybot.plugins.LLM.memoryExtractionModel: gemini/gemini-2.0-flash-lite
+supybot.plugins.LLM.memoryMaxPerUser: 50
+```
+
+Facts are automatically extracted from `%ask`, `%picard`, and `%code` conversations. Users manage memories with `%memories`.
+
+### Spontaneous Participation
+
+```
+supybot.plugins.LLM.spontaneousEnabled: False
+supybot.plugins.LLM.spontaneousChance: 15
+supybot.plugins.LLM.spontaneousCooldown: 2
+```
+
+When enabled, the bot has a configurable chance (%) to join channel conversations. Cooldown is in minutes between spontaneous replies per channel. Disabled by default.
+
 ### Abuse Controls
 
 The plugin layers several protections:
@@ -139,23 +164,36 @@ The plugin layers several protections:
 - Capability checks on command wrappers
 - NickServ account requirement for expensive commands (`draw`, `animate`)
 - Manual moderation via `%flag`, `%unflag`, `%flagged` (no automatic flagging side effects)
-- Optional per-account rate limiter for `draw`/`animate`
+- Tiered per-account rate limiting (registered, trusted, unregistered) for all commands
 
 Protection matrix:
 
 | Command | Capability | NickServ Required | Rate Limited |
 |---------|------------|-------------------|--------------|
-| `%ask` | `llm.ask` | No | No |
-| `%code` | `llm.code` | No | No |
+| `%ask` | `llm.ask` | No | Yes (optional) |
+| `%picard` | `llm.ask` | No | Yes (optional) |
+| `%code` | `llm.code` | No | Yes (optional) |
 | `%draw` | `llm.draw` | Yes | Yes (optional) |
 | `%animate` / `%video` | `llm.animate` | Yes | Yes (optional) |
 
-Rate-limit config (global):
+Rate-limit config (per-command, per-tier):
 
 ```
-supybot.plugins.LLM.enforceRateLimits: False
+supybot.plugins.LLM.enforceRateLimits: True
+# ask (count/window per tier)
+supybot.plugins.LLM.askRateLimitCount: 15
+supybot.plugins.LLM.askRateLimitWindow: 60
+supybot.plugins.LLM.askTrustedRateLimitCount: 15
+supybot.plugins.LLM.askUnregRateLimitCount: 15
+# code
+supybot.plugins.LLM.codeRateLimitCount: 10
+supybot.plugins.LLM.codeRateLimitWindow: 60
+supybot.plugins.LLM.codeTrustedRateLimitCount: 0   # unlimited
+supybot.plugins.LLM.codeUnregRateLimitCount: 2
+# draw
 supybot.plugins.LLM.drawRateLimitCount: 3
 supybot.plugins.LLM.drawRateLimitWindow: 60
+# animate
 supybot.plugins.LLM.animateRateLimitCount: 2
 supybot.plugins.LLM.animateRateLimitWindow: 600
 ```

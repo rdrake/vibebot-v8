@@ -131,6 +131,12 @@ a { color: #66d9ef; }
 <span class="example">%ask Describe this: https://example.com/image.jpg</span>
 <span class="example">%ask And what about Germany?</span>  <span class="example">(follow-up using context)</span></code></pre>
 
+<h3><code class="command">%picard</code> <span class="param">[topic]</span></h3>
+<p>Share a random Captain Picard fact. Optionally provide a topic to steer the fact.</p>
+<pre><code><span class="example">%picard</span>
+<span class="example">%picard the Borg</span>
+<span class="example">%picard Earl Grey tea</span></code></pre>
+
 <h3><code class="command">%code</code> <span class="param">&lt;request&gt;</span></h3>
 <p>Generate code based on your request. Code is saved to an HTTP link with syntax highlighting.</p>
 <pre><code><span class="example">%code Python function to calculate fibonacci numbers</span>
@@ -152,11 +158,29 @@ a { color: #66d9ef; }
 <pre><code><span class="example">%forget</span>
 <span class="example">%forget #channel</span></code></pre>
 
+<h3><code class="command">%memories</code> <span class="param">[delete &lt;id&gt; | clear]</span></h3>
+<p>View or manage your stored long-term memories. Use <code>delete &lt;id&gt;</code> to remove a specific memory, or <code>clear</code> to remove all.</p>
+<pre><code><span class="example">%memories</span>
+<span class="example">%memories delete 3</span>
+<span class="example">%memories clear</span></code></pre>
+
+<h3><code class="command">%usage</code> <span class="param">[nick or #channel]</span></h3>
+<p>Show API usage statistics. No argument shows your stats and channel stats.</p>
+<pre><code><span class="example">%usage</span>
+<span class="example">%usage someone</span>
+<span class="example">%usage #channel</span></code></pre>
+
+<h3><code class="command">%llmkeys</code></h3>
+<p>Check API key configuration status (admin only, response sent privately).</p>
+<pre><code><span class="example">%llmkeys</span></code></pre>
+
 <h2>Features</h2>
 <ul>
 <li><strong>Conversation Context</strong> &ndash; The bot remembers recent exchanges for natural follow-up questions</li>
+<li><strong>Long-term Memory</strong> &ndash; The bot remembers facts about you across conversations</li>
 <li><strong>Vision Support</strong> &ndash; Include image URLs in <code>%ask</code> for image analysis</li>
 <li><strong>Syntax Highlighting</strong> &ndash; Generated code is displayed with full highlighting</li>
+<li><strong>Spontaneous Participation</strong> &ndash; The bot may occasionally join channel conversations (when enabled)</li>
 <li><strong>Multi-Provider</strong> &ndash; Supports various AI providers via LiteLLM</li>
 </ul>
 
