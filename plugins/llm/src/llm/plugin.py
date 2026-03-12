@@ -732,7 +732,12 @@ class LLM(callbacks.Plugin):
                 if result.error or result.content.strip().upper() == "PASS":
                     return
 
-                irc.queueMsg(ircmsgs.privmsg(channel, result.content))
+                response = result.content
+                is_action = response.startswith("/me ") and len(response) > 4
+                if is_action:
+                    irc.queueMsg(ircmsgs.action(channel, response[4:]))
+                else:
+                    irc.queueMsg(ircmsgs.privmsg(channel, response))
 
                 self.db.log_usage(
                     irc.nick,
