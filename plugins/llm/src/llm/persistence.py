@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -266,6 +266,15 @@ class LLMDatabase:
                     );
                     CREATE INDEX IF NOT EXISTS idx_memories_nick
                         ON memories(nick);
+                """)
+                conn.commit()
+
+            if current_version < 6:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS memory_cleanup_state (
+                        nick TEXT PRIMARY KEY,
+                        saves_since_cleanup INTEGER NOT NULL DEFAULT 0
+                    );
                 """)
                 conn.commit()
 
@@ -1319,5 +1328,66 @@ class LLMDatabase:
             )
             conn.commit()
             return cursor.rowcount
+        finally:
+            pass
+
+    def increment_memory_saves(self, nick: str) -> int:
+        """Increment the memory-saves-since-cleanup counter for a user.
+
+        Args:
+            nick: IRC nick (stored lowercased).
+
+        Returns:
+            The new counter value after incrementing.
+        """
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO memory_cleanup_state (nick, saves_since_cleanup) "
+                "VALUES (?, 1) "
+                "ON CONFLICT(nick) DO UPDATE SET saves_since_cleanup = saves_since_cleanup + 1",
+                (nick.lower(),),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
+                (nick.lower(),),
+            ).fetchone()
+            return row[0] if row else 0
+        finally:
+            pass
+
+    def reset_memory_saves(self, nick: str) -> None:
+        """Reset the memory-saves-since-cleanup counter for a user.
+
+        Args:
+            nick: IRC nick (stored lowercased).
+        """
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_cleanup_state SET saves_since_cleanup = 0 WHERE nick = ?",
+                (nick.lower(),),
+            )
+            conn.commit()
+        finally:
+            pass
+
+    def get_memory_saves(self, nick: str) -> int:
+        """Get the current memory-saves-since-cleanup count for a user.
+
+        Args:
+            nick: IRC nick (matched case-insensitively).
+
+        Returns:
+            Current counter value, or 0 if no record exists.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
+                (nick.lower(),),
+            ).fetchone()
+            return row[0] if row else 0
         finally:
             pass

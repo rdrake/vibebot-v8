@@ -1275,14 +1275,14 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_5(self, tmp_path: Path) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 5."""
+    def test_schema_version_is_6(self, tmp_path: Path) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 6."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         conn = db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 5
+            assert row[0] == 6
         finally:
             conn.close()
 
@@ -1599,3 +1599,37 @@ class TestMemoryPersistence:
         count = db.delete_all_memories("user1")
         assert count == 3
         assert db.get_memories("user1") == []
+
+
+class TestMemoryCleanupState:
+    """Test memory cleanup counter methods."""
+
+    def test_increment_memory_saves(self, tmp_path: Path) -> None:
+        """GIVEN no prior saves WHEN increment THEN returns 1."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.increment_memory_saves("user1") == 1
+
+    def test_increment_memory_saves_accumulates(self, tmp_path: Path) -> None:
+        """GIVEN two increments WHEN get THEN returns 2."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.increment_memory_saves("user1")
+        assert db.increment_memory_saves("user1") == 2
+
+    def test_increment_memory_saves_case_insensitive(self, tmp_path: Path) -> None:
+        """GIVEN mixed case nick WHEN increment THEN stored lowercased."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.increment_memory_saves("Alice")
+        assert db.increment_memory_saves("alice") == 2
+
+    def test_reset_memory_saves(self, tmp_path: Path) -> None:
+        """GIVEN incremented counter WHEN reset THEN returns to 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.increment_memory_saves("user1")
+        db.increment_memory_saves("user1")
+        db.reset_memory_saves("user1")
+        assert db.increment_memory_saves("user1") == 1
+
+    def test_get_memory_saves_default_zero(self, tmp_path: Path) -> None:
+        """GIVEN no prior saves WHEN get THEN returns 0."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.get_memory_saves("user1") == 0
