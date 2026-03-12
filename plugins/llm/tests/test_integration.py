@@ -495,3 +495,146 @@ class TestMemoryIntegration:
         # No memory extraction events should be scheduled
         memory_calls = [c for c in mock_add_event.call_args_list if "llm_memory_" in str(c)]
         assert len(memory_calls) == 0
+
+
+class TestMemoriesCommand:
+    """Test the %memories command for viewing and managing stored memories."""
+
+    @pytest.fixture
+    def plugin_with_real_db(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> tuple:
+        """Create plugin with real database for memories command testing."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": True})
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+
+        # Set up user identity: nick resolves to account "testuser"
+        mock_irc.state.nickToAccount.return_value = "testuser"
+
+        return plugin, mock_irc
+
+    @staticmethod
+    def _make_msg(mocker: MockerFixture) -> MagicMock:
+        """Create a mock IRC message from testuser."""
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "testuser!user@host"
+        mock_msg.args = ("#test", "memories")
+        mock_msg.channel = "#test"
+        mock_msg.nick = "testuser"
+        mock_msg.time = time.time() + 100
+        return mock_msg
+
+    def test_memories_list_shows_facts(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN saved memories WHEN memories called with no args THEN reply contains facts."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("testuser", "Likes Python", "#test")
+        plugin.db.save_memory("testuser", "Lives in Canada", "#test")
+
+        plugin.memories(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "Likes Python" in reply_text
+        assert "Lives in Canada" in reply_text
+
+    def test_memories_list_empty(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN no saved memories WHEN memories called THEN reply says no memories."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "don't have any memories" in reply_text
+
+    def test_memories_delete_removes_fact(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN saved memory WHEN memories delete <id> THEN memory is removed."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        memory_id = plugin.db.save_memory("testuser", "Likes Python", "#test")
+
+        plugin.memories(mock_irc, mock_msg, [f"delete {memory_id}"])
+
+        mock_irc.reply.assert_called_once()
+        assert "deleted" in mock_irc.reply.call_args[0][0].lower()
+
+        # Verify it's actually gone
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 0
+
+    def test_memories_delete_invalid_id(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN invalid id WHEN memories delete abc THEN error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["delete abc"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+
+    def test_memories_delete_nonexistent_id(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN nonexistent id WHEN memories delete 999 THEN error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["delete 999"])
+
+        mock_irc.error.assert_called_once()
+        assert "not found" in mock_irc.error.call_args[0][0].lower()
+
+    def test_memories_clear_deletes_all(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN saved memories WHEN memories clear THEN all deleted and count shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("testuser", "Likes Python", "#test")
+        plugin.db.save_memory("testuser", "Lives in Canada", "#test")
+        plugin.db.save_memory("testuser", "Uses Vim", "#test")
+
+        plugin.memories(mock_irc, mock_msg, ["clear"])
+
+        mock_irc.reply.assert_called_once()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "3" in reply_text
+        assert "Cleared" in reply_text
+
+        # Verify all gone
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 0
+
+    def test_memories_invalid_subcommand(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN invalid subcommand WHEN memories foo THEN usage error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["foo"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]

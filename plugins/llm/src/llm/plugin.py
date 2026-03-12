@@ -1897,6 +1897,53 @@ class LLM(callbacks.Plugin):
 
     forget = wrap(forget, [optional("channel")])
 
+    def memories(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None,
+    ) -> None:
+        """[delete <id> | clear]
+
+        View or manage your stored memories. Use 'delete <id>' to remove
+        a specific memory, or 'clear' to remove all.
+        """
+        nick = self._get_identity(irc, msg)
+
+        if not text:
+            # List memories
+            rows = self.db.get_memories(nick)
+            if not rows:
+                irc.reply("I don't have any memories about you.", prefixNick=False)
+                return
+            lines = [f"[{r.id}] {r.fact}" for r in rows]
+            irc.reply(" | ".join(lines), prefixNick=False)
+            return
+
+        parts = text.split(None, 1)
+        subcommand = parts[0].lower()
+
+        if subcommand == "clear":
+            count = self.db.delete_all_memories(nick)
+            irc.reply(f"Cleared {count} memories.", prefixNick=False)
+
+        elif subcommand == "delete" and len(parts) == 2:
+            try:
+                memory_id = int(parts[1])
+            except ValueError:
+                irc.error("Usage: memories delete <id>")
+                return
+            if self.db.delete_memory(nick, memory_id):
+                irc.reply("Memory deleted.", prefixNick=False)
+            else:
+                irc.error("Memory not found or doesn't belong to you.")
+
+        else:
+            irc.error("Usage: memories [delete <id> | clear]")
+
+    memories = wrap(memories, [optional("text")])
+
     def llmkeys(
         self,
         irc: callbacks.Irc,
