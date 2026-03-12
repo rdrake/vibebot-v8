@@ -3343,6 +3343,26 @@ class TestMemoryCleanup:
         result = service.cleanup_memories("user1", "#test", rows)
         assert result.error is not None
 
+    def test_cleanup_rejects_zero_surviving_memories(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN all memories dropped WHEN cleanup THEN returns error."""
+        from llm.persistence import MemoryRow
+
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"keep": [], "drop": [0, 1], "merge": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        rows = [
+            MemoryRow(10, "user1", "fact a", "#test", 100.0),
+            MemoryRow(11, "user1", "fact b", "#test", 200.0),
+        ]
+        result = service.cleanup_memories("user1", "#test", rows)
+        assert result.error is not None
+
     def test_cleanup_prompt_includes_indexed_memories(
         self, make_service, mocker: MockerFixture
     ) -> None:

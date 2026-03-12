@@ -275,8 +275,8 @@ conf.registerGlobalValue(
     "memoryCleanupInterval",
     registry.NonNegativeInteger(
         3,
-        _("""Number of new memory saves between automatic cleanup passes.
-        Set to 0 to disable periodic cleanup."""),
+        _("""Number of memory extraction passes (that save at least one fact)
+        between automatic cleanup runs. Set to 0 to disable periodic cleanup."""),
     ),
 )
 

@@ -1501,7 +1501,10 @@ class LLM(callbacks.Plugin):
             return
 
         def _cleanup_bg() -> None:
-            self._run_memory_cleanup(nick, channel)
+            try:
+                self._run_memory_cleanup(nick, channel)
+            finally:
+                self._cleanup_events.discard(event_name)
 
         event_name = f"llm_cleanup_{uuid.uuid4().hex[:8]}"
         self._cleanup_events.add(event_name)

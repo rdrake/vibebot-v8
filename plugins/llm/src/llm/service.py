@@ -2688,4 +2688,9 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         if len(all_indices) != len(set(all_indices)):
             return CleanupResult(error="Duplicate index across keep/drop/merge")
 
+        # Ensure at least one memory survives (keeps + merges)
+        surviving = len(keep) + len(validated_merge)
+        if surviving == 0 and num_memories > 0:
+            return CleanupResult(error="Cleanup would leave user with zero memories")
+
         return CleanupResult(keep=keep, drop=drop, merge=validated_merge)
