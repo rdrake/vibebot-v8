@@ -270,6 +270,16 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "memoryCleanupInterval",
+    registry.NonNegativeInteger(
+        3,
+        _("""Number of new memory saves between automatic cleanup passes.
+        Set to 0 to disable periodic cleanup."""),
+    ),
+)
+
 # ============================================================================
 # Spontaneous Participation
 # ============================================================================
