@@ -670,3 +670,155 @@ class TestMemoriesCommand:
 
         mock_irc.error.assert_called_once()
         assert "Usage" in mock_irc.error.call_args[0][0]
+
+
+class TestMemoryCleanup:
+    """Test background memory cleanup trigger and application."""
+
+    @pytest.fixture
+    def plugin_with_real_db(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> tuple:
+        """Create plugin with real database for cleanup testing."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect(
+            {
+                "databasePath": db_path,
+                "memoryEnabled": True,
+                "memoryCleanupInterval": 3,
+            }
+        )
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+
+        mock_irc.state.nickToAccount.return_value = "testuser"
+
+        return plugin, mock_irc
+
+    def test_cleanup_applies_drop(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN cleanup returns drop WHEN applied THEN memories are deleted."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "useful fact", "#test")
+        plugin.db.save_memory("testuser", "stale fact", "#test")
+
+        # Memories are newest-first: [0]="stale fact", [1]="useful fact"
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(keep=[1], drop=[0], merge=[])
+        )
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 1
+        assert rows[0].fact == "useful fact"
+
+    def test_cleanup_applies_merge(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN cleanup returns merge WHEN applied THEN memories are merged."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "likes Python programming", "#test")
+        plugin.db.save_memory("testuser", "enjoys writing Python", "#test")
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(keep=[], drop=[], merge=[[0, 1, "likes Python programming"]])
+        )
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 1
+        assert rows[0].fact == "likes Python programming"
+
+    def test_cleanup_aborts_on_error(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN cleanup returns error WHEN applied THEN no DB changes."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(error="LLM returned garbage")
+        )
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 2
+
+    def test_cleanup_aborts_on_snapshot_mismatch(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN memory count changes during cleanup WHEN applying THEN abort."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+
+        def cleanup_with_side_effect(*args, **kwargs):
+            plugin.db.save_memory("testuser", "new fact during cleanup", "#test")
+            return CleanupResult(keep=[0], drop=[1], merge=[])
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(side_effect=cleanup_with_side_effect)
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 3
+
+    def test_cleanup_skips_if_already_in_flight(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN nick already being cleaned WHEN scheduled THEN skip."""
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin._cleanup_in_flight.add("testuser")
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 2
+
+    def test_cleanup_resets_counter_on_success(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN successful cleanup WHEN done THEN saves counter is reset."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+        plugin.db.increment_memory_saves("testuser")
+        plugin.db.increment_memory_saves("testuser")
+        plugin.db.increment_memory_saves("testuser")
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(keep=[0, 1], drop=[], merge=[])
+        )
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        assert plugin.db.get_memory_saves("testuser") == 0

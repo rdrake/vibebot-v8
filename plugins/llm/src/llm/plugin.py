@@ -354,6 +354,9 @@ class LLM(callbacks.Plugin):
         # Pending spontaneous schedule events (cancelled on unload)
         self._spontaneous_events: set[str] = set()
 
+        # Nicks currently undergoing background memory cleanup (de-dup guard)
+        self._cleanup_in_flight: set[str] = set()
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -1482,6 +1485,63 @@ class LLM(callbacks.Plugin):
         rows = self.db.get_memories(nick)
         return [row.fact for row in rows]
 
+    def _schedule_memory_cleanup(self, nick: str, channel: str) -> None:
+        """Schedule a background memory cleanup for a user."""
+        if nick in self._cleanup_in_flight:
+            return
+
+        def _cleanup_bg() -> None:
+            self._run_memory_cleanup(nick, channel)
+
+        event_name = f"llm_cleanup_{uuid.uuid4().hex[:8]}"
+        schedule.addEvent(_cleanup_bg, time.time() + 0.5, name=event_name)
+
+    def _run_memory_cleanup(self, nick: str, channel: str) -> None:
+        """Run memory cleanup for a user. Called from scheduled event."""
+        if nick in self._cleanup_in_flight:
+            return
+
+        self._cleanup_in_flight.add(nick)
+        try:
+            snapshot = self.db.get_memories(nick)
+            if len(snapshot) < 2:
+                return
+
+            result = self.llm_service.cleanup_memories(nick, channel, snapshot)
+
+            if result.error:
+                log.warning("Memory cleanup failed for %s: %s", nick, result.error)
+                return
+
+            # Abort if memory count changed during LLM call (race protection)
+            current = self.db.get_memories(nick)
+            if len(current) != len(snapshot):
+                log.info("Memory cleanup aborted for %s: count changed", nick)
+                return
+
+            # Apply drops
+            for idx in result.drop:
+                if 0 <= idx < len(snapshot):
+                    self.db.delete_memory(nick, snapshot[idx].id)
+
+            # Apply merges: delete sources, insert merged fact
+            for entry in result.merge:
+                idx_a, idx_b, merged_text = entry
+                if 0 <= idx_a < len(snapshot) and 0 <= idx_b < len(snapshot):
+                    source_a = snapshot[idx_a]
+                    source_b = snapshot[idx_b]
+                    oldest = source_a if source_a.created_at <= source_b.created_at else source_b
+                    self.db.delete_memory(nick, source_a.id)
+                    self.db.delete_memory(nick, source_b.id)
+                    self.db.save_memory(nick, merged_text, oldest.source_channel)
+
+            # Success — reset counter
+            self.db.reset_memory_saves(nick)
+        except Exception:
+            log.exception("Memory cleanup error for %s", nick)
+        finally:
+            self._cleanup_in_flight.discard(nick)
+
     def _store_context_and_log_usage(
         self,
         nick: str,
@@ -1562,10 +1622,20 @@ class LLM(callbacks.Plugin):
                                 if 0 <= idx < len(existing_rows):
                                     self.db.delete_memory(nick, existing_rows[idx].id)
                             # Add new facts
+                            saved_count = 0
                             for fact in extraction.add:
                                 if len(self.db.get_memories(nick)) >= max_memories:
                                     break
                                 self.db.save_memory(nick, fact, channel)
+                                saved_count += 1
+
+                            # Trigger cleanup if enough new saves accumulated
+                            if saved_count > 0:
+                                interval = self.registryValue("memoryCleanupInterval")
+                                if interval:
+                                    new_count = self.db.increment_memory_saves(nick)
+                                    if new_count >= interval:
+                                        self._schedule_memory_cleanup(nick, channel)
                         except Exception:
                             log.exception("Memory extraction failed for %s", nick)
 
