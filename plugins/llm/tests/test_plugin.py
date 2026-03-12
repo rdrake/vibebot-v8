@@ -601,6 +601,7 @@ class TestDoPrivmsg:
         plugin.registryValue = mocker.MagicMock(return_value=True)
         plugin.context = mocker.MagicMock()
         plugin._spontaneous_cooldowns = {}
+        plugin._spontaneous_events = set()
 
         return plugin, mock_irc, mock_msg
 

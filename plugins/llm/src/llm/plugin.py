@@ -337,6 +337,9 @@ class LLM(callbacks.Plugin):
         # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
         self._spontaneous_cooldowns: dict[str, float] = {}
 
+        # Pending spontaneous schedule events (cancelled on unload)
+        self._spontaneous_events: set[str] = set()
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -418,7 +421,12 @@ class LLM(callbacks.Plugin):
                         schedule.removeEvent(event_name)
                 self._reminders.clear()
 
-        # Clear spontaneous participation cooldown state
+        # Cancel pending spontaneous events and clear cooldowns
+        if hasattr(self, "_spontaneous_events"):
+            for event_name in list(self._spontaneous_events):
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent(event_name)
+            self._spontaneous_events.clear()
         if hasattr(self, "_spontaneous_cooldowns"):
             self._spontaneous_cooldowns.clear()
 
@@ -727,8 +735,11 @@ class LLM(callbacks.Plugin):
                 )
             except Exception:
                 log.exception("Spontaneous evaluation failed for %s", channel)
+            finally:
+                self._spontaneous_events.discard(event_name)
 
         event_name = f"llm_spontaneous_{uuid.uuid4().hex[:8]}"
+        self._spontaneous_events.add(event_name)
         schedule.addEvent(_evaluate, time.time() + 0.5, name=event_name)
 
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
