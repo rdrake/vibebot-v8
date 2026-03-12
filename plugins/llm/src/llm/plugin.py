@@ -357,6 +357,9 @@ class LLM(callbacks.Plugin):
         # Nicks currently undergoing background memory cleanup (de-dup guard)
         self._cleanup_in_flight: set[str] = set()
 
+        # Pending memory cleanup schedule events (cancelled on unload)
+        self._cleanup_events: set[str] = set()
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -437,6 +440,13 @@ class LLM(callbacks.Plugin):
                     with contextlib.suppress(KeyError):
                         schedule.removeEvent(event_name)
                 self._reminders.clear()
+
+        # Cancel pending memory cleanup events
+        if hasattr(self, "_cleanup_events"):
+            for event_name in list(self._cleanup_events):
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent(event_name)
+            self._cleanup_events.clear()
 
         # Cancel pending spontaneous events and clear cooldowns
         if hasattr(self, "_spontaneous_events"):
@@ -1494,6 +1504,7 @@ class LLM(callbacks.Plugin):
             self._run_memory_cleanup(nick, channel)
 
         event_name = f"llm_cleanup_{uuid.uuid4().hex[:8]}"
+        self._cleanup_events.add(event_name)
         schedule.addEvent(_cleanup_bg, time.time() + 0.5, name=event_name)
 
     def _run_memory_cleanup(self, nick: str, channel: str) -> None:

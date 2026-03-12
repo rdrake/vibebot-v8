@@ -822,3 +822,35 @@ class TestMemoryCleanup:
         plugin._run_memory_cleanup("testuser", "#test")
 
         assert plugin.db.get_memory_saves("testuser") == 0
+
+    def test_cleanup_disabled_when_interval_zero(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """GIVEN memoryCleanupInterval=0 WHEN saves happen THEN no cleanup scheduled."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect(
+            {
+                "databasePath": db_path,
+                "memoryEnabled": True,
+                "memoryCleanupInterval": 0,
+            }
+        )
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+
+        # Simulate saving 5 memories — no cleanup should trigger
+        for i in range(5):
+            plugin.db.save_memory("testuser", f"fact {i}", "#test")
+            plugin.db.increment_memory_saves("testuser")
+
+        cleanup_calls = [c for c in mock_add_event.call_args_list if "llm_cleanup_" in str(c)]
+        assert len(cleanup_calls) == 0
