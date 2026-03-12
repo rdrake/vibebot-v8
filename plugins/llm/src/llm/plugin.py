@@ -672,15 +672,20 @@ class LLM(callbacks.Plugin):
         if ircutils.strEqual(irc.nick, msg.nick):
             return
 
-        nick = self._get_identity(irc, msg)
+        display_nick = msg.nick
+        identity = self._get_identity(irc, msg)
         message_text = msg.args[1] if len(msg.args) > 1 else ""
 
         # Store in conversation context for richer follow-up questions
+        # Use display nick for channel context (what the LLM sees) so it
+        # addresses people by their visible IRC name, not their account name.
         ctx_cfg = self._get_context_config(channel)
         self.context.add_message(
-            nick, channel, Role.USER, message_text, config=ctx_cfg, persist=False
+            identity, channel, Role.USER, message_text, config=ctx_cfg, persist=False
         )
-        self.context.add_channel_message(channel, nick, Role.USER, message_text, config=ctx_cfg)
+        self.context.add_channel_message(
+            channel, display_nick, Role.USER, message_text, config=ctx_cfg
+        )
 
         # Spontaneous participation
         if self.registryValue("spontaneousEnabled", channel):
