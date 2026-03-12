@@ -260,6 +260,15 @@ conf.registerGlobalValue(
     "memoryMaxPerUser",
     registry.PositiveInteger(50, _("""Maximum number of memories stored per user.""")),
 )
+conf.registerGlobalValue(
+    LLM,
+    "memoryApiKey",
+    registry.String(
+        "",
+        _("""API key for memory extraction model. Falls back to askApiKey if empty."""),
+        private=True,
+    ),
+)
 
 # ============================================================================
 # Spontaneous Participation

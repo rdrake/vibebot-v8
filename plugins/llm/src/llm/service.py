@@ -214,6 +214,7 @@ class LLMService:
             "askApiKey",
             "codeApiKey",
             "drawApiKey",
+            "memoryApiKey",
             "spontaneousApiKey",
         ):
             key = self.plugin.registryValue(key_name)
@@ -2529,7 +2530,9 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         try:
             model = self.plugin.registryValue("memoryExtractionModel", channel)
-            api_key = self.plugin.registryValue("askApiKey")
+            api_key = self.plugin.registryValue("memoryApiKey")
+            if not api_key:
+                api_key = self.plugin.registryValue("askApiKey")
             response = litellm.completion(
                 model=model,
                 messages=messages,
