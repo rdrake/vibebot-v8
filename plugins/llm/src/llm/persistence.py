@@ -1342,17 +1342,15 @@ class LLMDatabase:
         """
         conn = self._connect()
         try:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO memory_cleanup_state (nick, saves_since_cleanup) "
                 "VALUES (?, 1) "
-                "ON CONFLICT(nick) DO UPDATE SET saves_since_cleanup = saves_since_cleanup + 1",
+                "ON CONFLICT(nick) DO UPDATE SET saves_since_cleanup = saves_since_cleanup + 1 "
+                "RETURNING saves_since_cleanup",
                 (nick.lower(),),
             )
+            row = cursor.fetchone()
             conn.commit()
-            row = conn.execute(
-                "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
-                (nick.lower(),),
-            ).fetchone()
             return row[0] if row else 0
         finally:
             pass
