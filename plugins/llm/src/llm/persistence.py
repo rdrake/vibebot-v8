@@ -1346,3 +1346,92 @@ class LLMDatabase:
             return [FlaggedUserRow(*row) for row in rows]
         finally:
             pass
+
+    # ------------------------------------------------------------------
+    # Memory operations
+    # ------------------------------------------------------------------
+
+    def save_memory(self, nick: str, fact: str, source_channel: str) -> int:
+        """Save a memory fact for a user.
+
+        Args:
+            nick: IRC nick (stored lowercased).
+            fact: The fact to remember about the user.
+            source_channel: Channel where the fact was learned.
+
+        Returns:
+            The row ID of the inserted memory.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
+                (nick.lower(), fact, source_channel.lower(), time.time()),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+        finally:
+            pass
+
+    def get_memories(self, nick: str) -> list[MemoryRow]:
+        """Get all memories for a user, ordered by creation time.
+
+        Args:
+            nick: IRC nick (matched case-insensitively).
+
+        Returns:
+            List of MemoryRow ordered by created_at ascending.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, nick, fact, source_channel, created_at FROM memories "
+                "WHERE nick = ? ORDER BY created_at",
+                (nick.lower(),),
+            ).fetchall()
+            return [MemoryRow(*row) for row in rows]
+        finally:
+            pass
+
+    def delete_memory(self, nick: str, memory_id: int) -> bool:
+        """Delete a specific memory by ID and nick.
+
+        The nick check prevents users from deleting other users' memories.
+
+        Args:
+            nick: IRC nick (must match the memory's owner).
+            memory_id: Row ID of the memory to delete.
+
+        Returns:
+            True if a memory was deleted, False if not found or wrong owner.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM memories WHERE id = ? AND nick = ?",
+                (memory_id, nick.lower()),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            pass
+
+    def delete_all_memories(self, nick: str) -> int:
+        """Delete all memories for a user.
+
+        Args:
+            nick: IRC nick whose memories should be deleted.
+
+        Returns:
+            Number of memories deleted.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM memories WHERE nick = ?",
+                (nick.lower(),),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            pass

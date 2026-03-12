@@ -1637,3 +1637,70 @@ class TestConversationPersistence:
         loaded = db.load_conversations()
         assert len(loaded) == 1
         assert loaded[0][0] == "good"
+
+
+class TestMemoryPersistence:
+    """Test memory persistence methods."""
+
+    def test_save_and_get_memory(self, tmp_path: Path) -> None:
+        """GIVEN a saved memory WHEN get_memories THEN it is returned."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        row_id = db.save_memory("user1", "likes Python", "#test")
+        memories = db.get_memories("user1")
+        assert len(memories) == 1
+        assert memories[0].id == row_id
+        assert memories[0].nick == "user1"
+        assert memories[0].fact == "likes Python"
+        assert memories[0].source_channel == "#test"
+
+    def test_save_memory_lowercases_nick(self, tmp_path: Path) -> None:
+        """GIVEN mixed-case nick WHEN saved THEN stored lowercased."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_memory("Alice", "fact", "#test")
+        memories = db.get_memories("alice")
+        assert len(memories) == 1
+        assert memories[0].nick == "alice"
+
+    def test_get_memories_empty(self, tmp_path: Path) -> None:
+        """GIVEN no memories WHEN get_memories THEN returns empty list."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.get_memories("unknown") == []
+
+    def test_get_memories_ordered_by_created_at(self, tmp_path: Path) -> None:
+        """GIVEN multiple memories WHEN get_memories THEN ordered by created_at."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_memory("user1", "first fact", "#test")
+        db.save_memory("user1", "second fact", "#test")
+        memories = db.get_memories("user1")
+        assert len(memories) == 2
+        assert memories[0].fact == "first fact"
+        assert memories[1].fact == "second fact"
+
+    def test_delete_memory_by_id(self, tmp_path: Path) -> None:
+        """GIVEN two memories WHEN one deleted THEN only one remains."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        id1 = db.save_memory("user1", "fact one", "#test")
+        db.save_memory("user1", "fact two", "#test")
+        result = db.delete_memory("user1", id1)
+        assert result is True
+        memories = db.get_memories("user1")
+        assert len(memories) == 1
+        assert memories[0].fact == "fact two"
+
+    def test_delete_memory_wrong_nick(self, tmp_path: Path) -> None:
+        """GIVEN memory for alice WHEN bob tries to delete THEN fails."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        row_id = db.save_memory("alice", "secret", "#test")
+        result = db.delete_memory("bob", row_id)
+        assert result is False
+        assert len(db.get_memories("alice")) == 1
+
+    def test_delete_all_memories(self, tmp_path: Path) -> None:
+        """GIVEN three memories WHEN delete_all THEN all removed."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_memory("user1", "a", "#test")
+        db.save_memory("user1", "b", "#test")
+        db.save_memory("user1", "c", "#test")
+        count = db.delete_all_memories("user1")
+        assert count == 3
+        assert db.get_memories("user1") == []
