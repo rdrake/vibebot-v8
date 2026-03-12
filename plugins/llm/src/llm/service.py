@@ -91,6 +91,21 @@ _MEMORY_EXTRACTION_PROMPT = (
     "- Questions they asked (only facts about them)\n"
 )
 
+_MEMORY_CLEANUP_PROMPT = (
+    "You are a memory curator. Review these stored facts about an IRC user and "
+    "return edit operations as JSON.\n\n"
+    "Rules:\n"
+    "- ONLY reference facts by their index numbers below\n"
+    "- Do NOT invent new facts — merge text must combine existing information only\n"
+    "- Facts are listed newest-first; when facts contradict, prefer the newer one "
+    "(lower index)\n"
+    "- Merge near-duplicates into one clear statement\n"
+    "- Drop vague, trivial, or clearly transient/time-bound facts\n"
+    "- Keep all genuinely useful long-term information\n\n"
+    'Return JSON: {"keep": [...], "drop": [...], "merge": [[idx_a, idx_b, "text"], ...]}\n'
+    "Every index must appear in exactly one category (keep, drop, or as a source in merge).\n"
+)
+
 DELIVERY_MAX_ATTEMPTS = 10
 
 
@@ -134,6 +149,15 @@ class ExtractionResult(NamedTuple):
     error: str | None = None
 
 
+class CleanupResult(NamedTuple):
+    """Result of memory cleanup: index-based edit operations."""
+
+    keep: list[int] = []
+    drop: list[int] = []
+    merge: list[list] = []
+    error: str | None = None
+
+
 class PendingTaskResult(NamedTuple):
     """Result from checking a single pending task."""
 
@@ -169,6 +193,7 @@ if TYPE_CHECKING:
     from supybot.callbacks import Irc
     from supybot.ircmsgs import IrcMsg
 
+    from .persistence import MemoryRow
     from .plugin import LLM
 
 
@@ -2572,3 +2597,95 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             return ExtractionResult()
         except Exception:
             return ExtractionResult()
+
+    def cleanup_memories(
+        self,
+        nick: str,
+        channel: str,
+        memory_rows: list[MemoryRow],
+    ) -> CleanupResult:
+        """Review a user's memories and return index-based edit operations.
+
+        Uses the ask model (more capable) to identify duplicates,
+        contradictions, stale entries, and low-quality facts.
+
+        Args:
+            nick: The user's IRC nick.
+            channel: Channel for config lookups.
+            memory_rows: Current memories (newest-first from get_memories).
+
+        Returns:
+            CleanupResult with validated edit operations, or error on failure.
+        """
+        memory_section = "\n".join(f"[{i}] {r.fact}" for i, r in enumerate(memory_rows))
+
+        messages = [
+            {"role": "system", "content": _MEMORY_CLEANUP_PROMPT},
+            {
+                "role": "user",
+                "content": f"Current memories for {nick}:\n{memory_section}",
+            },
+        ]
+
+        try:
+            model = self.plugin.registryValue("askModel", channel)
+            api_key = self.plugin.registryValue("memoryApiKey")
+            if not api_key:
+                api_key = self.plugin.registryValue("askApiKey")
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=30,
+            )
+            content = response.choices[0].message.content.strip()
+            parsed = json.loads(content)
+        except Exception as e:
+            return CleanupResult(error=f"LLM call failed: {e}")
+
+        # Validate structure
+        if not isinstance(parsed, dict):
+            return CleanupResult(error="Response is not a JSON object")
+
+        keep = parsed.get("keep", [])
+        drop = parsed.get("drop", [])
+        merge = parsed.get("merge", [])
+
+        if not isinstance(keep, list) or not isinstance(drop, list) or not isinstance(merge, list):
+            return CleanupResult(error="keep/drop/merge must be arrays")
+
+        num_memories = len(memory_rows)
+
+        # Validate all indices are ints and in range
+        all_indices: list[int] = []
+        for idx in keep:
+            if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
+                return CleanupResult(error=f"Invalid keep index: {idx}")
+            all_indices.append(idx)
+
+        for idx in drop:
+            if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
+                return CleanupResult(error=f"Invalid drop index: {idx}")
+            all_indices.append(idx)
+
+        # Validate merge entries
+        validated_merge: list[list] = []
+        for entry in merge:
+            if not isinstance(entry, list) or len(entry) != 3:
+                return CleanupResult(error=f"Invalid merge entry: {entry}")
+            idx_a, idx_b, text = entry
+            if not isinstance(idx_a, int) or not isinstance(idx_b, int):
+                return CleanupResult(error=f"Merge indices must be ints: {entry}")
+            if idx_a < 0 or idx_a >= num_memories or idx_b < 0 or idx_b >= num_memories:
+                return CleanupResult(error=f"Merge index out of range: {entry}")
+            if not isinstance(text, str) or not text.strip():
+                return CleanupResult(error=f"Merge text must be non-empty: {entry}")
+            all_indices.append(idx_a)
+            all_indices.append(idx_b)
+            validated_merge.append([idx_a, idx_b, text.strip()])
+
+        # Check for duplicate indices
+        if len(all_indices) != len(set(all_indices)):
+            return CleanupResult(error="Duplicate index across keep/drop/merge")
+
+        return CleanupResult(keep=keep, drop=drop, merge=validated_merge)
