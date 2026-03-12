@@ -335,6 +335,24 @@ class TestAskCommand:
 
         mock_irc.reply.assert_called_once_with("/me", prefixNick=False)
 
+    def test_ask_star_botname_treated_as_action(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds with '* BotNick ...' WHEN ask called THEN sent as IRC action."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="* testbot nudges a pair of glasses toward you",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
+        plugin.ask(mock_irc, mock_msg, ["test"])
+
+        mock_action.assert_called_once_with("#test", "nudges a pair of glasses toward you")
+
 
 # ---------------------------------------------------------------------------
 # picard

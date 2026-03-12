@@ -738,9 +738,9 @@ class LLM(callbacks.Plugin):
                     return
 
                 response = result.content
-                is_action = response.startswith("/me ") and len(response) > 4
-                if is_action:
-                    irc.queueMsg(ircmsgs.action(channel, response[4:]))
+                action_text = self._extract_action(irc, response)
+                if action_text:
+                    irc.queueMsg(ircmsgs.action(channel, action_text))
                 else:
                     irc.queueMsg(ircmsgs.privmsg(channel, response))
 
@@ -1096,6 +1096,18 @@ class LLM(callbacks.Plugin):
         count = self.db.migrate_nick(old_nick, account)
         if count > 0:
             self.log.info("Migrated %d usage row(s) from %s to %s", count, old_nick, account)
+
+    def _extract_action(self, irc: callbacks.Irc, response: str) -> str | None:
+        """Return action text if *response* looks like an IRC action, else ``None``.
+
+        Recognises both ``/me does something`` and ``* BotNick does something``.
+        """
+        if response.startswith("/me ") and len(response) > 4:
+            return response[4:]
+        star_prefix = f"* {irc.nick} "
+        if response.startswith(star_prefix) and len(response) > len(star_prefix):
+            return response[len(star_prefix) :]
+        return None
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Return account name if the user is logged in, else fall back to nick.
@@ -1639,9 +1651,8 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                is_action = response.startswith("/me ") and len(response) > 4
-                if is_action:
-                    action_text = response[4:]
+                action_text = self._extract_action(irc, response)
+                if action_text:
                     if result.grounding_used:
                         action_text = f"{GROUNDING_ICON} {action_text}"
                     self.log.info("sending action to %s/%s", channel, nick)
@@ -1727,9 +1738,8 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                is_action = response.startswith("/me ") and len(response) > 4
-                if is_action:
-                    action_text = response[4:]
+                action_text = self._extract_action(irc, response)
+                if action_text:
                     if result.grounding_used:
                         action_text = f"{GROUNDING_ICON} {action_text}"
                     self.log.info("sending action to %s/%s", channel, nick)
