@@ -78,6 +78,19 @@ _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 # Pre-generated Pygments CSS for monokai theme (constant across calls)
 _PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
 
+# System prompt for memory extraction LLM calls
+_MEMORY_EXTRACTION_PROMPT = (
+    "You are a fact extractor. Given a conversation between a user and an assistant, "
+    "extract any new factual information about the user worth remembering long-term. "
+    "Examples: preferences, skills, location, job, interests, opinions.\n\n"
+    "Return ONLY a JSON array of short factual strings. "
+    "Return [] if there is nothing notable or new.\n\n"
+    "Do NOT include:\n"
+    "- Facts already known (listed below)\n"
+    "- Transient information (what they're doing right now)\n"
+    "- Questions they asked (only facts about them)\n"
+)
+
 DELIVERY_MAX_ATTEMPTS = 10
 
 
@@ -2914,3 +2927,57 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         """Run file cleanup (public interface for scheduler)."""
         http_root, _ = self.get_http_paths()
         self._cleanup_old_files(http_root)
+
+    def extract_memories(
+        self,
+        nick: str,
+        channel: str,
+        user_message: str,
+        assistant_response: str,
+        existing_memories: list[str],
+    ) -> list[str]:
+        """Extract memorable facts from a conversation exchange.
+
+        Uses a lightweight LLM call to identify new factual information about
+        the user that is worth remembering long-term.
+
+        Args:
+            nick: The user's IRC nick.
+            channel: The channel where the conversation took place.
+            user_message: What the user said.
+            assistant_response: What the assistant replied.
+            existing_memories: Already-known facts (to avoid duplicates).
+
+        Returns:
+            List of fact strings, or empty list on any error.
+        """
+        existing_section = ""
+        if existing_memories:
+            existing_section = "\n\nAlready known facts:\n" + "\n".join(
+                f"- {m}" for m in existing_memories
+            )
+
+        messages = [
+            {"role": "system", "content": _MEMORY_EXTRACTION_PROMPT + existing_section},
+            {
+                "role": "user",
+                "content": f"User ({nick}): {user_message}\nAssistant: {assistant_response}",
+            },
+        ]
+
+        try:
+            model = self.plugin.registryValue("memoryExtractionModel", channel)
+            api_key = self.plugin.registryValue("askApiKey")
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=15,
+            )
+            content = response.choices[0].message.content.strip()
+            facts = json.loads(content)
+            if isinstance(facts, list) and all(isinstance(f, str) for f in facts):
+                return facts
+            return []
+        except Exception:
+            return []
