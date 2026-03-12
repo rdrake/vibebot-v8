@@ -1537,15 +1537,15 @@ class TestMemoryPersistence:
         db = LLMDatabase(str(tmp_path / "test.db"))
         assert db.get_memories("unknown") == []
 
-    def test_get_memories_ordered_by_created_at(self, tmp_path: Path) -> None:
-        """GIVEN multiple memories WHEN get_memories THEN ordered by created_at."""
+    def test_get_memories_ordered_newest_first(self, tmp_path: Path) -> None:
+        """GIVEN multiple memories WHEN get_memories THEN ordered newest first."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         db.save_memory("user1", "first fact", "#test")
         db.save_memory("user1", "second fact", "#test")
         memories = db.get_memories("user1")
         assert len(memories) == 2
-        assert memories[0].fact == "first fact"
-        assert memories[1].fact == "second fact"
+        assert memories[0].fact == "second fact"
+        assert memories[1].fact == "first fact"
 
     def test_delete_memory_by_id(self, tmp_path: Path) -> None:
         """GIVEN two memories WHEN one deleted THEN only one remains."""
@@ -1557,6 +1557,30 @@ class TestMemoryPersistence:
         memories = db.get_memories("user1")
         assert len(memories) == 1
         assert memories[0].fact == "fact two"
+
+    def test_update_memory(self, tmp_path: Path) -> None:
+        """GIVEN a saved memory WHEN update_memory THEN fact text is changed."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        row_id = db.save_memory("user1", "likes Python", "#test")
+        result = db.update_memory("user1", row_id, "likes Rust")
+        assert result is True
+        memories = db.get_memories("user1")
+        assert len(memories) == 1
+        assert memories[0].fact == "likes Rust"
+
+    def test_update_memory_wrong_nick(self, tmp_path: Path) -> None:
+        """GIVEN memory for alice WHEN bob tries to update THEN fails."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        row_id = db.save_memory("alice", "secret", "#test")
+        result = db.update_memory("bob", row_id, "changed")
+        assert result is False
+        assert db.get_memories("alice")[0].fact == "secret"
+
+    def test_update_memory_nonexistent(self, tmp_path: Path) -> None:
+        """GIVEN no memory with id WHEN update_memory THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        result = db.update_memory("user1", 999, "anything")
+        assert result is False
 
     def test_delete_memory_wrong_nick(self, tmp_path: Path) -> None:
         """GIVEN memory for alice WHEN bob tries to delete THEN fails."""

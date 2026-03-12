@@ -604,6 +604,61 @@ class TestMemoriesCommand:
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 0
 
+    def test_memories_edit_updates_fact(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN saved memory WHEN memories edit <id> <text> THEN fact is updated."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        memory_id = plugin.db.save_memory("testuser", "Likes Python", "#test")
+
+        plugin.memories(mock_irc, mock_msg, [f"edit {memory_id} Loves Rust"])
+
+        mock_irc.reply.assert_called_once()
+        assert "updated" in mock_irc.reply.call_args[0][0].lower()
+
+        # Verify the fact was actually changed
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 1
+        assert rows[0].fact == "Loves Rust"
+
+    def test_memories_edit_invalid_id(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN invalid id WHEN memories edit abc text THEN error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["edit abc new text"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+
+    def test_memories_edit_nonexistent_id(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN nonexistent id WHEN memories edit 999 text THEN error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["edit 999 new text"])
+
+        mock_irc.error.assert_called_once()
+        assert "not found" in mock_irc.error.call_args[0][0].lower()
+
+    def test_memories_edit_missing_text(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN edit with id but no text WHEN memories edit 1 THEN usage error."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["edit 1"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+
     def test_memories_invalid_subcommand(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:

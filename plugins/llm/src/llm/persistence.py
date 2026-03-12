@@ -1236,19 +1236,19 @@ class LLMDatabase:
             pass
 
     def get_memories(self, nick: str) -> list[MemoryRow]:
-        """Get all memories for a user, ordered by creation time.
+        """Get all memories for a user, most recent first.
 
         Args:
             nick: IRC nick (matched case-insensitively).
 
         Returns:
-            List of MemoryRow ordered by created_at ascending.
+            List of MemoryRow ordered by created_at descending (newest first).
         """
         conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT id, nick, fact, source_channel, created_at FROM memories "
-                "WHERE nick = ? ORDER BY created_at",
+                "WHERE nick = ? ORDER BY created_at DESC",
                 (nick.lower(),),
             ).fetchall()
             return [MemoryRow(*row) for row in rows]
@@ -1272,6 +1272,30 @@ class LLMDatabase:
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ? AND nick = ?",
                 (memory_id, nick.lower()),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            pass
+
+    def update_memory(self, nick: str, memory_id: int, new_fact: str) -> bool:
+        """Update the fact text of a specific memory.
+
+        The nick check prevents users from editing other users' memories.
+
+        Args:
+            nick: IRC nick (must match the memory's owner).
+            memory_id: Row ID of the memory to update.
+            new_fact: The new fact text.
+
+        Returns:
+            True if a memory was updated, False if not found or wrong owner.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE memories SET fact = ? WHERE id = ? AND nick = ?",
+                (new_fact, memory_id, nick.lower()),
             )
             conn.commit()
             return cursor.rowcount > 0

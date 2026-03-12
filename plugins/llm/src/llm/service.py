@@ -79,9 +79,13 @@ _MEMORY_EXTRACTION_PROMPT = (
     "You are a fact extractor. Given a conversation between a user and an assistant, "
     "extract any new factual information about the user worth remembering long-term. "
     "Examples: preferences, skills, location, job, interests, opinions.\n\n"
-    "Return ONLY a JSON array of short factual strings. "
-    "Return [] if there is nothing notable or new.\n\n"
-    "Do NOT include:\n"
+    "Return ONLY a JSON object with two keys:\n"
+    '- "add": array of short factual strings to remember (new facts)\n'
+    '- "remove": array of indices (0-based) of existing facts that are now '
+    "contradicted, corrected, or superseded by the user's new statements\n\n"
+    'Example: {"add": ["prefers cats"], "remove": [2]}\n'
+    'If nothing to add or remove: {"add": [], "remove": []}\n\n'
+    "Do NOT include in add:\n"
     "- Facts already known (listed below)\n"
     "- Transient information (what they're doing right now)\n"
     "- Questions they asked (only facts about them)\n"
@@ -117,6 +121,15 @@ class ImageResult(NamedTuple):
     completion_tokens: int = 0
     cost: float = 0.0
     model: str = ""
+    error: str | None = None
+    rewritten_prompt: str | None = None
+
+
+class ExtractionResult(NamedTuple):
+    """Result of memory extraction: facts to add and indices to remove."""
+
+    add: list[str] = []
+    remove: list[int] = []
     rewritten_prompt: str | None = None
     error: str | None = None
 
@@ -2498,11 +2511,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         user_message: str,
         assistant_response: str,
         existing_memories: list[str],
-    ) -> list[str]:
+    ) -> ExtractionResult:
         """Extract memorable facts from a conversation exchange.
 
         Uses a lightweight LLM call to identify new factual information about
-        the user that is worth remembering long-term.
+        the user that is worth remembering long-term.  Also identifies existing
+        memories that are contradicted or superseded by the new conversation.
 
         Args:
             nick: The user's IRC nick.
@@ -2512,12 +2526,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             existing_memories: Already-known facts (to avoid duplicates).
 
         Returns:
-            List of fact strings, or empty list on any error.
+            ExtractionResult with facts to add and indices to remove.
         """
         existing_section = ""
         if existing_memories:
             existing_section = "\n\nAlready known facts:\n" + "\n".join(
-                f"- {m}" for m in existing_memories
+                f"[{i}] {m}" for i, m in enumerate(existing_memories)
             )
 
         messages = [
@@ -2540,9 +2554,21 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 timeout=15,
             )
             content = response.choices[0].message.content.strip()
-            facts = json.loads(content)
-            if isinstance(facts, list) and all(isinstance(f, str) for f in facts):
-                return facts
-            return []
+            parsed = json.loads(content)
+
+            # Accept both {"add": [...], "remove": [...]} and legacy [...] format
+            if isinstance(parsed, list):
+                add = [f for f in parsed if isinstance(f, str)]
+                return ExtractionResult(add=add)
+
+            if isinstance(parsed, dict):
+                add = parsed.get("add", [])
+                remove = parsed.get("remove", [])
+                if isinstance(add, list) and isinstance(remove, list):
+                    add = [f for f in add if isinstance(f, str)]
+                    remove = [i for i in remove if isinstance(i, int)]
+                    return ExtractionResult(add=add, remove=remove)
+
+            return ExtractionResult()
         except Exception:
-            return []
+            return ExtractionResult()

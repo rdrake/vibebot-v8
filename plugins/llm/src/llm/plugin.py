@@ -1546,17 +1546,23 @@ class LLM(callbacks.Plugin):
                 and result.error is None
                 and self.registryValue("memoryEnabled", channel)
             ):
-                existing = self._get_user_memories(nick)
+                existing_rows = self.db.get_memories(nick)
+                existing_facts = [r.fact for r in existing_rows]
                 max_memories = self.registryValue("memoryMaxPerUser")
-                if len(existing) < max_memories:
+                if len(existing_rows) < max_memories:
                     raw_response = result.content
 
                     def _extract_memories_bg() -> None:
                         try:
-                            facts = self.llm_service.extract_memories(
-                                nick, channel, text, raw_response, existing
+                            extraction = self.llm_service.extract_memories(
+                                nick, channel, text, raw_response, existing_facts
                             )
-                            for fact in facts:
+                            # Remove superseded/contradicted memories
+                            for idx in extraction.remove:
+                                if 0 <= idx < len(existing_rows):
+                                    self.db.delete_memory(nick, existing_rows[idx].id)
+                            # Add new facts
+                            for fact in extraction.add:
                                 if len(self.db.get_memories(nick)) >= max_memories:
                                     break
                                 self.db.save_memory(nick, fact, channel)
@@ -1941,15 +1947,16 @@ class LLM(callbacks.Plugin):
         args: list,
         text: str | None,
     ) -> None:
-        """[delete <id> | clear]
+        """[delete <id> | edit <id> <new text> | clear]
 
         View or manage your stored memories. Use 'delete <id>' to remove
-        a specific memory, or 'clear' to remove all.
+        a specific memory, 'edit <id> <text>' to update one, or 'clear'
+        to remove all.
         """
         nick = self._get_identity(irc, msg)
 
         if not text:
-            # List memories
+            # List memories (newest first)
             rows = self.db.get_memories(nick)
             if not rows:
                 irc.reply("I don't have any memories about you.", prefixNick=False)
@@ -1958,14 +1965,14 @@ class LLM(callbacks.Plugin):
             irc.reply(" | ".join(lines), prefixNick=False)
             return
 
-        parts = text.split(None, 1)
+        parts = text.split(None, 2)
         subcommand = parts[0].lower()
 
         if subcommand == "clear":
             count = self.db.delete_all_memories(nick)
             irc.reply(f"Cleared {count} memories.", prefixNick=False)
 
-        elif subcommand == "delete" and len(parts) == 2:
+        elif subcommand == "delete" and len(parts) >= 2:
             try:
                 memory_id = int(parts[1])
             except ValueError:
@@ -1976,8 +1983,23 @@ class LLM(callbacks.Plugin):
             else:
                 irc.error("Memory not found or doesn't belong to you.")
 
+        elif subcommand == "edit" and len(parts) == 3:
+            try:
+                memory_id = int(parts[1])
+            except ValueError:
+                irc.error("Usage: memories edit <id> <new text>")
+                return
+            new_text = parts[2].strip()
+            if not new_text:
+                irc.error("Usage: memories edit <id> <new text>")
+                return
+            if self.db.update_memory(nick, memory_id, new_text):
+                irc.reply("Memory updated.", prefixNick=False)
+            else:
+                irc.error("Memory not found or doesn't belong to you.")
+
         else:
-            irc.error("Usage: memories [delete <id> | clear]")
+            irc.error("Usage: memories [delete <id> | edit <id> <text> | clear]")
 
     memories = wrap(memories, [optional("text")])
 

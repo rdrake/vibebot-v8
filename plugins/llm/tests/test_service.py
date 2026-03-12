@@ -3130,62 +3130,96 @@ class TestMemoryExtraction:
     """Test memory fact extraction from conversations."""
 
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN conversation with facts WHEN extracted THEN returns fact list."""
+        """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '["likes Python", "lives in Toronto"]'
+        mock_response.choices[
+            0
+        ].message.content = '{"add": ["likes Python", "lives in Toronto"], "remove": []}'
         mock_litellm.completion.return_value = mock_response
-        facts = service.extract_memories(
+        result = service.extract_memories(
             "user1", "#test", "I love Python and live in Toronto", "Cool!", []
         )
-        assert facts == ["likes Python", "lives in Toronto"]
+        assert result.add == ["likes Python", "lives in Toronto"]
+        assert result.remove == []
 
-    def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN boring conversation WHEN extracted THEN returns empty list."""
+    def test_extract_memories_with_removals(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN contradicting fact WHEN extracted THEN returns indices to remove."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "[]"
+        mock_response.choices[0].message.content = '{"add": ["prefers cats"], "remove": [0]}'
         mock_litellm.completion.return_value = mock_response
-        facts = service.extract_memories("user1", "#test", "hello", "hi", [])
-        assert facts == []
+        result = service.extract_memories(
+            "user1", "#test", "Actually I prefer cats now", "Noted!", ["prefers dogs"]
+        )
+        assert result.add == ["prefers cats"]
+        assert result.remove == [0]
+
+    def test_extract_memories_legacy_array_format(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN legacy JSON array response WHEN extracted THEN accepted as add-only."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '["likes Python"]'
+        mock_litellm.completion.return_value = mock_response
+        result = service.extract_memories("user1", "#test", "I love Python", "Cool!", [])
+        assert result.add == ["likes Python"]
+        assert result.remove == []
+
+    def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN boring conversation WHEN extracted THEN returns empty result."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"add": [], "remove": []}'
+        mock_litellm.completion.return_value = mock_response
+        result = service.extract_memories("user1", "#test", "hello", "hi", [])
+        assert result.add == []
+        assert result.remove == []
 
     def test_extract_memories_empty_on_error(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN API error WHEN extracting THEN returns empty list."""
+        """GIVEN API error WHEN extracting THEN returns empty result."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_litellm.completion.side_effect = Exception("API down")
-        facts = service.extract_memories("user1", "#test", "hi", "hello", [])
-        assert facts == []
+        result = service.extract_memories("user1", "#test", "hi", "hello", [])
+        assert result.add == []
+        assert result.remove == []
 
     def test_extract_memories_empty_on_invalid_json(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN non-JSON response WHEN extracting THEN returns empty list."""
+        """GIVEN non-JSON response WHEN extracting THEN returns empty result."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = "not json at all"
         mock_litellm.completion.return_value = mock_response
-        facts = service.extract_memories("user1", "#test", "hi", "hello", [])
-        assert facts == []
+        result = service.extract_memories("user1", "#test", "hi", "hello", [])
+        assert result.add == []
+        assert result.remove == []
 
     def test_extract_memories_includes_existing_in_prompt(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN existing memories WHEN extracting THEN included in prompt."""
+        """GIVEN existing memories WHEN extracting THEN included with indices in prompt."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "[]"
+        mock_response.choices[0].message.content = '{"add": [], "remove": []}'
         mock_litellm.completion.return_value = mock_response
         service.extract_memories("user1", "#test", "hi", "hello", ["already knows Python"])
         call_args = mock_litellm.completion.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
         prompt_text = " ".join(m["content"] for m in messages)
-        assert "already knows Python" in prompt_text
+        assert "[0] already knows Python" in prompt_text
