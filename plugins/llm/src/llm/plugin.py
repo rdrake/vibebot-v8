@@ -418,6 +418,10 @@ class LLM(callbacks.Plugin):
                         schedule.removeEvent(event_name)
                 self._reminders.clear()
 
+        # Clear spontaneous participation cooldown state
+        if hasattr(self, "_spontaneous_cooldowns"):
+            self._spontaneous_cooldowns.clear()
+
         # Only unhook HTTP callback if we registered
         if self._http_callback is not None:
             httpserver.unhook("llm")
