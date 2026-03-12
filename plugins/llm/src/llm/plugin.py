@@ -35,7 +35,6 @@ from .service import (
     CompletionResult,
     ImageResult,
     LLMService,
-    VideoResult,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
@@ -148,11 +147,6 @@ a { color: #66d9ef; }
 <pre><code><span class="example">%draw A sunset over mountains in watercolor style</span>
 <span class="example">%draw A cyberpunk cityscape at night</span></code></pre>
 
-<h3><code class="command">%animate</code> <span class="param">&lt;prompt&gt;</span></h3>
-<p>Generate a short video from a text description. Also available as <code>%video</code>. Requires NickServ identification.</p>
-<pre><code><span class="example">%animate A cat playing with a ball of yarn</span>
-<span class="example">%animate A timelapse of a sunset over the ocean</span></code></pre>
-
 <h3><code class="command">%forget</code> <span class="param">[channel]</span></h3>
 <p>Clear your conversation context (memory) for the current or specified channel. Use this to start fresh.</p>
 <pre><code><span class="example">%forget</span>
@@ -169,10 +163,6 @@ a { color: #66d9ef; }
 <pre><code><span class="example">%usage</span>
 <span class="example">%usage someone</span>
 <span class="example">%usage #channel</span></code></pre>
-
-<h3><code class="command">%llmkeys</code></h3>
-<p>Check API key configuration status (admin only, response sent privately).</p>
-<pre><code><span class="example">%llmkeys</span></code></pre>
 
 <h2>Features</h2>
 <ul>
@@ -594,8 +584,6 @@ class LLM(callbacks.Plugin):
                     text = f"{nick}: {content}"
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
-            elif r.task_type == "animate":
-                text = f'{nick}: your video is ready! "{prompt_preview}" \u2192 {content}'
             else:
                 # ask or fallback
                 text = f"{nick}: {content}"
@@ -1018,7 +1006,7 @@ class LLM(callbacks.Plugin):
         return (
             _(
                 "AI-powered commands using LiteLLM. "
-                "Commands: ask, code, draw, animate (video), forget. "
+                "Commands: ask, code, draw, forget. "
                 "Full documentation: %s"
             )
             % url
@@ -1155,7 +1143,7 @@ class LLM(callbacks.Plugin):
             irc: IRC connection.
             msg: IRC message.
             text: User's prompt text (for usage logging).
-            command: Command name (ask, code, draw, animate).
+            command: Command name (ask, code, draw).
             require_account: If True, NickServ identification is mandatory.
 
         Returns:
@@ -1189,21 +1177,6 @@ class LLM(callbacks.Plugin):
                 account = None
             nick = self._get_identity(irc, msg)
 
-        # --- flagged check ---
-        if self._check_flagged(irc, msg, account):
-            self.db.log_usage(
-                nick,
-                channel,
-                command,
-                "",
-                0,
-                0,
-                0.0,
-                prompt=text,
-                status="flagged_blocked",
-            )
-            return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
-
         # --- tier-based rate limit check ---
         tier = self._resolve_tier(irc, msg)
         # Owner and admin are always exempt from rate limits
@@ -1220,7 +1193,7 @@ class LLM(callbacks.Plugin):
         Evicts timestamps outside the configured window before checking.
 
         Args:
-            command: Command name (ask, code, draw, or animate).
+            command: Command name (ask, code, or draw).
             account: NickServ account name or nick-based identity.
             now: Current time (seconds since epoch).
             tier: User tier (trusted, registered, unregistered).
@@ -1407,7 +1380,7 @@ class LLM(callbacks.Plugin):
         """Look up rate limit count and window for a command+tier.
 
         Args:
-            command: Command name (ask, code, draw, animate).
+            command: Command name (ask, code, draw).
             tier: User tier (trusted, registered, unregistered).
 
         Returns:
@@ -1417,20 +1390,6 @@ class LLM(callbacks.Plugin):
         count_key = f"{command}{infix}RateLimitCount"
         window_key = f"{command}{infix}RateLimitWindow"
         return self.registryValue(count_key), self.registryValue(window_key)
-
-    def _check_flagged(self, irc: callbacks.Irc, msg: IrcMsg, account: str | None) -> bool:
-        """Check if a user account is flagged for abuse.
-
-        Returns True (and sends error) if the user should be blocked.
-        Returns False if the user is clear to proceed.
-        Unidentified users (account=None) are not checked.
-        """
-        if account is None:
-            return False
-        if self.db.is_user_flagged(account):
-            irc.error(_("Your account has been suspended. Contact a bot admin."))
-            return True
-        return False
 
     def _get_channel(self, msg: IrcMsg) -> str:
         """Extract channel from IRC message.
@@ -1508,18 +1467,18 @@ class LLM(callbacks.Plugin):
         command: str,
         text: str,
         response: str,
-        result: CompletionResult | ImageResult | VideoResult,
+        result: CompletionResult | ImageResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
     ) -> None:
         """Store conversation context and log API usage for a command.
 
-        Shared between all commands (ask, code, draw, animate).
+        Shared between all commands (ask, code, draw).
 
         Args:
             nick: User's nick
             channel: Channel name
-            command: Command name ("ask", "code", "draw", or "animate")
+            command: Command name ("ask", "code", or "draw")
             text: Original user input
             response: Text to store in context (e.g. LLM response or
                 ``"[Generated image: <url>]"``)
@@ -1930,60 +1889,6 @@ class LLM(callbacks.Plugin):
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
-    def animate(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """<prompt>
-
-        Generate a short video from a text description.
-        Requires NickServ identification.
-
-        Examples:
-          %animate A cat playing with a ball of yarn
-          %animate A timelapse of a sunset over the ocean
-        """
-        # Skip ZNC playback messages
-        if self._is_old_message(msg):
-            return
-
-        pf = self._run_preflight(
-            irc,
-            msg,
-            text,
-            "animate",
-            require_account=True,
-        )
-        if pf.blocked:
-            return
-        nick, channel = pf.nick, pf.channel
-
-        with self._trace_request("animate", nick, channel):
-            with self._allow_concurrent():
-                result = self.llm_service.video_generation(text, irc=irc, msg=msg)
-                self.log.info("replying to %s/%s", channel, nick)
-                sanitized_content = self.llm_service.sanitize_output(result.content)
-                irc.reply(sanitized_content)
-
-            self._store_context_and_log_usage(
-                nick,
-                channel,
-                "animate",
-                text,
-                f"[Generated video: {result.content}]",
-                result,
-                irc,
-                msg,
-            )
-
-    animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
-
-    # Alias: %video works the same as %animate
-    video = animate
-
     def forget(
         self,
         irc: callbacks.Irc,
@@ -2055,126 +1960,6 @@ class LLM(callbacks.Plugin):
             irc.error("Usage: memories [delete <id> | clear]")
 
     memories = wrap(memories, [optional("text")])
-
-    def llmkeys(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-    ) -> None:
-        """(takes no arguments)
-
-        Check API key configuration status (admin only). Shows first 3 characters only.
-
-        This is a diagnostic command to verify keys are configured without exposing them.
-        """
-        # Get all API keys
-        ask_key = self.registryValue("askApiKey")
-        code_key = self.registryValue("codeApiKey")
-        draw_key = self.registryValue("drawApiKey")
-        animate_key = self.registryValue("animateApiKey")
-
-        # Safely display each key
-        ask_status = self.llm_service.safe_key_display(ask_key)
-        code_status = self.llm_service.safe_key_display(code_key)
-        draw_status = self.llm_service.safe_key_display(draw_key)
-        animate_status = self.llm_service.safe_key_display(animate_key)
-
-        # Build response
-        response = _("API Key Status: ask=%s, code=%s, draw=%s, animate=%s") % (
-            ask_status,
-            code_status,
-            draw_status,
-            animate_status,
-        )
-
-        # Send as private message for extra security
-        irc.reply(response, private=True)
-
-    llmkeys = wrap(llmkeys, ["admin"])
-
-    def flag(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        nick: str,
-        reason: str,
-    ) -> None:
-        """<nick> <reason>
-
-        Flag a user account for abuse. Resolves nick to NickServ account.
-        Flagged users are blocked from using bot commands.
-        """
-        try:
-            target_account = irc.state.nickToAccount(nick)
-        except (KeyError, AttributeError):
-            target_account = None
-        if not target_account:
-            irc.error(
-                _("Cannot resolve %s to a NickServ account. User must be online and identified.")
-                % nick
-            )
-            return
-
-        created = self.db.flag_user(target_account, reason, auto_flagged=False)
-        if created:
-            irc.reply(_("Flagged %s (%s).") % (nick, target_account), private=True)
-        else:
-            irc.reply(_("%s is already flagged.") % target_account, private=True)
-
-    flag = wrap(flag, ["admin", "nick", "text"])
-
-    def unflag(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        nick: str,
-    ) -> None:
-        """<nick>
-
-        Remove the abuse flag from a user account.
-        """
-        try:
-            target_account = irc.state.nickToAccount(nick)
-        except (KeyError, AttributeError):
-            target_account = None
-        if not target_account:
-            irc.error(_("Cannot resolve %s to a NickServ account.") % nick)
-            return
-
-        admin_account = self._get_identity(irc, msg)
-        result = self.db.unflag_user(target_account, admin_account)
-        if result:
-            irc.reply(_("Unflagged %s (%s).") % (nick, target_account), private=True)
-        else:
-            irc.reply(_("%s is not currently flagged.") % target_account, private=True)
-
-    unflag = wrap(unflag, ["admin", "nick"])
-
-    def flagged(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-    ) -> None:
-        """(takes no arguments)
-
-        List all currently flagged user accounts.
-        """
-        users = self.db.get_flagged_users()
-        if not users:
-            irc.reply(_("No flagged users."), private=True)
-            return
-
-        lines = []
-        for u in users:
-            flag_type = "auto" if u.auto_flagged else "manual"
-            lines.append(f"{u.account} ({flag_type}): {u.reason}")
-        irc.reply(" | ".join(lines), private=True)
-
-    flagged = wrap(flagged, ["admin"])
 
     def usage(
         self,

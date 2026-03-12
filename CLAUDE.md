@@ -163,7 +163,7 @@ class ValidationResult(NamedTuple):
 - **Never** store API keys in environment variables
 - **Never** log API keys in plain text
 - Pass keys directly to `litellm.completion()` via `api_key=` parameter
-- Display only first 3 characters: `safe_key_display("sk-abc123...")` → `"sk-***"`
+- API keys are scrubbed from error messages before display to users
 
 ### Input Validation
 - Image URLs must use HTTP/HTTPS (block `javascript:`, `data:`, `file:`)
@@ -188,14 +188,9 @@ class ValidationResult(NamedTuple):
 | `%picard [topic]` | Captain Picard facts, optionally steered by topic |
 | `%code <request>` | Generate code |
 | `%draw <prompt>` | Generate image |
-| `%animate <prompt>` / `%video` | Generate short video (requires NickServ) |
 | `%memories [delete <id> \| clear]` | View or manage stored long-term memories |
 | `%usage [nick or #channel]` | Show API usage statistics |
 | `%forget [channel]` | Clear conversation context |
-| `%llmkeys` | Check API key status (admin, PM only) |
-| `%flag <nick> <reason>` | Suspend account from bot commands (admin) |
-| `%unflag <nick>` | Remove account suspension (admin) |
-| `%flagged` | List suspended accounts (admin) |
 
 ## Testing Guidelines
 

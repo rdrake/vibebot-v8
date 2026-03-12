@@ -125,15 +125,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawModel": "dall-e-3",
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
-        # Animate command
-        "animateApiKey": TEST_API_KEY,
-        "animateModel": "grok-imagine-video",
-        "animateTimeout": 600,
         # Expiry (pending task retry)
         "askExpiry": 60,
         "codeExpiry": 60,
         "drawExpiry": 60,
-        "animateExpiry": 3600,
         # Memory extraction
         "memoryEnabled": True,
         "memoryExtractionModel": "gemini/gemini-2.0-flash-lite",
@@ -176,13 +171,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,
         "drawUnregRateLimitWindow": 60,
-        # animate
-        "animateRateLimitCount": 2,
-        "animateRateLimitWindow": 600,
-        "animateTrustedRateLimitCount": 5,
-        "animateTrustedRateLimitWindow": 600,
-        "animateUnregRateLimitCount": 0,
-        "animateUnregRateLimitWindow": 600,
     }
     if overrides:
         defaults.update(overrides)

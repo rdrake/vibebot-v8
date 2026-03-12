@@ -315,29 +315,6 @@ class TestRateLimitFullFlow:
         mock_irc.reply.assert_called_once()
         assert "http://img.example/gen2.png" in mock_irc.reply.call_args[0][0]
 
-        # Step 4: Unflag flow works independently
-        plugin.db.flag_user("testuser", "manual test", auto_flagged=False)
-        assert plugin.db.is_user_flagged("testuser") is True
-
-        mock_irc.reset_mock()
-        plugin.llm_service.image_generation.reset_mock()
-        plugin._rate_buckets.clear()  # Clear rate limits
-        plugin.draw(mock_irc, mock_msg, ["flagged draw"])
-        mock_irc.error.assert_called_once()
-        assert "suspended" in mock_irc.error.call_args[0][0]
-
-        plugin.db.unflag_user("testuser", "admin")
-        mock_irc.reset_mock()
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen3.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-        )
-        plugin.draw(mock_irc, mock_msg, ["unflagged draw"])
-        mock_irc.reply.assert_called_once()
-
 
 class TestMemoryIntegration:
     """Test memory extraction and retrieval wiring."""

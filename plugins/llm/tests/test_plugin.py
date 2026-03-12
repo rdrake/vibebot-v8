@@ -1571,7 +1571,7 @@ class TestDeliverPendingResult:
 
         r = self._make_result(
             status="expired",
-            task_type="animate",
+            task_type="draw",
             content="",
             reason="Request expired after retry timeout",
         )
@@ -1582,7 +1582,7 @@ class TestDeliverPendingResult:
         log_msg = plugin.log.warning.call_args[0][0]
         assert "expired" in log_msg.lower()
         # Should include key fields for grep/monitoring
-        assert "animate" in plugin.log.warning.call_args[0][1]
+        assert "draw" in plugin.log.warning.call_args[0][1]
         assert "alice" in plugin.log.warning.call_args[0][2]
 
     def test_logs_structured_failed_terminal_outcome(self, plugin, mocker: MockerFixture) -> None:
@@ -2116,12 +2116,12 @@ class TestRateLimiter:
         p._rate_buckets = {}
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
+                "askRateLimitCount": 15,
+                "askRateLimitWindow": 60,
                 "drawRateLimitCount": 3,
                 "drawRateLimitWindow": 60,
-                "animateRateLimitCount": 2,
-                "animateRateLimitWindow": 600,
                 "enforceRateLimits": True,
-            }.get(key, "")
+            }.get(key, 0)
         )
         return p
 
@@ -2149,11 +2149,11 @@ class TestRateLimiter:
         assert "draw:alice" not in plugin._rate_buckets
 
     def test_different_commands_isolated(self, plugin) -> None:
-        """GIVEN draw at limit WHEN checking animate THEN not limited."""
+        """GIVEN draw at limit WHEN checking ask THEN not limited."""
         now = 1000.0
         for i in range(3):
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
-        assert plugin._is_rate_limited("animate", "alice", now, tier="registered") is False
+        assert plugin._is_rate_limited("ask", "alice", now, tier="registered") is False
 
     def test_different_accounts_isolated(self, plugin) -> None:
         """GIVEN alice at limit WHEN checking bob THEN not limited."""
@@ -2223,7 +2223,6 @@ class TestRunPreflight:
         )
         p = LLM.__new__(LLM)
         p.db = mocker.MagicMock()
-        p.db.is_user_flagged.return_value = False
         p.log = mocker.MagicMock()
         p._rate_buckets = {}
         p._migrated_nicks = set()
@@ -2250,20 +2249,6 @@ class TestRunPreflight:
         assert result.blocked is False
         assert result.nick == "alice"
         assert result.channel == "#test"
-
-    def test_preflight_blocks_flagged_user(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN flagged user WHEN preflight THEN blocked and usage logged."""
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.nickToAccount.return_value = "baduser"
-        mock_msg = mocker.MagicMock()
-        mock_msg.prefix = "baduser!user@host"
-        mock_msg.args = ("#test", "test")
-        plugin.db.is_user_flagged.return_value = True
-
-        result = plugin._run_preflight(mock_irc, mock_msg, "test", "ask", require_account=False)
-        assert result.blocked is True
-        plugin.db.log_usage.assert_called_once()
-        assert plugin.db.log_usage.call_args.kwargs["status"] == "flagged_blocked"
 
     def test_preflight_blocks_unidentified_for_draw(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN unidentified user WHEN draw preflight THEN blocked with auth_failure."""

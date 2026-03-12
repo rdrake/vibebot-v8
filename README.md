@@ -11,7 +11,7 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Image generation**: Text-to-image via Vertex AI Imagen
 - **Long-term memory**: Automatically extracts and remembers facts about users across conversations
 - **Spontaneous participation**: Optionally joins channel conversations based on probability and cooldown (disabled by default)
-- **Abuse controls**: Capability checks, NickServ gating, manual moderation, tiered rate limiting
+- **Abuse controls**: Capability checks, NickServ gating, tiered rate limiting
 - **Modern Python**: Python 3.12+ with full type hints
 - **Quality tools**: Ruff for linting/formatting, ty for type checking
 
@@ -96,19 +96,9 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | `%picard [topic]` | Share a random Captain Picard fact, optionally steered by topic |
 | `%code <request>` | Generate code (remembers context for iterating on code) |
 | `%draw <prompt>` | Generate an image (no context) |
-| `%animate <prompt>` / `%video <prompt>` | Generate a short video (requires NickServ account) |
 | `%memories [delete <id> \| clear]` | View or manage your stored long-term memories |
 | `%usage [nick or #channel]` | Show API usage statistics |
 | `%forget [channel]` | Clear your conversation context |
-
-### Admin Commands
-
-| Command | Description |
-|---------|-------------|
-| `%llmkeys` | Check API key status (shows first 3 chars only, sent privately) |
-| `%flag <nick> <reason>` | Manually suspend an account from bot commands |
-| `%unflag <nick>` | Remove a manual suspension |
-| `%flagged` | List currently suspended accounts |
 
 ## Configuration
 
@@ -162,8 +152,7 @@ When enabled, the bot has a configurable chance (%) to join channel conversation
 The plugin layers several protections:
 
 - Capability checks on command wrappers
-- NickServ account requirement for expensive commands (`draw`, `animate`)
-- Manual moderation via `%flag`, `%unflag`, `%flagged` (no automatic flagging side effects)
+- NickServ account requirement for expensive commands (`draw`)
 - Tiered per-account rate limiting (registered, trusted, unregistered) for all commands
 
 Protection matrix:
@@ -174,7 +163,6 @@ Protection matrix:
 | `%picard` | `llm.ask` | No | Yes (optional) |
 | `%code` | `llm.code` | No | Yes (optional) |
 | `%draw` | `llm.draw` | Yes | Yes (optional) |
-| `%animate` / `%video` | `llm.animate` | Yes | Yes (optional) |
 
 Rate-limit config (per-command, per-tier):
 
@@ -193,9 +181,6 @@ supybot.plugins.LLM.codeUnregRateLimitCount: 2
 # draw
 supybot.plugins.LLM.drawRateLimitCount: 3
 supybot.plugins.LLM.drawRateLimitWindow: 60
-# animate
-supybot.plugins.LLM.animateRateLimitCount: 2
-supybot.plugins.LLM.animateRateLimitWindow: 600
 ```
 
 ### IRC Staging Smoke Checklist
@@ -203,19 +188,13 @@ supybot.plugins.LLM.animateRateLimitWindow: 600
 Run this sequence on a staging bot connected to IRC:
 
 1. Monitor mode (`enforceRateLimits=False`):
-   - Send `draw`/`animate` prompts above configured threshold.
+   - Send `draw` prompts above configured threshold.
    - Verify requests still execute (not blocked).
    - Verify logs include `rate_limit_shadow` entries.
 2. Enforced mode (`enforceRateLimits=True`):
    - Repeat prompts above threshold.
    - Verify bot replies with rate-limit error and provider call is not executed.
    - Verify usage rows include `status=rate_limited`.
-3. Manual moderation:
-   - `%flag <nick> <reason>` then verify `ask/code/draw/animate` are blocked.
-   - `%flagged` shows the account.
-   - `%unflag <nick>` then verify commands work again.
-4. Capability check:
-   - Verify `%animate`/`%video` require `llm.animate`.
 
 ### HTTP Output
 
@@ -292,12 +271,12 @@ vibebot-v8/
 
 ### API Key Not Working
 
-Check configuration:
+Check configuration via `%config`:
 ```
-%llmkeys
+%config plugins.LLM.askApiKey
 ```
 
-Should show `AIz...(36 chars hidden)` or similar.
+Should show the key is set (value is private and not displayed in full).
 
 ### Context Not Working
 

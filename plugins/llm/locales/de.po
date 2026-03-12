@@ -34,14 +34,6 @@ msgstr "Kein Konversationskontext zum Löschen vorhanden."
 msgid "Error clearing context."
 msgstr "Fehler beim Löschen des Kontexts."
 
-#: plugin.py:487
-msgid "API Key Status: ask=%s, code=%s, draw=%s"
-msgstr "API-Schlüssel-Status: ask=%s, code=%s, draw=%s"
-
-#: plugin.py:497
-msgid "Error checking API key status."
-msgstr "Fehler bei der Überprüfung des API-Schlüssel-Status."
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "Eingabe darf nicht leer sein"

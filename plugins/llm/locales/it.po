@@ -34,14 +34,6 @@ msgstr "Nessun contesto di conversazione da cancellare."
 msgid "Error clearing context."
 msgstr "Errore durante la cancellazione del contesto."
 
-#: plugin.py:487
-msgid "API Key Status: ask=%s, code=%s, draw=%s"
-msgstr "Stato chiavi API: ask=%s, code=%s, draw=%s"
-
-#: plugin.py:497
-msgid "Error checking API key status."
-msgstr "Errore durante la verifica dello stato delle chiavi API."
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "Il prompt non può essere vuoto"

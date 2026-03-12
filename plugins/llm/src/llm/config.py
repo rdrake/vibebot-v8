@@ -237,36 +237,6 @@ conf.registerChannelValue(
 )
 
 # ============================================================================
-# Video Generation (animate command)
-# ============================================================================
-
-conf.registerGlobalValue(
-    LLM,
-    "animateApiKey",
-    registry.String("", _("""API key for animate command"""), private=True),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateModel",
-    registry.String(
-        "grok-imagine-video",
-        _("""Model for video generation"""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateTimeout",
-    registry.NonNegativeInteger(
-        600,
-        _("""Timeout for video generation API calls in seconds. Video generation
-        is slower than image generation due to polling for completion.
-        Set to 0 to use the global timeout setting instead."""),
-    ),
-)
-
-# ============================================================================
 # Memory Extraction
 # ============================================================================
 
@@ -374,16 +344,6 @@ conf.registerGlobalValue(
         60,
         _("""Maximum seconds to keep retrying timed-out draw requests.
         Set to 0 to disable background retry for draw."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateExpiry",
-    registry.NonNegativeInteger(
-        3600,
-        _("""Maximum seconds to keep retrying timed-out animate requests.
-        Set to 0 to disable background retry for animate."""),
     ),
 )
 
@@ -733,65 +693,5 @@ conf.registerGlobalValue(
     registry.PositiveInteger(
         60,
         _("""Time window in seconds for counting draw requests (unregistered tier)."""),
-    ),
-)
-
-# --- animate (most expensive) ---
-
-conf.registerGlobalValue(
-    LLM,
-    "animateRateLimitCount",
-    registry.NonNegativeInteger(
-        2,
-        _("""Max animate requests per registered user within animateRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateRateLimitWindow",
-    registry.PositiveInteger(
-        600,
-        _("""Time window in seconds for counting animate requests (registered tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateTrustedRateLimitCount",
-    registry.NonNegativeInteger(
-        5,
-        _("""Max animate requests per trusted user within animateTrustedRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateTrustedRateLimitWindow",
-    registry.PositiveInteger(
-        600,
-        _("""Time window in seconds for counting animate requests (trusted tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateUnregRateLimitCount",
-    registry.NonNegativeInteger(
-        0,
-        _("""Max animate requests per unregistered user within animateUnregRateLimitWindow seconds.
-        Set to 0 to disable. Note: animate already requires NickServ, so unreg users
-        are blocked before this check."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateUnregRateLimitWindow",
-    registry.PositiveInteger(
-        600,
-        _("""Time window in seconds for counting animate requests (unregistered tier)."""),
     ),
 )

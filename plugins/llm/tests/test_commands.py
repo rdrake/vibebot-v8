@@ -1,6 +1,6 @@
 """Tests that call actual plugin command methods (not reimplementations).
 
-These tests exercise the real ask, code, draw, forget, llmkeys, usage,
+These tests exercise the real ask, code, draw, forget, usage,
 remindme, reminders, and unremind methods on a properly-initialised LLM
 plugin instance with mocked dependencies.
 
@@ -80,9 +80,6 @@ def plugin_env(mocker: MockerFixture):
 
     # migrate_nick returns an int (0 = nothing to migrate) by default.
     plugin.db.migrate_nick.return_value = 0
-
-    # is_user_flagged returns False by default (user not flagged)
-    plugin.db.is_user_flagged.return_value = False
 
     return plugin, mock_irc, mock_msg
 
@@ -892,50 +889,6 @@ class TestForgetCommand:
         assert len(plugin.context.get_messages("testnick", "#test")) == 0
         # Other channel context should be untouched
         assert len(plugin.context.get_messages("testnick", "#other")) == 1
-
-
-# ---------------------------------------------------------------------------
-# llmkeys
-# ---------------------------------------------------------------------------
-
-
-class TestLlmkeysCommand:
-    """Tests for the real LLM.llmkeys method."""
-
-    @pytest.fixture(autouse=True)
-    def _grant_admin(self, plugin_env, mocker: MockerFixture):
-        """Grant admin capability so @wrap(['admin']) passes (must run after plugin_env)."""
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
-        )
-
-    def test_llmkeys_shows_key_status_privately(self, plugin_env, mocker: MockerFixture):
-        """GIVEN admin user WHEN llmkeys called THEN key status sent as private reply."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.safe_key_display.return_value = "tes...(10 chars hidden)"
-
-        plugin.llmkeys(mock_irc, mock_msg, [])
-
-        # Should be sent privately
-        mock_irc.reply.assert_called_once()
-        assert mock_irc.reply.call_args.kwargs.get("private") is True
-
-        # Should call safe_key_display for all 4 keys (ask, code, draw, animate)
-        assert plugin.llm_service.safe_key_display.call_count == 4
-
-    def test_llmkeys_response_contains_all_key_types(self, plugin_env, mocker: MockerFixture):
-        """GIVEN admin WHEN llmkeys called THEN response mentions ask, code, draw."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.safe_key_display.return_value = "abc...(5 chars hidden)"
-
-        plugin.llmkeys(mock_irc, mock_msg, [])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "ask=" in reply_text
-        assert "code=" in reply_text
-        assert "draw=" in reply_text
-        assert "animate=" in reply_text
 
 
 # ---------------------------------------------------------------------------
@@ -1990,166 +1943,7 @@ class TestCodeEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# flag / unflag / flagged admin commands
-# ---------------------------------------------------------------------------
-
-
-class TestFlagCommands:
-    """Tests for the flag, unflag, and flagged admin commands."""
-
-    @pytest.fixture(autouse=True)
-    def _grant_admin(self, plugin_env, mocker: MockerFixture):
-        """Grant admin capability so @wrap(['admin']) passes (must run after plugin_env)."""
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
-        )
-
-    def test_flag_flags_user(self, plugin_env, mocker: MockerFixture):
-        """GIVEN identified target WHEN flag called THEN db.flag_user called and reply sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
-        plugin.db.flag_user.return_value = True
-
-        plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
-
-        plugin.db.flag_user.assert_called_once_with(
-            "target_account", "spamming", auto_flagged=False
-        )
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "Flagged" in reply_text
-        assert "baduser" in reply_text
-        assert mock_irc.reply.call_args.kwargs.get("private") is True
-
-    def test_flag_rejects_unidentified_target(self, plugin_env, mocker: MockerFixture):
-        """GIVEN nickToAccount returns None WHEN flag called THEN error sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
-
-        plugin.flag(mock_irc, mock_msg, ["unknown", "testing"])
-
-        mock_irc.error.assert_called_once()
-        error_text = mock_irc.error.call_args[0][0]
-        assert "NickServ" in error_text
-        plugin.db.flag_user.assert_not_called()
-
-    def test_flag_handles_already_flagged(self, plugin_env, mocker: MockerFixture):
-        """GIVEN already flagged user WHEN flag called THEN reply says already flagged."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
-        plugin.db.flag_user.return_value = False
-
-        plugin.flag(mock_irc, mock_msg, ["baduser", "spamming"])
-
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "already flagged" in reply_text
-
-    def test_flag_handles_nick_to_account_keyerror(self, plugin_env, mocker: MockerFixture):
-        """GIVEN nickToAccount raises KeyError WHEN flag called THEN error sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("not found"))
-
-        plugin.flag(mock_irc, mock_msg, ["ghost", "testing"])
-
-        mock_irc.error.assert_called_once()
-        plugin.db.flag_user.assert_not_called()
-
-    def test_unflag_unflags_user(self, plugin_env, mocker: MockerFixture):
-        """GIVEN flagged user WHEN unflag called THEN db.unflag_user called and reply sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-
-        def nick_to_account(nick):
-            if nick == "baduser":
-                return "target_account"
-            return "admin_account"
-
-        mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=nick_to_account)
-        plugin.db.unflag_user.return_value = True
-
-        plugin.unflag(mock_irc, mock_msg, ["baduser"])
-
-        plugin.db.unflag_user.assert_called_once_with("target_account", "admin_account")
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "Unflagged" in reply_text
-        assert mock_irc.reply.call_args.kwargs.get("private") is True
-
-    def test_unflag_rejects_unidentified(self, plugin_env, mocker: MockerFixture):
-        """GIVEN nickToAccount returns None WHEN unflag called THEN error sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
-
-        plugin.unflag(mock_irc, mock_msg, ["unknown"])
-
-        mock_irc.error.assert_called_once()
-        error_text = mock_irc.error.call_args[0][0]
-        assert "NickServ" in error_text
-        plugin.db.unflag_user.assert_not_called()
-
-    def test_unflag_handles_not_flagged(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user not flagged WHEN unflag called THEN reply says not flagged."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="target_account")
-        plugin.db.unflag_user.return_value = False
-
-        plugin.unflag(mock_irc, mock_msg, ["gooduser"])
-
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "not currently flagged" in reply_text
-
-    def test_flagged_lists_users(self, plugin_env, mocker: MockerFixture):
-        """GIVEN flagged users exist WHEN flagged called THEN lists them."""
-        from llm.persistence import FlaggedUserRow
-
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.db.get_flagged_users.return_value = [
-            FlaggedUserRow(
-                id=1,
-                account="alice",
-                flagged_at=time.time(),
-                reason="spamming",
-                auto_flagged=1,
-                resolved_at=None,
-                resolved_by=None,
-            ),
-            FlaggedUserRow(
-                id=2,
-                account="bob",
-                flagged_at=time.time(),
-                reason="abuse",
-                auto_flagged=0,
-                resolved_at=None,
-                resolved_by=None,
-            ),
-        ]
-
-        plugin.flagged(mock_irc, mock_msg, [])
-
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "alice (auto): spamming" in reply_text
-        assert "bob (manual): abuse" in reply_text
-        assert " | " in reply_text
-        assert mock_irc.reply.call_args.kwargs.get("private") is True
-
-    def test_flagged_empty(self, plugin_env, mocker: MockerFixture):
-        """GIVEN no flagged users WHEN flagged called THEN reports no flagged users."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.db.get_flagged_users.return_value = []
-
-        plugin.flagged(mock_irc, mock_msg, [])
-
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "No flagged users" in reply_text
-        assert mock_irc.reply.call_args.kwargs.get("private") is True
-
-
-# ---------------------------------------------------------------------------
-# Rate limiting: draw/animate respect per-command rate limits
+# Rate limiting: draw respects per-command rate limits
 # ---------------------------------------------------------------------------
 
 
@@ -2225,28 +2019,6 @@ class TestRateLimitIntegration:
         mock_irc.error.assert_called_once()
         assert "Rate limit" in mock_irc.error.call_args[0][0]
         plugin.llm_service.image_generation.assert_not_called()
-
-    def test_animate_rate_limited_when_enforced(self, plugin_env, mocker: MockerFixture):
-        """GIVEN rate limit exceeded and enforced WHEN animate called THEN blocked."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: {
-                "enforceRateLimits": True,
-                "animateRateLimitCount": 1,
-                "animateRateLimitWindow": 600,
-            }.get(key, "")
-        )
-
-        now = time.time()
-        plugin._record_rate_limit_hit("animate", "test_account", now - 2)
-
-        plugin.animate(mock_irc, mock_msg, ["test prompt"])
-
-        mock_irc.error.assert_called_once()
-        assert "Rate limit" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.video_generation.assert_not_called()
 
     def test_draw_over_threshold_logs_shadow_when_not_enforced(
         self, plugin_env, mocker: MockerFixture

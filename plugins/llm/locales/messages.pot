@@ -36,14 +36,6 @@ msgstr ""
 msgid "Error clearing context."
 msgstr ""
 
-#: plugin.py:487
-msgid "API Key Status: ask=%s, code=%s, draw=%s"
-msgstr ""
-
-#: plugin.py:497
-msgid "Error checking API key status."
-msgstr ""
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr ""

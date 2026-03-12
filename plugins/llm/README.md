@@ -7,7 +7,7 @@ AI-powered IRC commands using LiteLLM.
 - Multi-provider support (OpenAI, Anthropic, Google, etc.)
 - Vision support with automatic image URL detection
 - Conversation context (memory between messages)
-- Abuse controls with explicit manual moderation
+- Abuse controls with tiered rate limiting
 - Thread-safe API key handling
 - Comprehensive error handling
 
@@ -39,9 +39,7 @@ make test
    - Path traversal attempts (../)
    - Invalid image extensions
 
-4. **Safe key display**: `llmkeys` command shows only first 3 characters of API keys.
-
-5. **Private configuration**: All API key config values marked `private=True` in Limnoria.
+4. **Private configuration**: All API key config values marked `private=True` in Limnoria.
 
 ## API Reference
 
@@ -55,8 +53,6 @@ Main service class for AI interactions.
 - `image_generation(prompt)` - Generate image
 - `save_code_to_http(code, language)` - Save code to HTTP server
 - `validate_image_url(url)` - Validate image URL for security
-- `safe_key_display(api_key)` - Safely display API key
-
 ### ConversationContext
 
 Thread-safe conversation history manager.
@@ -80,24 +76,17 @@ See main README for full configuration options.
 | `%ask` | `llm.ask` | No | No |
 | `%code` | `llm.code` | No | No |
 | `%draw` | `llm.draw` | Yes | Yes (optional) |
-| `%animate` / `%video` | `llm.animate` | Yes | Yes (optional) |
 
-### Moderation Model
+### Rate Limiting
 
-- Manual account moderation only: `%flag`, `%unflag`, `%flagged`
-- Flagged accounts are blocked across user-facing commands
-- No automatic flagging side effects
-- Optional draw/animate limiter controlled by:
+- Optional per-command rate limiter controlled by:
   - `enforceRateLimits`
   - `drawRateLimitCount`, `drawRateLimitWindow`
-  - `animateRateLimitCount`, `animateRateLimitWindow`
 
 ### Staging Smoke Test
 
-1. Set `enforceRateLimits=False`, exceed draw/animate limits, confirm requests still run and logs emit `rate_limit_shadow`.
+1. Set `enforceRateLimits=False`, exceed draw limits, confirm requests still run and logs emit `rate_limit_shadow`.
 2. Set `enforceRateLimits=True`, exceed limits again, confirm requests are blocked and usage status is `rate_limited`.
-3. Validate `%flag`, `%flagged`, `%unflag` flow blocks then restores command access.
-4. Confirm `%animate`/`%video` require `llm.animate` capability.
 
 ## Development
 

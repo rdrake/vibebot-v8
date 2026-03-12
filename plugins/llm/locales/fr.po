@@ -34,14 +34,6 @@ msgstr "Aucun contexte de conversation à effacer."
 msgid "Error clearing context."
 msgstr "Erreur lors de l'effacement du contexte."
 
-#: plugin.py:487
-msgid "API Key Status: ask=%s, code=%s, draw=%s"
-msgstr "État des clés API : ask=%s, code=%s, draw=%s"
-
-#: plugin.py:497
-msgid "Error checking API key status."
-msgstr "Erreur lors de la vérification de l'état des clés API."
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "L'invite ne peut pas être vide"

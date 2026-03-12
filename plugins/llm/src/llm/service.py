@@ -41,10 +41,6 @@ IMAGE_COST_PER_IMAGE: dict[str, float] = {
     "xai/grok-imagine-image": 0.02,
 }
 
-VIDEO_COST_PER_VIDEO: dict[str, float] = {
-    "grok-imagine-video": 0.10,
-}
-
 _ = PluginInternationalization("LLM")
 
 # Constants
@@ -125,22 +121,11 @@ class ImageResult(NamedTuple):
     error: str | None = None
 
 
-class VideoResult(NamedTuple):
-    """Result of video generation API call."""
-
-    content: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cost: float = 0.0
-    model: str = ""
-    error: str | None = None
-
-
 class PendingTaskResult(NamedTuple):
     """Result from checking a single pending task."""
 
     status: str  # completed, failed_terminal, expired
-    task_type: str  # ask, code, draw, animate
+    task_type: str  # ask, code, draw
     nick: str
     reply_target: str
     is_channel: bool
@@ -229,7 +214,6 @@ class LLMService:
             "askApiKey",
             "codeApiKey",
             "drawApiKey",
-            "animateApiKey",
             "spontaneousApiKey",
         ):
             key = self.plugin.registryValue(key_name)
@@ -584,25 +568,6 @@ class LLMService:
             server_tags={"+typing": state},
         )
         irc.queueMsg(msg)
-
-    def safe_key_display(self, api_key: str) -> str:
-        """Safely display API key with only first 3 characters visible.
-
-        Args:
-            api_key: The API key to display
-
-        Returns:
-            String showing first 3 chars or status message
-        """
-        if not api_key or not api_key.strip():
-            return "Not configured"
-
-        key = api_key.strip()
-        if len(key) < 3:
-            return "Invalid (too short)"
-
-        hidden_count = len(key) - 3
-        return f"{key[:3]}...({hidden_count} chars hidden)"
 
     def detect_images(self, text: str) -> list[str]:
         """Extract image URLs from text for vision support.
@@ -977,7 +942,7 @@ class LLMService:
         table for later retry by the scheduler.
 
         Args:
-            task_type: Command type (ask, code, draw, animate).
+            task_type: Command type (ask, code, draw).
             nick: IRC nick of the requester.
             reply_target: Channel or PM nick for delivery.
             is_channel: True if reply_target is a channel.
@@ -1048,10 +1013,8 @@ class LLMService:
     def _is_terminal_error(error: Exception) -> bool:
         """Classify an exception as terminal (no retry) or transient.
 
-        Terminal: auth errors, content policy violations, bad requests,
-        and HTTP 400/401/403/404/410 from requests library.
-        Transient: timeouts, rate limits, network failures, 5xx,
-        and HTTP 408/409/425/429/5xx from requests library.
+        Terminal: auth errors, content policy violations, bad requests.
+        Transient: timeouts, rate limits, network failures, 5xx.
 
         Args:
             error: The exception to classify.
@@ -1059,10 +1022,7 @@ class LLMService:
         Returns:
             True if the error is terminal and should not be retried.
         """
-        import requests as _requests
-
-        # LiteLLM terminal errors
-        if isinstance(
+        return isinstance(
             error,
             (
                 litellm.AuthenticationError,
@@ -1070,15 +1030,7 @@ class LLMService:
                 litellm.BadRequestError,
                 litellm.NotFoundError,
             ),
-        ):
-            return True
-
-        # requests.HTTPError from _retry_video (uses requests, not litellm)
-        if isinstance(error, _requests.HTTPError) and error.response is not None:
-            terminal_http_codes = {400, 401, 403, 404, 410}
-            return error.response.status_code in terminal_http_codes
-
-        return False
+        )
 
     @staticmethod
     def _compute_backoff(attempt_count: int) -> float:
@@ -1223,96 +1175,6 @@ class LLMService:
             cost=result.cost,
         )
 
-    def _retry_video(self, task, request_data: dict) -> PendingTaskResult:
-        """Retry a stashed animate request by polling for completion.
-
-        Args:
-            task: PendingTaskRow from the database.
-            request_data: Parsed request payload with 'request_id' key.
-
-        Returns:
-            PendingTaskResult with status and content.
-        """
-        import requests as _requests
-
-        request_id_val = request_data.get("request_id")
-        if not isinstance(request_id_val, str):
-            return PendingTaskResult(
-                status="failed_terminal",
-                task_type=task.task_type,
-                nick=task.nick,
-                reply_target=task.reply_target,
-                is_channel=bool(task.is_channel),
-                prompt_preview=task.prompt_preview,
-                model=task.model,
-                reason="Malformed request data: missing request_id",
-            )
-
-        api_key = self.plugin.registryValue("animateApiKey")
-        if not api_key:
-            return PendingTaskResult(
-                status="failed_terminal",
-                task_type=task.task_type,
-                nick=task.nick,
-                reply_target=task.reply_target,
-                is_channel=bool(task.is_channel),
-                prompt_preview=task.prompt_preview,
-                model=task.model,
-                reason="API key not configured",
-            )
-
-        resp = _requests.get(
-            f"https://api.x.ai/v1/videos/{request_id_val}",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": "VibeBot/8",
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        status = data.get("status")
-        video_url = self._extract_video_url(data)
-
-        if status == "expired":
-            return PendingTaskResult(
-                status="failed_terminal",
-                task_type=task.task_type,
-                nick=task.nick,
-                reply_target=task.reply_target,
-                is_channel=bool(task.is_channel),
-                prompt_preview=task.prompt_preview,
-                model=task.model,
-                reason="Video generation request expired on provider",
-            )
-
-        if status == "done" or video_url:
-            if video_url:
-                local_url = self._download_and_save_video(video_url, api_key)
-                url = local_url or video_url
-            else:
-                url = "?"
-            cost = VIDEO_COST_PER_VIDEO.get(task.model, 0.0)
-            return PendingTaskResult(
-                status="completed",
-                task_type=task.task_type,
-                nick=task.nick,
-                reply_target=task.reply_target,
-                is_channel=bool(task.is_channel),
-                prompt_preview=task.prompt_preview,
-                model=task.model,
-                content=url,
-                cost=cost,
-            )
-
-        # Still pending — raise to trigger release with backoff
-        raise litellm.Timeout(  # noqa: TRY301
-            message=f"Video still pending: status={status}",
-            model=task.model,
-            llm_provider="xai",
-        )
-
     def check_pending_tasks(self, deliverable_channels: set[str]) -> list[PendingTaskResult]:
         """Poll and retry pending tasks, returning results for delivery.
 
@@ -1391,8 +1253,6 @@ class LLMService:
                     result = self._retry_completion(task, request_data)
                 elif task.task_type == "draw":
                     result = self._retry_image(task, request_data)
-                elif task.task_type == "animate":
-                    result = self._retry_video(task, request_data)
                 else:
                     db.update_task_for_delivery(
                         task.id,
@@ -2221,267 +2081,6 @@ Rules:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
-    @staticmethod
-    def _extract_video_url(data: dict) -> str | None:
-        """Extract video URL from xAI API response.
-
-        The API returns different structures depending on status:
-        - Completed: ``{"video": {"url": "..."}, "model": "..."}``
-        - Legacy/alt: ``{"url": "..."}`` or ``{"video_url": "..."}``
-        """
-        # Primary format: {"video": {"url": "..."}}
-        if "video" in data and isinstance(data["video"], dict):
-            return data["video"].get("url")
-        # Fallback formats
-        if "video_url" in data:
-            return data["video_url"]
-        if "url" in data:
-            return data["url"]
-        if "data" in data and data["data"]:
-            first = data["data"][0] if isinstance(data["data"], list) else data["data"]
-            return first.get("url") or first.get("video_url")
-        return None
-
-    def video_generation(
-        self,
-        prompt: str,
-        irc: Irc | None = None,
-        msg: IrcMsg | None = None,
-    ) -> VideoResult:
-        """Generate video from text prompt using xAI API.
-
-        Uses xAI's two-step async API: submit a generation request,
-        then poll until the video is ready. Sends IRC typing indicators
-        during polling to show the bot is working.
-
-        Args:
-            prompt: Text description of video to generate
-            irc: IRC connection for typing indicators (optional)
-            msg: IRC message for context (optional)
-
-        Returns:
-            VideoResult with URL to generated video or error message
-        """
-        import requests
-
-        target = None
-        if irc and msg and msg.args:
-            target = msg.args[0]
-
-        session = requests.Session()
-        session.headers.update({"User-Agent": "VibeBot/8"})
-
-        stashed_task_id: int | None = None
-        db: object | None = None
-
-        try:
-            if irc and target:
-                self.send_typing_indicator(irc, target, "active")
-
-            # Validate prompt
-            is_valid, error_msg = self.validate_prompt(prompt)
-            if not is_valid:
-                error_content = _("Error: %s") % error_msg
-                return VideoResult(content=error_content, error=error_content)
-
-            # Get configuration
-            channel = msg.args[0] if msg and msg.args else None
-            api_key = self.plugin.registryValue("animateApiKey")
-            if not api_key:
-                error_content = _("Error: API key not configured for animate command")
-                return VideoResult(content=error_content, error=error_content)
-            model = self.plugin.registryValue("animateModel", channel)
-            timeout = self.plugin.registryValue("animateTimeout") or self.plugin.registryValue(
-                "timeout"
-            )
-            session.headers["Authorization"] = f"Bearer {api_key}"
-
-            # Step 1: Submit generation request
-            submit_url = "https://api.x.ai/v1/videos/generations"
-
-            self.log.info("video_generation request: model=%s", model)
-
-            resp = session.post(
-                submit_url,
-                json={"model": model, "prompt": prompt, "duration": 10},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            submit_data = resp.json()
-
-            provider_request_id = submit_data.get("request_id")
-            if not provider_request_id:
-                error_content = _("Error: Video generation API returned no request ID")
-                return VideoResult(content=error_content, error=error_content)
-
-            self.log.info("video_generation submitted: request_id=%s", provider_request_id)
-
-            # Persist immediately for restart safety — schedule background
-            # eligibility after timeout so it doesn't race the foreground poll.
-            submitted_at = time.time()
-            db = getattr(self.plugin, "db", None)
-            expiry = self.plugin.registryValue("animateExpiry")
-            if db is not None and expiry:
-                try:
-                    stashed_task_id = db.save_pending_task(
-                        task_type="animate",
-                        nick=msg.nick if msg else "",
-                        reply_target=target or "",
-                        is_channel=bool(target) and ircutils.isChannel(target),
-                        prompt_preview=prompt[:100],
-                        model=model,
-                        request_data=json.dumps({"request_id": provider_request_id}),
-                        submitted_at=submitted_at,
-                        expires_at=submitted_at + expiry,
-                        next_attempt_at=submitted_at + timeout,
-                        origin_request_id=request_id.get(),
-                    )
-                    self.log.info(
-                        "Persisted animate job immediately: task_id=%d request_id=%s",
-                        stashed_task_id,
-                        provider_request_id,
-                    )
-                except Exception:
-                    self.log.exception("Failed to persist animate job after submit")
-
-            # Step 2: Poll for result
-            poll_url = f"https://api.x.ai/v1/videos/{provider_request_id}"
-            start_time = submitted_at
-            poll_interval = 60  # seconds
-
-            while True:
-                elapsed = time.time() - start_time
-                if elapsed > timeout:
-                    # Release persisted row for immediate background retry
-                    if stashed_task_id is not None and db is not None:
-                        release_at = time.time()
-                        with contextlib.suppress(Exception):
-                            db.release_pending_task(
-                                stashed_task_id,
-                                release_at,  # immediately eligible
-                                "Foreground poll timed out",
-                            )
-                        schedule_wakeup = getattr(self.plugin, "_schedule_queue_wakeup", None)
-                        if schedule_wakeup is not None:
-                            schedule_wakeup(at_time=release_at)
-                        self.log.info(
-                            "video_generation timed out after %ds, "
-                            "released task_id=%d for background retry",
-                            timeout,
-                            stashed_task_id,
-                        )
-                        error_content = (
-                            _(
-                                "Video generation timed out after %d seconds. "
-                                "I'll keep checking and deliver it when ready."
-                            )
-                            % timeout
-                        )
-                    else:
-                        error_content = (
-                            _(
-                                "Error: Video generation timed out after %d seconds. "
-                                "Please try again later."
-                            )
-                            % timeout
-                        )
-                    return VideoResult(content=error_content, model=model, error=error_content)
-
-                time.sleep(poll_interval)
-
-                # Send typing indicator on each poll
-                if irc and target:
-                    self.send_typing_indicator(irc, target, "active")
-
-                poll_resp = session.get(poll_url, timeout=30)
-                poll_resp.raise_for_status()
-                poll_data = poll_resp.json()
-
-                status = poll_data.get("status")
-                self.log.debug("video_generation poll: status=%s elapsed=%.0fs", status, elapsed)
-
-                # Check for completion: either explicit status or video data present
-                video_url = self._extract_video_url(poll_data)
-                if status == "done" or video_url:
-                    break
-                elif status == "expired":
-                    self._delete_stashed_task(db, stashed_task_id)
-                    error_content = _("Error: Video generation request expired. Please try again.")
-                    return VideoResult(content=error_content, model=model, error=error_content)
-                # status == "pending": continue polling
-
-            # Foreground completed — clean up persisted row
-            self._delete_stashed_task(db, stashed_task_id)
-
-            # Step 3: Extract video URL and download
-            if not video_url:
-                video_url = self._extract_video_url(poll_data)
-
-            if not video_url:
-                error_content = _("Error: Video generation completed but no video URL returned")
-                return VideoResult(content=error_content, model=model, error=error_content)
-
-            self.log.info("video_generation complete, downloading from %s", video_url[:100])
-
-            # Download and save locally
-            local_url = self._download_and_save_video(video_url, api_key)
-            if not local_url:
-                # Fall back to temporary URL if download fails
-                local_url = video_url
-
-            # Calculate cost
-            cost = VIDEO_COST_PER_VIDEO.get(model, 0.0)
-
-            return VideoResult(
-                content=local_url,
-                cost=cost,
-                model=model,
-            )
-
-        except requests.HTTPError as e:
-            self._delete_stashed_task(db, stashed_task_id)
-            self._log_server_headers(e.response)
-            body = ""
-            with contextlib.suppress(Exception):
-                body = e.response.text[:200] if e.response is not None else ""
-            code = e.response.status_code if e.response is not None else 0
-            sanitized = self._sanitize(body or str(e))
-            self.log.error("Video generation HTTP error %s: %s", code, sanitized)
-
-            if code == 401:
-                error_content = _(
-                    "Error: Invalid API key for animate. Please check your configuration."
-                )
-            elif code == 429:
-                error_content = _("Error: API rate limit reached. Please wait and try again.")
-            elif code == 400 and any(
-                kw in body.lower() for kw in ("moderation", "safety", "content policy", "blocked")
-            ):
-                error_content = _(
-                    "Error: Content violates AI safety policies. Please rephrase your request."
-                )
-            else:
-                error_content = (
-                    _("Error: Video generation API error (%s). Check logs for details.") % code
-                )
-            return VideoResult(content=error_content, error=error_content)
-
-        except Exception as e:
-            self._delete_stashed_task(db, stashed_task_id)
-            self._log_server_headers(e)
-            sanitized = self._sanitize(str(e))
-            self.log.exception("Video generation failed: %s", sanitized)
-            error_content = _(
-                "Error: Unable to complete video generation. "
-                "Check your configuration or try again later."
-            )
-            return VideoResult(content=error_content, error=error_content)
-
-        finally:
-            session.close()
-            if irc and target:
-                self.send_typing_indicator(irc, target, "done")
-
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
         """Strip markdown code fences and extract language if present.
 
@@ -2669,32 +2268,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             self.log.error("Failed to save image file: %s", e)
             return None
 
-    def _save_video_bytes(self, video_bytes: bytes, extension: str = "mp4") -> str | None:
-        """Save raw video bytes to HTTP server and return public URL.
-
-        Args:
-            video_bytes: Raw video bytes
-            extension: Video file extension (default: mp4)
-
-        Returns:
-            Public URL to saved video or None on error
-        """
-        http_root, url_base = self.get_http_paths()
-
-        hash_input = hashlib.sha256(video_bytes[:256]).hexdigest() + str(time.time())
-        hash_str = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-        filename = f"vid_{hash_str}.{extension}"
-        filepath = Path(http_root) / filename
-
-        try:
-            Path(http_root).mkdir(parents=True, exist_ok=True)
-            with AtomicFile(str(filepath), "wb") as f:
-                f.write(video_bytes)
-            return f"{url_base}/{filename}"
-        except OSError as e:
-            self.log.error("Failed to save video file: %s", e)
-            return None
-
     def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
         """Save base64-encoded image to HTTP server.
 
@@ -2768,42 +2341,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         except Exception as e:
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
-            return None
-
-    def _download_and_save_video(self, url: str, api_key: str | None = None) -> str | None:
-        """Download a video from a URL and save it locally.
-
-        Args:
-            url: Video URL to download
-            api_key: Optional API key for authenticated downloads
-
-        Returns:
-            Local public URL to saved video or None on error
-        """
-        import requests
-
-        max_size = 100 * 1024 * 1024  # 100 MB
-
-        timeout = self.plugin.registryValue("animateTimeout") or self.plugin.registryValue(
-            "timeout"
-        )
-
-        try:
-            headers: dict[str, str] = {"User-Agent": "VibeBot/8"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
-            resp.raise_for_status()
-
-            data = resp.content
-            if len(data) > max_size:
-                self.log.warning("Video too large to download: %s", url[:200])
-                return None
-
-            return self._save_video_bytes(data)
-
-        except Exception as e:
-            self.log.warning("Failed to download video from %s: %s", url[:200], e)
             return None
 
     def _build_messages(

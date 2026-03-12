@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 from llm.persistence import (
-    FlaggedUserRow,
     LLMDatabase,
     MemoryRow,
     PendingTaskRow,
@@ -92,18 +91,6 @@ class TestDatabaseInit:
             columns = conn.execute("PRAGMA table_info(usage)").fetchall()
             column_names = [col[1] for col in columns]
             assert "error_detail" in column_names
-        finally:
-            conn.close()
-
-    def test_creates_flagged_users_table(self, tmp_path: Path) -> None:
-        """GIVEN a new database WHEN initialized THEN flagged_users table exists."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        conn = db._connect()
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='flagged_users'"
-            )
-            assert cursor.fetchone() is not None
         finally:
             conn.close()
 
@@ -239,16 +226,6 @@ class TestSchemaMigration:
             assert row[0] == ""  # prompt default
             assert row[1] == "success"  # status default
             assert row[2] == ""  # error_detail default
-        finally:
-            conn.close()
-
-        # Verify flagged_users table was also created
-        conn = db._connect()
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='flagged_users'"
-            )
-            assert cursor.fetchone() is not None
         finally:
             conn.close()
 
@@ -961,12 +938,12 @@ class TestPendingTasks:
 
         db1 = LLMDatabase(db_path)
         db1.save_pending_task(
-            task_type="animate",
+            task_type="draw",
             nick="grace",
             reply_target="grace",
             is_channel=False,
             prompt_preview="dancing cat",
-            model="grok-imagine-video",
+            model="vertex_ai/imagen-4.0-generate-001",
             request_data='{"request_id": "req-999"}',
             submitted_at=now,
             expires_at=now + 3600,
@@ -978,7 +955,7 @@ class TestPendingTasks:
         tasks = db2.load_pending_tasks()
         assert len(tasks) == 1
         assert tasks[0].nick == "grace"
-        assert tasks[0].task_type == "animate"
+        assert tasks[0].task_type == "draw"
         assert tasks[0].is_channel == 0
         db2.close()
 
@@ -1236,12 +1213,12 @@ class TestSchemaV3Migration:
             "claimed_until, last_error) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '')",
             (
-                "animate",
+                "draw",
                 "alice",
                 "#test",
                 1,
                 "dancing cat",
-                "grok-imagine-video",
+                "vertex_ai/imagen-4.0-generate-001",
                 '{"request_id": "req-1"}',
                 now,
                 now + 3600,
@@ -1449,112 +1426,6 @@ class TestLogUsageExtended:
             assert row[2] == ""
         finally:
             conn.close()
-
-
-class TestFlaggedUsers:
-    """Test flagged user CRUD operations and refusal counting."""
-
-    def test_flag_user_creates_record(self, tmp_path: Path) -> None:
-        """GIVEN no flags WHEN flagging a user THEN record appears in get_flagged_users."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        result = db.flag_user("alice", "repeated abuse", auto_flagged=True)
-        assert result is True
-
-        flagged = db.get_flagged_users()
-        assert len(flagged) == 1
-        assert isinstance(flagged[0], FlaggedUserRow)
-        assert flagged[0].account == "alice"
-        assert flagged[0].reason == "repeated abuse"
-        assert flagged[0].auto_flagged == 1
-        assert flagged[0].resolved_at is None
-        assert flagged[0].resolved_by is None
-
-    def test_flag_user_idempotent(self, tmp_path: Path) -> None:
-        """GIVEN an already-flagged user WHEN flagging again THEN no-op, original reason preserved."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "first reason", auto_flagged=False)
-        result = db.flag_user("alice", "second reason", auto_flagged=True)
-        assert result is False
-
-        flagged = db.get_flagged_users()
-        assert len(flagged) == 1
-        assert flagged[0].reason == "first reason"
-        assert flagged[0].auto_flagged == 0
-
-    def test_is_user_flagged_returns_true(self, tmp_path: Path) -> None:
-        """GIVEN a flagged user WHEN checking is_user_flagged THEN returns True."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "test", auto_flagged=False)
-        assert db.is_user_flagged("alice") is True
-
-    def test_is_user_flagged_returns_false_when_not_flagged(self, tmp_path: Path) -> None:
-        """GIVEN no flags WHEN checking is_user_flagged THEN returns False."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        assert db.is_user_flagged("nobody") is False
-
-    def test_is_user_flagged_returns_false_after_unflag(self, tmp_path: Path) -> None:
-        """GIVEN a flagged then unflagged user WHEN checking THEN returns False."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "test", auto_flagged=False)
-        db.unflag_user("alice", resolved_by="admin")
-        assert db.is_user_flagged("alice") is False
-
-    def test_unflag_sets_resolved_fields(self, tmp_path: Path) -> None:
-        """GIVEN a flagged user WHEN unflagging THEN resolved_at and resolved_by are set."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "test", auto_flagged=True)
-        before = time.time()
-        result = db.unflag_user("alice", resolved_by="admin")
-        after = time.time()
-        assert result is True
-
-        # Read the raw row to check resolved fields
-        conn = db._connect()
-        try:
-            row = conn.execute(
-                "SELECT resolved_at, resolved_by FROM flagged_users WHERE account = 'alice'"
-            ).fetchone()
-            assert row is not None
-            assert row[0] is not None
-            assert before <= row[0] <= after
-            assert row[1] == "admin"
-        finally:
-            conn.close()
-
-    def test_unflag_nonexistent_returns_false(self, tmp_path: Path) -> None:
-        """GIVEN no flags WHEN unflagging a user THEN returns False."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        result = db.unflag_user("nobody", resolved_by="admin")
-        assert result is False
-
-    def test_get_flagged_users_excludes_resolved(self, tmp_path: Path) -> None:
-        """GIVEN two flagged users, one resolved WHEN listing THEN only active returned."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "reason a", auto_flagged=False)
-        db.flag_user("bob", "reason b", auto_flagged=True)
-        db.unflag_user("alice", resolved_by="admin")
-
-        flagged = db.get_flagged_users()
-        assert len(flagged) == 1
-        assert flagged[0].account == "bob"
-
-    def test_reflag_after_unflag_creates_new_flag(self, tmp_path: Path) -> None:
-        """GIVEN a flagged-then-unflagged user WHEN re-flagging THEN active again."""
-        db = LLMDatabase(str(tmp_path / "test.db"))
-        db.flag_user("alice", "first offense", auto_flagged=False)
-        db.unflag_user("alice", resolved_by="admin")
-        assert db.is_user_flagged("alice") is False
-
-        result = db.flag_user("alice", "second offense", auto_flagged=True)
-        assert result is True
-        assert db.is_user_flagged("alice") is True
-
-        flagged = db.get_flagged_users()
-        assert len(flagged) == 1
-        assert flagged[0].account == "alice"
-        assert flagged[0].reason == "second offense"
-        assert flagged[0].auto_flagged == 1
-        assert flagged[0].resolved_at is None
 
 
 class TestConversationPersistence:

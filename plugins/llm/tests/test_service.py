@@ -89,28 +89,6 @@ class TestLLMService:
         self.mocker.patch.object(self.service, "_is_private_host", return_value=False)
         assert self.service.validate_image_url(url) is True
 
-    def test_safe_key_display_shows_only_first_3_chars(self) -> None:
-        """GIVEN API key WHEN displaying safely THEN only first 3 chars shown."""
-        api_key = "AIzaFAKE_TEST_KEY_NOT_REAL_1234567890"
-        result = self.service.safe_key_display(api_key)
-
-        assert "AIz" in result
-        assert "FAKE_TEST_KEY_NOT_REAL_1234567890" not in result
-        assert "chars hidden" in result
-
-    def test_safe_key_display_empty_key(self) -> None:
-        """GIVEN empty API key WHEN displaying THEN shows 'Not configured'."""
-        assert self.service.safe_key_display("") == "Not configured"
-        assert self.service.safe_key_display("   ") == "Not configured"
-
-    def test_safe_key_display_none_key(self) -> None:
-        """GIVEN None API key WHEN displaying THEN shows 'Not configured'."""
-        assert self.service.safe_key_display(None) == "Not configured"  # type: ignore
-
-    def test_safe_key_display_short_key(self) -> None:
-        """GIVEN too short API key WHEN displaying THEN shows invalid."""
-        assert self.service.safe_key_display("ab") == "Invalid (too short)"
-
     def test_api_key_sanitization_sk_format(self) -> None:
         """GIVEN text with configured sk-* API key WHEN sanitized THEN key redacted."""
         api_key = "sk-test-fake"  # noqa: S105
@@ -119,7 +97,6 @@ class TestLLMService:
                 "askApiKey": api_key,
                 "codeApiKey": "",
                 "drawApiKey": "",
-                "animateApiKey": "",
             }.get(key, "")
         )
         text_with_key = f"Error: Invalid API key {api_key}"
@@ -135,7 +112,6 @@ class TestLLMService:
                 "askApiKey": "",
                 "codeApiKey": "",
                 "drawApiKey": api_key,
-                "animateApiKey": "",
             }.get(key, "")
         )
         text_with_key = f"Error with key {api_key}"
@@ -157,7 +133,6 @@ class TestLLMService:
                 "askApiKey": ask_key,
                 "codeApiKey": code_key,
                 "drawApiKey": "",
-                "animateApiKey": "",
             }.get(key, "")
         )
         text = f"Error with {ask_key} and also {code_key}"
@@ -173,7 +148,6 @@ class TestLLMService:
                 "askApiKey": "",
                 "codeApiKey": "",
                 "drawApiKey": "",
-                "animateApiKey": "",
             }.get(key, "")
         )
         text = "Error: some random text with no keys"
@@ -2965,60 +2939,6 @@ class TestErrorClassification:
         err = litellm_module.RateLimitError(
             message="rate limited", llm_provider="openai", model="gpt-4"
         )
-        assert LLMService._is_terminal_error(err) is False
-
-    def test_requests_http_404_is_terminal(self) -> None:
-        """GIVEN requests.HTTPError with 404 WHEN classified THEN terminal."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 404
-        err = requests.HTTPError(response=resp)
-        assert LLMService._is_terminal_error(err) is True
-
-    def test_requests_http_401_is_terminal(self) -> None:
-        """GIVEN requests.HTTPError with 401 WHEN classified THEN terminal."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 401
-        err = requests.HTTPError(response=resp)
-        assert LLMService._is_terminal_error(err) is True
-
-    def test_requests_http_410_is_terminal(self) -> None:
-        """GIVEN requests.HTTPError with 410 WHEN classified THEN terminal."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 410
-        err = requests.HTTPError(response=resp)
-        assert LLMService._is_terminal_error(err) is True
-
-    def test_requests_http_429_is_transient(self) -> None:
-        """GIVEN requests.HTTPError with 429 WHEN classified THEN transient."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 429
-        err = requests.HTTPError(response=resp)
-        assert LLMService._is_terminal_error(err) is False
-
-    def test_requests_http_500_is_transient(self) -> None:
-        """GIVEN requests.HTTPError with 500 WHEN classified THEN transient."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 500
-        err = requests.HTTPError(response=resp)
-        assert LLMService._is_terminal_error(err) is False
-
-    def test_requests_http_503_is_transient(self) -> None:
-        """GIVEN requests.HTTPError with 503 WHEN classified THEN transient."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 503
-        err = requests.HTTPError(response=resp)
         assert LLMService._is_terminal_error(err) is False
 
 

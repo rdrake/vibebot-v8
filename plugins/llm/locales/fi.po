@@ -34,14 +34,6 @@ msgstr "Ei keskustelukontekstia tyhjennettäväksi."
 msgid "Error clearing context."
 msgstr "Virhe kontekstin tyhjentämisessä."
 
-#: plugin.py:487
-msgid "API Key Status: ask=%s, code=%s, draw=%s"
-msgstr "API-avainten tila: ask=%s, code=%s, draw=%s"
-
-#: plugin.py:497
-msgid "Error checking API key status."
-msgstr "Virhe API-avainten tilan tarkistuksessa."
-
 #: service.py:334
 msgid "Prompt cannot be empty"
 msgstr "Kehote ei voi olla tyhjä"
