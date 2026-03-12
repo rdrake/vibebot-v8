@@ -46,6 +46,9 @@ _ = PluginInternationalization("LLM")
 # Icon shown when Google grounding/search was used in the response
 GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 
+# Commands that support long-term memory extraction
+_MEMORY_COMMANDS = frozenset({"ask", "picard", "code"})
+
 
 class PreflightResult(NamedTuple):
     """Result of the shared command preflight check.
@@ -1379,6 +1382,13 @@ class LLM(callbacks.Plugin):
         """
         return self.registryValue("contextEnabled", channel)
 
+    def _get_user_memories(self, nick: str) -> list[str]:
+        """Get memory facts for a user as a list of strings."""
+        if self.db is None:
+            return []
+        rows = self.db.get_memories(nick)
+        return [row.fact for row in rows]
+
     def _store_context_and_log_usage(
         self,
         nick: str,
@@ -1436,6 +1446,35 @@ class LLM(callbacks.Plugin):
             error_detail=error_detail,
         )
 
+        # Schedule background memory extraction for eligible commands
+        try:
+            if (
+                command in _MEMORY_COMMANDS
+                and result.error is None
+                and self.registryValue("memoryEnabled", channel)
+            ):
+                existing = self._get_user_memories(nick)
+                max_memories = self.registryValue("memoryMaxPerUser")
+                if len(existing) < max_memories:
+                    raw_response = result.content
+
+                    def _extract_memories_bg() -> None:
+                        try:
+                            facts = self.llm_service.extract_memories(
+                                nick, channel, text, raw_response, existing
+                            )
+                            for fact in facts:
+                                if len(self.db.get_memories(nick)) >= max_memories:
+                                    break
+                                self.db.save_memory(nick, fact, channel)
+                        except Exception:
+                            log.exception("Memory extraction failed for %s", nick)
+
+                    event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
+                    schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
+        except Exception:
+            log.exception("Memory extraction scheduling failed for %s", nick)
+
     def ask(
         self,
         irc: callbacks.Irc,
@@ -1482,6 +1521,8 @@ class LLM(callbacks.Plugin):
             else:
                 history, channel_history = [], []
 
+            memories = self._get_user_memories(nick)
+
             with self._allow_concurrent():
                 if images:
                     # Clean prompt by removing image URLs
@@ -1498,6 +1539,7 @@ class LLM(callbacks.Plugin):
                         channel_history=channel_history,
                         irc=irc,
                         msg=msg,
+                        memories=memories,
                     )
                 else:
                     result = self.llm_service.completion(
@@ -1507,6 +1549,7 @@ class LLM(callbacks.Plugin):
                         channel_history=channel_history,
                         irc=irc,
                         msg=msg,
+                        memories=memories,
                     )
 
                 # Format response with grounding icon if search was used
@@ -1584,6 +1627,7 @@ class LLM(callbacks.Plugin):
                 history, channel_history = [], []
 
             picard_prompt = self.registryValue("picardSystemPrompt", channel)
+            memories = self._get_user_memories(nick)
 
             with self._allow_concurrent():
                 result = self.llm_service.completion(
@@ -1594,6 +1638,7 @@ class LLM(callbacks.Plugin):
                     irc=irc,
                     msg=msg,
                     system_prompt=picard_prompt,
+                    memories=memories,
                 )
 
                 response = result.content
@@ -1669,6 +1714,8 @@ class LLM(callbacks.Plugin):
             else:
                 history, channel_history = [], []
 
+            memories = self._get_user_memories(nick)
+
             with self._allow_concurrent():
                 result = self.llm_service.completion(
                     text,
@@ -1677,6 +1724,7 @@ class LLM(callbacks.Plugin):
                     channel_history=channel_history,
                     irc=irc,
                     msg=msg,
+                    memories=memories,
                 )
 
                 response = result.content

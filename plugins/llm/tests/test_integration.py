@@ -337,3 +337,161 @@ class TestRateLimitFullFlow:
         )
         plugin.draw(mock_irc, mock_msg, ["unflagged draw"])
         mock_irc.reply.assert_called_once()
+
+
+class TestMemoryIntegration:
+    """Test memory extraction and retrieval wiring."""
+
+    @pytest.fixture
+    def plugin_with_real_db(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> tuple:
+        """Create plugin with real database."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": True})
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        return plugin, mock_irc
+
+    def test_ask_passes_memories_to_completion(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN saved memory WHEN ask called THEN completion receives memories kwarg."""
+        from llm.service import CompletionResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        # Save a memory for the user
+        plugin.db.save_memory("testuser", "Likes Python programming", "#test")
+
+        mock_irc.state.nickToAccount.return_value = "testuser"
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "testuser!user@host"
+        mock_msg.args = ("#test", "ask hello")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#test"
+        mock_msg.nick = "testuser"
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Hello there!",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.detect_images.return_value = []
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        # Verify completion was called with memories kwarg
+        plugin.llm_service.completion.assert_called_once()
+        call_kwargs = plugin.llm_service.completion.call_args
+        assert call_kwargs.kwargs.get("memories") == ["Likes Python programming"]
+
+    def test_ask_triggers_background_extraction(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN successful ask WHEN response received THEN background extraction scheduled."""
+        from llm.plugin import schedule
+        from llm.service import CompletionResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        mock_irc.state.nickToAccount.return_value = "testuser"
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "testuser!user@host"
+        mock_msg.args = ("#test", "ask hello")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#test"
+        mock_msg.nick = "testuser"
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Hello there!",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.detect_images.return_value = []
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        # Verify schedule.addEvent was called with a "llm_memory_" prefixed name
+        add_event_calls = schedule.addEvent.call_args_list
+        memory_calls = [c for c in add_event_calls if str(c).find("llm_memory_") != -1]
+        assert len(memory_calls) == 1
+        # Verify the name kwarg starts with llm_memory_
+        name_arg = memory_calls[0].kwargs.get("name", memory_calls[0][1].get("name", ""))
+        assert name_arg.startswith("llm_memory_")
+
+    def test_ask_skips_extraction_when_memory_disabled(
+        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """GIVEN memoryEnabled=False WHEN ask succeeds THEN no extraction event scheduled."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        db_path = str(tmp_path / "test.db")
+        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": False})
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker, mock_database=False)
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        from llm.service import CompletionResult
+
+        mock_irc.state.nickToAccount.return_value = "testuser"
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "testuser!user@host"
+        mock_msg.args = ("#test", "ask hello")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#test"
+        mock_msg.nick = "testuser"
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Hello there!",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.detect_images.return_value = []
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        # No memory extraction events should be scheduled
+        memory_calls = [c for c in mock_add_event.call_args_list if "llm_memory_" in str(c)]
+        assert len(memory_calls) == 0
