@@ -1492,6 +1492,7 @@ class LLMService:
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
         system_prompt: str | None = None,
+        memories: list[str] | None = None,
     ) -> CompletionResult:
         """Generate text completion with optional vision and conversation history.
 
@@ -1512,6 +1513,9 @@ class LLMService:
             msg: IRC message object for context (optional)
             system_prompt: Optional override for the system prompt. When provided,
                 this is used instead of the registry ``{command}SystemPrompt`` value.
+            memories: Optional list of remembered facts about the user.
+                When provided and non-empty, these are appended to the system
+                prompt so the LLM can personalize its responses.
 
         Returns:
             CompletionResult with content and grounding_used flag
@@ -1563,6 +1567,14 @@ class LLMService:
 
             # Build system prompt (context now injected as user message in _build_messages)
             built_system_prompt = self._build_system_prompt(base_system_prompt)
+
+            # Inject user memories into system prompt
+            if memories:
+                memory_section = (
+                    "\n\nWhat you know about this user from past conversations:\n"
+                    + "\n".join(f"- {fact}" for fact in memories)
+                )
+                built_system_prompt += memory_section
 
             # Build messages with history, system prompt, and context
             messages = self._build_messages(

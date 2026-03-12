@@ -3144,6 +3144,68 @@ class TestServerHeaderLogging:
         assert header_logged, f"Expected server headers in debug log, got: {debug_calls}"
 
 
+class TestMemoryInjection:
+    """Test memory injection into system prompts."""
+
+    def test_completion_with_memories_injects_into_prompt(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN memories WHEN completion called THEN facts in system prompt."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = "Hello!"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response._hidden_params = {"response_cost": 0.001}
+        mock_litellm.completion.return_value = mock_response
+        service.completion("hi", command="ask", memories=["likes Python", "lives in Toronto"])
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert "likes Python" in system_msg["content"]
+        assert "lives in Toronto" in system_msg["content"]
+
+    def test_completion_without_memories_no_section(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN no memories WHEN completion called THEN no memory section."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = "Hello!"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response._hidden_params = {"response_cost": 0.001}
+        mock_litellm.completion.return_value = mock_response
+        service.completion("hi", command="ask")
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert "What you know about this user" not in system_msg["content"]
+
+    def test_completion_with_empty_memories_no_section(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN empty memories list WHEN completion called THEN no memory section."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = "Hello!"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response._hidden_params = {"response_cost": 0.001}
+        mock_litellm.completion.return_value = mock_response
+        service.completion("hi", command="ask", memories=[])
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert "What you know about this user" not in system_msg["content"]
+
+
 class TestMemoryExtraction:
     """Test memory fact extraction from conversations."""
 
