@@ -134,6 +134,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "codeExpiry": 60,
         "drawExpiry": 60,
         "animateExpiry": 3600,
+        # Memory extraction
+        "memoryEnabled": True,
+        "memoryExtractionModel": "gemini/gemini-2.0-flash-lite",
+        "memoryMaxPerUser": 50,
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,

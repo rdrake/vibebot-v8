@@ -267,6 +267,31 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
+# Memory Extraction
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "memoryEnabled",
+    registry.Boolean(True, _("""Enable automatic memory extraction from command interactions.""")),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "memoryExtractionModel",
+    ValidatedModelName(
+        "gemini/gemini-2.0-flash-lite",
+        _("""Model for memory extraction (cheap flash-tier recommended)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "memoryMaxPerUser",
+    registry.PositiveInteger(50, _("""Maximum number of memories stored per user.""")),
+)
+
+# ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================
 
