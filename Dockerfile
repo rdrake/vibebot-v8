@@ -7,6 +7,7 @@ ENV UV_LINK_MODE=copy
 # Install dependencies first (incomplete workspace - use --frozen)
 COPY pyproject.toml uv.lock ./
 COPY plugins/llm/pyproject.toml plugins/llm/
+COPY plugins/rpg/pyproject.toml plugins/rpg/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-workspace --no-dev
 
