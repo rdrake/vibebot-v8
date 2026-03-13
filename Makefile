@@ -16,10 +16,10 @@ run:
 	uv run limnoria bot.conf
 
 test:
-	uv run pytest plugins/llm/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=80
+	uv run pytest plugins/llm/tests/ plugins/rpg/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=80
 
 test-all:
-	uv run pytest plugins/llm/tests/ -v --cov --cov-report=term-missing --cov-fail-under=80
+	uv run pytest plugins/llm/tests/ plugins/rpg/tests/ -v --cov --cov-report=term-missing --cov-fail-under=80
 
 lint:
 	uv run ruff check .
@@ -31,7 +31,7 @@ format-check:
 	uv run ruff format --check .
 
 typecheck:
-	uv run ty check plugins/llm/src/
+	uv run ty check plugins/llm/src/ plugins/rpg/src/
 
 syntax-check:
 	uv run python scripts/check_python_syntax_compat.py --versions 3.12 3.13 3.14
