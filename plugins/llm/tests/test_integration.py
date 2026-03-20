@@ -704,6 +704,63 @@ class TestMemoriesCommand:
         mock_irc.error.assert_called_once()
         assert "Usage" in mock_irc.error.call_args[0][0]
 
+    def test_memories_cleanup_own(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
+        """GIVEN user with memories WHEN memories cleanup THEN cleanup scheduled."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+
+        plugin.memories(mock_irc, mock_msg, ["cleanup"])
+
+        mock_irc.reply.assert_called_once()
+        assert "Running cleanup" in mock_irc.reply.call_args[0][0]
+
+    def test_memories_cleanup_other_user_owner(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN owner WHEN memories cleanup <nick> THEN cleanup scheduled for that user."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("otheruser", "fact a", "#test")
+        plugin.db.save_memory("otheruser", "fact b", "#test")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        plugin.memories(mock_irc, mock_msg, ["cleanup otheruser"])
+
+        mock_irc.reply.assert_called_once()
+        assert "otheruser" in mock_irc.reply.call_args[0][0]
+
+    def test_memories_cleanup_other_user_non_owner(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN non-owner WHEN memories cleanup <nick> THEN error."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+
+        plugin.memories(mock_irc, mock_msg, ["cleanup otheruser"])
+
+        mock_irc.error.assert_called_once()
+
+    def test_memories_cleanup_too_few(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN user with < 2 memories WHEN cleanup THEN not enough message."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("testuser", "only one fact", "#test")
+
+        plugin.memories(mock_irc, mock_msg, ["cleanup"])
+
+        mock_irc.reply.assert_called_once()
+        assert "Not enough" in mock_irc.reply.call_args[0][0]
+
     def test_memories_invalid_subcommand(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:

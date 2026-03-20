@@ -2029,12 +2029,13 @@ class LLM(callbacks.Plugin):
         args: list,
         text: str | None,
     ) -> None:
-        """[<nick> | del(ete) <id> | edit <id> <new text> | clear]
+        """[<nick> | del(ete) <id> | edit <id> <text> | clear | cleanup [nick]]
 
         View or manage your stored memories. Use 'delete <id>' to remove
-        a specific memory, 'edit <id> <text>' to update one, or 'clear'
-        to remove all. Bot owners can view another user's memories with
-        'memories <nick>'.
+        a specific memory, 'edit <id> <text>' to update one, 'clear' to
+        remove all, or 'cleanup' to trigger a cleanup pass. Bot owners
+        can use 'memories <nick>' or 'memories cleanup <nick>' for other
+        users.
         """
         nick = self._get_identity(irc, msg)
 
@@ -2076,16 +2077,33 @@ class LLM(callbacks.Plugin):
             else:
                 irc.error("Memory not found or doesn't belong to you.")
 
+        elif subcommand == "cleanup":
+            # cleanup [nick] — nick requires owner
+            if len(parts) >= 2:
+                if not ircdb.checkCapability(msg.prefix, "owner"):
+                    irc.error("Only bot owners can clean up other users' memories.")
+                    return
+                target = parts[1]
+            else:
+                target = nick
+            channel = msg.channel or msg.args[0] if msg.args else "#unknown"
+            rows = self.db.get_memories(target)
+            if len(rows) < 2:
+                irc.reply(f"Not enough memories to clean up for {target}.", prefixNick=False)
+                return
+            irc.reply(f"Running cleanup on {len(rows)} memories for {target}...", prefixNick=False)
+            self._schedule_memory_cleanup(target, channel)
+
         elif len(parts) == 1:
             # Owner viewing another user's memories
             if not ircdb.checkCapability(msg.prefix, "owner"):
-                irc.error("Usage: memories [delete <id> | edit <id> <text> | clear]")
+                irc.error("Usage: memories [delete <id> | edit <id> <text> | clear | cleanup]")
                 return
             target = parts[0]
             self._memories_list(irc, target, target)
 
         else:
-            irc.error("Usage: memories [delete <id> | edit <id> <text> | clear]")
+            irc.error("Usage: memories [delete <id> | edit <id> <text> | clear | cleanup]")
 
     def _memories_list(self, irc: callbacks.Irc, nick: str, display_name: str) -> None:
         """List memories for a user."""
