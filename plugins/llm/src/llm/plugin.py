@@ -1622,6 +1622,8 @@ class LLM(callbacks.Plugin):
                 existing_rows = self.db.get_memories(nick)
                 existing_facts = [r.fact for r in existing_rows]
                 max_memories = self.registryValue("memoryMaxPerUser")
+
+                # Schedule extraction if under the cap
                 if len(existing_rows) < max_memories:
                     raw_response = result.content
 
@@ -1635,25 +1637,22 @@ class LLM(callbacks.Plugin):
                                 if 0 <= idx < len(existing_rows):
                                     self.db.delete_memory(nick, existing_rows[idx].id)
                             # Add new facts
-                            saved_count = 0
                             for fact in extraction.add:
                                 if len(self.db.get_memories(nick)) >= max_memories:
                                     break
                                 self.db.save_memory(nick, fact, channel)
-                                saved_count += 1
-
-                            # Trigger cleanup if enough new saves accumulated
-                            if saved_count > 0:
-                                interval = self.registryValue("memoryCleanupInterval")
-                                if interval:
-                                    new_count = self.db.increment_memory_saves(nick)
-                                    if new_count >= interval:
-                                        self._schedule_memory_cleanup(nick, channel)
                         except Exception:
                             log.exception("Memory extraction failed for %s", nick)
 
                     event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
                     schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
+
+                # Trigger cleanup every N commands (not saves) if user has memories
+                interval = self.registryValue("memoryCleanupInterval")
+                if interval and len(existing_rows) >= 2:
+                    new_count = self.db.increment_memory_saves(nick)
+                    if new_count >= interval:
+                        self._schedule_memory_cleanup(nick, channel)
         except Exception:
             log.exception("Memory extraction scheduling failed for %s", nick)
 
