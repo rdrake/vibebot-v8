@@ -117,6 +117,39 @@ _MEMORY_CLEANUP_PROMPT = (
     "Indices not mentioned in drop or merge are kept as-is.\n"
 )
 
+# JSON schema for structured output from memory extraction
+_EXTRACTION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "add": {"type": "array", "items": {"type": "string"}},
+        "remove": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["add", "remove"],
+    "additionalProperties": False,
+}
+
+# JSON schema for structured output from memory cleanup
+_CLEANUP_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "drop": {"type": "array", "items": {"type": "integer"}},
+        "merge": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "prefixItems": [
+                    {"type": "array", "items": {"type": "integer"}},
+                    {"type": "string"},
+                ],
+                "minItems": 2,
+                "maxItems": 2,
+            },
+        },
+    },
+    "required": ["drop", "merge"],
+    "additionalProperties": False,
+}
+
 DELIVERY_MAX_ATTEMPTS = 10
 
 
@@ -2594,19 +2627,21 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 messages=messages,
                 api_key=api_key,
                 timeout=15,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "extraction",
+                        "strict": True,
+                        "schema": _EXTRACTION_SCHEMA,
+                    },
+                },
             )
             content = response.choices[0].message.content.strip()
             parsed = json.loads(content)
 
-            if isinstance(parsed, dict):
-                add = parsed.get("add", [])
-                remove = parsed.get("remove", [])
-                if isinstance(add, list) and isinstance(remove, list):
-                    add = [f for f in add if isinstance(f, str)]
-                    remove = [i for i in remove if isinstance(i, int)]
-                    return ExtractionResult(add=add, remove=remove)
-
-            return ExtractionResult()
+            add = [f for f in parsed.get("add", []) if isinstance(f, str)]
+            remove = [i for i in parsed.get("remove", []) if isinstance(i, int)]
+            return ExtractionResult(add=add, remove=remove)
         except Exception:
             return ExtractionResult()
 
@@ -2649,6 +2684,14 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 messages=messages,
                 api_key=api_key,
                 timeout=30,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "cleanup",
+                        "strict": True,
+                        "schema": _CLEANUP_SCHEMA,
+                    },
+                },
             )
             content = response.choices[0].message.content.strip()
             parsed = json.loads(content)
