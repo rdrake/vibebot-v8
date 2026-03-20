@@ -705,22 +705,33 @@ class TestMemoriesCommand:
         assert "Usage" in mock_irc.error.call_args[0][0]
 
     def test_memories_cleanup_own(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
-        """GIVEN user with memories WHEN memories cleanup THEN cleanup scheduled."""
+        """GIVEN user with memories WHEN memories cleanup THEN summary shown."""
+        from llm.service import CleanupResult
+
         plugin, mock_irc = plugin_with_real_db
         mock_msg = self._make_msg(mocker)
 
         plugin.db.save_memory("testuser", "fact a", "#test")
         plugin.db.save_memory("testuser", "fact b", "#test")
+        plugin.db.save_memory("testuser", "stale fact", "#test")
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(drop=[0], merge=[])
+        )
 
         plugin.memories(mock_irc, mock_msg, ["cleanup"])
 
         mock_irc.reply.assert_called_once()
-        assert "Running cleanup" in mock_irc.reply.call_args[0][0]
+        reply = mock_irc.reply.call_args[0][0]
+        assert "Before: 3" in reply
+        assert "after: 2" in reply
 
     def test_memories_cleanup_other_user_owner(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN owner WHEN memories cleanup <nick> THEN cleanup scheduled for that user."""
+        """GIVEN owner WHEN memories cleanup <nick> THEN cleanup runs for that user."""
+        from llm.service import CleanupResult
+
         plugin, mock_irc = plugin_with_real_db
         mock_msg = self._make_msg(mocker)
 
@@ -728,11 +739,15 @@ class TestMemoriesCommand:
         plugin.db.save_memory("otheruser", "fact b", "#test")
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(drop=[], merge=[])
+        )
 
         plugin.memories(mock_irc, mock_msg, ["cleanup otheruser"])
 
         mock_irc.reply.assert_called_once()
-        assert "otheruser" in mock_irc.reply.call_args[0][0]
+        reply = mock_irc.reply.call_args[0][0]
+        assert "Before: 2" in reply
 
     def test_memories_cleanup_other_user_non_owner(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -885,10 +900,11 @@ class TestMemoryCleanup:
             return_value=CleanupResult(error="LLM returned garbage")
         )
 
-        plugin._run_memory_cleanup("testuser", "#test")
+        summary = plugin._run_memory_cleanup("testuser", "#test")
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 2
+        assert "Cleanup failed" in summary
 
     def test_cleanup_aborts_on_snapshot_mismatch(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -907,77 +923,29 @@ class TestMemoryCleanup:
 
         plugin.llm_service.cleanup_memories = mocker.MagicMock(side_effect=cleanup_with_side_effect)
 
-        plugin._run_memory_cleanup("testuser", "#test")
+        summary = plugin._run_memory_cleanup("testuser", "#test")
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 3
+        assert "aborted" in summary.lower()
 
-    def test_cleanup_skips_if_already_in_flight(
+    def test_cleanup_returns_summary(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN nick already being cleaned WHEN scheduled THEN skip."""
-        plugin, mock_irc = plugin_with_real_db
-
-        plugin._cleanup_in_flight.add("testuser")
-
-        plugin.db.save_memory("testuser", "fact a", "#test")
-        plugin.db.save_memory("testuser", "fact b", "#test")
-
-        plugin._run_memory_cleanup("testuser", "#test")
-
-        rows = plugin.db.get_memories("testuser")
-        assert len(rows) == 2
-
-    def test_cleanup_resets_counter_on_success(
-        self, plugin_with_real_db: tuple, mocker: MockerFixture
-    ) -> None:
-        """GIVEN successful cleanup WHEN done THEN saves counter is reset."""
+        """GIVEN successful cleanup WHEN run THEN returns summary string."""
         from llm.service import CleanupResult
 
         plugin, mock_irc = plugin_with_real_db
 
         plugin.db.save_memory("testuser", "fact a", "#test")
         plugin.db.save_memory("testuser", "fact b", "#test")
-        plugin.db.increment_memory_saves("testuser")
-        plugin.db.increment_memory_saves("testuser")
-        plugin.db.increment_memory_saves("testuser")
+        plugin.db.save_memory("testuser", "stale", "#test")
 
         plugin.llm_service.cleanup_memories = mocker.MagicMock(
-            return_value=CleanupResult(drop=[], merge=[])
+            return_value=CleanupResult(drop=[0], merge=[])
         )
 
-        plugin._run_memory_cleanup("testuser", "#test")
-
-        assert plugin.db.get_memory_saves("testuser") == 0
-
-    def test_cleanup_disabled_when_interval_zero(
-        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
-    ) -> None:
-        """GIVEN memoryCleanupInterval=0 WHEN saves happen THEN no cleanup scheduled."""
-        from llm.plugin import LLM
-
-        from .conftest import make_registry_side_effect, plugin_init_patches
-
-        db_path = str(tmp_path / "test.db")
-        registry = make_registry_side_effect(
-            {
-                "databasePath": db_path,
-                "memoryEnabled": True,
-                "memoryCleanupInterval": 0,
-            }
-        )
-        mocker.patch.object(LLM, "registryValue", side_effect=registry)
-        plugin_init_patches(mocker, mock_database=False)
-        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
-
-        plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.MagicMock(side_effect=registry)
-        plugin._MetaSynchronized_rlock = threading.RLock()
-
-        # Simulate saving 5 memories — no cleanup should trigger
-        for i in range(5):
-            plugin.db.save_memory("testuser", f"fact {i}", "#test")
-            plugin.db.increment_memory_saves("testuser")
-
-        cleanup_calls = [c for c in mock_add_event.call_args_list if "llm_cleanup_" in str(c)]
-        assert len(cleanup_calls) == 0
+        summary = plugin._run_memory_cleanup("testuser", "#test")
+        assert "Before: 3" in summary
+        assert "dropped: 1" in summary
+        assert "after: 2" in summary

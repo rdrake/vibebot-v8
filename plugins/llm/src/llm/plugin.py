@@ -354,12 +354,6 @@ class LLM(callbacks.Plugin):
         # Pending spontaneous schedule events (cancelled on unload)
         self._spontaneous_events: set[str] = set()
 
-        # Nicks currently undergoing background memory cleanup (de-dup guard)
-        self._cleanup_in_flight: set[str] = set()
-
-        # Pending memory cleanup schedule events (cancelled on unload)
-        self._cleanup_events: set[str] = set()
-
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -440,13 +434,6 @@ class LLM(callbacks.Plugin):
                     with contextlib.suppress(KeyError):
                         schedule.removeEvent(event_name)
                 self._reminders.clear()
-
-        # Cancel pending memory cleanup events
-        if hasattr(self, "_cleanup_events"):
-            for event_name in list(self._cleanup_events):
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent(event_name)
-            self._cleanup_events.clear()
 
         # Cancel pending spontaneous events and clear cooldowns
         if hasattr(self, "_spontaneous_events"):
@@ -1495,65 +1482,52 @@ class LLM(callbacks.Plugin):
         rows = self.db.get_memories(nick)
         return [row.fact for row in rows]
 
-    def _schedule_memory_cleanup(self, nick: str, channel: str) -> None:
-        """Schedule a background memory cleanup for a user."""
-        if nick in self._cleanup_in_flight:
-            return
+    def _run_memory_cleanup(self, nick: str, channel: str) -> str:
+        """Run memory cleanup for a user. Returns a summary string."""
+        snapshot = self.db.get_memories(nick)
+        if len(snapshot) < 2:
+            return "Not enough memories to clean up."
 
-        def _cleanup_bg() -> None:
-            try:
-                self._run_memory_cleanup(nick, channel)
-            finally:
-                self._cleanup_events.discard(event_name)
+        before_count = len(snapshot)
+        result = self.llm_service.cleanup_memories(nick, channel, snapshot)
 
-        event_name = f"llm_cleanup_{uuid.uuid4().hex[:8]}"
-        self._cleanup_events.add(event_name)
-        schedule.addEvent(_cleanup_bg, time.time() + 0.5, name=event_name)
+        if result.error:
+            return f"Cleanup failed: {result.error}"
 
-    def _run_memory_cleanup(self, nick: str, channel: str) -> None:
-        """Run memory cleanup for a user. Called from scheduled event."""
-        if nick in self._cleanup_in_flight:
-            return
+        # Abort if memory count changed during LLM call (race protection)
+        current = self.db.get_memories(nick)
+        if len(current) != len(snapshot):
+            return "Cleanup aborted: memories changed during processing."
 
-        self._cleanup_in_flight.add(nick)
-        try:
-            snapshot = self.db.get_memories(nick)
-            if len(snapshot) < 2:
-                return
+        # Apply drops
+        dropped = 0
+        for idx in result.drop:
+            if 0 <= idx < len(snapshot):
+                self.db.delete_memory(nick, snapshot[idx].id)
+                dropped += 1
 
-            result = self.llm_service.cleanup_memories(nick, channel, snapshot)
+        # Apply merges: delete sources, insert merged fact
+        merged = 0
+        for entry in result.merge:
+            sources = [snapshot[i] for i in entry.indices if 0 <= i < len(snapshot)]
+            if len(sources) < 2:
+                continue
+            oldest = min(sources, key=lambda s: s.created_at)
+            for source in sources:
+                self.db.delete_memory(nick, source.id)
+            self.db.save_memory(nick, entry.text, oldest.source_channel)
+            merged += 1
 
-            if result.error:
-                log.warning("Memory cleanup failed for %s: %s", nick, result.error)
-                return
+        after_count = len(self.db.get_memories(nick))
+        merged_sources = sum(len(e.indices) for e in result.merge)
 
-            # Abort if memory count changed during LLM call (race protection)
-            current = self.db.get_memories(nick)
-            if len(current) != len(snapshot):
-                log.info("Memory cleanup aborted for %s: count changed", nick)
-                return
-
-            # Apply drops
-            for idx in result.drop:
-                if 0 <= idx < len(snapshot):
-                    self.db.delete_memory(nick, snapshot[idx].id)
-
-            # Apply merges: delete sources, insert merged fact
-            for entry in result.merge:
-                sources = [snapshot[i] for i in entry.indices if 0 <= i < len(snapshot)]
-                if len(sources) < 2:
-                    continue
-                oldest = min(sources, key=lambda s: s.created_at)
-                for source in sources:
-                    self.db.delete_memory(nick, source.id)
-                self.db.save_memory(nick, entry.text, oldest.source_channel)
-
-            # Success — reset counter
-            self.db.reset_memory_saves(nick)
-        except Exception:
-            log.exception("Memory cleanup error for %s", nick)
-        finally:
-            self._cleanup_in_flight.discard(nick)
+        parts = [f"Before: {before_count}"]
+        if dropped:
+            parts.append(f"dropped: {dropped}")
+        if merged:
+            parts.append(f"merged: {merged_sources} → {merged}")
+        parts.append(f"after: {after_count}")
+        return " | ".join(parts)
 
     def _store_context_and_log_usage(
         self,
@@ -1647,12 +1621,6 @@ class LLM(callbacks.Plugin):
                     event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
                     schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
 
-                # Trigger cleanup every N commands (not saves) if user has memories
-                interval = self.registryValue("memoryCleanupInterval")
-                if interval and len(existing_rows) >= 2:
-                    new_count = self.db.increment_memory_saves(nick)
-                    if new_count >= interval:
-                        self._schedule_memory_cleanup(nick, channel)
         except Exception:
             log.exception("Memory extraction scheduling failed for %s", nick)
 
@@ -2087,12 +2055,8 @@ class LLM(callbacks.Plugin):
             else:
                 target = nick
             channel = msg.channel or msg.args[0] if msg.args else "#unknown"
-            rows = self.db.get_memories(target)
-            if len(rows) < 2:
-                irc.reply(f"Not enough memories to clean up for {target}.", prefixNick=False)
-                return
-            irc.reply(f"Running cleanup on {len(rows)} memories for {target}...", prefixNick=False)
-            self._schedule_memory_cleanup(target, channel)
+            summary = self._run_memory_cleanup(target, channel)
+            irc.reply(summary, prefixNick=False)
 
         elif len(parts) == 1:
             # Owner viewing another user's memories
