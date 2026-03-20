@@ -3234,7 +3234,7 @@ class TestMemoryCleanup:
         mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
-        ].message.content = '{"drop": [4], "merge": [[[1, 2], "likes Python"]]}'
+        ].message.content = '{"drop": [4], "merge": [{"indices": [1, 2], "text": "likes Python"}]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3293,7 +3293,9 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [1], "merge": [[[0, 1], "combined"]]}'
+        mock_response.choices[
+            0
+        ].message.content = '{"drop": [1], "merge": [{"indices": [0, 1], "text": "combined"}]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3330,7 +3332,9 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [], "merge": [[[0, 1], ""]]}'
+        mock_response.choices[
+            0
+        ].message.content = '{"drop": [], "merge": [{"indices": [0, 1], "text": ""}]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [

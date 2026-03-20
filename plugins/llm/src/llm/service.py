@@ -113,7 +113,7 @@ _MEMORY_CLEANUP_PROMPT = (
     "- Drop jokes, transient info, vague observations, or anything not a durable "
     "fact about the user\n"
     "- Be aggressive — fewer high-quality facts beat many low-quality ones\n\n"
-    'Return JSON: {"drop": [...], "merge": [[[idx, idx, ...], "merged text"], ...]}\n'
+    'Return JSON: {"drop": [...], "merge": [{"indices": [idx, ...], "text": "merged"}, ...]}\n'
     "Indices not mentioned in drop or merge are kept as-is.\n"
 )
 
@@ -136,13 +136,13 @@ _CLEANUP_SCHEMA: dict = {
         "merge": {
             "type": "array",
             "items": {
-                "type": "array",
-                "prefixItems": [
-                    {"type": "array", "items": {"type": "integer"}},
-                    {"type": "string"},
-                ],
-                "minItems": 2,
-                "maxItems": 2,
+                "type": "object",
+                "properties": {
+                    "indices": {"type": "array", "items": {"type": "integer"}},
+                    "text": {"type": "string"},
+                },
+                "required": ["indices", "text"],
+                "additionalProperties": False,
             },
         },
     },
@@ -2717,12 +2717,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 return CleanupResult(error=f"Invalid drop index: {idx}")
             all_indices.append(idx)
 
-        # Validate merge entries — each is [list_of_indices, merged_text]
+        # Validate merge entries — each is {"indices": [...], "text": "..."}
         validated_merge: list[MergeOp] = []
         for entry in merge:
-            if not isinstance(entry, list) or len(entry) != 2:
+            if not isinstance(entry, dict):
                 return CleanupResult(error=f"Invalid merge entry: {entry}")
-            indices, text = entry
+            indices = entry.get("indices", [])
+            text = entry.get("text", "")
             if not isinstance(indices, list) or len(indices) < 2:
                 return CleanupResult(error=f"Merge needs at least 2 indices: {entry}")
             for idx in indices:
