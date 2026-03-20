@@ -2061,13 +2061,19 @@ class LLM(callbacks.Plugin):
         elif len(parts) == 1:
             # Owner viewing another user's memories
             if not ircdb.checkCapability(msg.prefix, "owner"):
-                irc.error("Usage: memories [delete <id> | edit <id> <text> | clear | cleanup]")
+                irc.reply(
+                    "Usage: memories [del <id> | edit <id> <text> | clear | cleanup]",
+                    prefixNick=False,
+                )
                 return
             target = parts[0]
             self._memories_list(irc, target, target)
 
         else:
-            irc.error("Usage: memories [delete <id> | edit <id> <text> | clear | cleanup]")
+            irc.reply(
+                "Usage: memories [del <id> | edit <id> <text> | clear | cleanup]",
+                prefixNick=False,
+            )
 
     def _memories_list(self, irc: callbacks.Irc, nick: str, display_name: str) -> None:
         """List memories for a user."""

@@ -656,8 +656,8 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["edit 1"])
 
-        mock_irc.error.assert_called_once()
-        assert "Usage" in mock_irc.error.call_args[0][0]
+        mock_irc.reply.assert_called_once()
+        assert "Usage" in mock_irc.reply.call_args[0][0]
 
     def test_memories_del_shorthand(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -701,8 +701,8 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["otheruser"])
 
-        mock_irc.error.assert_called_once()
-        assert "Usage" in mock_irc.error.call_args[0][0]
+        mock_irc.reply.assert_called_once()
+        assert "Usage" in mock_irc.reply.call_args[0][0]
 
     def test_memories_cleanup_own(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
         """GIVEN user with memories WHEN memories cleanup THEN summary shown."""
@@ -785,8 +785,8 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["foo bar"])
 
-        mock_irc.error.assert_called_once()
-        assert "Usage" in mock_irc.error.call_args[0][0]
+        mock_irc.reply.assert_called_once()
+        assert "Usage" in mock_irc.reply.call_args[0][0]
 
 
 class TestMemoryCleanup:
