@@ -538,7 +538,7 @@ class TestMemoriesCommand:
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
-        assert "don't have any memories" in reply_text
+        assert "No memories stored" in reply_text
 
     def test_memories_delete_removes_fact(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -659,14 +659,59 @@ class TestMemoriesCommand:
         mock_irc.error.assert_called_once()
         assert "Usage" in mock_irc.error.call_args[0][0]
 
-    def test_memories_invalid_subcommand(
+    def test_memories_del_shorthand(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN invalid subcommand WHEN memories foo THEN usage error shown."""
+        """GIVEN saved memory WHEN memories del <id> THEN memory is removed."""
         plugin, mock_irc = plugin_with_real_db
         mock_msg = self._make_msg(mocker)
 
-        plugin.memories(mock_irc, mock_msg, ["foo"])
+        memory_id = plugin.db.save_memory("testuser", "Likes Python", "#test")
+
+        plugin.memories(mock_irc, mock_msg, [f"del {memory_id}"])
+
+        mock_irc.reply.assert_called_once()
+        assert "deleted" in mock_irc.reply.call_args[0][0].lower()
+        assert len(plugin.db.get_memories("testuser")) == 0
+
+    def test_memories_owner_views_other_user(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN owner WHEN memories <nick> THEN shows that user's memories."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.db.save_memory("otheruser", "Likes Rust", "#test")
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        plugin.memories(mock_irc, mock_msg, ["otheruser"])
+
+        mock_irc.reply.assert_called_once()
+        assert "Likes Rust" in mock_irc.reply.call_args[0][0]
+
+    def test_memories_non_owner_cannot_view_other_user(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN non-owner WHEN memories <nick> THEN usage error."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+
+        plugin.memories(mock_irc, mock_msg, ["otheruser"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+
+    def test_memories_invalid_subcommand(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN invalid subcommand WHEN memories foo bar THEN usage error shown."""
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["foo bar"])
 
         mock_irc.error.assert_called_once()
         assert "Usage" in mock_irc.error.call_args[0][0]

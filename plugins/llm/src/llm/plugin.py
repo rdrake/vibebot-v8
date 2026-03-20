@@ -2029,22 +2029,18 @@ class LLM(callbacks.Plugin):
         args: list,
         text: str | None,
     ) -> None:
-        """[delete <id> | edit <id> <new text> | clear]
+        """[<nick> | del(ete) <id> | edit <id> <new text> | clear]
 
         View or manage your stored memories. Use 'delete <id>' to remove
         a specific memory, 'edit <id> <text>' to update one, or 'clear'
-        to remove all.
+        to remove all. Bot owners can view another user's memories with
+        'memories <nick>'.
         """
         nick = self._get_identity(irc, msg)
 
         if not text:
-            # List memories (newest first)
-            rows = self.db.get_memories(nick)
-            if not rows:
-                irc.reply("I don't have any memories about you.", prefixNick=False)
-                return
-            lines = [f"[{r.id}] {r.fact}" for r in rows]
-            irc.reply(" | ".join(lines), prefixNick=False)
+            # List own memories (newest first)
+            self._memories_list(irc, nick, nick)
             return
 
         parts = text.split(None, 2)
@@ -2054,7 +2050,7 @@ class LLM(callbacks.Plugin):
             count = self.db.delete_all_memories(nick)
             irc.reply(f"Cleared {count} memories.", prefixNick=False)
 
-        elif subcommand == "delete" and len(parts) >= 2:
+        elif subcommand in ("delete", "del") and len(parts) >= 2:
             try:
                 memory_id = int(parts[1])
             except ValueError:
@@ -2080,8 +2076,25 @@ class LLM(callbacks.Plugin):
             else:
                 irc.error("Memory not found or doesn't belong to you.")
 
+        elif len(parts) == 1:
+            # Owner viewing another user's memories
+            if not ircdb.checkCapability(msg.prefix, "owner"):
+                irc.error("Usage: memories [delete <id> | edit <id> <text> | clear]")
+                return
+            target = parts[0]
+            self._memories_list(irc, target, target)
+
         else:
             irc.error("Usage: memories [delete <id> | edit <id> <text> | clear]")
+
+    def _memories_list(self, irc: callbacks.Irc, nick: str, display_name: str) -> None:
+        """List memories for a user."""
+        rows = self.db.get_memories(nick)
+        if not rows:
+            irc.reply(f"No memories stored for {display_name}.", prefixNick=False)
+            return
+        lines = [f"[{r.id}] {r.fact}" for r in rows]
+        irc.reply(" | ".join(lines), prefixNick=False)
 
     memories = wrap(memories, [optional("text")])
 
