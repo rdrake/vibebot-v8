@@ -1540,14 +1540,13 @@ class LLM(callbacks.Plugin):
 
             # Apply merges: delete sources, insert merged fact
             for entry in result.merge:
-                idx_a, idx_b, merged_text = entry
-                if 0 <= idx_a < len(snapshot) and 0 <= idx_b < len(snapshot):
-                    source_a = snapshot[idx_a]
-                    source_b = snapshot[idx_b]
-                    oldest = source_a if source_a.created_at <= source_b.created_at else source_b
-                    self.db.delete_memory(nick, source_a.id)
-                    self.db.delete_memory(nick, source_b.id)
-                    self.db.save_memory(nick, merged_text, oldest.source_channel)
+                sources = [snapshot[i] for i in entry.indices if 0 <= i < len(snapshot)]
+                if len(sources) < 2:
+                    continue
+                oldest = min(sources, key=lambda s: s.created_at)
+                for source in sources:
+                    self.db.delete_memory(nick, source.id)
+                self.db.save_memory(nick, entry.text, oldest.source_channel)
 
             # Success — reset counter
             self.db.reset_memory_saves(nick)

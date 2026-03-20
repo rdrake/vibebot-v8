@@ -715,7 +715,7 @@ class TestMemoryCleanup:
 
         # Memories are newest-first: [0]="stale fact", [1]="useful fact"
         plugin.llm_service.cleanup_memories = mocker.MagicMock(
-            return_value=CleanupResult(keep=[1], drop=[0], merge=[])
+            return_value=CleanupResult(drop=[0], merge=[])
         )
 
         plugin._run_memory_cleanup("testuser", "#test")
@@ -726,7 +726,7 @@ class TestMemoryCleanup:
 
     def test_cleanup_applies_merge(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
         """GIVEN cleanup returns merge WHEN applied THEN memories are merged."""
-        from llm.service import CleanupResult
+        from llm.service import CleanupResult, MergeOp
 
         plugin, mock_irc = plugin_with_real_db
 
@@ -734,7 +734,7 @@ class TestMemoryCleanup:
         plugin.db.save_memory("testuser", "enjoys writing Python", "#test")
 
         plugin.llm_service.cleanup_memories = mocker.MagicMock(
-            return_value=CleanupResult(keep=[], drop=[], merge=[[0, 1, "likes Python programming"]])
+            return_value=CleanupResult(drop=[], merge=[MergeOp([0, 1], "likes Python programming")])
         )
 
         plugin._run_memory_cleanup("testuser", "#test")
@@ -742,6 +742,31 @@ class TestMemoryCleanup:
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 1
         assert rows[0].fact == "likes Python programming"
+
+    def test_cleanup_applies_multiway_merge(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN cleanup returns 3-way merge WHEN applied THEN memories consolidated."""
+        from llm.service import CleanupResult, MergeOp
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "uses Arch Linux", "#test")
+        plugin.db.save_memory("testuser", "uses Debian", "#test")
+        plugin.db.save_memory("testuser", "uses Fedora", "#test")
+
+        # Memories newest-first: [0]=Fedora, [1]=Debian, [2]=Arch
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(
+            return_value=CleanupResult(
+                drop=[], merge=[MergeOp([0, 1, 2], "uses Linux (Arch, Debian, Fedora)")]
+            )
+        )
+
+        plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        assert len(rows) == 1
+        assert rows[0].fact == "uses Linux (Arch, Debian, Fedora)"
 
     def test_cleanup_aborts_on_error(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -776,7 +801,7 @@ class TestMemoryCleanup:
 
         def cleanup_with_side_effect(*args, **kwargs):
             plugin.db.save_memory("testuser", "new fact during cleanup", "#test")
-            return CleanupResult(keep=[0], drop=[1], merge=[])
+            return CleanupResult(drop=[1], merge=[])
 
         plugin.llm_service.cleanup_memories = mocker.MagicMock(side_effect=cleanup_with_side_effect)
 
@@ -816,7 +841,7 @@ class TestMemoryCleanup:
         plugin.db.increment_memory_saves("testuser")
 
         plugin.llm_service.cleanup_memories = mocker.MagicMock(
-            return_value=CleanupResult(keep=[0, 1], drop=[], merge=[])
+            return_value=CleanupResult(drop=[], merge=[])
         )
 
         plugin._run_memory_cleanup("testuser", "#test")

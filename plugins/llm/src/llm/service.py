@@ -77,18 +77,28 @@ _PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
 # System prompt for memory extraction LLM calls
 _MEMORY_EXTRACTION_PROMPT = (
     "You are a fact extractor. Given a conversation between a user and an assistant, "
-    "extract any new factual information about the user worth remembering long-term. "
-    "Examples: preferences, skills, location, job, interests, opinions.\n\n"
+    "extract ONLY durable identity facts about the user — things that would still be "
+    "true and useful in a month.\n\n"
+    "SAVE: occupation, technical skills, OS/tool preferences, location, pets, hobbies, "
+    "strong opinions they have stated directly.\n\n"
+    "DO NOT SAVE:\n"
+    "- Conversation topics or questions they asked (not facts about them)\n"
+    "- Jokes, sarcasm, or hypotheticals taken literally\n"
+    "- Transient activities (working on X right now, debugging Y)\n"
+    "- One-time preferences or situational advice\n"
+    "- Vague or trivial observations\n"
+    "- Facts already known (listed below)\n\n"
+    "CONSOLIDATION: If a new fact overlaps with existing facts, include ALL related "
+    'existing indices in "remove" and provide ONE consolidated fact in "add".\n'
+    'Example: if [3] "uses Arch Linux" and [5] "uses Debian" exist, and the user '
+    "mentions Fedora, return: "
+    '{"add": ["uses Linux (Arch, Debian, Fedora)"], "remove": [3, 5]}\n\n'
     "Return ONLY a JSON object with two keys:\n"
-    '- "add": array of short factual strings to remember (new facts)\n'
-    '- "remove": array of indices (0-based) of existing facts that are now '
-    "contradicted, corrected, or superseded by the user's new statements\n\n"
-    'Example: {"add": ["prefers cats"], "remove": [2]}\n'
-    'If nothing to add or remove: {"add": [], "remove": []}\n\n'
-    "Do NOT include in add:\n"
-    "- Facts already known (listed below)\n"
-    "- Transient information (what they're doing right now)\n"
-    "- Questions they asked (only facts about them)\n"
+    '- "add": array of short factual strings (at most 2 per exchange)\n'
+    '- "remove": array of 0-based indices of existing facts that are contradicted, '
+    "corrected, or superseded\n\n"
+    'If nothing worth saving: {"add": [], "remove": []}\n'
+    "Prefer saving nothing over saving junk.\n"
 )
 
 _MEMORY_CLEANUP_PROMPT = (
@@ -99,11 +109,12 @@ _MEMORY_CLEANUP_PROMPT = (
     "- Do NOT invent new facts — merge text must combine existing information only\n"
     "- Facts are listed newest-first; when facts contradict, prefer the newer one "
     "(lower index)\n"
-    "- Merge near-duplicates into one clear statement\n"
-    "- Drop vague, trivial, or clearly transient/time-bound facts\n"
-    "- Keep all genuinely useful long-term information\n\n"
-    'Return JSON: {"keep": [...], "drop": [...], "merge": [[idx_a, idx_b, "text"], ...]}\n'
-    "Every index must appear in exactly one category (keep, drop, or as a source in merge).\n"
+    "- Merge related facts into single consolidated statements\n"
+    "- Drop jokes, transient info, vague observations, or anything not a durable "
+    "fact about the user\n"
+    "- Be aggressive — fewer high-quality facts beat many low-quality ones\n\n"
+    'Return JSON: {"drop": [...], "merge": [[[idx, idx, ...], "merged text"], ...]}\n'
+    "Indices not mentioned in drop or merge are kept as-is.\n"
 )
 
 DELIVERY_MAX_ATTEMPTS = 10
@@ -149,12 +160,18 @@ class ExtractionResult(NamedTuple):
     error: str | None = None
 
 
+class MergeOp(NamedTuple):
+    """A single merge operation: consolidate multiple facts into one."""
+
+    indices: list[int]
+    text: str
+
+
 class CleanupResult(NamedTuple):
     """Result of memory cleanup: index-based edit operations."""
 
-    keep: list[int] = []
     drop: list[int] = []
-    merge: list[list] = []
+    merge: list[MergeOp] = []
     error: str | None = None
 
 
@@ -2581,11 +2598,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             content = response.choices[0].message.content.strip()
             parsed = json.loads(content)
 
-            # Accept both {"add": [...], "remove": [...]} and legacy [...] format
-            if isinstance(parsed, list):
-                add = [f for f in parsed if isinstance(f, str)]
-                return ExtractionResult(add=add)
-
             if isinstance(parsed, dict):
                 add = parsed.get("add", [])
                 remove = parsed.get("remove", [])
@@ -2647,50 +2659,49 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         if not isinstance(parsed, dict):
             return CleanupResult(error="Response is not a JSON object")
 
-        keep = parsed.get("keep", [])
         drop = parsed.get("drop", [])
         merge = parsed.get("merge", [])
 
-        if not isinstance(keep, list) or not isinstance(drop, list) or not isinstance(merge, list):
-            return CleanupResult(error="keep/drop/merge must be arrays")
+        if not isinstance(drop, list) or not isinstance(merge, list):
+            return CleanupResult(error="drop/merge must be arrays")
 
         num_memories = len(memory_rows)
 
-        # Validate all indices are ints and in range
+        # Validate drop indices
         all_indices: list[int] = []
-        for idx in keep:
-            if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
-                return CleanupResult(error=f"Invalid keep index: {idx}")
-            all_indices.append(idx)
-
         for idx in drop:
             if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
                 return CleanupResult(error=f"Invalid drop index: {idx}")
             all_indices.append(idx)
 
-        # Validate merge entries
-        validated_merge: list[list] = []
+        # Validate merge entries — each is [list_of_indices, merged_text]
+        validated_merge: list[MergeOp] = []
         for entry in merge:
-            if not isinstance(entry, list) or len(entry) != 3:
+            if not isinstance(entry, list) or len(entry) != 2:
                 return CleanupResult(error=f"Invalid merge entry: {entry}")
-            idx_a, idx_b, text = entry
-            if not isinstance(idx_a, int) or not isinstance(idx_b, int):
-                return CleanupResult(error=f"Merge indices must be ints: {entry}")
-            if idx_a < 0 or idx_a >= num_memories or idx_b < 0 or idx_b >= num_memories:
-                return CleanupResult(error=f"Merge index out of range: {entry}")
+            indices, text = entry
+            if not isinstance(indices, list) or len(indices) < 2:
+                return CleanupResult(error=f"Merge needs at least 2 indices: {entry}")
+            for idx in indices:
+                if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
+                    return CleanupResult(error=f"Merge index out of range: {entry}")
+                all_indices.append(idx)
             if not isinstance(text, str) or not text.strip():
                 return CleanupResult(error=f"Merge text must be non-empty: {entry}")
-            all_indices.append(idx_a)
-            all_indices.append(idx_b)
-            validated_merge.append([idx_a, idx_b, text.strip()])
+            validated_merge.append(MergeOp(indices=indices, text=text.strip()))
 
-        # Check for duplicate indices
+        # Check for duplicate indices across drop and merge
         if len(all_indices) != len(set(all_indices)):
-            return CleanupResult(error="Duplicate index across keep/drop/merge")
+            return CleanupResult(error="Duplicate index across drop/merge")
 
-        # Ensure at least one memory survives (keeps + merges)
-        surviving = len(keep) + len(validated_merge)
-        if surviving == 0 and num_memories > 0:
+        # Ensure at least one memory survives
+        surviving = (
+            num_memories
+            - len(drop)
+            - sum(len(e.indices) for e in validated_merge)
+            + len(validated_merge)
+        )
+        if surviving <= 0 and num_memories > 0:
             return CleanupResult(error="Cleanup would leave user with zero memories")
 
-        return CleanupResult(keep=keep, drop=drop, merge=validated_merge)
+        return CleanupResult(drop=drop, merge=validated_merge)

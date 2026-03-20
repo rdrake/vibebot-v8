@@ -3129,6 +3129,16 @@ class TestMemoryInjection:
 class TestMemoryExtraction:
     """Test memory fact extraction from conversations."""
 
+    def test_extract_memories_prompt_limits_facts(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN extraction prompt WHEN checked THEN contains strictness markers."""
+        from llm.service import _MEMORY_EXTRACTION_PROMPT
+
+        assert "at most 2" in _MEMORY_EXTRACTION_PROMPT.lower()
+        assert "DO NOT SAVE" in _MEMORY_EXTRACTION_PROMPT
+        assert "CONSOLIDATION" in _MEMORY_EXTRACTION_PROMPT
+
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
         service, mock_plugin = make_service()
@@ -3158,20 +3168,6 @@ class TestMemoryExtraction:
         )
         assert result.add == ["prefers cats"]
         assert result.remove == [0]
-
-    def test_extract_memories_legacy_array_format(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN legacy JSON array response WHEN extracted THEN accepted as add-only."""
-        service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '["likes Python"]'
-        mock_litellm.completion.return_value = mock_response
-        result = service.extract_memories("user1", "#test", "I love Python", "Cool!", [])
-        assert result.add == ["likes Python"]
-        assert result.remove == []
 
     def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN boring conversation WHEN extracted THEN returns empty result."""
@@ -3229,7 +3225,7 @@ class TestMemoryCleanup:
     """Test memory cleanup LLM call and validation."""
 
     def test_cleanup_returns_valid_edits(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN memories with duplicates WHEN cleanup THEN returns keep/drop/merge."""
+        """GIVEN memories with duplicates WHEN cleanup THEN returns drop/merge."""
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
@@ -3238,7 +3234,7 @@ class TestMemoryCleanup:
         mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[
             0
-        ].message.content = '{"keep": [0, 3], "drop": [4], "merge": [[1, 2, "likes Python"]]}'
+        ].message.content = '{"drop": [4], "merge": [[[1, 2], "likes Python"]]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3249,9 +3245,10 @@ class TestMemoryCleanup:
             MemoryRow(14, "user1", "asked about weather", "#test", 100.0),
         ]
         result = service.cleanup_memories("user1", "#test", rows)
-        assert result.keep == [0, 3]
         assert result.drop == [4]
-        assert result.merge == [[1, 2, "likes Python"]]
+        from llm.service import MergeOp
+
+        assert result.merge == [MergeOp([1, 2], "likes Python")]
 
     def test_cleanup_returns_empty_on_error(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN API error WHEN cleanup THEN returns empty result."""
@@ -3266,7 +3263,6 @@ class TestMemoryCleanup:
             MemoryRow(11, "user1", "fact b", "#test", 200.0),
         ]
         result = service.cleanup_memories("user1", "#test", rows)
-        assert result.keep == []
         assert result.drop == []
         assert result.merge == []
         assert result.error is not None
@@ -3290,19 +3286,20 @@ class TestMemoryCleanup:
         assert result.error is not None
 
     def test_cleanup_rejects_duplicate_indices(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN index in both keep and drop WHEN cleanup THEN returns error."""
+        """GIVEN index in both drop and merge WHEN cleanup THEN returns error."""
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [0, 1], "drop": [1], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [1], "merge": [[[0, 1], "combined"]]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
             MemoryRow(11, "user1", "fact b", "#test", 200.0),
+            MemoryRow(12, "user1", "fact c", "#test", 300.0),
         ]
         result = service.cleanup_memories("user1", "#test", rows)
         assert result.error is not None
@@ -3315,7 +3312,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [0, 5], "drop": [], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [5], "merge": []}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3333,7 +3330,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [], "drop": [], "merge": [[0, 1, ""]]}'
+        mock_response.choices[0].message.content = '{"drop": [], "merge": [[[0, 1], ""]]}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3353,7 +3350,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [], "drop": [0, 1], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [0, 1], "merge": []}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3373,7 +3370,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [0, 1], "drop": [], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -3396,7 +3393,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [0], "drop": [], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
@@ -3416,7 +3413,7 @@ class TestMemoryCleanup:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"keep": [0], "drop": [], "merge": []}'
+        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
         mock_litellm.completion.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
@@ -3424,3 +3421,36 @@ class TestMemoryCleanup:
 
         call_kwargs = mock_litellm.completion.call_args.kwargs
         assert call_kwargs["api_key"] == "memory-specific-key"
+
+    def test_cleanup_result_has_no_keep_field(self) -> None:
+        """GIVEN CleanupResult WHEN inspected THEN has no keep field."""
+        from llm.service import CleanupResult
+
+        assert "keep" not in CleanupResult._fields
+
+    def test_cleanup_keeps_unmentioned_indices(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN LLM omits some indices WHEN cleanup THEN unmentioned indices are kept."""
+        from llm.persistence import MemoryRow
+
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"drop": [2], "merge": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        rows = [
+            MemoryRow(10, "user1", "fact a", "#test", 300.0),
+            MemoryRow(11, "user1", "fact b", "#test", 200.0),
+            MemoryRow(12, "user1", "trivial fact", "#test", 100.0),
+        ]
+        result = service.cleanup_memories("user1", "#test", rows)
+        assert result.error is None
+        assert result.drop == [2]
+
+    def test_cleanup_prompt_uses_new_format(self) -> None:
+        """GIVEN cleanup prompt WHEN checked THEN uses new merge format without keep."""
+        from llm.service import _MEMORY_CLEANUP_PROMPT
+
+        assert "keep" not in _MEMORY_CLEANUP_PROMPT.lower()
+        assert "Be aggressive" in _MEMORY_CLEANUP_PROMPT
