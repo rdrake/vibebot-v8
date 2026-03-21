@@ -94,7 +94,7 @@ _MEMORY_EXTRACTION_PROMPT = (
     "mentions Fedora, return: "
     '{"add": ["uses Linux (Arch, Debian, Fedora)"], "remove": [3, 5]}\n\n'
     "Return ONLY a JSON object with two keys:\n"
-    '- "add": array of short factual strings (at most 2 per exchange)\n'
+    '- "add": array of brief facts, max 8 words each (at most 2 per exchange)\n'
     '- "remove": array of 0-based indices of existing facts that are contradicted, '
     "corrected, or superseded\n\n"
     'If nothing worth saving: {"add": [], "remove": []}\n'
@@ -110,6 +110,7 @@ _MEMORY_CLEANUP_PROMPT = (
     "- Facts are listed newest-first; when facts contradict, prefer the newer one "
     "(lower index)\n"
     "- Merge related facts into single consolidated statements\n"
+    "- Rewrite verbose facts to be concise (max 8 words each)\n"
     "- Drop jokes, transient info, vague observations, or anything not a durable "
     "fact about the user\n"
     "- Be aggressive — fewer high-quality facts beat many low-quality ones\n\n"
