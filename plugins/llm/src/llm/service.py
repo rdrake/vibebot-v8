@@ -1933,6 +1933,8 @@ Rules:
         kwargs: dict[str, object] = {}
         if model.startswith("xai/"):
             kwargs["aspect_ratio"] = "9:16"
+            kwargs["quality"] = "high"
+            kwargs["resolution"] = "2k"
 
         response = litellm.image_generation(
             prompt=prompt,
