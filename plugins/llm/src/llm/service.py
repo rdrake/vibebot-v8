@@ -1930,6 +1930,10 @@ Rules:
             ImageResult on success, None if data is empty (content blocked).
             Raises exceptions for other errors.
         """
+        kwargs: dict[str, object] = {}
+        if model.startswith("xai/"):
+            kwargs["aspect_ratio"] = "9:16"
+
         response = litellm.image_generation(
             prompt=prompt,
             model=model,
@@ -1937,6 +1941,7 @@ Rules:
             n=1,
             timeout=timeout,
             metadata=self._get_litellm_metadata(),
+            **kwargs,
         )
         self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
         self._log_server_headers(response)
