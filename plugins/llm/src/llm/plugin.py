@@ -1704,7 +1704,6 @@ class LLM(callbacks.Plugin):
                     for img in images:
                         clean_prompt = clean_prompt.replace(img, "").strip()
 
-                    irc.reply(_("Processing with %d image(s)...") % len(images), prefixNick=False)
                     result = self.llm_service.completion(
                         clean_prompt,
                         command="ask",

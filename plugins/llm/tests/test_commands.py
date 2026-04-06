@@ -185,25 +185,6 @@ class TestAskCommand:
         assert reply_text.startswith("\U0001f310")
         assert "searched result" in reply_text
 
-    def test_ask_with_images_sends_processing_message(self, plugin_env, mocker: MockerFixture):
-        """GIVEN prompt with image URL WHEN ask is called THEN processing message is sent first."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.detect_images.return_value = ["http://img.example/pic.jpg"]
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="I see an image",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
-        )
-
-        plugin.ask(mock_irc, mock_msg, ["describe", "http://img.example/pic.jpg"])
-
-        # First call is the "Processing with N image(s)..." message
-        assert mock_irc.reply.call_count == 2
-        first_reply = mock_irc.reply.call_args_list[0]
-        assert "image" in first_reply[0][0].lower()
-
     def test_ask_does_not_store_context_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN completion returns an error WHEN ask completes THEN context is NOT stored."""
         plugin, mock_irc, mock_msg = plugin_env

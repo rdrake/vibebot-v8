@@ -14,10 +14,6 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: plugin.py:318
-msgid "Processing with %d image(s)..."
-msgstr "Traitement avec %d image(s)..."
-
 #: plugin.py:379
 msgid "Code generated (%d lines): %s"
 msgstr "Code généré (%d lignes) : %s"
