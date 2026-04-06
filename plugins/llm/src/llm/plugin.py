@@ -2022,13 +2022,13 @@ class LLM(callbacks.Plugin):
         args: list,
         text: str | None,
     ) -> None:
-        """[<nick> | del(ete) <id> | edit <id> <text> | clear | cleanup [nick]]
+        """[<nick> | del(ete) <id> [<id>...] | edit <id> <text> | clear | cleanup [nick]]
 
-        View or manage your stored memories. Use 'delete <id>' to remove
-        a specific memory, 'edit <id> <text>' to update one, 'clear' to
-        remove all, or 'cleanup' to trigger a cleanup pass. Bot owners
-        can use 'memories <nick>' or 'memories cleanup <nick>' for other
-        users.
+        View or manage your stored memories. Use 'delete <id> [<id>...]'
+        to remove one or more memories, 'edit <id> <text>' to update one,
+        'clear' to remove all, or 'cleanup' to trigger a cleanup pass.
+        Bot owners can use 'memories <nick>' or 'memories cleanup <nick>'
+        for other users.
         """
         nick = self._get_identity(irc, msg)
 
@@ -2045,15 +2045,19 @@ class LLM(callbacks.Plugin):
             irc.reply(f"Cleared {count} memories.", prefixNick=False)
 
         elif subcommand in ("delete", "del") and len(parts) >= 2:
+            raw_ids = text.split()[1:]
             try:
-                memory_id = int(parts[1])
+                memory_ids = [int(x) for x in raw_ids]
             except ValueError:
-                irc.error("Usage: memories delete <id>")
+                irc.error("Usage: memories delete <id> [<id> ...]")
                 return
-            if self.db.delete_memory(nick, memory_id):
+            deleted = sum(1 for mid in memory_ids if self.db.delete_memory(nick, mid))
+            if deleted == 0:
+                irc.error("No matching memories found.")
+            elif deleted == 1:
                 irc.reply("Memory deleted.", prefixNick=False)
             else:
-                irc.error("Memory not found or doesn't belong to you.")
+                irc.reply(f"Deleted {deleted} memories.", prefixNick=False)
 
         elif subcommand == "edit" and len(parts) == 3:
             try:

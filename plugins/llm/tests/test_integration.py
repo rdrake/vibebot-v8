@@ -581,7 +581,7 @@ class TestMemoriesCommand:
         plugin.memories(mock_irc, mock_msg, ["delete 999"])
 
         mock_irc.error.assert_called_once()
-        assert "not found" in mock_irc.error.call_args[0][0].lower()
+        assert "no matching" in mock_irc.error.call_args[0][0].lower()
 
     def test_memories_clear_deletes_all(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
