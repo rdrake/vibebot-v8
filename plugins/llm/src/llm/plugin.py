@@ -1312,9 +1312,7 @@ class LLM(callbacks.Plugin):
                     max_count,
                     window,
                 )
-                irc.error(
-                    _("Rate limit exceeded for %s. Please wait before trying again.") % command
-                )
+                irc.error(_("Rate limit exceeded for %s. Try again in %ds.") % (command, window))
                 self.db.log_usage(
                     nick,
                     channel,
@@ -1492,12 +1490,13 @@ class LLM(callbacks.Plugin):
         result = self.llm_service.cleanup_memories(nick, channel, snapshot)
 
         if result.error:
-            return f"Cleanup failed: {result.error}"
+            log.warning("Memory cleanup failed for %s: %s", nick, result.error)
+            return "Cleanup failed, try again later."
 
         # Abort if memory count changed during LLM call (race protection)
         current = self.db.get_memories(nick)
         if len(current) != len(snapshot):
-            return "Cleanup aborted: memories changed during processing."
+            return "Cleanup skipped — memories changed while processing."
 
         # Apply drops
         dropped = 0
@@ -1966,15 +1965,7 @@ class LLM(callbacks.Plugin):
                 result = self.llm_service.image_generation(text, irc=irc, msg=msg)
                 self.log.info("replying to %s/%s", channel, nick)
                 sanitized_content = self.llm_service.sanitize_output(result.content)
-                if result.rewritten_prompt:
-                    prompt_preview = self.llm_service.sanitize_output(result.rewritten_prompt)
-                    if len(prompt_preview) > 200:
-                        prompt_preview = prompt_preview[:197] + "..."
-                    irc.reply(
-                        _("[Rewritten: %s] %s") % (prompt_preview, sanitized_content),
-                    )
-                else:
-                    irc.reply(sanitized_content)
+                irc.reply(sanitized_content)
 
             self._store_context_and_log_usage(
                 nick,
@@ -2005,12 +1996,8 @@ class LLM(callbacks.Plugin):
         # Default to current channel if not specified
         if channel is None:
             channel = self._get_channel(msg)
-        cleared = self.context.clear(nick, channel)
-
-        if cleared:
-            irc.reply(_("Conversation context cleared. Starting fresh!"), prefixNick=False)
-        else:
-            irc.reply(_("No conversation context to clear."), prefixNick=False)
+        self.context.clear(nick, channel)
+        irc.reply(_("Context cleared."), prefixNick=False)
 
     forget = wrap(forget, [optional("channel")])
 
@@ -2041,14 +2028,15 @@ class LLM(callbacks.Plugin):
 
         if subcommand == "clear":
             count = self.db.delete_all_memories(nick)
-            irc.reply(f"Cleared {count} memories.", prefixNick=False)
+            label = "memory" if count == 1 else "memories"
+            irc.reply(f"Cleared {count} {label}.", prefixNick=False)
 
         elif subcommand in ("delete", "del") and len(parts) >= 2:
             raw_ids = text.split()[1:]
             try:
                 memory_ids = [int(x) for x in raw_ids]
             except ValueError:
-                irc.error("Usage: memories delete <id> [<id> ...]")
+                irc.reply("Usage: memories delete <id> [<id> ...]", prefixNick=False)
                 return
             deleted = sum(1 for mid in memory_ids if self.db.delete_memory(nick, mid))
             if deleted == 0:
@@ -2062,11 +2050,11 @@ class LLM(callbacks.Plugin):
             try:
                 memory_id = int(parts[1])
             except ValueError:
-                irc.error("Usage: memories edit <id> <new text>")
+                irc.reply("Usage: memories edit <id> <new text>", prefixNick=False)
                 return
             new_text = parts[2].strip()
             if not new_text:
-                irc.error("Usage: memories edit <id> <new text>")
+                irc.reply("Usage: memories edit <id> <new text>", prefixNick=False)
                 return
             if self.db.update_memory(nick, memory_id, new_text):
                 irc.reply("Memory updated.", prefixNick=False)

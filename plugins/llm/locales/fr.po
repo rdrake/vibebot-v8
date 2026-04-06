@@ -18,14 +18,6 @@ msgstr ""
 msgid "Code generated (%d lines): %s"
 msgstr "Code généré (%d lignes) : %s"
 
-#: plugin.py:441
-msgid "Conversation context cleared. Starting fresh!"
-msgstr "Contexte de conversation effacé. Nouveau départ !"
-
-#: plugin.py:456
-msgid "No conversation context to clear."
-msgstr "Aucun contexte de conversation à effacer."
-
 #: plugin.py:459
 msgid "Error clearing context."
 msgstr "Erreur lors de l'effacement du contexte."
@@ -85,3 +77,11 @@ msgid ""
 msgstr ""
 "Erreur : Aucune image générée. L'invite a peut-être été bloquée par les "
 "filtres de sécurité. Essayez de reformuler votre demande."
+
+#: plugin.py
+msgid "Context cleared."
+msgstr ""
+
+#: plugin.py
+msgid "Rate limit exceeded for %s. Try again in %ds."
+msgstr ""

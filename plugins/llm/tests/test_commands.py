@@ -620,45 +620,6 @@ class TestDrawCommand:
 
         mock_irc.reply.assert_called_once_with("http://img.example/gen.png")
 
-    def test_draw_shows_rewritten_prompt_when_present(self, plugin_env, mocker: MockerFixture):
-        """GIVEN image result has rewritten_prompt WHEN draw called THEN reply includes it."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-            rewritten_prompt="A beautiful sunset over mountains",
-        )
-
-        plugin.draw(mock_irc, mock_msg, ["sunset"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "Rewritten" in reply_text
-        assert "A beautiful sunset over mountains" in reply_text
-        assert "http://img.example/gen.png" in reply_text
-
-    def test_draw_truncates_long_rewritten_prompt(self, plugin_env, mocker: MockerFixture):
-        """GIVEN rewritten_prompt is >200 chars WHEN draw called THEN prompt is truncated."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-        long_prompt = "A" * 250
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-            rewritten_prompt=long_prompt,
-        )
-
-        plugin.draw(mock_irc, mock_msg, ["test"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "..." in reply_text
-
     def test_draw_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -860,15 +821,15 @@ class TestForgetCommand:
         # Context should be empty
         assert len(plugin.context.get_messages("testnick", "#test")) == 0
 
-    def test_forget_reports_no_context(self, plugin_env):
-        """GIVEN user has no context WHEN forget called THEN reports no context."""
+    def test_forget_reports_cleared_even_when_empty(self, plugin_env):
+        """GIVEN user has no context WHEN forget called THEN still says cleared."""
         plugin, mock_irc, mock_msg = plugin_env
 
         plugin.forget(mock_irc, mock_msg, [])
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
-        assert "no" in reply_text.lower()
+        assert "cleared" in reply_text.lower()
 
     def test_forget_defaults_to_current_channel(self, plugin_env):
         """GIVEN user in a channel WHEN forget called without args THEN clears current channel."""

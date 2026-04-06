@@ -18,14 +18,6 @@ msgstr ""
 msgid "Code generated (%d lines): %s"
 msgstr "Код сгенерирован (%d строк): %s"
 
-#: plugin.py:441
-msgid "Conversation context cleared. Starting fresh!"
-msgstr "Контекст разговора очищен. Начинаем заново!"
-
-#: plugin.py:456
-msgid "No conversation context to clear."
-msgstr "Нет контекста разговора для очистки."
-
 #: plugin.py:459
 msgid "Error clearing context."
 msgstr "Ошибка очистки контекста."
@@ -85,3 +77,11 @@ msgid ""
 msgstr ""
 "Ошибка: Изображение не создано. Запрос мог быть заблокирован фильтрами "
 "безопасности. Попробуйте переформулировать запрос."
+
+#: plugin.py
+msgid "Context cleared."
+msgstr ""
+
+#: plugin.py
+msgid "Rate limit exceeded for %s. Try again in %ds."
+msgstr ""
