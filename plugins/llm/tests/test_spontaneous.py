@@ -88,7 +88,9 @@ def evaluate_env(
         for nick, text in messages:
             plugin.context.add_channel_message(channel, nick, "user", text)
 
-        plugin._schedule_spontaneous(mock_irc, channel)
+        last_nick = messages[-1][0] if messages else "unknown"
+        last_text = messages[-1][1] if messages else ""
+        plugin._schedule_spontaneous(mock_irc, channel, last_nick, last_text)
 
         assert mock_add_event.called, "schedule.addEvent should have been called"
         callback = mock_add_event.call_args[0][0]
@@ -140,7 +142,10 @@ class TestSpontaneousDoPrivmsg:
 
         plugin.doPrivmsg(mock_irc, mock_msg)
 
-        mock_schedule.assert_called_once_with(mock_irc, "#channel")
+        mock_schedule.assert_called_once()
+        call_args = mock_schedule.call_args[0]
+        assert call_args[0] is mock_irc
+        assert call_args[1] == "#channel"
 
     def test_respects_cooldown(self, spontaneous_env: Callable, mocker: MockerFixture) -> None:
         """GIVEN recent spontaneous cooldown WHEN doPrivmsg fires THEN no evaluation fires."""

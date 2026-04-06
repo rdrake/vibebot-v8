@@ -695,9 +695,11 @@ class LLM(callbacks.Plugin):
                 chance = self.registryValue("spontaneousChance", channel)
                 if random.randint(1, 100) <= chance:
                     self._spontaneous_cooldowns[channel] = time.time()
-                    self._schedule_spontaneous(irc, channel)
+                    self._schedule_spontaneous(irc, channel, identity, message_text)
 
-    def _schedule_spontaneous(self, irc: callbacks.Irc, channel: str) -> None:
+    def _schedule_spontaneous(
+        self, irc: callbacks.Irc, channel: str, trigger_nick: str, trigger_text: str
+    ) -> None:
         """Schedule a spontaneous reply evaluation.
 
         Queues a short-delayed event that reads channel history, asks the LLM
@@ -707,6 +709,8 @@ class LLM(callbacks.Plugin):
         Args:
             irc: IRC connection object
             channel: Channel to potentially respond in
+            trigger_nick: Identity of the user whose message triggered this
+            trigger_text: The message text that triggered this
         """
 
         def _evaluate() -> None:
@@ -755,6 +759,9 @@ class LLM(callbacks.Plugin):
                     prompt="[spontaneous]",
                     status="success",
                 )
+
+                # Extract memories from the triggering user's message
+                self._schedule_memory_extraction(trigger_nick, channel, trigger_text, response)
             except Exception:
                 log.exception("Spontaneous evaluation failed for %s", channel)
             finally:
@@ -1480,6 +1487,77 @@ class LLM(callbacks.Plugin):
         rows = self.db.get_memories(nick)
         return [row.fact for row in rows]
 
+    def _schedule_memory_extraction(
+        self, nick: str, channel: str, user_text: str, assistant_response: str
+    ) -> None:
+        """Schedule background memory extraction for a user interaction.
+
+        Args:
+            nick: User's resolved identity
+            channel: Channel where the interaction happened
+            user_text: What the user said
+            assistant_response: What the bot replied
+        """
+        try:
+            if not self.registryValue("memoryEnabled", channel):
+                return
+
+            existing_rows = self.db.get_memories(nick)
+            existing_facts = [r.fact for r in existing_rows]
+            max_memories = self.registryValue("memoryMaxPerUser")
+
+            if len(existing_rows) >= max_memories:
+                return
+
+            snapshot_count = len(existing_rows)
+
+            def _extract_memories_bg() -> None:
+                try:
+                    extraction = self.llm_service.extract_memories(
+                        nick, channel, user_text, assistant_response, existing_facts
+                    )
+                    if not extraction.add:
+                        return
+
+                    # Race protection: abort if memories changed during LLM call
+                    current = self.db.get_memories(nick)
+                    if len(current) != snapshot_count:
+                        log.info(
+                            "Memory extraction for %s aborted: count changed (%d -> %d)",
+                            nick,
+                            snapshot_count,
+                            len(current),
+                        )
+                        return
+
+                    # Add new facts (respecting cap)
+                    saved: list[str] = []
+                    for fact in extraction.add:
+                        if len(self.db.get_memories(nick)) >= max_memories:
+                            break
+                        self.db.save_memory(nick, fact, channel)
+                        saved.append(fact)
+
+                    if not saved:
+                        return
+
+                    # Trigger cleanup if counter reaches interval
+                    cleanup_interval = self.registryValue("memoryCleanupInterval")
+                    if cleanup_interval > 0:
+                        count = self.db.increment_memory_saves(nick)
+                        if count >= cleanup_interval:
+                            self.db.reset_memory_saves(nick)
+                            self._run_memory_cleanup(nick, channel)
+
+                except Exception:
+                    log.exception("Memory extraction failed for %s", nick)
+
+            event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
+            schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
+
+        except Exception:
+            log.exception("Memory extraction scheduling failed for %s", nick)
+
     def _run_memory_cleanup(self, nick: str, channel: str) -> str:
         """Run memory cleanup for a user. Returns a summary string."""
         snapshot = self.db.get_memories(nick)
@@ -1586,67 +1664,8 @@ class LLM(callbacks.Plugin):
         )
 
         # Schedule background memory extraction for eligible commands
-        try:
-            if (
-                command in _MEMORY_COMMANDS
-                and result.error is None
-                and self.registryValue("memoryEnabled", channel)
-            ):
-                existing_rows = self.db.get_memories(nick)
-                existing_facts = [r.fact for r in existing_rows]
-                max_memories = self.registryValue("memoryMaxPerUser")
-
-                # Schedule extraction if under the cap
-                if len(existing_rows) < max_memories:
-                    raw_response = result.content
-                    snapshot_count = len(existing_rows)
-
-                    def _extract_memories_bg() -> None:
-                        try:
-                            extraction = self.llm_service.extract_memories(
-                                nick, channel, text, raw_response, existing_facts
-                            )
-                            if not extraction.add:
-                                return
-
-                            # Race protection: abort if memories changed during LLM call
-                            current = self.db.get_memories(nick)
-                            if len(current) != snapshot_count:
-                                log.info(
-                                    "Memory extraction for %s aborted: count changed (%d -> %d)",
-                                    nick,
-                                    snapshot_count,
-                                    len(current),
-                                )
-                                return
-
-                            # Add new facts (respecting cap)
-                            saved: list[str] = []
-                            for fact in extraction.add:
-                                if len(self.db.get_memories(nick)) >= max_memories:
-                                    break
-                                self.db.save_memory(nick, fact, channel)
-                                saved.append(fact)
-
-                            if not saved:
-                                return
-
-                            # Trigger cleanup if counter reaches interval
-                            cleanup_interval = self.registryValue("memoryCleanupInterval")
-                            if cleanup_interval > 0:
-                                count = self.db.increment_memory_saves(nick)
-                                if count >= cleanup_interval:
-                                    self.db.reset_memory_saves(nick)
-                                    self._run_memory_cleanup(nick, channel)
-
-                        except Exception:
-                            log.exception("Memory extraction failed for %s", nick)
-
-                    event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
-                    schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
-
-        except Exception:
-            log.exception("Memory extraction scheduling failed for %s", nick)
+        if command in _MEMORY_COMMANDS and result.error is None:
+            self._schedule_memory_extraction(nick, channel, text, result.content)
 
     def ask(
         self,
