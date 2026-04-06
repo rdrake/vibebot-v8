@@ -1600,21 +1600,46 @@ class LLM(callbacks.Plugin):
                 # Schedule extraction if under the cap
                 if len(existing_rows) < max_memories:
                     raw_response = result.content
+                    snapshot_count = len(existing_rows)
 
                     def _extract_memories_bg() -> None:
                         try:
                             extraction = self.llm_service.extract_memories(
                                 nick, channel, text, raw_response, existing_facts
                             )
-                            # Remove superseded/contradicted memories
-                            for idx in extraction.remove:
-                                if 0 <= idx < len(existing_rows):
-                                    self.db.delete_memory(nick, existing_rows[idx].id)
-                            # Add new facts
+                            if not extraction.add:
+                                return
+
+                            # Race protection: abort if memories changed during LLM call
+                            current = self.db.get_memories(nick)
+                            if len(current) != snapshot_count:
+                                log.info(
+                                    "Memory extraction for %s aborted: count changed (%d -> %d)",
+                                    nick,
+                                    snapshot_count,
+                                    len(current),
+                                )
+                                return
+
+                            # Add new facts (respecting cap)
+                            saved: list[str] = []
                             for fact in extraction.add:
                                 if len(self.db.get_memories(nick)) >= max_memories:
                                     break
                                 self.db.save_memory(nick, fact, channel)
+                                saved.append(fact)
+
+                            if not saved:
+                                return
+
+                            # Trigger cleanup if counter reaches interval
+                            cleanup_interval = self.registryValue("memoryCleanupInterval")
+                            if cleanup_interval > 0:
+                                count = self.db.increment_memory_saves(nick)
+                                if count >= cleanup_interval:
+                                    self.db.reset_memory_saves(nick)
+                                    self._run_memory_cleanup(nick, channel)
+
                         except Exception:
                             log.exception("Memory extraction failed for %s", nick)
 
@@ -2076,13 +2101,13 @@ class LLM(callbacks.Plugin):
             )
 
     def _memories_list(self, irc: callbacks.Irc, nick: str, display_name: str) -> None:
-        """List memories for a user."""
+        """List memories for a user using Limnoria's built-in pagination."""
         rows = self.db.get_memories(nick)
         if not rows:
             irc.reply(f"No memories stored for {display_name}.", prefixNick=False)
             return
-        lines = [f"[{r.id}] {r.fact}" for r in rows]
-        irc.reply(" | ".join(lines), prefixNick=False)
+        items = [f"[{r.id}] {r.fact}" for r in rows]
+        irc.replies(items, joiner=" | ", prefixNick=False)
 
     memories = wrap(memories, [optional("text")])
 

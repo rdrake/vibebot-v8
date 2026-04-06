@@ -87,17 +87,11 @@ _MEMORY_EXTRACTION_PROMPT = (
     "- Transient activities (working on X right now, debugging Y)\n"
     "- One-time preferences or situational advice\n"
     "- Vague or trivial observations\n"
-    "- Facts already known (listed below)\n\n"
-    "CONSOLIDATION: If a new fact overlaps with existing facts, include ALL related "
-    'existing indices in "remove" and provide ONE consolidated fact in "add".\n'
-    'Example: if [3] "uses Arch Linux" and [5] "uses Debian" exist, and the user '
-    "mentions Fedora, return: "
-    '{"add": ["uses Linux (Arch, Debian, Fedora)"], "remove": [3, 5]}\n\n'
-    "Return ONLY a JSON object with two keys:\n"
-    '- "add": array of brief facts, max 8 words each (at most 2 per exchange)\n'
-    '- "remove": array of 0-based indices of existing facts that are contradicted, '
-    "corrected, or superseded\n\n"
-    'If nothing worth saving: {"add": [], "remove": []}\n'
+    "- Facts already known (listed below)\n"
+    "- Facts that contradict or update existing facts (periodic cleanup handles that)\n\n"
+    "Return ONLY a JSON object with one key:\n"
+    '- "add": array of brief NEW facts, max 8 words each (at most 2 per exchange)\n\n'
+    'If nothing worth saving: {"add": []}\n'
     "Prefer saving nothing over saving junk.\n"
 )
 
@@ -123,9 +117,8 @@ _EXTRACTION_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "add": {"type": "array", "items": {"type": "string"}},
-        "remove": {"type": "array", "items": {"type": "integer"}},
     },
-    "required": ["add", "remove"],
+    "required": ["add"],
     "additionalProperties": False,
 }
 
@@ -186,10 +179,9 @@ class ImageResult(NamedTuple):
 
 
 class ExtractionResult(NamedTuple):
-    """Result of memory extraction: facts to add and indices to remove."""
+    """Result of memory extraction: new facts to add."""
 
     add: list[str] = []
-    remove: list[int] = []
     rewritten_prompt: str | None = None
     error: str | None = None
 
@@ -2609,12 +2601,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             existing_memories: Already-known facts (to avoid duplicates).
 
         Returns:
-            ExtractionResult with facts to add and indices to remove.
+            ExtractionResult with new facts to add.
         """
         existing_section = ""
         if existing_memories:
             existing_section = "\n\nAlready known facts:\n" + "\n".join(
-                f"[{i}] {m}" for i, m in enumerate(existing_memories)
+                f"- {m}" for m in existing_memories
             )
 
         messages = [
@@ -2648,8 +2640,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             parsed = json.loads(content)
 
             add = [f for f in parsed.get("add", []) if isinstance(f, str)]
-            remove = [i for i in parsed.get("remove", []) if isinstance(i, int)]
-            return ExtractionResult(add=add, remove=remove)
+            return ExtractionResult(add=add)
         except Exception:
             return ExtractionResult()
 
@@ -2683,7 +2674,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         ]
 
         try:
-            model = self.plugin.registryValue("askModel", channel)
+            model = self.plugin.registryValue("memoryCleanupModel", channel)
             api_key = self.plugin.registryValue("memoryApiKey")
             if not api_key:
                 api_key = self.plugin.registryValue("askApiKey")

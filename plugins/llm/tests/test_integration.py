@@ -524,10 +524,11 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, [])
 
-        mock_irc.reply.assert_called_once()
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "Likes Python" in reply_text
-        assert "Lives in Canada" in reply_text
+        mock_irc.replies.assert_called_once()
+        items = mock_irc.replies.call_args[0][0]
+        all_text = " ".join(items)
+        assert "Likes Python" in all_text
+        assert "Lives in Canada" in all_text
 
     def test_memories_list_empty(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
         """GIVEN no saved memories WHEN memories called THEN reply says no memories."""
@@ -687,8 +688,9 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["otheruser"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Likes Rust" in mock_irc.reply.call_args[0][0]
+        mock_irc.replies.assert_called_once()
+        items = mock_irc.replies.call_args[0][0]
+        assert "Likes Rust" in " ".join(items)
 
     def test_memories_non_owner_cannot_view_other_user(
         self, plugin_with_real_db: tuple, mocker: MockerFixture

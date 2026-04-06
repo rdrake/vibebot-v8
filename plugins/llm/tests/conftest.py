@@ -132,6 +132,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Memory extraction
         "memoryEnabled": True,
         "memoryExtractionModel": "gemini/gemini-2.0-flash-lite",
+        "memoryCleanupModel": "gemini/gemini-3.1-flash-lite-preview",
+        "memoryApiKey": "",
         "memoryMaxPerUser": 50,
         "memoryCleanupInterval": 3,
         # Spontaneous participation

@@ -3137,7 +3137,6 @@ class TestMemoryExtraction:
 
         assert "at most 2" in _MEMORY_EXTRACTION_PROMPT.lower()
         assert "DO NOT SAVE" in _MEMORY_EXTRACTION_PROMPT
-        assert "CONSOLIDATION" in _MEMORY_EXTRACTION_PROMPT
 
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
@@ -3145,29 +3144,12 @@ class TestMemoryExtraction:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = '{"add": ["likes Python", "lives in Toronto"], "remove": []}'
+        mock_response.choices[0].message.content = '{"add": ["likes Python", "lives in Toronto"]}'
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "I love Python and live in Toronto", "Cool!", []
         )
         assert result.add == ["likes Python", "lives in Toronto"]
-        assert result.remove == []
-
-    def test_extract_memories_with_removals(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN contradicting fact WHEN extracted THEN returns indices to remove."""
-        service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": ["prefers cats"], "remove": [0]}'
-        mock_litellm.completion.return_value = mock_response
-        result = service.extract_memories(
-            "user1", "#test", "Actually I prefer cats now", "Noted!", ["prefers dogs"]
-        )
-        assert result.add == ["prefers cats"]
-        assert result.remove == [0]
 
     def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN boring conversation WHEN extracted THEN returns empty result."""
@@ -3175,11 +3157,10 @@ class TestMemoryExtraction:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "remove": []}'
+        mock_response.choices[0].message.content = '{"add": []}'
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hello", "hi", [])
         assert result.add == []
-        assert result.remove == []
 
     def test_extract_memories_empty_on_error(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN API error WHEN extracting THEN returns empty result."""
@@ -3188,7 +3169,6 @@ class TestMemoryExtraction:
         mock_litellm.completion.side_effect = Exception("API down")
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
-        assert result.remove == []
 
     def test_extract_memories_empty_on_invalid_json(
         self, make_service, mocker: MockerFixture
@@ -3202,23 +3182,22 @@ class TestMemoryExtraction:
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
-        assert result.remove == []
 
     def test_extract_memories_includes_existing_in_prompt(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN existing memories WHEN extracting THEN included with indices in prompt."""
+        """GIVEN existing memories WHEN extracting THEN included in prompt."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "remove": []}'
+        mock_response.choices[0].message.content = '{"add": []}'
         mock_litellm.completion.return_value = mock_response
         service.extract_memories("user1", "#test", "hi", "hello", ["already knows Python"])
         call_args = mock_litellm.completion.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
         prompt_text = " ".join(m["content"] for m in messages)
-        assert "[0] already knows Python" in prompt_text
+        assert "already knows Python" in prompt_text
 
 
 class TestMemoryCleanup:
@@ -3389,8 +3368,8 @@ class TestMemoryCleanup:
         assert "[0] likes Python" in prompt_text
         assert "[1] works at Acme" in prompt_text
 
-    def test_cleanup_uses_ask_model(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN cleanup call WHEN LLM invoked THEN uses askModel and memoryApiKey fallback."""
+    def test_cleanup_uses_cleanup_model(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN cleanup call WHEN LLM invoked THEN uses memoryCleanupModel."""
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
@@ -3404,7 +3383,7 @@ class TestMemoryCleanup:
         service.cleanup_memories("user1", "#test", rows)
 
         call_kwargs = mock_litellm.completion.call_args.kwargs
-        assert call_kwargs["model"] == "gpt-4"  # default askModel in test fixture
+        assert call_kwargs["model"] == "gemini/gemini-3.1-flash-lite-preview"
         assert call_kwargs["api_key"] == "test-key"  # fallback to askApiKey in test fixture
 
     def test_cleanup_uses_memory_api_key_when_set(

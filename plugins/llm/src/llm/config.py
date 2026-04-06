@@ -270,6 +270,15 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "memoryCleanupModel",
+    ValidatedModelName(
+        "gemini/gemini-3.1-flash-lite-preview",
+        _("""Model for memory cleanup (flash-tier recommended)."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "memoryCleanupInterval",
