@@ -92,12 +92,14 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 
 | Command | Description |
 |---------|-------------|
-| `%ask <question>` | Ask AI a question (supports vision with image URLs, uses volatile memory for context) |
-| `%code <request>` | Generate code (remembers context for iterating on code) |
-| `%draw <prompt>` | Generate an image (no context) |
-| `%memories [delete <id> \| clear]` | View or manage your non-volatile memory (stored facts about you) |
-| `%usage [nick or #channel]` | Show API usage statistics |
-| `%forget [channel]` | Clear your volatile memory (conversation context) |
+| `%ask <question>` | Ask with context, vision, and optional instructions |
+| `%code <request>` | Generate code with HTTP link output |
+| `%draw <prompt>` | Generate image (account required) |
+| `%forget [channel]` | Clear volatile memory (conversation context) |
+| `%memories [subcommand]` | Manage non-volatile memory (stored facts) |
+| `%instruct [text \| clear]` | Set persistent instructions for ask |
+| `%remind [text \| list \| del \| clear]` | Set and manage reminders |
+| `%usage [nick \| #channel]` | View API usage statistics |
 
 ## Configuration
 

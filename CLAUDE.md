@@ -184,12 +184,14 @@ class ValidationResult(NamedTuple):
 
 | Command | Description |
 |---------|-------------|
-| `%ask <question>` | Ask with context & vision support |
-| `%code <request>` | Generate code |
-| `%draw <prompt>` | Generate image |
-| `%memories [delete <id> \| clear]` | View or manage non-volatile memory (stored facts about you) |
-| `%usage [nick or #channel]` | Show API usage statistics |
+| `%ask <question>` | Ask with context, vision, and optional instructions |
+| `%code <request>` | Generate code with HTTP link output |
+| `%draw <prompt>` | Generate image (account required) |
 | `%forget [channel]` | Clear volatile memory (conversation context) |
+| `%memories [subcommand]` | Manage non-volatile memory (stored facts) |
+| `%instruct [text \| clear]` | Set persistent instructions for ask |
+| `%remind [text \| list \| del \| clear]` | Set and manage reminders |
+| `%usage [nick \| #channel]` | View API usage statistics |
 
 ## Testing Guidelines
 
