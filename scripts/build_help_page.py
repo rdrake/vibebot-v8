@@ -24,68 +24,132 @@ _HTML_HEAD = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Bot Commands</title>
 <style>
-* { box-sizing: border-box; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-    margin: 0;
-    padding: 20px;
-    background: #272822;
-    color: #f8f8f2;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    line-height: 1.6;
-    max-width: 800px;
+    padding: 3rem 1.5rem;
+    background: #fff;
+    color: #1a1a2e;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+    max-width: 720px;
     margin: 0 auto;
 }
-h1 { color: #f8f8f2; margin-bottom: 0.5em; }
-h2 { color: #a6e22e; margin-top: 1.5em; border-bottom: 1px solid #49483e; padding-bottom: 0.3em; }
-h3 { color: #66d9ef; margin-top: 1.2em; }
-code {
-    font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace;
-    font-size: 14px;
-    background: #1e1e1e;
-    padding: 2px 6px;
-    border-radius: 3px;
+h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.25rem;
 }
-pre {
-    background: #1e1e1e;
-    padding: 16px;
-    border-radius: 6px;
-    overflow-x: auto;
-    margin: 1em 0;
+.subtitle {
+    color: #6b7280;
+    font-size: 1.05rem;
+    margin-bottom: 2.5rem;
 }
-pre code { padding: 0; background: none; }
-.command { color: #e6db74; font-weight: bold; }
-.param { color: #fd971f; }
-.example { color: #75715e; font-style: italic; }
-ul { margin: 0.5em 0; padding-left: 1.5em; }
-li { margin: 0.3em 0; }
-a { color: #66d9ef; }
+h2 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6b7280;
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+}
+.cmd {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 0.75rem;
+    transition: box-shadow 0.15s;
+}
+.cmd:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.cmd-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+.command {
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #1a1a2e;
+}
+.param {
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.85rem;
+    color: #9ca3af;
+}
+.cmd p {
+    color: #4b5563;
+    font-size: 0.925rem;
+    margin-bottom: 0.5rem;
+}
+.examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+.examples code {
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.8rem;
+    background: #f3f4f6;
+    color: #374151;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+}
+.features {
+    list-style: none;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+}
+.features li {
+    font-size: 0.9rem;
+    color: #4b5563;
+    padding-left: 1.25rem;
+    position: relative;
+}
+.features li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.55rem;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #d1d5db;
+}
 .note {
-    background: #3e3d32;
-    border-left: 3px solid #a6e22e;
-    padding: 10px 15px;
-    margin: 1em 0;
-    border-radius: 0 6px 6px 0;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+    color: #6b7280;
 }
 @media (max-width: 600px) {
-    body { padding: 15px; }
-    pre { padding: 12px; font-size: 13px; }
+    body { padding: 1.5rem 1rem; }
+    .features { grid-template-columns: 1fr; }
 }
 </style>
 </head>
 <body>
 <h1>LLM Bot Commands</h1>
-<p>AI-powered IRC bot commands using LiteLLM.</p>
+<p class="subtitle">AI-powered IRC bot commands using LiteLLM.</p>
 """
 
 _HTML_FOOT = """
 <h2>Features</h2>
-<ul>
-<li><strong>Volatile Memory</strong> &ndash; Recent exchanges for natural follow-up questions (cleared by <code>%forget</code>, expires after timeout)</li>
-<li><strong>Non-volatile Memory</strong> &ndash; Facts the bot remembers about you across conversations (managed by <code>%memories</code>)</li>
-<li><strong>Vision Support</strong> &ndash; Include image URLs in <code>%ask</code> for image analysis</li>
-<li><strong>Syntax Highlighting</strong> &ndash; Generated code is displayed with full highlighting</li>
-<li><strong>Spontaneous Participation</strong> &ndash; The bot may occasionally join channel conversations (when enabled)</li>
-<li><strong>Multi-Provider</strong> &ndash; Supports various AI providers via LiteLLM</li>
+<ul class="features">
+<li>Volatile memory for follow-up questions</li>
+<li>Non-volatile memory across conversations</li>
+<li>Vision support with image URLs</li>
+<li>Syntax-highlighted code output</li>
+<li>Spontaneous channel participation</li>
+<li>Multi-provider AI via LiteLLM</li>
 </ul>
 
 <h2>Configuration</h2>
@@ -93,13 +157,6 @@ _HTML_FOOT = """
 Configuration is managed by the bot operator via Limnoria's config system.
 Commands require the appropriate capability (e.g., <code>llm.ask</code>).
 </div>
-
-<p>Key settings include:</p>
-<ul>
-<li><strong>Model selection</strong> &ndash; Different models for ask/code/draw commands</li>
-<li><strong>System prompts</strong> &ndash; Customize bot personality per command</li>
-<li><strong>Context settings</strong> &ndash; Configure volatile memory limits</li>
-</ul>
 
 </body>
 </html>"""
@@ -115,15 +172,17 @@ def _build_commands_html() -> str:
         sections.append(f"<h2>{_CATEGORY_LABELS[category]}</h2>")
         for cmd in cmds:
             escaped_args = html.escape(cmd.args)
+            examples = "".join(f"<code>{html.escape(ex)}</code>" for ex in cmd.examples)
             sections.append(
-                f'<h3><code class="command">%{cmd.name}</code> '
-                f'<span class="param">{escaped_args}</span></h3>'
+                f'<div class="cmd">'
+                f'<div class="cmd-header">'
+                f'<span class="command">%{cmd.name}</span> '
+                f'<span class="param">{escaped_args}</span>'
+                f"</div>"
+                f"<p>{html.escape(cmd.description)}</p>"
+                f'<div class="examples">{examples}</div>'
+                f"</div>"
             )
-            sections.append(f"<p>{html.escape(cmd.description)}</p>")
-            example_lines = "\n".join(
-                f'<span class="example">{html.escape(ex)}</span>' for ex in cmd.examples
-            )
-            sections.append(f"<pre><code>{example_lines}</code></pre>")
     return "\n".join(sections)
 
 
