@@ -1139,20 +1139,9 @@ class LLM(callbacks.Plugin):
             self.log.info("%s complete: %s/%s", command, channel, nick)
             request_id.reset(token)
 
-    def _get_help_url(self) -> str:
-        """Get the URL to the web help documentation.
-
-        Delegates to service.get_http_paths() for consistent URL construction.
-
-        Returns:
-            Full URL to help page (e.g., http://localhost:8080/llm/)
-        """
-        _, url_base = self.llm_service.get_http_paths()
-        return f"{url_base}/"
-
     def getPluginHelp(self) -> str:  # noqa: N802
-        """Return plugin help with dynamic documentation URL."""
-        url = self._get_help_url()
+        """Return plugin help with documentation URL."""
+        url = self.registryValue("helpUrl")
         names = ", ".join(cmd.name for cmd in COMMAND_REGISTRY)
         return _("AI-powered commands using LiteLLM. Commands: %s. Full documentation: %s") % (
             names,

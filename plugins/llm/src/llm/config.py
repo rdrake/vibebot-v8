@@ -383,6 +383,15 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "helpUrl",
+    registry.String(
+        "https://rdrake.github.io/vibebot-v8/",
+        _("""URL to the help documentation page. Shown in plugin help output."""),
+    ),
+)
+
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================

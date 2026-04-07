@@ -477,57 +477,18 @@ class TestPluginHelperMethods:
 
         assert result is False
 
-    def test_get_help_url_delegates_to_service(self, mocker: MockerFixture) -> None:
-        """GIVEN service returns url_base WHEN _get_help_url THEN returns url_base + /."""
+    def test_get_plugin_help_uses_help_url_config(self, mocker: MockerFixture) -> None:
+        """GIVEN helpUrl configured WHEN getPluginHelp called THEN uses config URL."""
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.get_http_paths.return_value = (
-            "/var/www/llm",
-            "https://example.com/llm",
-        )
-
-        result = plugin._get_help_url()
-
-        assert result == "https://example.com/llm/"
-
-    def test_get_help_url_with_localhost_fallback(self, mocker: MockerFixture) -> None:
-        """GIVEN service returns localhost url WHEN _get_help_url THEN uses it."""
-        from llm.plugin import LLM
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.get_http_paths.return_value = (
-            "/data/web/llm",
-            "http://localhost:8080/llm",
-        )
-
-        result = plugin._get_help_url()
-
-        assert result == "http://localhost:8080/llm/"
-
-    def test_get_plugin_help_includes_url(self, mocker: MockerFixture) -> None:
-        """GIVEN plugin WHEN getPluginHelp called THEN includes help URL."""
-        from llm.plugin import LLM
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.get_http_paths.return_value = (
-            "/data/web/llm",
-            "https://example.com/llm",
-        )
+        plugin.registryValue = mocker.MagicMock(return_value="https://rdrake.github.io/vibebot-v8/")
 
         result = plugin.getPluginHelp()
 
-        assert "https://example.com/llm/" in result
+        assert "https://rdrake.github.io/vibebot-v8/" in result
         assert "ask" in result
-        assert "code" in result
-        assert "draw" in result
-        assert "forget" in result
 
 
 class TestDoPrivmsg:
@@ -2393,11 +2354,7 @@ class TestGetPluginHelp:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.get_http_paths.return_value = (
-            "/data/web/llm",
-            "https://example.com/llm",
-        )
+        plugin.registryValue = mocker.MagicMock(return_value="https://example.com/help")
 
         help_text = plugin.getPluginHelp()
         for cmd in COMMAND_REGISTRY:
