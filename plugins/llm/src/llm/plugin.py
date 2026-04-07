@@ -1521,7 +1521,8 @@ class LLM(callbacks.Plugin):
 
         if result.error:
             log.warning("Memory cleanup failed for %s: %s", nick, result.error)
-            return "Cleanup failed, try again later."
+            short = result.error.split(":")[0] if ":" in result.error else result.error
+            return f"Cleanup failed ({short}). Try again later."
 
         # Abort if memory count changed during LLM call (race protection)
         current = self.db.get_memories(nick)

@@ -2682,6 +2682,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 messages=messages,
                 api_key=api_key,
                 timeout=30,
+                num_retries=2,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
