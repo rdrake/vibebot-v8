@@ -20,33 +20,40 @@
 
 Add to `test_persistence.py`:
 
+Note: `test_persistence.py` does NOT have a `db` fixture — each test creates `LLMDatabase` instances directly with `tmp_path`. Follow that pattern:
+
 ```python
 class TestUserInstructions:
     """Tests for user_instructions table CRUD."""
 
-    def test_get_instruction_returns_none_when_empty(self, db):
+    def test_get_instruction_returns_none_when_empty(self, tmp_path: Path) -> None:
         """GIVEN no instruction WHEN queried THEN returns None."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
         assert db.get_instruction("testnick") is None
 
-    def test_save_and_get_instruction(self, db):
+    def test_save_and_get_instruction(self, tmp_path: Path) -> None:
         """GIVEN saved instruction WHEN queried THEN returns text."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
         db.save_instruction("testnick", "You are Captain Picard.")
         assert db.get_instruction("testnick") == "You are Captain Picard."
 
-    def test_save_instruction_overwrites(self, db):
+    def test_save_instruction_overwrites(self, tmp_path: Path) -> None:
         """GIVEN existing instruction WHEN saved again THEN overwrites."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
         db.save_instruction("testnick", "old")
         db.save_instruction("testnick", "new")
         assert db.get_instruction("testnick") == "new"
 
-    def test_delete_instruction(self, db):
+    def test_delete_instruction(self, tmp_path: Path) -> None:
         """GIVEN existing instruction WHEN deleted THEN returns True and clears."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
         db.save_instruction("testnick", "text")
         assert db.delete_instruction("testnick") is True
         assert db.get_instruction("testnick") is None
 
-    def test_delete_instruction_missing(self, db):
+    def test_delete_instruction_missing(self, tmp_path: Path) -> None:
         """GIVEN no instruction WHEN deleted THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
         assert db.delete_instruction("testnick") is False
 ```
 
@@ -328,6 +335,8 @@ git commit -m "feat: add %instruct command for user-settable system prompt instr
 - Modify: `plugins/llm/src/llm/config.py`
 - Modify: `plugins/llm/tests/test_commands.py`
 - Modify: `plugins/llm/tests/conftest.py`
+- Modify: `README.md` (remove picard from command tables/examples)
+- Modify: `CLAUDE.md` (remove picard from IRC commands table)
 
 **Step 1: Remove `picardSystemPrompt` from config.py**
 
@@ -360,15 +369,19 @@ Delete the entire `TestPicardCommand` class (lines 343-441 in test_commands.py).
 
 Delete the picard block from the HTML template (lines 139-143 in plugin.py).
 
-**Step 7: Run preflight**
+**Step 7: Remove picard from README.md and CLAUDE.md**
+
+Grep for `picard` in both files and remove from command tables, feature descriptions, and examples. In `CLAUDE.md`, remove the `%picard` row from the IRC Commands table.
+
+**Step 8: Run preflight**
 
 ```bash
 make preflight
 ```
 
-Expected: PASS — no remaining references to picard in src/tests (grep to verify: `grep -rn picard plugins/llm/src/ plugins/llm/tests/`).
+Expected: PASS — no remaining references to picard in src/tests/docs (grep to verify: `grep -rn picard plugins/llm/src/ plugins/llm/tests/ README.md CLAUDE.md`).
 
-**Step 8: Commit**
+**Step 9: Commit**
 
 ```bash
 git commit -m "refactor: remove %picard command, replaced by %instruct"
@@ -458,7 +471,69 @@ def remind(
 remind = wrap(remind, [optional("text")])
 ```
 
-Extract the existing `remindme` body into `_remind_set(self, irc, msg, nick, text)` and the `reminders` body into `_remind_list(self, irc, nick)` as private helpers.
+Extract the existing `remindme` body into `_remind_set` and the `reminders` body into `_remind_list` as private helpers:
+
+```python
+def _remind_list(self, irc: callbacks.Irc, nick: str) -> None:
+    """List pending reminders for a user."""
+    user_reminders = self._get_user_reminders(nick)
+    if not user_reminders:
+        irc.reply(_("You have no pending reminders."))
+        return
+    irc.reply(self._format_reminders(user_reminders))
+
+def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> None:
+    """Parse and schedule a natural language reminder.
+
+    This is the body extracted from the old remindme() command.
+    The caller has already resolved nick via _get_identity().
+    """
+    channel = self._get_channel(msg)
+
+    with self._trace_request("remind", nick, channel):
+        with self._allow_concurrent():
+            result = self.llm_service.parse_reminder(text, channel)
+
+        if result.action == "clarify":
+            irc.reply(result.confirmation)
+            return
+
+        if result.seconds is None:
+            irc.reply(_("I couldn't determine when to remind you. Please try again."))
+            return
+
+        if result.seconds < 10:
+            irc.error(_("Reminder must be at least 10 seconds from now."))
+            return
+
+        if result.seconds > 604800:  # 7 days
+            irc.error(_("Reminder can't be more than 7 days out."))
+            return
+
+        reminder_message = result.message or text
+        event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
+        deliver = self._make_reminder_delivery_closure(
+            nick, channel, reminder_message, event_name
+        )
+
+        try:
+            schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
+            with self._reminders_lock:
+                self._reminders[event_name] = (nick, channel, reminder_message)
+
+            self.db.save_reminder(
+                event_name, nick, channel, reminder_message,
+                time.time() + result.seconds,
+            )
+
+            reply = self.llm_service.sanitize_output(result.confirmation)
+            if result.note:
+                reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
+            irc.reply(reply)
+        except Exception as e:
+            self.log.error("Failed to schedule reminder: %s", e)
+            irc.error(_("Failed to set reminder."))
+```
 
 **Step 2: Remove old commands**
 
@@ -544,9 +619,26 @@ usage = wrap(usage, [optional("text")])
 
 Grep for `_extract_raw_arg` in plugin.py. If `usage` was the only caller, delete the method entirely (lines 1469-1493).
 
-**Step 3: Update tests**
+**Step 3: Update tests in `test_commands.py` — `TestUsageCommand`**
 
-Update any tests that passed tokenized args lists to `usage()` to pass `text` as a single string instead. The `args` parameter is no longer manually consumed.
+This is the most labor-intensive part. The existing tests mock `callbacks.addressed` (via `_extract_raw_arg`) to feed targets. After the refactoring, targets arrive as the `text` parameter.
+
+1. **Remove the `_mock_addressed` autouse fixture** (line 862-865). It patched `callbacks.addressed` to return `None` — no longer needed since `_extract_raw_arg` is gone.
+
+2. **Update all no-arg tests** — tests that call `plugin.usage(mock_irc, mock_msg, [])` stay the same, but add `None` as the `text` arg:
+   - `plugin.usage(mock_irc, mock_msg, [], None)` (or simply `plugin.usage(mock_irc, mock_msg, [])` if wrap handles it)
+
+3. **Update all target-nick tests** — ~6 tests mock `callbacks.addressed` to return strings like `"usage @Larry"`, `"usage Rubin[F]"`, `"usage othernick"`. Replace each with passing `text` directly:
+   - Remove the `mocker.patch("llm.plugin.callbacks.addressed", ...)` line
+   - Change `plugin.usage(mock_irc, mock_msg, [])` → `plugin.usage(mock_irc, mock_msg, [], "@Larry")`
+   - The bracket-nick test (`Rubin[F]`) now works naturally: `plugin.usage(mock_irc, mock_msg, [], "Rubin[F]")`
+
+4. **Update all target-channel tests** — ~2 tests mock `callbacks.addressed` to return `"usage #other"` etc. Same pattern:
+   - Remove the `mocker.patch("llm.plugin.callbacks.addressed", ...)` line
+   - Change to `plugin.usage(mock_irc, mock_msg, [], "#other")`
+   - Keep `mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)` if needed for channel detection
+
+There are approximately 12 tests to update. Each change is mechanical: remove `callbacks.addressed` mock, pass target as `text` arg.
 
 **Step 4: Run preflight**
 

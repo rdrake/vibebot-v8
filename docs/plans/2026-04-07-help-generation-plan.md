@@ -10,6 +10,8 @@
 
 **Prerequisite:** This plan should be executed AFTER the command surface plan (2026-04-07-command-surface-plan.md), since it needs to know the final command set.
 
+**Before starting:** Verify the prerequisite was completed — grep for `def instruct` (should exist) and `def picard` (should not) in `plugin.py`.
+
 ---
 
 ### Task 1: Define the command registry
@@ -254,21 +256,21 @@ git commit -m "feat: generate getPluginHelp() from command registry"
 
 **Step 1: Write the failing test**
 
+Note: The current codebase exports `HELP_HTML_TEMPLATE` (string) and `_HELP_HTML_BYTES` (private, bytes). After this change, keep `HELP_HTML_TEMPLATE` as the public export name (now dynamically generated) so existing test imports continue to work. `_HELP_HTML_BYTES` stays as `HELP_HTML_TEMPLATE.encode("utf-8")`.
+
 ```python
 def test_html_help_lists_all_commands():
-    """GIVEN HELP_HTML_BYTES WHEN decoded THEN contains all registered commands."""
-    from llm.plugin import COMMAND_REGISTRY, HELP_HTML_BYTES
-    html = HELP_HTML_BYTES.decode()
+    """GIVEN HELP_HTML_TEMPLATE WHEN checked THEN contains all registered commands."""
+    from llm.plugin import COMMAND_REGISTRY, HELP_HTML_TEMPLATE
     for cmd in COMMAND_REGISTRY:
-        assert f"%{cmd.name}" in html, f"%{cmd.name} missing from HTML help"
+        assert f"%{cmd.name}" in HELP_HTML_TEMPLATE, f"%{cmd.name} missing from HTML help"
 
 def test_html_help_groups_by_category():
     """GIVEN HTML help WHEN parsed THEN has generation, memory, utility sections."""
-    from llm.plugin import HELP_HTML_BYTES
-    html = HELP_HTML_BYTES.decode()
-    assert "Generation" in html
-    assert "Memory" in html
-    assert "Utility" in html
+    from llm.plugin import HELP_HTML_TEMPLATE
+    assert "Generation" in HELP_HTML_TEMPLATE
+    assert "Memory" in HELP_HTML_TEMPLATE
+    assert "Utility" in HELP_HTML_TEMPLATE
 ```
 
 **Step 2: Run to verify it fails**
@@ -279,11 +281,15 @@ Keep the CSS/layout shell as a constant (`_HELP_HTML_HEAD` and `_HELP_HTML_FOOT`
 
 Add a module-level function:
 
+**IMPORTANT:** The `args` field contains angle brackets (e.g., `<question>`) which must be HTML-escaped or they become actual HTML tags. Use `html.escape()` from the standard library.
+
 ```python
+import html as _html
+
 _CATEGORY_LABELS = {"generation": "Generation", "memory": "Memory", "utility": "Utility"}
 
 def _build_help_html() -> str:
-    """Build the HTML help page from the command registry."""
+    """Build the command sections of the HTML help page from the registry."""
     sections: list[str] = []
     for category in ("generation", "memory", "utility"):
         cmds = [c for c in COMMAND_REGISTRY if c.category == category]
@@ -291,37 +297,50 @@ def _build_help_html() -> str:
             continue
         sections.append(f'<h2>{_CATEGORY_LABELS[category]}</h2>')
         for cmd in cmds:
+            escaped_args = _html.escape(cmd.args)
             sections.append(
                 f'<h3><code class="command">%{cmd.name}</code> '
-                f'<span class="param">{cmd.args}</span></h3>'
+                f'<span class="param">{escaped_args}</span></h3>'
             )
-            sections.append(f"<p>{cmd.description}</p>")
+            sections.append(f"<p>{_html.escape(cmd.description)}</p>")
             example_lines = "\n".join(
-                f'<span class="example">{ex}</span>' for ex in cmd.examples
+                f'<span class="example">{_html.escape(ex)}</span>'
+                for ex in cmd.examples
             )
             sections.append(f"<pre><code>{example_lines}</code></pre>")
-    return sections
+    return "\n".join(sections)
 ```
 
 Then build the full HTML from head + generated sections + features section + foot. Replace `HELP_HTML_TEMPLATE` and `HELP_HTML_BYTES` with the generated result.
 
 **Step 4: Keep features and configuration sections**
 
-Move the existing Features and Configuration HTML sections (lines 173-196) into the footer constant so they're still present but no longer mixed with command blocks.
+Move the existing Features and Configuration HTML sections into the footer constant so they're still present but no longer mixed with command blocks.
 
-**Step 5: Run tests**
+**Step 5: Update existing tests that import `HELP_HTML_TEMPLATE`**
+
+Two test files reference the old template:
+
+1. `test_html_output.py` — `TestHelpPageContent` class (4 tests) imports `HELP_HTML_TEMPLATE` and asserts specific strings. Update assertions to match the new generated content:
+   - `"%ask" in HELP_HTML_TEMPLATE` — still true, keep
+   - `"Conversation Context" in HELP_HTML_TEMPLATE` — update to match new terminology ("Volatile Memory")
+   - Other structural assertions (DOCTYPE, html tags, viewport) — still true, keep
+
+2. `test_plugin.py` — `TestHTTPCallbackServeHelpPage` class (2 tests at lines 293 and 333) imports `HELP_HTML_TEMPLATE` and checks `HELP_HTML_TEMPLATE.encode("utf-8")`. These still work as long as the public export name stays `HELP_HTML_TEMPLATE`.
+
+**Step 6: Run tests**
 
 ```bash
 make test
 ```
 
-**Step 6: Run preflight**
+**Step 7: Run preflight**
 
 ```bash
 make preflight
 ```
 
-**Step 7: Commit**
+**Step 8: Commit**
 
 ```bash
 git commit -m "feat: generate HTML help page from command registry"
@@ -336,30 +355,41 @@ git commit -m "feat: generate HTML help page from command registry"
 
 **Step 1: Write the test**
 
+Limnoria identifies commands via `isCommandMethod()` on the `Commands` base class. It checks:
+1. `name == canonicalName(name)` (lowercase, alphanumeric only) — this filters out `getPluginHelp`, `invalidCommand`, `inFilter`, `outFilter`, `doPrivmsg`, etc.
+2. The method's code object has args `['self', 'irc', 'msg', 'args']`
+
+We replicate this logic to find all commands and assert they're in the registry:
+
 ```python
+import inspect
+from supybot.callbacks import canonicalName
+
 def test_all_wrapped_commands_in_registry():
-    """GIVEN plugin class WHEN checking wrapped methods THEN all are in registry.
+    """GIVEN plugin class WHEN checking command methods THEN all are in registry.
 
     This test prevents adding a new command to plugin.py without updating
-    the command registry. It introspects the class for methods that have
-    been wrapped with Limnoria's wrap() decorator.
+    the command registry. It uses the same introspection as Limnoria's
+    isCommandMethod() to find all commands.
     """
     from llm.plugin import COMMAND_REGISTRY, LLM
     registry_names = {cmd.name for cmd in COMMAND_REGISTRY}
-
-    # Commands that are intentionally NOT in the user-facing registry
-    internal = {"invalidCommand", "getPluginHelp", "inFilter", "outFilter"}
+    command_args = ["self", "irc", "msg", "args"]
 
     for name in dir(LLM):
-        obj = getattr(LLM, name)
-        if callable(obj) and hasattr(obj, 'isCommand') and name not in internal:
+        if name.startswith("_"):
+            continue
+        if name != canonicalName(name):
+            continue  # filters getPluginHelp, invalidCommand, inFilter, etc.
+        obj = getattr(LLM, name, None)
+        if not inspect.isfunction(obj):
+            continue
+        if inspect.getargs(obj.__code__)[0] == command_args:
             assert name in registry_names, (
                 f"Command '{name}' is registered with Limnoria but missing from "
                 f"COMMAND_REGISTRY. Add it to keep help in sync."
             )
 ```
-
-Note: Limnoria's `wrap()` sets an `isCommand` attribute on the wrapped function. Verify the exact attribute name by checking a wrapped command — it may be `__commands__` or similar. Adjust the introspection accordingly.
 
 **Step 2: Run tests**
 
