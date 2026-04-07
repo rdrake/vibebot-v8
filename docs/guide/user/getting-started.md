@@ -1,6 +1,6 @@
 # Getting Started
 
-VibeBot is an AI-powered IRC bot that lets you chat with large language models, generate code, create images, and more -- all from IRC.
+Chat with large language models, generate code, create images, and more -- all from IRC.
 
 ## Your first conversation
 
@@ -25,7 +25,7 @@ Context is per user and per channel. It expires after a few minutes of inactivit
 
 ## Generating code
 
-Use `@code` instead of `@ask` when you want code. The output is served as a syntax-highlighted HTTP link to keep IRC clean:
+Use `@code` instead of `@ask` when you want code. The bot returns a syntax-highlighted HTTP link to keep IRC clean:
 
 ```
 <you>     @code Python script to rename files by date
@@ -52,21 +52,21 @@ Set persistent instructions to change how the bot talks to you:
 @instruct You are Captain Picard. Respond in character.
 ```
 
-The bot also picks up facts from your conversations automatically -- things like your preferred language or what you're working on. View and manage them with `@memories`.
+The bot also picks up facts from your conversations automatically -- such as your preferred language or what you're working on. View and manage them with `@memories`.
 
 See [Memory & Instructions](memory.md) for details.
 
 ## Account requirements
 
-Some commands require you to be authenticated. For example, `@draw` requires a registered account. If you're not authenticated, the bot will let you know.
+Some commands require an authenticated account. For example, `@draw` requires registration. The bot tells you if you need to log in first.
 
 ## Rate limits
 
-Commands are rate-limited to prevent abuse. Your limits depend on your account status (unregistered, registered, or trusted). If you hit a limit, wait a moment and try again. Bot admins and owners are exempt.
+Commands are rate-limited to prevent misuse. Your limits depend on your account status (unregistered, registered, or trusted). If you reach a limit, wait a moment and try again. Bot admins and owners are exempt.
 
 ## Permissions
 
-Your bot operator controls who can use which commands via Limnoria's capability system. If a command tells you that you lack permission, ask your channel operator to grant you access.
+Your bot operator controls who can use each command through Limnoria's capability system. If a command tells you that you lack permission, ask your channel operator to grant you access.
 
 See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html) for details.
 
