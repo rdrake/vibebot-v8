@@ -2353,3 +2353,31 @@ class TestIsContentBlockedError:
         from llm.plugin import LLM
 
         assert LLM._is_content_blocked_error("") is False
+
+
+class TestCommandRegistry:
+    """Tests for the command metadata registry."""
+
+    def test_registry_contains_all_commands(self) -> None:
+        """GIVEN command registry WHEN checked THEN contains all user-facing commands."""
+        from llm.plugin import COMMAND_REGISTRY
+
+        names = {cmd.name for cmd in COMMAND_REGISTRY}
+        expected = {"ask", "code", "draw", "forget", "memories", "instruct", "remind", "usage"}
+        assert names == expected
+
+    def test_registry_entries_have_required_fields(self) -> None:
+        """GIVEN command registry WHEN checked THEN all entries have name, args, description."""
+        from llm.plugin import COMMAND_REGISTRY
+
+        for cmd in COMMAND_REGISTRY:
+            assert cmd.name, "name is required"
+            assert cmd.description, "description is required"
+            assert cmd.category in ("generation", "memory", "utility")
+
+    def test_registry_entries_have_examples(self) -> None:
+        """GIVEN command registry WHEN checked THEN all entries have at least one example."""
+        from llm.plugin import COMMAND_REGISTRY
+
+        for cmd in COMMAND_REGISTRY:
+            assert cmd.examples, f"{cmd.name} needs at least one example"

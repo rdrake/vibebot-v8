@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -67,6 +68,117 @@ class PreflightResult(NamedTuple):
     nick: str  # account-resolved identity for logging
     channel: str
     account: str | None  # NickServ account, or None if unidentified
+
+
+@dataclass(frozen=True)
+class CommandInfo:
+    """Metadata for a user-facing command, used to generate help."""
+
+    name: str
+    args: str
+    description: str
+    examples: tuple[str, ...]
+    category: str  # "generation", "memory", "utility"
+
+
+COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
+    CommandInfo(
+        name="ask",
+        args="<question>",
+        description=(
+            "Ask the AI a question. Supports conversation context "
+            "(follow-up questions) and vision (include image URLs)."
+        ),
+        examples=(
+            "%ask What is the capital of France?",
+            "%ask Describe this: https://example.com/image.jpg",
+            "%ask And what about Germany?  (follow-up using context)",
+        ),
+        category="generation",
+    ),
+    CommandInfo(
+        name="code",
+        args="<request>",
+        description=(
+            "Generate code based on your request. "
+            "Code is saved to an HTTP link with syntax highlighting."
+        ),
+        examples=(
+            "%code Python function to calculate fibonacci numbers",
+            "%code Now add memoization to that",
+        ),
+        category="generation",
+    ),
+    CommandInfo(
+        name="draw",
+        args="<prompt>",
+        description="Generate an image from a text description.",
+        examples=(
+            "%draw A sunset over mountains in watercolor style",
+            "%draw A cyberpunk cityscape at night",
+        ),
+        category="generation",
+    ),
+    CommandInfo(
+        name="forget",
+        args="[channel]",
+        description=(
+            "Clear your volatile memory (conversation context) "
+            "for the current or specified channel."
+        ),
+        examples=("%forget", "%forget #channel"),
+        category="memory",
+    ),
+    CommandInfo(
+        name="memories",
+        args="[del <id> | edit <id> <text> | clear | cleanup]",
+        description=(
+            "Manage your non-volatile memory (stored facts the bot "
+            "remembers about you across conversations)."
+        ),
+        examples=(
+            "%memories",
+            "%memories delete 3",
+            "%memories edit 5 corrected fact",
+            "%memories clear",
+        ),
+        category="memory",
+    ),
+    CommandInfo(
+        name="instruct",
+        args="[<instruction> | clear]",
+        description=(
+            "Set persistent instructions that shape how %ask responds to you. "
+            "Your instruction is prepended to the system prompt."
+        ),
+        examples=(
+            "%instruct You are Captain Picard. Respond in character.",
+            "%instruct Respond only in haiku",
+            "%instruct clear",
+            "%instruct",
+        ),
+        category="memory",
+    ),
+    CommandInfo(
+        name="remind",
+        args="[<text> | list | del <id> | clear]",
+        description="Set and manage reminders using natural language.",
+        examples=(
+            "%remind in 30 minutes check the build",
+            "%remind list",
+            "%remind delete abc1",
+            "%remind clear",
+        ),
+        category="utility",
+    ),
+    CommandInfo(
+        name="usage",
+        args="[nick | #channel]",
+        description="Show API usage statistics.",
+        examples=("%usage", "%usage someone", "%usage #channel"),
+        category="utility",
+    ),
+)
 
 
 HELP_HTML_TEMPLATE = """<!DOCTYPE html>
