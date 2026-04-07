@@ -1459,33 +1459,6 @@ class LLM(callbacks.Plugin):
         """
         return msg.args[0] if msg.args else "unknown"
 
-    @staticmethod
-    def _extract_raw_arg(irc: callbacks.Irc, msg: IrcMsg, command: str) -> str | None:
-        """Extract the raw argument for a command from the original message.
-
-        Limnoria's tokenizer treats ``[…]`` as nested-command syntax, so a
-        nick like ``Rubin[F]`` is evaluated as a nested command before the
-        command method ever sees it.  This bypasses the tokenizer entirely
-        by reading the addressed text from the raw IRC message.
-
-        Args:
-            irc: IRC connection (needed by ``callbacks.addressed``)
-            msg: IRC message
-            command: Command name to find (e.g. ``"usage"``)
-
-        Returns:
-            The raw text after the command name, or None if absent.
-        """
-        payload = callbacks.addressed(irc, msg)
-        if not payload:
-            return None
-        # payload is e.g. "usage Rubin[F]" or "llm usage Rubin[F]"
-        idx = payload.lower().find(command)
-        if idx < 0:
-            return None
-        after = payload[idx + len(command) :].strip()
-        return after or None
-
     def _is_old_message(self, msg: IrcMsg) -> bool:
         """Check if message predates bot startup (ZNC playback).
 
@@ -2118,6 +2091,7 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
+        text: str | None,
     ) -> None:
         """[<nick or #channel>]
 
@@ -2128,12 +2102,7 @@ class LLM(callbacks.Plugin):
         <nick>: shows that user's stats (scoped to current channel if in one).
         <#channel>: shows that channel's stats.
         """
-        # Extract the raw target from the IRC message instead of using
-        # Limnoria's tokenized args.  The tokenizer treats "[" as nested-
-        # command syntax, so "Rubin[F]" is evaluated as a nested command
-        # before the args reach us — _extract_raw_arg bypasses that.
-        target: str | None = self._extract_raw_arg(irc, msg, "usage")
-        args[:] = []  # consume all tokens
+        target = text.strip() if text else None
 
         # Strip IRC status prefixes (@op, +voice, %halfop) from nick targets
         if target and not ircutils.isChannel(target):
@@ -2145,11 +2114,12 @@ class LLM(callbacks.Plugin):
         elif msg.channel:
             self._usage_channel(irc, msg)
         else:
-            # PM mode requires admin
             if not ircdb.checkCapability(msg.prefix, "admin"):
                 irc.error(_("You need the 'admin' capability to view global usage stats."))
                 return
             self._usage_global(irc, msg)
+
+    usage = wrap(usage, [optional("text")])
 
     def _usage_global(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show global usage overview via PM (admin only)."""

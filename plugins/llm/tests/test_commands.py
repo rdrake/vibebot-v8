@@ -753,11 +753,6 @@ class TestForgetCommand:
 class TestUsageCommand:
     """Tests for the real LLM.usage method (dual-mode: channel + PM)."""
 
-    @pytest.fixture(autouse=True)
-    def _mock_addressed(self, mocker: MockerFixture):
-        """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
-        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
-
     # -- PM mode (global stats, admin only) --
 
     def test_usage_pm_shows_today_and_month_stats(self, plugin_env, mocker: MockerFixture):
@@ -950,8 +945,7 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(7, 800, 400, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage @Larry")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["@Larry"])
 
         # Should query for "Larry", not "@Larry"
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
@@ -965,9 +959,7 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(3, 300, 150, 0.005)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=4)
 
-        # Mock the raw message extraction to return the bracket nick intact
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["Rubin[F]"])
 
         # Should query DB with the full bracket nick
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Rubin[F]"
@@ -983,8 +975,7 @@ class TestUsageCommand:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(5, 500, 250, 0.01)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=2, total=6)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage OldNick")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["OldNick"])
 
         # DB should be queried with the account name
         assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "RealAccount"
@@ -1005,8 +996,7 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=3, total=10)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["othernick"])
 
         mock_irc.reply.assert_called_once()
         reply_text = mock_irc.reply.call_args[0][0]
@@ -1034,8 +1024,7 @@ class TestUsageCommand:
         )
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["othernick"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "othernick" in reply_text
@@ -1057,9 +1046,8 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=2, total=8)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #other")
         mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["#other"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#other this month:" in reply_text
@@ -1082,9 +1070,8 @@ class TestUsageCommand:
         )
         plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #somechan")
         mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["#somechan"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#somechan this month:" in reply_text
@@ -1557,7 +1544,6 @@ class TestAccountBasedIdentity:
         plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=3)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
         plugin.usage(mock_irc, mock_msg, [])
 
         # Personal stats should query by account name
@@ -1703,11 +1689,6 @@ class TestAccountBasedIdentity:
 class TestUsageEdgeCases:
     """Additional edge-case tests for usage command flows."""
 
-    @pytest.fixture(autouse=True)
-    def _mock_addressed(self, mocker: MockerFixture):
-        """Mock callbacks.addressed so _extract_raw_arg doesn't hit real Limnoria."""
-        mocker.patch("llm.plugin.callbacks.addressed", return_value=None)
-
     def test_usage_for_nick_with_zero_rank(self, plugin_env, mocker: MockerFixture):
         """GIVEN nick target with no usage WHEN usage called THEN rank is omitted."""
         from llm.persistence import UsageRank
@@ -1716,8 +1697,7 @@ class TestUsageEdgeCases:
         plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
         plugin.db.get_nick_rank.return_value = UsageRank(rank=0, total=5)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage somenick")
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["somenick"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "somenick" in reply_text
@@ -1731,29 +1711,12 @@ class TestUsageEdgeCases:
         plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
         plugin.db.get_channel_rank.return_value = UsageRank(rank=0, total=0)
 
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage #empty")
         mocker.patch("llm.plugin.ircutils.isChannel", return_value=True)
-        plugin.usage(mock_irc, mock_msg, [])
+        plugin.usage(mock_irc, mock_msg, ["#empty"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#empty this month:" in reply_text
         assert "rank" not in reply_text
-
-
-class TestExtractRawArgEdgeCases:
-    """Tests for _extract_raw_arg edge cases."""
-
-    def test_extract_raw_arg_command_not_in_payload(self, mocker: MockerFixture):
-        """GIVEN payload without the command WHEN _extract_raw_arg THEN returns None."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_msg = mocker.MagicMock()
-
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="help something")
-        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
-
-        assert result is None
 
 
 class TestRemindEdgeCases:

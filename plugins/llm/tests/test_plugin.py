@@ -405,54 +405,6 @@ class TestPluginHelperMethods:
 
         assert result == "testnick"
 
-    def test_extract_raw_arg_returns_target_with_brackets(self, mocker: MockerFixture) -> None:
-        """GIVEN message with bracket nick WHEN _extract_raw_arg THEN brackets preserved."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_msg = mocker.MagicMock()
-
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage Rubin[F]")
-        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
-
-        assert result == "Rubin[F]"
-
-    def test_extract_raw_arg_returns_simple_nick(self, mocker: MockerFixture) -> None:
-        """GIVEN message with simple nick WHEN _extract_raw_arg THEN nick returned."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_msg = mocker.MagicMock()
-
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage othernick")
-        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
-
-        assert result == "othernick"
-
-    def test_extract_raw_arg_returns_none_when_no_arg(self, mocker: MockerFixture) -> None:
-        """GIVEN usage with no argument WHEN _extract_raw_arg THEN returns None."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_msg = mocker.MagicMock()
-
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="usage")
-        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
-
-        assert result is None
-
-    def test_extract_raw_arg_handles_plugin_qualified_command(self, mocker: MockerFixture) -> None:
-        """GIVEN plugin-qualified command WHEN _extract_raw_arg THEN arg extracted."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_msg = mocker.MagicMock()
-
-        mocker.patch("llm.plugin.callbacks.addressed", return_value="llm usage Rubin[F]")
-        result = LLM._extract_raw_arg(mock_irc, mock_msg, "usage")
-
-        assert result == "Rubin[F]"
-
     def test_get_channel_extracts_channel_from_args(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
