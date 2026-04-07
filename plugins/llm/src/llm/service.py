@@ -2681,16 +2681,9 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 model=model,
                 messages=messages,
                 api_key=api_key,
-                timeout=30,
+                timeout=60,
                 num_retries=2,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "cleanup",
-                        "strict": True,
-                        "schema": _CLEANUP_SCHEMA,
-                    },
-                },
+                response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content.strip()
             parsed = json.loads(content)
