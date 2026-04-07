@@ -7,6 +7,7 @@ import contextlib
 import logging
 import mimetypes
 import random
+import re
 import subprocess
 import threading
 import time
@@ -48,6 +49,11 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 
 # Commands that support long-term memory extraction
 _MEMORY_COMMANDS = frozenset({"ask", "picard", "code"})
+
+# C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
+# Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
+# brackets crash Limnoria's nested-command tokenizer.
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class PreflightResult(NamedTuple):
@@ -644,6 +650,36 @@ class LLM(callbacks.Plugin):
                     r.cost,
                 )
                 break
+
+    def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg:  # noqa: N802
+        """Sanitize PRIVMSG text before Limnoria's tokenizer processes it.
+
+        Limnoria's command tokenizer interprets ``[…]`` as nested-command
+        syntax and raises ``SyntaxError`` on unmatched brackets.  Messages
+        containing ANSI escape sequences (e.g. ``\\x1b[6n``) or casual
+        bracket use (e.g. ``array[0``) crash the tokenizer before
+        ``invalidCommand`` ever runs.
+
+        This filter:
+        1. Strips C0 control characters (except TAB/LF/CR) — removes the
+           ESC byte from ANSI sequences.
+        2. Replaces ``[`` and ``]`` with full-width equivalents when brackets
+           are unbalanced — prevents the tokenizer crash while keeping the
+           text readable for the LLM.
+        """
+        if msg.command != "PRIVMSG" or len(msg.args) < 2:
+            return msg
+
+        text = msg.args[1]
+        cleaned = _CTRL_CHAR_RE.sub("", text)
+
+        # Escape unbalanced brackets that would crash the tokenizer
+        if cleaned.count("[") != cleaned.count("]"):
+            cleaned = cleaned.replace("[", "\uff3b").replace("]", "\uff3d")
+
+        if cleaned != text:
+            return ircmsgs.IrcMsg(msg=msg, args=(msg.args[0], cleaned))
+        return msg
 
     def doPrivmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Monitor channel messages for enhanced context (opt-in feature).

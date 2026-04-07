@@ -1073,6 +1073,98 @@ class TestStartupNotification:
         mock_remove.assert_called_once_with("llm_startup_check")
 
 
+class TestInFilter:
+    """Test inFilter sanitisation of control characters and unbalanced brackets."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture) -> object:
+        """Create a bare LLM instance for inFilter tests."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        return LLM.__new__(LLM)
+
+    @staticmethod
+    def _privmsg(text: str, channel: str = "#test") -> object:
+        """Build a minimal PRIVMSG, bypassing Limnoria's argument validation.
+
+        Uses the raw-string constructor so we can inject control
+        characters that the keyword constructor would reject.
+        """
+        import supybot.ircmsgs as ircmsgs
+
+        return ircmsgs.IrcMsg(s=f":n!u@h PRIVMSG {channel} :{text}\r\n")
+
+    def test_normal_text_passes_through(self, plugin: object) -> None:
+        """GIVEN plain text WHEN inFilter THEN message unchanged."""
+        msg = self._privmsg("hello world")
+        result = plugin.inFilter(None, msg)
+        assert result.args[1] == "hello world"
+
+    def test_strips_esc_byte(self, plugin: object) -> None:
+        """GIVEN text with ESC byte WHEN inFilter THEN ESC removed."""
+        msg = self._privmsg("before\x1bafter")
+        result = plugin.inFilter(None, msg)
+        assert "\x1b" not in result.args[1]
+        assert result.args[1] == "beforeafter"
+
+    def test_ansi_escape_sequence_with_bracket(self, plugin: object) -> None:
+        """GIVEN ANSI escape \\x1b[6n WHEN inFilter THEN does not crash tokenizer."""
+        from supybot import callbacks
+
+        msg = self._privmsg("\x1b[6n cursor position check")
+        result = plugin.inFilter(None, msg)
+        # Should not raise SyntaxError
+        callbacks.tokenize(result.args[1])
+
+    def test_unbalanced_open_bracket_escaped(self, plugin: object) -> None:
+        """GIVEN unmatched [ WHEN inFilter THEN brackets replaced with full-width."""
+        msg = self._privmsg("explain array[0")
+        result = plugin.inFilter(None, msg)
+        assert "[" not in result.args[1]
+        assert "\uff3b" in result.args[1]
+
+    def test_balanced_brackets_preserved(self, plugin: object) -> None:
+        """GIVEN matched brackets WHEN inFilter THEN original brackets kept."""
+        msg = self._privmsg("run [echo hello]")
+        result = plugin.inFilter(None, msg)
+        assert result.args[1] == "run [echo hello]"
+
+    def test_non_privmsg_passes_through(self, plugin: object) -> None:
+        """GIVEN non-PRIVMSG WHEN inFilter THEN returned unchanged."""
+        import supybot.ircmsgs as ircmsgs
+
+        msg = ircmsgs.join("#test")
+        result = plugin.inFilter(None, msg)
+        assert result is msg
+
+    def test_strips_null_bytes(self, plugin: object) -> None:
+        """GIVEN text with null bytes WHEN inFilter THEN nulls removed."""
+        msg = self._privmsg("hello\x00world")
+        result = plugin.inFilter(None, msg)
+        assert result.args[1] == "helloworld"
+
+    def test_preserves_tabs(self, plugin: object) -> None:
+        """GIVEN text with tab WHEN inFilter THEN preserved."""
+        msg = self._privmsg("col1\tcol2")
+        result = plugin.inFilter(None, msg)
+        assert result.args[1] == "col1\tcol2"
+
+    def test_original_crash_message(self, plugin: object) -> None:
+        r"""GIVEN the exact message that caused the crash WHEN inFilter THEN tokenizable."""
+        from supybot import callbacks
+
+        text = (
+            r"do this but don't fuck it up suggests sending \x1b[6n"
+            " to see if the terminal force-injects its cursor position"
+            " into his input buffer."
+        )
+        msg = self._privmsg(text)
+        result = plugin.inFilter(None, msg)
+        # Must not raise SyntaxError
+        callbacks.tokenize(result.args[1])
+
+
 class TestInvalidCommand:
     """Test invalidCommand fallback to ask."""
 
