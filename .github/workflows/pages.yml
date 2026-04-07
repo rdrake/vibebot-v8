@@ -1,4 +1,4 @@
-name: Deploy Help Page
+name: Deploy Docs
 
 on:
   push:
@@ -31,13 +31,13 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Build help page
-        run: uv run python scripts/build_help_page.py
+      - name: Build docs
+        run: uv run mkdocs build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: site
 
       - name: Deploy to GitHub Pages
         id: deployment

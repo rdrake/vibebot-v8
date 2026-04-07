@@ -61,8 +61,7 @@ docs/reviews/
 # Git worktrees
 .worktrees/
 
-# Generated help site
-_site/
+# Generated docs site
 site/
 
 # Claude Code (keep project settings.json, ignore user-local config)
