@@ -48,7 +48,7 @@ _ = PluginInternationalization("LLM")
 GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 
 # Commands that support long-term memory extraction
-_MEMORY_COMMANDS = frozenset({"ask", "picard", "code"})
+_MEMORY_COMMANDS = frozenset({"ask", "code"})
 
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
@@ -135,12 +135,6 @@ a { color: #66d9ef; }
 <pre><code><span class="example">%ask What is the capital of France?</span>
 <span class="example">%ask Describe this: https://example.com/image.jpg</span>
 <span class="example">%ask And what about Germany?</span>  <span class="example">(follow-up using context)</span></code></pre>
-
-<h3><code class="command">%picard</code> <span class="param">[topic]</span></h3>
-<p>Share a random Captain Picard fact. Optionally provide a topic to steer the fact.</p>
-<pre><code><span class="example">%picard</span>
-<span class="example">%picard the Borg</span>
-<span class="example">%picard Earl Grey tea</span></code></pre>
 
 <h3><code class="command">%code</code> <span class="param">&lt;request&gt;</span></h3>
 <p>Generate code based on your request. Code is saved to an HTTP link with syntax highlighting.</p>
@@ -1817,93 +1811,6 @@ class LLM(callbacks.Plugin):
             )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
-
-    def picard(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str = "",
-    ) -> None:
-        """[<topic>]
-
-        Share a random Captain Picard fact. Optionally provide a topic
-        to steer the fact (e.g., %picard tea, %picard diplomacy).
-
-        Examples:
-          %picard
-          %picard the Borg
-          %picard Earl Grey tea
-        """
-        if self._is_old_message(msg):
-            return
-
-        pf = self._run_preflight(
-            irc,
-            msg,
-            text or "random fact",
-            "ask",
-            require_account=False,
-        )
-        if pf.blocked:
-            return
-        nick, channel = pf.nick, pf.channel
-
-        with self._trace_request("picard", nick, channel):
-            prompt = text if text else "Tell me a random Picard fact."
-
-            if self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                history = self.context.get_messages(nick, channel, config=ctx_cfg)
-                channel_history = self.context.get_channel_messages(
-                    channel, exclude_nick=nick, config=ctx_cfg
-                )
-            else:
-                history, channel_history = [], []
-
-            picard_prompt = self.registryValue("picardSystemPrompt", channel)
-            memories = self._get_user_memories(nick)
-
-            with self._allow_concurrent():
-                result = self.llm_service.completion(
-                    prompt,
-                    command="ask",
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                    system_prompt=picard_prompt,
-                    memories=memories,
-                )
-
-                response = result.content
-                if not response or not response.strip():
-                    irc.error(_("The model returned an empty response. Please try again."))
-                    return
-
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    if result.grounding_used:
-                        action_text = f"{GROUNDING_ICON} {action_text}"
-                    self.log.info("sending action to %s/%s", channel, nick)
-                    target = msg.args[0]
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    response = f"* {irc.nick} {action_text}"
-                    self._store_context_and_log_usage(
-                        nick, channel, "picard", prompt, response, result, irc, msg
-                    )
-                    return
-
-                display_response = (
-                    f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                )
-                irc.reply(display_response, prefixNick=False)
-
-            self._store_context_and_log_usage(
-                nick, channel, "picard", text or prompt, response, result, irc, msg
-            )
-
-    picard = wrap(picard, [("checkCapability", "llm.ask"), optional("text")])
 
     def code(
         self,

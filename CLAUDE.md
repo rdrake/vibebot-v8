@@ -185,7 +185,6 @@ class ValidationResult(NamedTuple):
 | Command | Description |
 |---------|-------------|
 | `%ask <question>` | Ask with context & vision support |
-| `%picard [topic]` | Captain Picard facts, optionally steered by topic |
 | `%code <request>` | Generate code |
 | `%draw <prompt>` | Generate image |
 | `%memories [delete <id> \| clear]` | View or manage stored long-term memories |

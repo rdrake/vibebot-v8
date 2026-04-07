@@ -93,7 +93,6 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 | Command | Description |
 |---------|-------------|
 | `%ask <question>` | Ask AI a question (supports vision with image URLs, remembers context) |
-| `%picard [topic]` | Share a random Captain Picard fact, optionally steered by topic |
 | `%code <request>` | Generate code (remembers context for iterating on code) |
 | `%draw <prompt>` | Generate an image (no context) |
 | `%memories [delete <id> \| clear]` | View or manage your stored long-term memories |
@@ -135,7 +134,7 @@ supybot.plugins.LLM.memoryExtractionModel: gemini/gemini-2.0-flash-lite
 supybot.plugins.LLM.memoryMaxPerUser: 50
 ```
 
-Facts are automatically extracted from `%ask`, `%picard`, and `%code` conversations. Users manage memories with `%memories`.
+Facts are automatically extracted from `%ask` and `%code` conversations. Users manage memories with `%memories`.
 
 ### Spontaneous Participation
 
@@ -160,7 +159,6 @@ Protection matrix:
 | Command | Capability | NickServ Required | Rate Limited |
 |---------|------------|-------------------|--------------|
 | `%ask` | `llm.ask` | No | Yes (optional) |
-| `%picard` | `llm.ask` | No | Yes (optional) |
 | `%code` | `llm.code` | No | Yes (optional) |
 | `%draw` | `llm.draw` | Yes | Yes (optional) |
 

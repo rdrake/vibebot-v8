@@ -114,8 +114,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "askApiKey": TEST_API_KEY,
         "askModel": TEST_MODEL,
         "askSystemPrompt": "You are helpful.",
-        # Picard command (reuses ask model/key)
-        "picardSystemPrompt": "You are Captain Picard.",
         # Code command
         "codeApiKey": TEST_API_KEY,
         "codeModel": TEST_MODEL,
