@@ -2325,37 +2325,26 @@ class LLM(callbacks.Plugin):
                     return name
             return None
 
-    def remindme(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """<natural language reminder>
+    def _remind_list(self, irc: callbacks.Irc, nick: str) -> None:
+        """List pending reminders for a user."""
+        user_reminders = self._get_user_reminders(nick)
+        if not user_reminders:
+            irc.reply(_("You have no pending reminders."))
+            return
+        irc.reply(self._format_reminders(user_reminders))
 
-        Set a reminder using natural language.
-
-        Examples:
-          %remindme in 30 minutes check the build
-          %remindme tomorrow at 3pm call Bob
-          %remindme in 2 hours meeting starts
-          %remindme next Tuesday morning dentist appointment
-        """
-        nick = self._get_identity(irc, msg)
+    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> None:
+        """Parse and schedule a natural language reminder."""
         channel = self._get_channel(msg)
 
-        with self._trace_request("remindme", nick, channel):
-            # Parse reminder using LLM (release lock during blocking API call)
+        with self._trace_request("remind", nick, channel):
             with self._allow_concurrent():
                 result = self.llm_service.parse_reminder(text, channel)
 
-            # Handle clarification requests
             if result.action == "clarify":
                 irc.reply(result.confirmation)
                 return
 
-            # Validate duration limits
             if result.seconds is None:
                 irc.reply(_("I couldn't determine when to remind you. Please try again."))
                 return
@@ -2368,7 +2357,6 @@ class LLM(callbacks.Plugin):
                 irc.error(_("Reminder can't be more than 7 days out."))
                 return
 
-            # Schedule the reminder
             reminder_message = result.message or text
             event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
             deliver = self._make_reminder_delivery_closure(
@@ -2380,7 +2368,6 @@ class LLM(callbacks.Plugin):
                 with self._reminders_lock:
                     self._reminders[event_name] = (nick, channel, reminder_message)
 
-                # Persist to database
                 self.db.save_reminder(
                     event_name,
                     nick,
@@ -2389,7 +2376,6 @@ class LLM(callbacks.Plugin):
                     time.time() + result.seconds,
                 )
 
-                # Build reply with optional note
                 reply = self.llm_service.sanitize_output(result.confirmation)
                 if result.note:
                     reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
@@ -2398,55 +2384,72 @@ class LLM(callbacks.Plugin):
                 self.log.error("Failed to schedule reminder: %s", e)
                 irc.error(_("Failed to set reminder."))
 
-    remindme = wrap(remindme, ["text"])
-
-    def reminders(
+    def remind(
         self,
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
+        text: str | None,
     ) -> None:
-        """(takes no arguments)
+        """[<reminder text> | list | del(ete) <id> [<id>...] | clear]
 
-        List your pending reminders.
+        Set and manage reminders using natural language.
+
+        Examples:
+          %remind in 30 minutes check the build
+          %remind list
+          %remind delete abc1
+          %remind clear
         """
         nick = self._get_identity(irc, msg)
-        user_reminders = self._get_user_reminders(nick)
 
-        if not user_reminders:
-            irc.reply(_("You have no pending reminders."))
+        if not text:
+            self._remind_list(irc, nick)
             return
 
-        irc.reply(self._format_reminders(user_reminders))
+        parts = text.split(None, 1)
+        subcommand = parts[0].lower()
 
-    reminders = wrap(reminders, [])
+        if subcommand == "list":
+            self._remind_list(irc, nick)
 
-    def unremind(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        reminder_id: str,
-    ) -> None:
-        """<id>
+        elif subcommand in ("delete", "del") and len(parts) >= 2:
+            raw_ids = text.split()[1:]
+            deleted = 0
+            for rid in raw_ids:
+                target = self._find_user_reminder(nick, rid)
+                if target:
+                    with contextlib.suppress(KeyError):
+                        schedule.removeEvent(target)
+                    with self._reminders_lock:
+                        self._reminders.pop(target, None)
+                    self.db.delete_reminder(target)
+                    deleted += 1
+            if deleted == 0:
+                irc.error(_("No matching reminders found."))
+            elif deleted == 1:
+                irc.reply(_("Reminder cancelled."), prefixNick=False)
+            else:
+                irc.reply(f"Cancelled {deleted} reminders.", prefixNick=False)
 
-        Cancel a reminder by ID (shown in %reminders).
-        """
-        nick = self._get_identity(irc, msg)
-        target = self._find_user_reminder(nick, reminder_id)
+        elif subcommand == "clear":
+            user_reminders = self._get_user_reminders(nick)
+            if not user_reminders:
+                irc.reply(_("No reminders to clear."), prefixNick=False)
+                return
+            for name, _data in user_reminders:
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent(name)
+                with self._reminders_lock:
+                    self._reminders.pop(name, None)
+                self.db.delete_reminder(name)
+            label = "reminder" if len(user_reminders) == 1 else "reminders"
+            irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
 
-        if not target:
-            irc.error(_("Reminder not found or not yours."))
-            return
+        else:
+            self._remind_set(irc, msg, nick, text)
 
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent(target)
-        with self._reminders_lock:
-            self._reminders.pop(target, None)
-        self.db.delete_reminder(target)
-        irc.reply(_("Reminder cancelled."))
-
-    unremind = wrap(unremind, ["somethingWithoutSpaces"])
+    remind = wrap(remind, [optional("text")])
 
 
 Class = LLM

@@ -14,34 +14,20 @@ if TYPE_CHECKING:
 
 
 class TestReminderCommands:
-    """Tests for remindme, reminders, and unremind commands."""
+    """Tests for the consolidated remind command."""
 
-    def test_remindme_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for remindme THEN method exists."""
+    def test_remind_command_exists(self) -> None:
+        """GIVEN LLM plugin WHEN checking for remind THEN method exists."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM, "remindme")
-        assert callable(LLM.remindme)
+        assert hasattr(LLM, "remind")
+        assert callable(LLM.remind)
 
-    def test_reminders_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for reminders THEN method exists."""
+    def test_remind_docstring_shows_natural_language_examples(self) -> None:
+        """GIVEN remind command WHEN checking docstring THEN shows examples."""
         from llm.plugin import LLM
 
-        assert hasattr(LLM, "reminders")
-        assert callable(LLM.reminders)
-
-    def test_unremind_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for unremind THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "unremind")
-        assert callable(LLM.unremind)
-
-    def test_remindme_docstring_shows_natural_language_examples(self) -> None:
-        """GIVEN remindme command WHEN checking docstring THEN shows examples."""
-        from llm.plugin import LLM
-
-        doc = LLM.remindme.__doc__ or ""
+        doc = LLM.remind.__doc__ or ""
         assert "natural language" in doc.lower() or "in 30 minutes" in doc
 
 

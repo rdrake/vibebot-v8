@@ -1,8 +1,8 @@
 """Tests that call actual plugin command methods (not reimplementations).
 
 These tests exercise the real ask, code, draw, forget, usage,
-remindme, reminders, and unremind methods on a properly-initialised LLM
-plugin instance with mocked dependencies.
+and remind methods on a properly-initialised LLM plugin instance
+with mocked dependencies.
 
 Unlike the _call_ask / _call_code / _call_draw helpers in test_plugin.py
 which reimplement command logic, these tests invoke the actual methods so
@@ -1092,15 +1092,15 @@ class TestUsageCommand:
 
 
 # ---------------------------------------------------------------------------
-# remindme
+# remind
 # ---------------------------------------------------------------------------
 
 
-class TestRemindmeCommand:
-    """Tests for the real LLM.remindme method."""
+class TestRemindSetCommand:
+    """Tests for the real LLM.remind method (set subcommand)."""
 
-    def test_remindme_schedules_reminder_on_success(self, plugin_env, mocker: MockerFixture):
-        """GIVEN valid reminder WHEN remindme called THEN reminder is scheduled and persisted."""
+    def test_remind_schedules_reminder_on_success(self, plugin_env, mocker: MockerFixture):
+        """GIVEN valid reminder WHEN remind called THEN reminder is scheduled and persisted."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1111,7 +1111,7 @@ class TestRemindmeCommand:
         )
 
         mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
-        plugin.remindme(mock_irc, mock_msg, ["in", "30m", "check", "the", "build"])
+        plugin.remind(mock_irc, mock_msg, ["in 30m check the build"])
 
         # Should schedule the event
         mock_add_event.assert_called_once()
@@ -1121,8 +1121,8 @@ class TestRemindmeCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Reminder set" in reply_text
 
-    def test_remindme_includes_note_in_reply(self, plugin_env, mocker: MockerFixture):
-        """GIVEN reminder with timezone note WHEN remindme called THEN reply includes note."""
+    def test_remind_includes_note_in_reply(self, plugin_env, mocker: MockerFixture):
+        """GIVEN reminder with timezone note WHEN remind called THEN reply includes note."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1133,26 +1133,26 @@ class TestRemindmeCommand:
         )
 
         mocker.patch("llm.plugin.schedule.addEvent")
-        plugin.remindme(mock_irc, mock_msg, ["in", "1h", "meeting"])
+        plugin.remind(mock_irc, mock_msg, ["in 1h meeting"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "Assuming UTC timezone" in reply_text
 
-    def test_remindme_handles_clarification(self, plugin_env, mocker: MockerFixture):
-        """GIVEN parse returns clarify WHEN remindme called THEN asks for clarification."""
+    def test_remind_handles_clarification(self, plugin_env, mocker: MockerFixture):
+        """GIVEN parse returns clarify WHEN remind called THEN asks for clarification."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="clarify",
             confirmation="When should I remind you?",
         )
 
-        plugin.remindme(mock_irc, mock_msg, ["something", "vague"])
+        plugin.remind(mock_irc, mock_msg, ["something vague"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "When should I remind you?" in reply_text
 
-    def test_remindme_rejects_too_short_duration(self, plugin_env, mocker: MockerFixture):
-        """GIVEN duration < 10 seconds WHEN remindme called THEN error is returned."""
+    def test_remind_rejects_too_short_duration(self, plugin_env, mocker: MockerFixture):
+        """GIVEN duration < 10 seconds WHEN remind called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1161,14 +1161,14 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        plugin.remindme(mock_irc, mock_msg, ["in", "5s", "test"])
+        plugin.remind(mock_irc, mock_msg, ["in 5s test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "10 seconds" in error_text
 
-    def test_remindme_rejects_too_long_duration(self, plugin_env, mocker: MockerFixture):
-        """GIVEN duration > 7 days WHEN remindme called THEN error is returned."""
+    def test_remind_rejects_too_long_duration(self, plugin_env, mocker: MockerFixture):
+        """GIVEN duration > 7 days WHEN remind called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1177,14 +1177,14 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        plugin.remindme(mock_irc, mock_msg, ["in", "8d", "test"])
+        plugin.remind(mock_irc, mock_msg, ["in 8d test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "7 days" in error_text
 
-    def test_remindme_rejects_none_seconds(self, plugin_env, mocker: MockerFixture):
-        """GIVEN parse result has seconds=None WHEN remindme called THEN error is returned."""
+    def test_remind_rejects_none_seconds(self, plugin_env, mocker: MockerFixture):
+        """GIVEN parse result has seconds=None WHEN remind called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1193,13 +1193,13 @@ class TestRemindmeCommand:
             confirmation="ok",
         )
 
-        plugin.remindme(mock_irc, mock_msg, ["test"])
+        plugin.remind(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "couldn't determine" in reply_text.lower()
 
-    def test_remindme_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
-        """GIVEN schedule.addEvent raises WHEN remindme called THEN error is reported."""
+    def test_remind_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
+        """GIVEN schedule.addEvent raises WHEN remind called THEN error is reported."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1209,50 +1209,59 @@ class TestRemindmeCommand:
         )
 
         mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
-        plugin.remindme(mock_irc, mock_msg, ["in", "1m", "test"])
+        plugin.remind(mock_irc, mock_msg, ["in 1m test"])
 
         mock_irc.error.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# reminders
+# remind list
 # ---------------------------------------------------------------------------
 
 
-class TestRemindersCommand:
-    """Tests for the real LLM.reminders method."""
+class TestRemindListCommand:
+    """Tests for the real LLM.remind method (list subcommand)."""
 
-    def test_reminders_lists_pending_reminders(self, plugin_env):
-        """GIVEN user has reminders WHEN reminders called THEN formatted list is shown."""
+    def test_remind_list_shows_pending_reminders(self, plugin_env):
+        """GIVEN user has reminders WHEN remind list called THEN formatted list is shown."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
             plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "check build")
             plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "call Bob")
 
-        plugin.reminders(mock_irc, mock_msg, [])
+        plugin.remind(mock_irc, mock_msg, ["list"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "#1:" in reply_text or "#2:" in reply_text
         assert "check build" in reply_text
         assert "call Bob" in reply_text
 
-    def test_reminders_shows_no_pending_message(self, plugin_env):
-        """GIVEN user has no reminders WHEN reminders called THEN reports none."""
+    def test_remind_list_shows_no_pending_message(self, plugin_env):
+        """GIVEN user has no reminders WHEN remind list called THEN reports none."""
         plugin, mock_irc, mock_msg = plugin_env
 
-        plugin.reminders(mock_irc, mock_msg, [])
+        plugin.remind(mock_irc, mock_msg, ["list"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "no pending" in reply_text.lower()
 
-    def test_reminders_only_shows_own_reminders(self, plugin_env):
-        """GIVEN reminders from different users WHEN reminders called THEN only shows own."""
+    def test_remind_no_args_defaults_to_list(self, plugin_env):
+        """GIVEN no arguments WHEN remind called THEN defaults to list."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        plugin.remind(mock_irc, mock_msg, [])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "no pending" in reply_text.lower()
+
+    def test_remind_list_only_shows_own_reminders(self, plugin_env):
+        """GIVEN reminders from different users WHEN remind list called THEN only shows own."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
             plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "my reminder")
             plugin._reminders["llm_remind_100_2"] = ("otheruser", "#test", "not mine")
 
-        plugin.reminders(mock_irc, mock_msg, [])
+        plugin.remind(mock_irc, mock_msg, ["list"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "my reminder" in reply_text
@@ -1260,22 +1269,22 @@ class TestRemindersCommand:
 
 
 # ---------------------------------------------------------------------------
-# unremind
+# remind delete
 # ---------------------------------------------------------------------------
 
 
-class TestUnremindCommand:
-    """Tests for the real LLM.unremind method."""
+class TestRemindDeleteCommand:
+    """Tests for the real LLM.remind method (delete subcommand)."""
 
-    def test_unremind_cancels_own_reminder(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user owns a reminder WHEN unremind called with ID THEN reminder is cancelled."""
+    def test_remind_delete_cancels_own_reminder(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user owns a reminder WHEN remind delete called THEN reminder is cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
         with plugin._reminders_lock:
             plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
 
         mock_remove = mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin.unremind(mock_irc, mock_msg, ["42"])
+        plugin.remind(mock_irc, mock_msg, ["delete 42"])
 
         # Should remove from schedule
         mock_remove.assert_called_once_with(event_name)
@@ -1287,42 +1296,114 @@ class TestUnremindCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert "cancelled" in reply_text.lower()
 
-    def test_unremind_rejects_nonexistent_reminder(self, plugin_env):
-        """GIVEN no matching reminder WHEN unremind called THEN error is reported."""
+    def test_remind_delete_rejects_nonexistent_reminder(self, plugin_env):
+        """GIVEN no matching reminder WHEN remind delete called THEN error is reported."""
         plugin, mock_irc, mock_msg = plugin_env
 
-        plugin.unremind(mock_irc, mock_msg, ["999"])
+        plugin.remind(mock_irc, mock_msg, ["delete 999"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
-        assert "not found" in error_text.lower()
+        assert "no matching" in error_text.lower()
 
-    def test_unremind_rejects_other_users_reminder(self, plugin_env):
-        """GIVEN reminder owned by another user WHEN unremind called THEN error is reported."""
+    def test_remind_delete_rejects_other_users_reminder(self, plugin_env):
+        """GIVEN reminder owned by another user WHEN remind delete called THEN error."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
             plugin._reminders["llm_remind_100_5"] = ("otheruser", "#test", "their reminder")
 
-        plugin.unremind(mock_irc, mock_msg, ["5"])
+        plugin.remind(mock_irc, mock_msg, ["delete 5"])
 
         mock_irc.error.assert_called_once()
 
-    def test_unremind_handles_missing_schedule_event_gracefully(
+    def test_remind_delete_handles_missing_schedule_event_gracefully(
         self, plugin_env, mocker: MockerFixture
     ):
-        """GIVEN reminder exists but schedule event is gone WHEN unremind called THEN no crash."""
+        """GIVEN reminder exists but schedule event is gone WHEN remind delete THEN no crash."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_7"
         with plugin._reminders_lock:
             plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
 
         mocker.patch("llm.plugin.schedule.removeEvent", side_effect=KeyError("gone"))
-        # Should not raise
-        plugin.unremind(mock_irc, mock_msg, ["7"])
+        plugin.remind(mock_irc, mock_msg, ["delete 7"])
 
         # Still confirmed
         reply_text = mock_irc.reply.call_args[0][0]
         assert "cancelled" in reply_text.lower()
+
+    def test_remind_del_shorthand_works(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user owns a reminder WHEN remind del called THEN reminder is cancelled."""
+        plugin, mock_irc, mock_msg = plugin_env
+        event_name = "llm_remind_100_42"
+        with plugin._reminders_lock:
+            plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin.remind(mock_irc, mock_msg, ["del 42"])
+
+        assert event_name not in plugin._reminders
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "cancelled" in reply_text.lower()
+
+    def test_remind_delete_multiple_ids(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user owns multiple reminders WHEN remind delete with multiple IDs THEN all cancelled."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first")
+            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second")
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin.remind(mock_irc, mock_msg, ["delete 1 2"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "2 reminders" in reply_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# remind clear
+# ---------------------------------------------------------------------------
+
+
+class TestRemindClearCommand:
+    """Tests for the real LLM.remind method (clear subcommand)."""
+
+    def test_remind_clear_removes_all_own_reminders(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user has reminders WHEN remind clear called THEN all are removed."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first")
+            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second")
+            plugin._reminders["llm_remind_100_3"] = ("otheruser", "#test", "not mine")
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "2 reminders" in reply_text.lower()
+        # Other user's reminder should remain
+        assert "llm_remind_100_3" in plugin._reminders
+
+    def test_remind_clear_reports_no_reminders(self, plugin_env):
+        """GIVEN user has no reminders WHEN remind clear called THEN reports none."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "no reminders" in reply_text.lower()
+
+    def test_remind_clear_singular_label(self, plugin_env, mocker: MockerFixture):
+        """GIVEN user has one reminder WHEN remind clear called THEN uses singular label."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "only one")
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "1 reminder." in reply_text
 
 
 # ---------------------------------------------------------------------------
@@ -1615,7 +1696,7 @@ class TestAccountBasedIdentity:
 
 
 # ---------------------------------------------------------------------------
-# Additional coverage: edge cases for usage, remindme, code
+# Additional coverage: edge cases for usage, remind, code
 # ---------------------------------------------------------------------------
 
 
@@ -1675,13 +1756,11 @@ class TestExtractRawArgEdgeCases:
         assert result is None
 
 
-class TestRemindmeEdgeCases:
-    """Additional edge-case tests for remindme command."""
+class TestRemindEdgeCases:
+    """Additional edge-case tests for remind command."""
 
-    def test_remindme_rejects_negative_seconds_via_min_check(
-        self, plugin_env, mocker: MockerFixture
-    ):
-        """GIVEN duration < 0 WHEN remindme called THEN caught by the <10s check."""
+    def test_remind_rejects_negative_seconds_via_min_check(self, plugin_env, mocker: MockerFixture):
+        """GIVEN duration < 0 WHEN remind called THEN caught by the <10s check."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1690,14 +1769,14 @@ class TestRemindmeEdgeCases:
             confirmation="ok",
         )
 
-        plugin.remindme(mock_irc, mock_msg, ["yesterday", "test"])
+        plugin.remind(mock_irc, mock_msg, ["yesterday test"])
 
         mock_irc.error.assert_called_once()
         error_text = mock_irc.error.call_args[0][0]
         assert "10 seconds" in error_text
 
-    def test_remindme_uses_input_text_when_no_message(self, plugin_env, mocker: MockerFixture):
-        """GIVEN parse result with no message WHEN remindme called THEN uses original text."""
+    def test_remind_uses_input_text_when_no_message(self, plugin_env, mocker: MockerFixture):
+        """GIVEN parse result with no message WHEN remind called THEN uses original text."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -1707,7 +1786,7 @@ class TestRemindmeEdgeCases:
         )
 
         mocker.patch("llm.plugin.schedule.addEvent")
-        plugin.remindme(mock_irc, mock_msg, ["in", "1m", "something"])
+        plugin.remind(mock_irc, mock_msg, ["in 1m something"])
 
         # The save_reminder call should use the original text as fallback
         save_call = plugin.db.save_reminder.call_args

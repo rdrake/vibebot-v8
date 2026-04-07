@@ -1254,7 +1254,7 @@ class TestReminderDelivery:
         nick = "testuser"
         reminder_message = "check the build"
 
-        # Simulate the deliver closure as defined in remindme()
+        # Simulate the deliver closure as defined in remind()
         plugin._reminders[event_name] = (nick, channel, reminder_message)
 
         def deliver() -> None:
