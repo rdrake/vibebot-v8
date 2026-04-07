@@ -1,17 +1,41 @@
 # VibeBot v8
 
-VibeBot is an IRC bot built on [Limnoria](https://github.com/ProgVal/Limnoria) that brings AI capabilities to IRC channels. Powered by [LiteLLM](https://github.com/BerriAI/litellm), it supports multiple AI providers -- including OpenAI, Anthropic, and Google Gemini -- letting users ask questions, generate code, create images, and manage conversation memory directly from chat.
+AI on IRC. Ask questions, generate code, create images, and hold conversations with large language models -- all without leaving your IRC client.
+
+```
+<rdrake> @ask What causes the northern lights?
+<VibeBot> The northern lights (aurora borealis) happen when charged particles
+          from the sun collide with gases in Earth's atmosphere. The particles
+          follow magnetic field lines toward the poles, exciting nitrogen and
+          oxygen molecules that release photons as they return to their ground
+          state. Green comes from oxygen, purple and blue from nitrogen.
+<rdrake> @ask How far south can you see them?
+<VibeBot> During strong solar storms, auroras have been visible as far south
+          as Texas and Florida (around 30°N). Typically you need to be above
+          50°N for regular sightings -- places like northern Canada, Iceland,
+          Scandinavia, and Alaska.
+```
+
+## Features
+
+- **Conversation memory** -- Follow up on previous questions. The bot tracks context per user and channel.
+- **Vision** -- Drop an image URL into `@ask` and the bot will describe or reason about it.
+- **Code generation** -- `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
+- **Image generation** -- `@draw` creates images from text descriptions via Vertex AI Imagen.
+- **Stored facts** -- Save things about yourself with `@memories` that persist across sessions.
+- **Custom instructions** -- Shape how the bot responds to you with `@instruct`.
+- **Multi-provider AI** -- Supports OpenAI, Anthropic, and Google Gemini through [LiteLLM](https://github.com/BerriAI/litellm).
 
 ## Documentation
 
-**[User Guide](user/getting-started.md)** -- Learn how to interact with the bot: ask questions, generate code and images, manage conversation memory, set reminders, and track usage.
+**[User Guide](user/getting-started.md)** -- Start here. Learn the commands and how to get the most out of the bot.
 
-**[Operator Guide](operator/installation.md)** -- Install and configure VibeBot for your IRC network: deployment options, model selection, rate limiting, security, and monitoring.
+**[Operator Guide](operator/installation.md)** -- Deploy and configure VibeBot for your network.
 
-**[Command Reference](reference/commands.md)** -- Quick-reference table of every command with its syntax, options, and examples.
+**[Command Reference](reference/commands.md)** -- Every command, its syntax, and examples.
 
 ## Links
 
-- [GitHub Repository](https://github.com/rdrake/vibebot-v8)
-- [Limnoria IRC Framework](https://github.com/ProgVal/Limnoria)
+- [GitHub](https://github.com/rdrake/vibebot-v8)
+- [Limnoria](https://github.com/ProgVal/Limnoria)
 - [LiteLLM](https://github.com/BerriAI/litellm)
