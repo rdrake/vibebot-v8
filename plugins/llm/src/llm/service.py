@@ -1675,7 +1675,8 @@ or
 
 Rules:
 - "seconds" = seconds from now until reminder fires (must be positive)
-- If timezone not specified, assume UTC and set note suggesting they specify next time
+- For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
+- For absolute times ("at 3pm") without a timezone, assume UTC and set note suggesting they specify next time
 - If request is too vague (missing time or message), use "clarify"
 - Keep confirmation concise (under 100 chars)
 - Extract just the reminder message, not the time part
