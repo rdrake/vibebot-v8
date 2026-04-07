@@ -1538,17 +1538,17 @@ class LLM(callbacks.Plugin):
 
         # Apply merges: delete sources, insert merged fact
         merged = 0
+        merged_sources = 0
         for entry in result.merge:
             sources = [snapshot[i] for i in entry.indices if 0 <= i < len(snapshot)]
-            if len(sources) < 2:
+            if not sources:
                 continue
             oldest = min(sources, key=lambda s: s.created_at)
             for source in sources:
                 self.db.delete_memory(nick, source.id)
             self.db.save_memory(nick, entry.text, oldest.source_channel)
             merged += 1
-
-        merged_sources = sum(len(e.indices) for e in result.merge)
+            merged_sources += len(sources)
         after_count = before_count - dropped - merged_sources + merged
 
         parts = [f"Before: {before_count}"]
