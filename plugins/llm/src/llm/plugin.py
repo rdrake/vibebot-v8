@@ -892,7 +892,7 @@ class LLM(callbacks.Plugin):
 
         Args:
             nick: User's nick
-            channel: Channel to deliver to
+            channel: Channel to deliver to (or nick for PM delivery)
             message: Reminder message
             event_name: Scheduler event name for cleanup
 
@@ -900,13 +900,16 @@ class LLM(callbacks.Plugin):
             Callable for use with schedule.addEvent
         """
         lock = self._reminders_lock
+        # If the command was sent via PM, channel is the bot's own nick.
+        # Deliver to the user's nick instead.
+        target = channel if ircutils.isChannel(channel) else nick
 
         def _deliver() -> None:
             try:
                 for active_irc in world.ircs:
                     safe_message = self.llm_service.sanitize_output(message)
                     active_irc.queueMsg(
-                        ircmsgs.privmsg(channel, f"{nick}: Reminder: {safe_message}")
+                        ircmsgs.privmsg(target, f"{nick}: Reminder: {safe_message}")
                     )
                     break
             finally:

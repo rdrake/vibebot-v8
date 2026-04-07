@@ -535,6 +535,49 @@ class TestReminderDeliveryClosure:
         plugin.db.delete_reminder.assert_called_with(event_name)
         mock_irc.queueMsg.assert_called_once()
 
+    def test_delivery_via_pm_sends_to_user_nick(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN reminder set via PM WHEN delivered THEN sends to user nick, not bot nick."""
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
+        mock_world.ircs = [mock_irc]
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        event_name = "llm_remind_pm_test"
+        # channel="vibebot" simulates PM: _get_channel returns the bot's own nick
+        plugin._reminders[event_name] = ("rdrake", "vibebot", "eat a sandwich")
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "rdrake", "vibebot", "eat a sandwich", event_name
+        )
+        deliver()
+
+        # Should deliver to user's nick, not the bot's nick
+        sent_msg = mock_irc.queueMsg.call_args[0][0]
+        assert sent_msg.args[0] == "rdrake"
+        assert "eat a sandwich" in sent_msg.args[1]
+
+    def test_delivery_in_channel_sends_to_channel(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN reminder set in channel WHEN delivered THEN sends to channel."""
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
+        mock_world.ircs = [mock_irc]
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        event_name = "llm_remind_chan_test"
+        plugin._reminders[event_name] = ("rdrake", "#test", "check build")
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "rdrake", "#test", "check build", event_name
+        )
+        deliver()
+
+        sent_msg = mock_irc.queueMsg.call_args[0][0]
+        assert sent_msg.args[0] == "#test"
+
     def test_delivery_cleans_up_even_on_error(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
