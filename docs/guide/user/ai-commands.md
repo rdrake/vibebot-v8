@@ -91,7 +91,7 @@ Generate an image from a text description.
 
 ### Account required
 
-`@draw` requires you to be identified with NickServ. If you're not identified, the bot will ask you to log in first.
+`@draw` requires you to be authenticated. If you're not authenticated, the bot will ask you to log in first.
 
 ### Safety filter
 

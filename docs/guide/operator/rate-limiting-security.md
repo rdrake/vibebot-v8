@@ -21,7 +21,7 @@ Users fall into one of four tiers, checked from most to least privileged:
 |------|---------------|-------------------|
 | **Owner/Admin** | Limnoria owner or admin capability | Always exempt |
 | **Trusted** | Has the `trusted` capability | Uses `Trusted` limit settings |
-| **Registered** | Identified with NickServ | Uses standard limit settings |
+| **Registered** | Authenticated with the network | Uses standard limit settings |
 | **Unregistered** | Not identified | Uses `Unreg` limit settings |
 
 To grant a user the `trusted` capability, see the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html).
@@ -48,7 +48,7 @@ Setting any count to `0` disables rate limiting for that command and tier (unlim
 | `code` | Unregistered | 2 | 60s | 2 per minute |
 | `draw` | Registered | 2 | 300s | 2 per 5 minutes |
 | `draw` | Trusted | 5 | 60s | 5 per minute |
-| `draw` | Unregistered | 0 | 60s | Blocked (also requires NickServ) |
+| `draw` | Unregistered | 0 | 60s | Blocked (also requires authentication) |
 
 ### Complete rate limit settings
 
@@ -87,9 +87,9 @@ Each command requires a Limnoria capability:
 
 By default, all users have these capabilities. To restrict a command, use Limnoria's capability system to remove it from specific users or channels. See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html) for details.
 
-### NickServ gating
+### Authentication gating
 
-The `@draw` command requires users to be identified with NickServ before use. This is enforced regardless of capability settings and provides accountability for image generation.
+The `@draw` command requires users to be authenticated before use. This is enforced regardless of capability settings and provides accountability for image generation.
 
 ### URL validation
 

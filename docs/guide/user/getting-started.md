@@ -14,7 +14,7 @@ All commands use the `@` prefix:
 
 ## Account requirements
 
-Some commands require you to be identified with NickServ. For example, `@draw` requires a registered account. If you're not identified, the bot will let you know.
+Some commands require you to be authenticated. For example, `@draw` requires a registered account. If you're not authenticated, the bot will let you know.
 
 ## Permissions
 

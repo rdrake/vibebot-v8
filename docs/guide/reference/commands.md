@@ -42,7 +42,7 @@ See [AI Commands -- code](../user/ai-commands.md#code) for full details.
 
 ### draw
 
-Generate an image from a text description. Requires a registered NickServ account.
+Generate an image from a text description. Requires an authenticated account.
 
 ```
 @draw A sunset over mountains in watercolor style
