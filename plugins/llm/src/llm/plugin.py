@@ -1532,11 +1532,13 @@ class LLM(callbacks.Plugin):
 
                     # Add new facts (respecting cap)
                     saved: list[str] = []
+                    current_count = len(current)
                     for fact in extraction.add:
-                        if len(self.db.get_memories(nick)) >= max_memories:
+                        if current_count >= max_memories:
                             break
                         self.db.save_memory(nick, fact, channel)
                         saved.append(fact)
+                        current_count += 1
 
                     if not saved:
                         return
@@ -1595,8 +1597,8 @@ class LLM(callbacks.Plugin):
             self.db.save_memory(nick, entry.text, oldest.source_channel)
             merged += 1
 
-        after_count = len(self.db.get_memories(nick))
         merged_sources = sum(len(e.indices) for e in result.merge)
+        after_count = before_count - dropped - merged_sources + merged
 
         parts = [f"Before: {before_count}"]
         if dropped:

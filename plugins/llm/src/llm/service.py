@@ -182,8 +182,6 @@ class ExtractionResult(NamedTuple):
     """Result of memory extraction: new facts to add."""
 
     add: list[str] = []
-    rewritten_prompt: str | None = None
-    error: str | None = None
 
 
 class MergeOp(NamedTuple):
