@@ -6,6 +6,7 @@ without requiring a full Limnoria runtime environment.
 
 from __future__ import annotations
 
+import inspect
 import time
 from typing import TYPE_CHECKING
 
@@ -2420,3 +2421,34 @@ class TestHTMLHelpGeneration:
         assert "Generation" in HELP_HTML_TEMPLATE
         assert "Memory" in HELP_HTML_TEMPLATE
         assert "Utility" in HELP_HTML_TEMPLATE
+
+
+class TestCommandRegistryCompleteness:
+    """Drift-prevention: ensures registry stays in sync with actual commands."""
+
+    def test_all_wrapped_commands_in_registry(self) -> None:
+        """GIVEN plugin class WHEN checking command methods THEN all are in registry.
+
+        This test prevents adding a new command to plugin.py without updating
+        the command registry. It uses the same introspection as Limnoria's
+        isCommandMethod() to find all commands.
+        """
+        from llm.plugin import COMMAND_REGISTRY, LLM
+        from supybot.callbacks import canonicalName
+
+        registry_names = {cmd.name for cmd in COMMAND_REGISTRY}
+        command_args = ["self", "irc", "msg", "args"]
+
+        for name in dir(LLM):
+            if name.startswith("_"):
+                continue
+            if name != canonicalName(name):
+                continue  # filters getPluginHelp, invalidCommand, inFilter, etc.
+            obj = getattr(LLM, name, None)
+            if not inspect.isfunction(obj):
+                continue
+            if inspect.getargs(obj.__code__)[0] == command_args:
+                assert name in registry_names, (
+                    f"Command '{name}' is registered with Limnoria but missing from "
+                    f"COMMAND_REGISTRY. Add it to keep help in sync."
+                )
