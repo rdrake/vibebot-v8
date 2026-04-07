@@ -2716,7 +2716,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 return CleanupResult(error=f"Invalid merge entry: {entry}")
             indices = entry.get("indices", [])
             text = entry.get("text", "")
-            if not isinstance(indices, list) or len(indices) < 2:
+            if not isinstance(indices, list) or len(indices) < 1:
                 return CleanupResult(error=f"Merge needs at least 2 indices: {entry}")
             for idx in indices:
                 if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
