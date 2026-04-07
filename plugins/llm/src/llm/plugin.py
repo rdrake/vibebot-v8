@@ -1157,18 +1157,12 @@ class LLM(callbacks.Plugin):
         return f"{url_base}/"
 
     def getPluginHelp(self) -> str:  # noqa: N802
-        """Return plugin help with dynamic documentation URL.
-
-        Overrides Limnoria's default to include web docs URL.
-        """
+        """Return plugin help with dynamic documentation URL."""
         url = self._get_help_url()
-        return (
-            _(
-                "AI-powered commands using LiteLLM. "
-                "Commands: ask, code, draw, forget. "
-                "Full documentation: %s"
-            )
-            % url
+        names = ", ".join(cmd.name for cmd in COMMAND_REGISTRY)
+        return _("AI-powered commands using LiteLLM. Commands: %s. Full documentation: %s") % (
+            names,
+            url,
         )
 
     def invalidCommand(  # noqa: N802

@@ -2381,3 +2381,23 @@ class TestCommandRegistry:
 
         for cmd in COMMAND_REGISTRY:
             assert cmd.examples, f"{cmd.name} needs at least one example"
+
+
+class TestGetPluginHelp:
+    """Tests for getPluginHelp() generation from COMMAND_REGISTRY."""
+
+    def test_get_plugin_help_lists_all_commands(self, mocker: MockerFixture) -> None:
+        """GIVEN plugin WHEN getPluginHelp called THEN lists all registered commands."""
+        from llm.plugin import COMMAND_REGISTRY, LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.get_http_paths.return_value = (
+            "/data/web/llm",
+            "https://example.com/llm",
+        )
+
+        help_text = plugin.getPluginHelp()
+        for cmd in COMMAND_REGISTRY:
+            assert cmd.name in help_text, f"{cmd.name} missing from help"
