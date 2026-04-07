@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -274,6 +274,16 @@ class LLMDatabase:
                     CREATE TABLE IF NOT EXISTS memory_cleanup_state (
                         nick TEXT PRIMARY KEY,
                         saves_since_cleanup INTEGER NOT NULL DEFAULT 0
+                    );
+                """)
+                conn.commit()
+
+            if current_version < 7:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS user_instructions (
+                        nick TEXT PRIMARY KEY,
+                        instruction TEXT NOT NULL,
+                        updated_at REAL NOT NULL
                     );
                 """)
                 conn.commit()
@@ -1389,3 +1399,38 @@ class LLMDatabase:
             return row[0] if row else 0
         finally:
             pass
+
+    # ------------------------------------------------------------------
+    # User instruction operations
+    # ------------------------------------------------------------------
+
+    def get_instruction(self, nick: str) -> str | None:
+        """Get the user's persistent instruction, or None if not set."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT instruction FROM user_instructions WHERE nick = ?",
+            (nick,),
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_instruction(self, nick: str, instruction: str) -> None:
+        """Save or overwrite the user's persistent instruction."""
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO user_instructions (nick, instruction, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(nick) DO UPDATE SET instruction = excluded.instruction, "
+            "updated_at = excluded.updated_at",
+            (nick, instruction, time.time()),
+        )
+        conn.commit()
+
+    def delete_instruction(self, nick: str) -> bool:
+        """Delete the user's instruction. Returns True if one was deleted."""
+        conn = self._connect()
+        cursor = conn.execute(
+            "DELETE FROM user_instructions WHERE nick = ?",
+            (nick,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0

@@ -1275,14 +1275,14 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_6(self, tmp_path: Path) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 6."""
+    def test_schema_version_is_7(self, tmp_path: Path) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 7."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         conn = db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 6
+            assert row[0] == 7
         finally:
             conn.close()
 
@@ -1633,3 +1633,37 @@ class TestMemoryCleanupState:
         """GIVEN no prior saves WHEN get THEN returns 0."""
         db = LLMDatabase(str(tmp_path / "test.db"))
         assert db.get_memory_saves("user1") == 0
+
+
+class TestUserInstructions:
+    """Tests for user_instructions table CRUD."""
+
+    def test_get_instruction_returns_none_when_empty(self, tmp_path: Path) -> None:
+        """GIVEN no instruction WHEN queried THEN returns None."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.get_instruction("testnick") is None
+
+    def test_save_and_get_instruction(self, tmp_path: Path) -> None:
+        """GIVEN saved instruction WHEN queried THEN returns text."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_instruction("testnick", "You are Captain Picard.")
+        assert db.get_instruction("testnick") == "You are Captain Picard."
+
+    def test_save_instruction_overwrites(self, tmp_path: Path) -> None:
+        """GIVEN existing instruction WHEN saved again THEN overwrites."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_instruction("testnick", "old")
+        db.save_instruction("testnick", "new")
+        assert db.get_instruction("testnick") == "new"
+
+    def test_delete_instruction(self, tmp_path: Path) -> None:
+        """GIVEN existing instruction WHEN deleted THEN returns True and clears."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.save_instruction("testnick", "text")
+        assert db.delete_instruction("testnick") is True
+        assert db.get_instruction("testnick") is None
+
+    def test_delete_instruction_missing(self, tmp_path: Path) -> None:
+        """GIVEN no instruction WHEN deleted THEN returns False."""
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        assert db.delete_instruction("testnick") is False
