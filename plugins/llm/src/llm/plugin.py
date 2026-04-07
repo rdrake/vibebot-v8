@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import html as _html
 import logging
 import mimetypes
 import random
@@ -181,7 +182,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
 )
 
 
-HELP_HTML_TEMPLATE = """<!DOCTYPE html>
+_HELP_HTML_HEAD = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -239,43 +240,34 @@ a { color: #66d9ef; }
 <body>
 <h1>LLM Bot Commands</h1>
 <p>AI-powered IRC bot commands using LiteLLM.</p>
+"""
 
-<h2>Commands</h2>
+_CATEGORY_LABELS = {"generation": "Generation", "memory": "Memory", "utility": "Utility"}
 
-<h3><code class="command">%ask</code> <span class="param">&lt;question&gt;</span></h3>
-<p>Ask the AI a question. Supports volatile memory (follow-up questions) and vision (include image URLs).</p>
-<pre><code><span class="example">%ask What is the capital of France?</span>
-<span class="example">%ask Describe this: https://example.com/image.jpg</span>
-<span class="example">%ask And what about Germany?</span>  <span class="example">(follow-up using context)</span></code></pre>
 
-<h3><code class="command">%code</code> <span class="param">&lt;request&gt;</span></h3>
-<p>Generate code based on your request. Code is saved to an HTTP link with syntax highlighting.</p>
-<pre><code><span class="example">%code Python function to calculate fibonacci numbers</span>
-<span class="example">%code Now add memoization to that</span>
-<span class="example">%code JavaScript async fetch with error handling</span></code></pre>
+def _build_help_html() -> str:
+    """Build the command sections of the HTML help page from the registry."""
+    sections: list[str] = []
+    for category in ("generation", "memory", "utility"):
+        cmds = [c for c in COMMAND_REGISTRY if c.category == category]
+        if not cmds:
+            continue
+        sections.append(f"<h2>{_CATEGORY_LABELS[category]}</h2>")
+        for cmd in cmds:
+            escaped_args = _html.escape(cmd.args)
+            sections.append(
+                f'<h3><code class="command">%{cmd.name}</code> '
+                f'<span class="param">{escaped_args}</span></h3>'
+            )
+            sections.append(f"<p>{_html.escape(cmd.description)}</p>")
+            example_lines = "\n".join(
+                f'<span class="example">{_html.escape(ex)}</span>' for ex in cmd.examples
+            )
+            sections.append(f"<pre><code>{example_lines}</code></pre>")
+    return "\n".join(sections)
 
-<h3><code class="command">%draw</code> <span class="param">&lt;prompt&gt;</span></h3>
-<p>Generate an image from a text description.</p>
-<pre><code><span class="example">%draw A sunset over mountains in watercolor style</span>
-<span class="example">%draw A cyberpunk cityscape at night</span></code></pre>
 
-<h3><code class="command">%forget</code> <span class="param">[channel]</span></h3>
-<p>Clear your volatile memory (conversation context) for the current or specified channel. Use this to start fresh. Volatile memory expires automatically after a timeout.</p>
-<pre><code><span class="example">%forget</span>
-<span class="example">%forget #channel</span></code></pre>
-
-<h3><code class="command">%memories</code> <span class="param">[delete &lt;id&gt; | clear]</span></h3>
-<p>View or manage your non-volatile memory (stored facts about you). Use <code>delete &lt;id&gt;</code> to remove a specific memory, or <code>clear</code> to remove all.</p>
-<pre><code><span class="example">%memories</span>
-<span class="example">%memories delete 3</span>
-<span class="example">%memories clear</span></code></pre>
-
-<h3><code class="command">%usage</code> <span class="param">[nick or #channel]</span></h3>
-<p>Show API usage statistics. No argument shows your stats and channel stats.</p>
-<pre><code><span class="example">%usage</span>
-<span class="example">%usage someone</span>
-<span class="example">%usage #channel</span></code></pre>
-
+_HELP_HTML_FOOT = """
 <h2>Features</h2>
 <ul>
 <li><strong>Volatile Memory</strong> &ndash; Recent exchanges for natural follow-up questions (cleared by <code>%forget</code>, expires after timeout)</li>
@@ -301,6 +293,8 @@ Commands require the appropriate capability (e.g., <code>llm.ask</code>).
 
 </body>
 </html>"""
+
+HELP_HTML_TEMPLATE = _HELP_HTML_HEAD + _build_help_html() + _HELP_HTML_FOOT
 
 # Pre-encoded bytes to avoid re-encoding on every HTTP request
 _HELP_HTML_BYTES = HELP_HTML_TEMPLATE.encode("utf-8")

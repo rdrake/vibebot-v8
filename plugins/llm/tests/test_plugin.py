@@ -2401,3 +2401,22 @@ class TestGetPluginHelp:
         help_text = plugin.getPluginHelp()
         for cmd in COMMAND_REGISTRY:
             assert cmd.name in help_text, f"{cmd.name} missing from help"
+
+
+class TestHTMLHelpGeneration:
+    """Tests for generated HTML help page."""
+
+    def test_html_help_lists_all_commands(self) -> None:
+        """GIVEN HELP_HTML_TEMPLATE WHEN checked THEN contains all registered commands."""
+        from llm.plugin import COMMAND_REGISTRY, HELP_HTML_TEMPLATE
+
+        for cmd in COMMAND_REGISTRY:
+            assert f"%{cmd.name}" in HELP_HTML_TEMPLATE, f"%{cmd.name} missing from HTML help"
+
+    def test_html_help_groups_by_category(self) -> None:
+        """GIVEN HTML help WHEN parsed THEN has generation, memory, utility sections."""
+        from llm.plugin import HELP_HTML_TEMPLATE
+
+        assert "Generation" in HELP_HTML_TEMPLATE
+        assert "Memory" in HELP_HTML_TEMPLATE
+        assert "Utility" in HELP_HTML_TEMPLATE
