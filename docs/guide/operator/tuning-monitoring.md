@@ -54,7 +54,7 @@ The default system prompt instructs the model to act as a channel regular who ca
 
 ## HTTP output
 
-The `@code` and `@draw` commands save output as files served over HTTP. There are two modes:
+The `@code` and `@draw` commands save output as files served over HTTP. Two modes exist:
 
 ### Built-in HTTP server (default)
 
@@ -111,9 +111,9 @@ Set it from IRC:
 @config plugins.LLM.logLevel DEBUG
 ```
 
-### Database
+### Storage location
 
-The bot stores reminders, usage statistics, and memories in a SQLite database. The location is controlled by `databasePath`:
+The bot stores reminders, usage statistics, and memories in a SQLite database. The location depends on `databasePath`:
 
 - If empty (default): uses `data/LLM.db` relative to the bot's working directory
 - If set: uses the specified path
@@ -129,7 +129,7 @@ The bot stores reminders, usage statistics, and memories in a SQLite database. T
 **Context not working (bot does not remember previous messages)**
 
 - Check that context is enabled: `@config channel #yourchannel plugins.LLM.contextEnabled`
-- Check the timeout: if `contextTimeoutMinutes` is very short, context may expire between messages.
+- Check the timeout: if `contextTimeoutMinutes` is too short, context may expire between messages.
 - Users can manually clear context with `@forget`. It resets automatically after the timeout.
 
 **HTTP output not saving (no link from @code/@draw)**

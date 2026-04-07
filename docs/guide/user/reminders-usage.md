@@ -15,7 +15,7 @@ Set reminders using natural language. When the time comes, the bot delivers the 
 @remind in 2 hours take a break
 ```
 
-The bot parses times like "in 30 minutes", "at 5pm", "tomorrow at 9am", and many other natural language formats.
+The bot parses times like "in 30 minutes", "at 5 p.m.", "tomorrow at 9 a.m.", and many other natural language formats.
 
 ### Listing reminders
 
@@ -25,7 +25,7 @@ The bot parses times like "in 30 minutes", "at 5pm", "tomorrow at 9am", and many
 
 Shows your active reminders with their IDs and scheduled times.
 
-### Cancelling reminders
+### Canceling reminders
 
 **Cancel specific reminders:**
 
