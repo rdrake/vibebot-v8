@@ -1,0 +1,23 @@
+site_name: VibeBot v8
+site_url: https://rdrake.github.io/vibebot-v8/
+repo_url: https://github.com/rdrake/vibebot-v8
+docs_dir: docs/guide
+strict: true
+
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - User Guide:
+    - Getting Started: user/getting-started.md
+    - AI Commands: user/ai-commands.md
+    - Memory & Instructions: user/memory.md
+    - Reminders & Usage: user/reminders-usage.md
+  - Operator Guide:
+    - Installation & Deployment: operator/installation.md
+    - Configuration: operator/configuration.md
+    - Rate Limiting & Security: operator/rate-limiting-security.md
+    - Tuning & Monitoring: operator/tuning-monitoring.md
+  - Reference:
+    - Command Reference: reference/commands.md

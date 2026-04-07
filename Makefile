@@ -1,6 +1,6 @@
 .PHONY: install run test test-all lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
-       install-deploy worktree-create worktree-remove wait-ci rebase-pr
+       install-deploy worktree-create worktree-remove wait-ci rebase-pr docs docs-serve
 
 install:
 	uv sync
@@ -133,6 +133,8 @@ help:
 	@echo "  clean           - Remove cache files"
 	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
 	@echo "  setup-http      - Create HTTP directory for code/image output"
+	@echo "  docs            - Build MkDocs site"
+	@echo "  docs-serve      - Serve docs locally with live reload"
 	@echo "  docker-build    - Build Docker image locally"
 	@echo "  docker-run      - Run Docker container locally"
 	@echo "  install-service - Install systemd user service"
@@ -140,6 +142,13 @@ help:
 	@echo "  install-timer   - Install auto-update timer (checks GHCR every 15 min)"
 	@echo "  uninstall-timer - Remove auto-update timer"
 	@echo "  install-deploy  - Install service and timer together"
+
+# Documentation
+docs:
+	uv run mkdocs build --strict
+
+docs-serve:
+	uv run mkdocs serve
 
 # Docker
 IMAGE_NAME ?= ghcr.io/rdrake/vibebot-v8

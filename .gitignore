@@ -63,6 +63,7 @@ docs/reviews/
 
 # Generated help site
 _site/
+site/
 
 # Claude Code (keep project settings.json, ignore user-local config)
 .claude/*

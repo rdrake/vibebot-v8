@@ -77,6 +77,7 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
+    "mkdocs-material>=9.6",
     "prek>=0.3.1",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
