@@ -67,11 +67,11 @@ class TestHTTPCallbackDoGet:
         handler.wfile = mocker.MagicMock()
         return handler
 
-    def test_doget_serves_help_at_root(self, http_callback, mock_handler: MagicMock) -> None:
-        """GIVEN empty path WHEN doGet called THEN serves help page."""
+    def test_doget_returns_404_at_root(self, http_callback, mock_handler: MagicMock) -> None:
+        """GIVEN empty path WHEN doGet called THEN returns 404 (help is on GitHub Pages)."""
         http_callback.doGet(mock_handler, "")
-        mock_handler.send_response.assert_called_with(200)
-        mock_handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
+        mock_handler.send_response.assert_called_with(404)
+        mock_handler.end_headers.assert_called_once()
 
     def test_doget_blocks_directory_traversal(self, http_callback, mock_handler: MagicMock) -> None:
         """GIVEN path with .. WHEN doGet called THEN returns 403."""
@@ -261,87 +261,6 @@ class TestHTTPCallbackGetWebDir:
         # Should return a path that ends with 'llm'
         assert result.endswith("llm") or "llm" in result
         mock_plugin.registryValue.assert_called_with("httpRoot")
-
-
-class TestHTTPCallbackServeHelpPage:
-    """Test HTTP callback _serve_help_page method."""
-
-    @pytest.fixture
-    def mock_plugin(self, mocker: MockerFixture) -> MagicMock:
-        """Create a mock plugin for HTTP callback."""
-        plugin = mocker.MagicMock()
-        plugin.registryValue.return_value = ""
-        return plugin
-
-    @pytest.fixture
-    def http_callback(self, mock_plugin: MagicMock):
-        """Create an HTTP callback with mock plugin."""
-        from llm.plugin import LLMHTTPCallback
-
-        return LLMHTTPCallback(mock_plugin)
-
-    @pytest.fixture
-    def mock_handler(self, mocker: MockerFixture) -> MagicMock:
-        """Create a mock HTTP handler."""
-        handler = mocker.MagicMock()
-        handler.wfile = mocker.MagicMock()
-        return handler
-
-    def test_serve_help_page_uses_builtin_template(
-        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN no custom help.html WHEN _serve_help_page THEN uses builtin template."""
-        from llm.plugin import HELP_HTML_TEMPLATE
-
-        mocker.patch.object(http_callback, "_get_web_dir", return_value="/nonexistent")
-        http_callback._serve_help_page(mock_handler)
-
-        mock_handler.send_response.assert_called_with(200)
-        mock_handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
-        # Verify content matches template
-        written_content = mock_handler.wfile.write.call_args[0][0]
-        assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
-
-    def test_serve_help_page_uses_custom_file_when_exists(
-        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
-    ) -> None:
-        """GIVEN custom help.html WHEN _serve_help_page THEN uses custom file."""
-        custom_help = tmp_path / "help.html"
-        custom_content = b"<html>Custom Help</html>"
-        custom_help.write_bytes(custom_content)
-
-        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
-        http_callback._serve_help_page(mock_handler)
-
-        mock_handler.send_response.assert_called_with(200)
-        written_content = mock_handler.wfile.write.call_args[0][0]
-        assert written_content == custom_content
-
-    def test_serve_help_page_handles_broken_pipe(
-        self, http_callback, mock_handler: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN client disconnect WHEN _serve_help_page THEN no error raised."""
-        mock_handler.wfile.write.side_effect = BrokenPipeError()
-
-        mocker.patch.object(http_callback, "_get_web_dir", return_value="/nonexistent")
-        # Should not raise
-        http_callback._serve_help_page(mock_handler)
-
-    def test_serve_help_page_falls_back_on_read_error(
-        self, http_callback, mock_handler: MagicMock, tmp_path, mocker: MockerFixture
-    ) -> None:
-        """GIVEN custom file read error WHEN _serve_help_page THEN falls back to template."""
-        from llm.plugin import HELP_HTML_TEMPLATE
-
-        custom_help = tmp_path / "help.html"
-        custom_help.write_bytes(b"content")
-
-        mocker.patch.object(http_callback, "_get_web_dir", return_value=str(tmp_path))
-        mocker.patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied"))
-        http_callback._serve_help_page(mock_handler)
-
-        written_content = mock_handler.wfile.write.call_args[0][0]
-        assert written_content == HELP_HTML_TEMPLATE.encode("utf-8")
 
 
 class TestPluginHelperMethods:
@@ -2359,25 +2278,6 @@ class TestGetPluginHelp:
         help_text = plugin.getPluginHelp()
         for cmd in COMMAND_REGISTRY:
             assert cmd.name in help_text, f"{cmd.name} missing from help"
-
-
-class TestHTMLHelpGeneration:
-    """Tests for generated HTML help page."""
-
-    def test_html_help_lists_all_commands(self) -> None:
-        """GIVEN HELP_HTML_TEMPLATE WHEN checked THEN contains all registered commands."""
-        from llm.plugin import COMMAND_REGISTRY, HELP_HTML_TEMPLATE
-
-        for cmd in COMMAND_REGISTRY:
-            assert f"%{cmd.name}" in HELP_HTML_TEMPLATE, f"%{cmd.name} missing from HTML help"
-
-    def test_html_help_groups_by_category(self) -> None:
-        """GIVEN HTML help WHEN parsed THEN has generation, memory, utility sections."""
-        from llm.plugin import HELP_HTML_TEMPLATE
-
-        assert "Generation" in HELP_HTML_TEMPLATE
-        assert "Memory" in HELP_HTML_TEMPLATE
-        assert "Utility" in HELP_HTML_TEMPLATE
 
 
 class TestCommandRegistryCompleteness:

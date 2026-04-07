@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import contextlib
-import html as _html
 import logging
 import mimetypes
 import random
@@ -182,124 +181,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
 )
 
 
-_HELP_HTML_HEAD = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LLM Bot Commands</title>
-<style>
-* { box-sizing: border-box; }
-body {
-    margin: 0;
-    padding: 20px;
-    background: #272822;
-    color: #f8f8f2;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    line-height: 1.6;
-    max-width: 800px;
-    margin: 0 auto;
-}
-h1 { color: #f8f8f2; margin-bottom: 0.5em; }
-h2 { color: #a6e22e; margin-top: 1.5em; border-bottom: 1px solid #49483e; padding-bottom: 0.3em; }
-h3 { color: #66d9ef; margin-top: 1.2em; }
-code {
-    font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace;
-    font-size: 14px;
-    background: #1e1e1e;
-    padding: 2px 6px;
-    border-radius: 3px;
-}
-pre {
-    background: #1e1e1e;
-    padding: 16px;
-    border-radius: 6px;
-    overflow-x: auto;
-    margin: 1em 0;
-}
-pre code { padding: 0; background: none; }
-.command { color: #e6db74; font-weight: bold; }
-.param { color: #fd971f; }
-.example { color: #75715e; font-style: italic; }
-ul { margin: 0.5em 0; padding-left: 1.5em; }
-li { margin: 0.3em 0; }
-a { color: #66d9ef; }
-.note {
-    background: #3e3d32;
-    border-left: 3px solid #a6e22e;
-    padding: 10px 15px;
-    margin: 1em 0;
-    border-radius: 0 6px 6px 0;
-}
-@media (max-width: 600px) {
-    body { padding: 15px; }
-    pre { padding: 12px; font-size: 13px; }
-}
-</style>
-</head>
-<body>
-<h1>LLM Bot Commands</h1>
-<p>AI-powered IRC bot commands using LiteLLM.</p>
-"""
-
-_CATEGORY_LABELS = {"generation": "Generation", "memory": "Memory", "utility": "Utility"}
-
-
-def _build_help_html() -> str:
-    """Build the command sections of the HTML help page from the registry."""
-    sections: list[str] = []
-    for category in ("generation", "memory", "utility"):
-        cmds = [c for c in COMMAND_REGISTRY if c.category == category]
-        if not cmds:
-            continue
-        sections.append(f"<h2>{_CATEGORY_LABELS[category]}</h2>")
-        for cmd in cmds:
-            escaped_args = _html.escape(cmd.args)
-            sections.append(
-                f'<h3><code class="command">%{cmd.name}</code> '
-                f'<span class="param">{escaped_args}</span></h3>'
-            )
-            sections.append(f"<p>{_html.escape(cmd.description)}</p>")
-            example_lines = "\n".join(
-                f'<span class="example">{_html.escape(ex)}</span>' for ex in cmd.examples
-            )
-            sections.append(f"<pre><code>{example_lines}</code></pre>")
-    return "\n".join(sections)
-
-
-_HELP_HTML_FOOT = """
-<h2>Features</h2>
-<ul>
-<li><strong>Volatile Memory</strong> &ndash; Recent exchanges for natural follow-up questions (cleared by <code>%forget</code>, expires after timeout)</li>
-<li><strong>Non-volatile Memory</strong> &ndash; Facts the bot remembers about you across conversations (managed by <code>%memories</code>)</li>
-<li><strong>Vision Support</strong> &ndash; Include image URLs in <code>%ask</code> for image analysis</li>
-<li><strong>Syntax Highlighting</strong> &ndash; Generated code is displayed with full highlighting</li>
-<li><strong>Spontaneous Participation</strong> &ndash; The bot may occasionally join channel conversations (when enabled)</li>
-<li><strong>Multi-Provider</strong> &ndash; Supports various AI providers via LiteLLM</li>
-</ul>
-
-<h2>Configuration</h2>
-<div class="note">
-Configuration is managed by the bot operator via Limnoria's config system.
-Commands require the appropriate capability (e.g., <code>llm.ask</code>).
-</div>
-
-<p>Key settings include:</p>
-<ul>
-<li><strong>Model selection</strong> &ndash; Different models for ask/code/draw commands</li>
-<li><strong>System prompts</strong> &ndash; Customize bot personality per command</li>
-<li><strong>Context settings</strong> &ndash; Configure volatile memory limits</li>
-</ul>
-
-</body>
-</html>"""
-
-HELP_HTML_TEMPLATE = _HELP_HTML_HEAD + _build_help_html() + _HELP_HTML_FOOT
-
-# Pre-encoded bytes to avoid re-encoding on every HTTP request
-_HELP_HTML_BYTES = HELP_HTML_TEMPLATE.encode("utf-8")
-
-
 class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
     """HTTP callback to serve LLM-generated files (images, code)."""
 
@@ -318,41 +199,15 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             return http_root
         return conf.supybot.directories.data.web.dirize("llm")
 
-    def _serve_help_page(self, handler: httpserver.RequestHandler) -> None:
-        """Serve the help documentation page.
-
-        Serves custom help.html from web dir if it exists,
-        otherwise falls back to built-in HELP_HTML_TEMPLATE.
-        """
-        web_dir = Path(self._get_web_dir())
-        custom_help = web_dir / "help.html"
-
-        # Try custom help.html first
-        if custom_help.is_file():
-            try:
-                content = custom_help.read_bytes()
-            except OSError:
-                content = _HELP_HTML_BYTES
-        else:
-            content = _HELP_HTML_BYTES
-
-        try:
-            handler.send_response(200)
-            handler.send_header("Content-Type", "text/html; charset=utf-8")
-            handler.send_header("Content-Length", str(len(content)))
-            handler.end_headers()
-            handler.wfile.write(content)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # Client disconnected
-
     def doGet(self, handler: httpserver.RequestHandler, path: str) -> None:  # noqa: N802
         """Serve static files from LLM web directory."""
         # Remove leading slash
         path = path.lstrip("/")
 
-        # Serve help page at root
+        # No index page — help docs are on GitHub Pages
         if path == "":
-            self._serve_help_page(handler)
+            handler.send_response(404)
+            handler.end_headers()
             return
 
         # Security: prevent directory traversal (early check before path operations)
