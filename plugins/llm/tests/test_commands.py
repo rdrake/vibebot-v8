@@ -2180,3 +2180,95 @@ class TestRateLimitIntegration:
 
         mock_irc.error.assert_not_called()
         mock_irc.reply.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# instruct
+# ---------------------------------------------------------------------------
+
+
+class TestInstructCommand:
+    """Tests for the %instruct command."""
+
+    def test_instruct_sets_instruction(self, plugin_env):
+        """GIVEN text WHEN instruct called THEN saves to DB and confirms."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.instruct(mock_irc, mock_msg, ["You are Captain Picard."])
+        plugin.db.save_instruction.assert_called_once_with("testnick", "You are Captain Picard.")
+        mock_irc.reply.assert_called_once()
+        assert "set" in mock_irc.reply.call_args.args[0].lower()
+
+    def test_instruct_no_args_shows_current(self, plugin_env):
+        """GIVEN no text and existing instruction WHEN instruct called THEN shows it."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = "You are Picard."
+        plugin.instruct(mock_irc, mock_msg, [])
+        mock_irc.reply.assert_called_once()
+        assert "Picard" in mock_irc.reply.call_args.args[0]
+
+    def test_instruct_no_args_no_instruction(self, plugin_env):
+        """GIVEN no text and no instruction WHEN instruct called THEN says none set."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = None
+        plugin.instruct(mock_irc, mock_msg, [])
+        mock_irc.reply.assert_called_once()
+        assert "no instruction" in mock_irc.reply.call_args.args[0].lower()
+
+    def test_instruct_clear_removes(self, plugin_env):
+        """GIVEN 'clear' WHEN instruct called THEN deletes and confirms."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.delete_instruction.return_value = True
+        plugin.instruct(mock_irc, mock_msg, ["clear"])
+        plugin.db.delete_instruction.assert_called_once_with("testnick")
+        mock_irc.reply.assert_called_once()
+        assert "cleared" in mock_irc.reply.call_args.args[0].lower()
+
+    def test_instruct_clear_when_none_set(self, plugin_env):
+        """GIVEN 'clear' with no instruction WHEN instruct called THEN says none set."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.delete_instruction.return_value = False
+        plugin.instruct(mock_irc, mock_msg, ["clear"])
+        assert "no instruction" in mock_irc.reply.call_args.args[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# ask + instruct integration
+# ---------------------------------------------------------------------------
+
+
+class TestAskWithInstruction:
+    """Tests for %ask using user instructions from %instruct."""
+
+    def test_ask_prepends_user_instruction(self, plugin_env):
+        """GIVEN user has instruction WHEN ask called THEN instruction prepended to system prompt."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = "You are Captain Picard."
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Make it so.",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+        call_kwargs = plugin.llm_service.completion.call_args.kwargs
+        assert "Picard" in call_kwargs["system_prompt"]
+
+    def test_ask_no_instruction_uses_default(self, plugin_env):
+        """GIVEN no instruction WHEN ask called THEN no system_prompt override."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = None
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="Hello!",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+        call_kwargs = plugin.llm_service.completion.call_args.kwargs
+        assert call_kwargs.get("system_prompt") is None

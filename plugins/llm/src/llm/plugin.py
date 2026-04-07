@@ -1752,6 +1752,11 @@ class LLM(callbacks.Plugin):
                 history, channel_history = [], []
 
             memories = self._get_user_memories(nick)
+            user_instruction = self.db.get_instruction(nick)
+
+            # Build system prompt with optional user instruction
+            ask_prompt = self.registryValue("askSystemPrompt", channel)
+            effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
 
             with self._allow_concurrent():
                 if images:
@@ -1769,6 +1774,7 @@ class LLM(callbacks.Plugin):
                         irc=irc,
                         msg=msg,
                         memories=memories,
+                        system_prompt=effective_prompt,
                     )
                 else:
                     result = self.llm_service.completion(
@@ -1779,6 +1785,7 @@ class LLM(callbacks.Plugin):
                         irc=irc,
                         msg=msg,
                         memories=memories,
+                        system_prompt=effective_prompt,
                     )
 
                 # Format response with grounding icon if search was used
@@ -2158,6 +2165,46 @@ class LLM(callbacks.Plugin):
         irc.replies(items, joiner=" | ", prefixNick=False)
 
     memories = wrap(memories, [optional("text")])
+
+    def instruct(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None,
+    ) -> None:
+        """[<instruction> | clear]
+
+        Set persistent instructions that shape how %ask responds to you.
+        Your instruction is prepended to the system prompt for every %ask call.
+
+        Examples:
+          %instruct You are Captain Picard. Respond in character.
+          %instruct Respond only in haiku
+          %instruct clear
+          %instruct          (show current instruction)
+        """
+        nick = self._get_identity(irc, msg)
+
+        if not text:
+            current = self.db.get_instruction(nick)
+            if current:
+                irc.reply(f"Current instruction: {current}", prefixNick=False)
+            else:
+                irc.reply("No instruction set. Use %instruct <text> to set one.", prefixNick=False)
+            return
+
+        if text.strip().lower() == "clear":
+            if self.db.delete_instruction(nick):
+                irc.reply("Instruction cleared.", prefixNick=False)
+            else:
+                irc.reply("No instruction to clear.", prefixNick=False)
+            return
+
+        self.db.save_instruction(nick, text)
+        irc.reply("Instruction set.", prefixNick=False)
+
+    instruct = wrap(instruct, [optional("text")])
 
     def usage(
         self,
