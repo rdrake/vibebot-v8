@@ -7,7 +7,9 @@ without requiring a full Limnoria runtime environment.
 from __future__ import annotations
 
 import inspect
+import subprocess
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -2309,3 +2311,33 @@ class TestCommandRegistryCompleteness:
                     f"Command '{name}' is registered with Limnoria but missing from "
                     f"COMMAND_REGISTRY. Add it to keep help in sync."
                 )
+
+
+class TestBuildHelpPage:
+    """Tests for the help page build script."""
+
+    def test_build_script_generates_valid_html(self, tmp_path: Path) -> None:
+        """GIVEN build script WHEN run THEN generates valid HTML with all commands."""
+        from llm.plugin import COMMAND_REGISTRY
+
+        repo_root = Path(__file__).resolve().parents[3]
+        site_dir = tmp_path / "_site"
+
+        result = subprocess.run(
+            ["uv", "run", "python", str(repo_root / "scripts" / "build_help_page.py")],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, f"Build script failed: {result.stderr}"
+
+        html = (site_dir / "index.html").read_text()
+        assert html.startswith("<!DOCTYPE html>")
+        assert "</html>" in html
+
+        for cmd in COMMAND_REGISTRY:
+            assert f"%{cmd.name}" in html, f"%{cmd.name} missing from built help page"
+
+        assert "Generation" in html
+        assert "Memory" in html
+        assert "Utility" in html
