@@ -36,9 +36,11 @@ vibebot-v8/
 │   └── dependabot.yml              # Automated dependency updates
 │
 ├── docs/
+│   ├── guide/                      # MkDocs source pages (user guide, operator guide, reference)
 │   ├── reviews/                    # Code review documents
 │   └── plans/                      # Design documents
 │
+├── mkdocs.yml                      # MkDocs Material configuration
 ├── .pre-commit-config.yaml         # Git hooks config
 ├── Dockerfile                      # Multi-stage Docker build
 ├── Makefile                        # Development commands
@@ -58,6 +60,7 @@ vibebot-v8/
 | Type Checker | ty (Astral) |
 | Testing | pytest with pytest-cov |
 | HTML Sanitization | nh3 |
+| Documentation | MkDocs Material |
 
 ## Quality Gates
 
@@ -84,6 +87,10 @@ make format               # Auto-format with ruff
 make typecheck            # Check types with ty
 make check                # Run lint + format-check + typecheck + test
 make preflight            # Auto-format then run all checks (use this before committing)
+
+# Documentation
+make docs                 # Build MkDocs site (strict mode, zero warnings)
+make docs-serve           # Serve docs locally with live reload
 
 # CI/Quality
 make ci                   # Full CI pipeline (sync --locked, pre-commit, test)
