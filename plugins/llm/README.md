@@ -6,7 +6,7 @@ AI-powered IRC commands using LiteLLM.
 
 - Multi-provider support (OpenAI, Anthropic, Google, etc.)
 - Vision support with automatic image URL detection
-- Conversation context (memory between messages)
+- Volatile memory (conversation context between messages)
 - Abuse controls with tiered rate limiting
 - Thread-safe API key handling
 - Comprehensive error handling

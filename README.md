@@ -5,11 +5,11 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 ## Features
 
 - **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and more via LiteLLM
-- **Conversation context**: Follow-up questions remember previous messages
+- **Volatile memory**: Conversation context for natural follow-up questions (expires after timeout)
 - **Vision support**: Automatically detects image URLs in prompts
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen
-- **Long-term memory**: Automatically extracts and remembers facts about users across conversations
+- **Non-volatile memory**: Automatically extracts and remembers facts about users across conversations
 - **Spontaneous participation**: Optionally joins channel conversations based on probability and cooldown (disabled by default)
 - **Abuse controls**: Capability checks, NickServ gating, tiered rate limiting
 - **Modern Python**: Python 3.12+ with full type hints
@@ -92,12 +92,12 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 
 | Command | Description |
 |---------|-------------|
-| `%ask <question>` | Ask AI a question (supports vision with image URLs, remembers context) |
+| `%ask <question>` | Ask AI a question (supports vision with image URLs, uses volatile memory for context) |
 | `%code <request>` | Generate code (remembers context for iterating on code) |
 | `%draw <prompt>` | Generate an image (no context) |
-| `%memories [delete <id> \| clear]` | View or manage your stored long-term memories |
+| `%memories [delete <id> \| clear]` | View or manage your non-volatile memory (stored facts about you) |
 | `%usage [nick or #channel]` | Show API usage statistics |
-| `%forget [channel]` | Clear your conversation context |
+| `%forget [channel]` | Clear your volatile memory (conversation context) |
 
 ## Configuration
 
@@ -116,7 +116,7 @@ supybot.plugins.LLM.drawModel: vertex_ai/imagen-4.0-generate-001
 
 See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for supported models.
 
-### Conversation Context
+### Volatile Memory (Conversation Context)
 
 ```
 supybot.plugins.LLM.contextEnabled: True
@@ -124,9 +124,9 @@ supybot.plugins.LLM.contextMaxMessages: 20
 supybot.plugins.LLM.contextTimeoutMinutes: 30
 ```
 
-Context is per-user per-channel. Cleared after 30 minutes of inactivity or when max messages exceeded.
+Volatile memory is per-user per-channel. Cleared by `%forget`, after 30 minutes of inactivity, or when max messages exceeded.
 
-### Long-term Memory
+### Non-volatile Memory (Stored Facts)
 
 ```
 supybot.plugins.LLM.memoryEnabled: True
@@ -134,7 +134,7 @@ supybot.plugins.LLM.memoryExtractionModel: gemini/gemini-2.0-flash-lite
 supybot.plugins.LLM.memoryMaxPerUser: 50
 ```
 
-Facts are automatically extracted from `%ask` and `%code` conversations. Users manage memories with `%memories`.
+Facts are automatically extracted from `%ask` and `%code` conversations. Users manage non-volatile memory with `%memories`.
 
 ### Spontaneous Participation
 
@@ -276,7 +276,7 @@ Check configuration via `%config`:
 
 Should show the key is set (value is private and not displayed in full).
 
-### Context Not Working
+### Volatile Memory Not Working
 
 Clear and retry:
 ```

@@ -359,7 +359,7 @@ class TestHelpPageStructure:
         from llm.plugin import HELP_HTML_TEMPLATE
 
         assert "Features" in HELP_HTML_TEMPLATE
-        assert "Conversation Context" in HELP_HTML_TEMPLATE
+        assert "Volatile Memory" in HELP_HTML_TEMPLATE
         assert "Vision Support" in HELP_HTML_TEMPLATE
         assert "Syntax Highlighting" in HELP_HTML_TEMPLATE
 

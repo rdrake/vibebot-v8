@@ -131,7 +131,7 @@ a { color: #66d9ef; }
 <h2>Commands</h2>
 
 <h3><code class="command">%ask</code> <span class="param">&lt;question&gt;</span></h3>
-<p>Ask the AI a question. Supports conversation context (follow-up questions) and vision (include image URLs).</p>
+<p>Ask the AI a question. Supports volatile memory (follow-up questions) and vision (include image URLs).</p>
 <pre><code><span class="example">%ask What is the capital of France?</span>
 <span class="example">%ask Describe this: https://example.com/image.jpg</span>
 <span class="example">%ask And what about Germany?</span>  <span class="example">(follow-up using context)</span></code></pre>
@@ -148,12 +148,12 @@ a { color: #66d9ef; }
 <span class="example">%draw A cyberpunk cityscape at night</span></code></pre>
 
 <h3><code class="command">%forget</code> <span class="param">[channel]</span></h3>
-<p>Clear your conversation context (memory) for the current or specified channel. Use this to start fresh.</p>
+<p>Clear your volatile memory (conversation context) for the current or specified channel. Use this to start fresh. Volatile memory expires automatically after a timeout.</p>
 <pre><code><span class="example">%forget</span>
 <span class="example">%forget #channel</span></code></pre>
 
 <h3><code class="command">%memories</code> <span class="param">[delete &lt;id&gt; | clear]</span></h3>
-<p>View or manage your stored long-term memories. Use <code>delete &lt;id&gt;</code> to remove a specific memory, or <code>clear</code> to remove all.</p>
+<p>View or manage your non-volatile memory (stored facts about you). Use <code>delete &lt;id&gt;</code> to remove a specific memory, or <code>clear</code> to remove all.</p>
 <pre><code><span class="example">%memories</span>
 <span class="example">%memories delete 3</span>
 <span class="example">%memories clear</span></code></pre>
@@ -166,8 +166,8 @@ a { color: #66d9ef; }
 
 <h2>Features</h2>
 <ul>
-<li><strong>Conversation Context</strong> &ndash; The bot remembers recent exchanges for natural follow-up questions</li>
-<li><strong>Long-term Memory</strong> &ndash; The bot remembers facts about you across conversations</li>
+<li><strong>Volatile Memory</strong> &ndash; Recent exchanges for natural follow-up questions (cleared by <code>%forget</code>, expires after timeout)</li>
+<li><strong>Non-volatile Memory</strong> &ndash; Facts the bot remembers about you across conversations (managed by <code>%memories</code>)</li>
 <li><strong>Vision Support</strong> &ndash; Include image URLs in <code>%ask</code> for image analysis</li>
 <li><strong>Syntax Highlighting</strong> &ndash; Generated code is displayed with full highlighting</li>
 <li><strong>Spontaneous Participation</strong> &ndash; The bot may occasionally join channel conversations (when enabled)</li>
@@ -184,7 +184,7 @@ Commands require the appropriate capability (e.g., <code>llm.ask</code>).
 <ul>
 <li><strong>Model selection</strong> &ndash; Different models for ask/code/draw commands</li>
 <li><strong>System prompts</strong> &ndash; Customize bot personality per command</li>
-<li><strong>Context settings</strong> &ndash; Configure conversation memory limits</li>
+<li><strong>Context settings</strong> &ndash; Configure volatile memory limits</li>
 </ul>
 
 </body>
@@ -1933,8 +1933,9 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<channel>]
 
-        Clear your conversation context (memory) for the current or specified channel.
-        Use this to start fresh.
+        Clear your volatile memory (conversation context) for the current or specified
+        channel. Use this to start fresh. Volatile memory expires automatically after a
+        timeout.
         """
         nick = self._get_identity(irc, msg)
         # Default to current channel if not specified
@@ -1954,11 +1955,11 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<nick> | del(ete) <id> [<id>...] | edit <id> <text> | clear | cleanup [nick]]
 
-        View or manage your stored memories. Use 'delete <id> [<id>...]'
-        to remove one or more memories, 'edit <id> <text>' to update one,
-        'clear' to remove all, or 'cleanup' to trigger a cleanup pass.
-        Bot owners can use 'memories <nick>' or 'memories cleanup <nick>'
-        for other users.
+        Manage your non-volatile memory (stored facts the bot remembers about you
+        across conversations). Use 'delete <id> [<id>...]' to remove one or more
+        memories, 'edit <id> <text>' to update one, 'clear' to remove all, or
+        'cleanup' to trigger a cleanup pass. Bot owners can use 'memories <nick>'
+        or 'memories cleanup <nick>' for other users.
         """
         nick = self._get_identity(irc, msg)
 

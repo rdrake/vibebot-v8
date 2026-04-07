@@ -8,7 +8,7 @@ This document provides comprehensive guidance for AI assistants working with the
 
 ### Key Features
 - Multi-provider AI through LiteLLM abstraction
-- Conversation context/memory between messages
+- Volatile memory (conversation context) and non-volatile memory (stored facts)
 - Vision support with automatic image URL detection
 - Code generation with HTTP link support for long outputs
 - Image generation via Vertex AI Imagen
@@ -187,9 +187,9 @@ class ValidationResult(NamedTuple):
 | `%ask <question>` | Ask with context & vision support |
 | `%code <request>` | Generate code |
 | `%draw <prompt>` | Generate image |
-| `%memories [delete <id> \| clear]` | View or manage stored long-term memories |
+| `%memories [delete <id> \| clear]` | View or manage non-volatile memory (stored facts about you) |
 | `%usage [nick or #channel]` | Show API usage statistics |
-| `%forget [channel]` | Clear conversation context |
+| `%forget [channel]` | Clear volatile memory (conversation context) |
 
 ## Testing Guidelines
 
@@ -275,7 +275,7 @@ gh pr merge 42 --merge    # merge once green
 |------|---------|
 | `plugins/llm/src/llm/service.py` | Core LLM logic, start here for AI-related changes |
 | `plugins/llm/src/llm/plugin.py` | IRC command handlers |
-| `plugins/llm/src/llm/context.py` | Conversation memory management |
+| `plugins/llm/src/llm/context.py` | Volatile memory (conversation context) management |
 | `pyproject.toml` | Root config, ruff/pytest settings |
 | `Makefile` | All development commands |
 
