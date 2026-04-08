@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from llm.persistence import LLMDatabase
 from llm.service import LLMService
 
 if TYPE_CHECKING:
@@ -65,6 +67,19 @@ def cleanup_limnoria_logging() -> Generator[None]:
             supybot.world.dying = True  # Prevent further shutdown logging
     except (ImportError, AttributeError):
         pass
+
+
+# =============================================================================
+# Database fixture
+# =============================================================================
+
+
+@pytest.fixture
+def test_db(tmp_path: Path) -> Generator[LLMDatabase, None, None]:
+    """Create an LLMDatabase backed by a temporary file with automatic cleanup."""
+    db = LLMDatabase(str(tmp_path / "test.db"))
+    yield db
+    db.close()
 
 
 # =============================================================================
