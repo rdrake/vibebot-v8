@@ -3601,3 +3601,221 @@ class TestExtractUsage:
         assert prompt_tokens == 0
         assert completion_tokens == 0
         assert cost == 0.01
+
+
+class TestStashTimeout:
+    """Tests for _stash_timeout early-exit paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with mock plugin."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_stash_timeout_returns_false_when_no_db(self) -> None:
+        """GIVEN plugin.db is None WHEN _stash_timeout called THEN returns False."""
+        self.mock_plugin.db = None
+
+        result = self.service._stash_timeout(
+            task_type="ask",
+            nick="u",
+            reply_target="#c",
+            is_channel=True,
+            prompt="test",
+            model="m",
+            request_data={"prompt": "test"},
+            submitted_at=1.0,
+        )
+
+        assert result is False
+
+
+class TestDeleteStashedTask:
+    """Tests for _delete_stashed_task guard clauses."""
+
+    def test_delete_stashed_task_with_none_db(self) -> None:
+        """GIVEN db is None WHEN _delete_stashed_task called THEN does not raise."""
+        LLMService._delete_stashed_task(None, 1)
+
+    def test_delete_stashed_task_with_none_task_id(self, mocker: MockerFixture) -> None:
+        """GIVEN task_id is None WHEN _delete_stashed_task called THEN does not raise."""
+        mock_db = mocker.MagicMock()
+
+        LLMService._delete_stashed_task(mock_db, None)
+
+        mock_db.delete_pending_task.assert_not_called()
+
+
+class TestRetryImage:
+    """Tests for _retry_image error paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with mock plugin."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def _make_task(self, **overrides):
+        """Create a PendingTaskRow with draw defaults."""
+        from llm.persistence import PendingTaskRow
+
+        defaults = {
+            "id": 1,
+            "task_type": "draw",
+            "nick": "user",
+            "reply_target": "#chan",
+            "is_channel": 1,
+            "prompt_preview": "test",
+            "model": "dall-e-3",
+            "request_data": '{"prompt": "cat"}',
+            "submitted_at": 100.0,
+            "expires_at": 200.0,
+            "attempt_count": 0,
+            "next_attempt_at": 100.0,
+            "claimed_until": 0,
+            "last_error": "",
+            "delivery_state": "pending",
+            "result_payload": "",
+            "last_delivery_error": "",
+            "delivery_attempt_count": 0,
+            "origin_request_id": "",
+        }
+        defaults.update(overrides)
+        return PendingTaskRow(**defaults)
+
+    def test_retry_image_malformed_data(self) -> None:
+        """GIVEN request_data missing prompt key WHEN _retry_image called THEN returns failed_terminal with Malformed reason."""
+        task = self._make_task()
+
+        result = self.service._retry_image(task, {"not_prompt": "x"})
+
+        assert result.status == "failed_terminal"
+        assert "Malformed" in result.reason
+
+    def test_retry_image_no_api_key(self) -> None:
+        """GIVEN drawApiKey is empty WHEN _retry_image called THEN returns failed_terminal with API key reason."""
+        from .conftest import make_registry_side_effect
+
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=make_registry_side_effect({"drawApiKey": ""})
+        )
+        service = LLMService(self.mock_plugin)
+        task = self._make_task()
+
+        result = service._retry_image(task, {"prompt": "cat"})
+
+        assert result.status == "failed_terminal"
+        assert "API key" in result.reason
+
+    def test_retry_image_content_blocked(self) -> None:
+        """GIVEN _attempt_image_generation returns None WHEN _retry_image called THEN returns failed_terminal with blocked reason."""
+        task = self._make_task()
+        self.mocker.patch.object(self.service, "_attempt_image_generation", return_value=None)
+
+        result = self.service._retry_image(task, {"prompt": "cat"})
+
+        assert result.status == "failed_terminal"
+        assert "blocked" in result.reason
+
+
+class TestCheckPendingTasksDispatch:
+    """Tests for check_pending_tasks dispatch and delivery edge cases."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up service with mock database and time."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+        self.mock_db = mocker.MagicMock()
+        self.mock_plugin.db = self.mock_db
+        self.now = 1000000.0
+        mocker.patch("llm.service.time.time", return_value=self.now)
+
+    def _make_task(self, **overrides):
+        """Create a PendingTaskRow with sensible defaults."""
+        from llm.persistence import PendingTaskRow
+
+        defaults = {
+            "id": 1,
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": 1,
+            "prompt_preview": "hello",
+            "model": "gpt-4",
+            "request_data": '{"messages": [{"role": "user", "content": "hello"}]}',
+            "submitted_at": self.now - 30,
+            "expires_at": self.now + 30,
+            "attempt_count": 0,
+            "next_attempt_at": self.now - 5,
+            "claimed_until": 0,
+            "last_error": "",
+            "delivery_state": "pending",
+            "result_payload": "",
+            "last_delivery_error": "",
+            "delivery_attempt_count": 0,
+            "origin_request_id": "",
+        }
+        defaults.update(overrides)
+        return PendingTaskRow(**defaults)
+
+    def test_unknown_task_type_stored_as_terminal_failure(self) -> None:
+        """GIVEN task with unknown task_type WHEN check_pending_tasks runs THEN update_task_for_delivery called with Unknown task type."""
+        import json
+
+        task = self._make_task(task_type="unknown")
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # Phase 1: provider
+            [],  # Phase 2: delivery
+        ]
+
+        self.service.check_pending_tasks({"#test"})
+
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        call_args = self.mock_db.update_task_for_delivery.call_args
+        assert call_args[0][0] == task.id
+        assert call_args[0][1] == "ready"
+        payload = json.loads(call_args[0][2])
+        assert payload["status"] == "failed_terminal"
+        assert "Unknown task type" in payload["reason"]
+
+    def test_malformed_json_request_data_stored_for_delivery(self) -> None:
+        """GIVEN task with unparseable request_data WHEN check_pending_tasks runs THEN update_task_for_delivery called."""
+        import json
+
+        task = self._make_task(request_data="not json!")
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # Phase 1: provider
+            [],  # Phase 2: delivery
+        ]
+
+        self.service.check_pending_tasks({"#test"})
+
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        call_args = self.mock_db.update_task_for_delivery.call_args
+        payload = json.loads(call_args[0][2])
+        assert payload["status"] == "failed_terminal"
+        assert "Malformed" in payload["reason"]
+
+    def test_delivery_to_unavailable_channel_released(self) -> None:
+        """GIVEN delivery task for channel not in deliverable_channels WHEN check_pending_tasks runs THEN release_pending_task called."""
+        task = self._make_task(
+            reply_target="#gone",
+            delivery_state="ready",
+            result_payload='{"status": "completed", "content": "hi"}',
+        )
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [],  # Phase 1: no provider tasks
+            [task],  # Phase 2: delivery task
+        ]
+
+        results = self.service.check_pending_tasks({"#other"})
+
+        assert len(results) == 0
+        self.mock_db.release_pending_task.assert_called_once()
+        call_kwargs = self.mock_db.release_pending_task.call_args
+        assert call_kwargs[0][0] == task.id
+        assert call_kwargs[1]["increment_attempt"] is False
