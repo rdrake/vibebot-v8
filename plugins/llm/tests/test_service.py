@@ -3532,3 +3532,72 @@ class TestImageGenerationValidation:
 
         assert result.error is not None
         assert "API key" in result.content
+
+
+class TestCompletionWithToolFallback:
+    """Tests for _completion_with_tool_fallback Gemini tool retry logic."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_retries_without_tools_on_invalid_argument(self) -> None:
+        """GIVEN Gemini INVALID_ARGUMENT error with tools WHEN calling THEN retries without tools."""
+        import litellm
+
+        success_response = self.mocker.Mock()
+
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                litellm.BadRequestError(
+                    message="INVALID_ARGUMENT: tools are not supported",
+                    model="gemini/gemini-2.5-flash",
+                    llm_provider="gemini",
+                ),
+                success_response,
+            ],
+        )
+
+        result = self.service._completion_with_tool_fallback(
+            model="gemini/gemini-2.5-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            api_key="test-key",
+            timeout=30,
+            optional_kwargs={"tools": [{"type": "function"}], "safety_settings": "low"},
+        )
+
+        assert result is success_response
+        assert mock_completion.call_count == 2
+
+        # Second call should NOT include "tools" but should keep other kwargs
+        second_call_kwargs = mock_completion.call_args_list[1][1]
+        assert "tools" not in second_call_kwargs
+        assert second_call_kwargs["safety_settings"] == "low"
+
+
+class TestExtractUsage:
+    """Tests for _extract_usage error handling."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_extract_usage_handles_type_error_on_usage(self) -> None:
+        """GIVEN response where accessing usage raises TypeError WHEN extracting THEN returns zeros with cost."""
+        mock_response = self.mocker.Mock()
+        mock_response.usage = property(lambda self: (_ for _ in ()).throw(TypeError))
+        # Make getattr(response, "usage", None) raise TypeError
+        type(mock_response).usage = self.mocker.PropertyMock(side_effect=TypeError)
+
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+
+        prompt_tokens, completion_tokens, cost = self.service._extract_usage(mock_response, "gpt-4")
+
+        assert prompt_tokens == 0
+        assert completion_tokens == 0
+        assert cost == 0.01
