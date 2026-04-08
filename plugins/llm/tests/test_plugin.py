@@ -2280,6 +2280,225 @@ class TestGetPluginHelp:
             assert cmd.name in help_text, f"{cmd.name} missing from help"
 
 
+class TestHTTPCallbackOSErrorWithBrokenPipe:
+    """Test HTTP callback OSError handler when sending 500 also fails."""
+
+    def test_oserror_then_broken_pipe_silenced(self, tmp_path, mocker: MockerFixture) -> None:
+        """GIVEN file open raises OSError WHEN sending 500 also raises BrokenPipeError THEN no exception propagates."""
+        from llm.plugin import LLMHTTPCallback
+
+        callback = LLMHTTPCallback.__new__(LLMHTTPCallback)
+        mock_plugin = mocker.MagicMock()
+        mock_plugin.registryValue.return_value = str(tmp_path)
+        callback._plugin = mock_plugin
+
+        # Create a real file so path resolution succeeds and is_file() returns True
+        test_file = tmp_path / "somefile.html"
+        test_file.write_bytes(b"<html>test</html>")
+
+        handler = mocker.MagicMock()
+        handler.wfile = mocker.MagicMock()
+
+        # Patch builtins.open to raise OSError (hits line 260)
+        mocker.patch("builtins.open", side_effect=OSError("disk error"))
+        # Then handler.send_response raises BrokenPipeError (hits line 264)
+        handler.send_response.side_effect = BrokenPipeError("client gone")
+
+        # Should not raise
+        callback.doGet(handler, "somefile.html")
+
+    def test_oserror_then_connection_reset_silenced(self, tmp_path, mocker: MockerFixture) -> None:
+        """GIVEN file open raises OSError WHEN sending 500 raises ConnectionResetError THEN no exception propagates."""
+        from llm.plugin import LLMHTTPCallback
+
+        callback = LLMHTTPCallback.__new__(LLMHTTPCallback)
+        mock_plugin = mocker.MagicMock()
+        mock_plugin.registryValue.return_value = str(tmp_path)
+        callback._plugin = mock_plugin
+
+        test_file = tmp_path / "somefile.html"
+        test_file.write_bytes(b"<html>test</html>")
+
+        handler = mocker.MagicMock()
+        handler.wfile = mocker.MagicMock()
+
+        mocker.patch("builtins.open", side_effect=OSError("disk error"))
+        handler.send_response.side_effect = ConnectionResetError("reset")
+
+        # Should not raise
+        callback.doGet(handler, "somefile.html")
+
+
+class TestGetBuildInfoGitFailure:
+    """Test _get_build_info when git is not available."""
+
+    def test_git_not_found_returns_version_without_sha(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN git not installed WHEN _get_build_info called THEN returns version without SHA."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        plugin_init_patches(mocker)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin = LLM(mock_irc)
+
+        mocker.patch("subprocess.check_output", side_effect=FileNotFoundError("git"))
+        result = plugin._get_build_info()
+
+        assert result.startswith("v")
+        assert "(" not in result
+
+    def test_git_subprocess_error_returns_version_without_sha(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN git fails with SubprocessError WHEN _get_build_info called THEN returns version without SHA."""
+        import subprocess
+
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        plugin_init_patches(mocker)
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin = LLM(mock_irc)
+
+        mocker.patch(
+            "subprocess.check_output",
+            side_effect=subprocess.SubprocessError("git failed"),
+        )
+        result = plugin._get_build_info()
+
+        assert result.startswith("v")
+        assert "(" not in result
+
+
+class TestDeliverPendingResultCodeBranch:
+    """Test _deliver_pending_result code branch with HTTP URL."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture):
+        """Create a minimal plugin for delivery testing."""
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+        return plugin
+
+    def _make_result(self, **overrides):
+        """Create a PendingTaskResult with defaults."""
+        from llm.service import PendingTaskResult
+
+        defaults = {
+            "status": "completed",
+            "task_type": "ask",
+            "nick": "alice",
+            "reply_target": "#test",
+            "is_channel": True,
+            "prompt_preview": "hello world",
+            "model": "gpt-4",
+            "content": "The answer is 42",
+            "reason": "",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cost": 0.01,
+        }
+        defaults.update(overrides)
+        return PendingTaskResult(**defaults)
+
+    def test_code_result_with_url_sends_code_is_ready(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN completed code result WHEN save_code_to_http returns URL THEN sends 'code is ready' message."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        plugin.llm_service.save_code_to_http.return_value = "http://example.com/code_abc.html"
+
+        r = self._make_result(
+            task_type="code",
+            nick="alice",
+            content="print('hello')",
+            prompt_preview="hello world",
+            task_id=1,
+        )
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg = mock_irc.queueMsg.call_args[0][0]
+        msg_text = str(msg)
+        assert "code is ready" in msg_text
+        assert "http://example.com/code_abc.html" in msg_text
+        assert "alice" in msg_text
+
+    def test_code_result_without_url_sends_content(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN completed code result WHEN save_code_to_http returns None THEN sends raw content."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        plugin.llm_service.save_code_to_http.return_value = None
+
+        r = self._make_result(
+            task_type="code",
+            nick="alice",
+            content="print('hello')",
+            prompt_preview="hello world",
+        )
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg_text = str(mock_irc.queueMsg.call_args[0][0])
+        assert "print('hello')" in msg_text
+        assert "code is ready" not in msg_text
+
+
+class TestDeliverPendingResultUnknownStatus:
+    """Test _deliver_pending_result with an unknown status."""
+
+    def test_unknown_status_returns_early_no_message(self, mocker: MockerFixture) -> None:
+        """GIVEN result with unknown status WHEN _deliver_pending_result called THEN returns early with no IRC message."""
+        from llm.plugin import LLM
+        from llm.service import PendingTaskResult
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.db = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
+
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = PendingTaskResult(
+            status="weird",
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            content="some content",
+            reason="",
+        )
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_not_called()
+        mock_irc.sendMsg.assert_not_called()
+
+
 class TestCommandRegistryCompleteness:
     """Drift-prevention: ensures registry stays in sync with actual commands."""
 
