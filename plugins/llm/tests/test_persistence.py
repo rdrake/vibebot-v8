@@ -1579,3 +1579,215 @@ class TestUserInstructions:
     def test_delete_instruction_missing(self, test_db: LLMDatabase) -> None:
         """GIVEN no instruction WHEN deleted THEN returns False."""
         assert test_db.delete_instruction("testnick") is False
+
+
+class TestLoadPendingTasksTypeFilter:
+    """Test load_pending_tasks with the optional task_type filter."""
+
+    def test_filter_by_type_returns_only_matching(self, test_db: LLMDatabase) -> None:
+        """GIVEN ask and draw tasks WHEN load_pending_tasks(task_type='ask') THEN only ask returned."""
+        now = time.time()
+        test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+        test_db.save_pending_task(
+            task_type="draw",
+            nick="bob",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="a cat",
+            model="dall-e-3",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        ask_tasks = test_db.load_pending_tasks(task_type="ask")
+        assert len(ask_tasks) == 1
+        assert ask_tasks[0].task_type == "ask"
+        assert ask_tasks[0].nick == "alice"
+
+    def test_filter_by_type_with_no_matches(self, test_db: LLMDatabase) -> None:
+        """GIVEN only ask tasks WHEN load_pending_tasks(task_type='draw') THEN empty list."""
+        now = time.time()
+        test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        draw_tasks = test_db.load_pending_tasks(task_type="draw")
+        assert len(draw_tasks) == 0
+
+
+class TestDeleteExpiredPendingTasksDeterministic:
+    """Test delete_expired_pending_tasks with explicit timestamps."""
+
+    def test_expired_task_returned_and_removed(self, test_db: LLMDatabase) -> None:
+        """GIVEN task with expires_at=10 WHEN delete_expired_pending_tasks(now=20) THEN returned and removed."""
+        test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="old question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=1.0,
+            expires_at=10.0,
+            next_attempt_at=5.0,
+        )
+
+        expired = test_db.delete_expired_pending_tasks(now=20.0)
+        assert len(expired) == 1
+        assert expired[0].nick == "alice"
+        assert expired[0].expires_at == 10.0
+
+        remaining = test_db.load_pending_tasks()
+        assert len(remaining) == 0
+
+    def test_not_yet_expired_task_preserved(self, test_db: LLMDatabase) -> None:
+        """GIVEN task with expires_at=100 WHEN delete_expired_pending_tasks(now=20) THEN preserved."""
+        test_db.save_pending_task(
+            task_type="ask",
+            nick="bob",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="fresh question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=1.0,
+            expires_at=100.0,
+            next_attempt_at=5.0,
+        )
+
+        expired = test_db.delete_expired_pending_tasks(now=20.0)
+        assert len(expired) == 0
+
+        remaining = test_db.load_pending_tasks()
+        assert len(remaining) == 1
+
+
+class TestDeletePendingTask:
+    """Test delete_pending_task found and not-found cases."""
+
+    def test_delete_existing_task_returns_true(self, test_db: LLMDatabase) -> None:
+        """GIVEN a saved task WHEN delete_pending_task called THEN returns True."""
+        now = time.time()
+        task_id = test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        assert test_db.delete_pending_task(task_id) is True
+        assert test_db.load_pending_tasks() == []
+
+    def test_delete_same_task_twice_returns_false(self, test_db: LLMDatabase) -> None:
+        """GIVEN a deleted task WHEN delete_pending_task called again THEN returns False."""
+        now = time.time()
+        task_id = test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="question",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+
+        assert test_db.delete_pending_task(task_id) is True
+        assert test_db.delete_pending_task(task_id) is False
+
+    def test_delete_nonexistent_task_returns_false(self, test_db: LLMDatabase) -> None:
+        """GIVEN no tasks WHEN delete_pending_task called THEN returns False."""
+        assert test_db.delete_pending_task(99999) is False
+
+
+class TestUsageSummaryEdgeCases:
+    """Test usage summary edge cases for since filter, missing nick/channel."""
+
+    def test_summary_with_future_since_returns_zeros(self, test_db: LLMDatabase) -> None:
+        """GIVEN logged usage WHEN querying with future since THEN returns zeros."""
+        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
+
+        future = time.time() + 86400  # 1 day in the future
+        summary = test_db.get_usage_summary(since=future)
+        assert summary.total_requests == 0
+        assert summary.total_prompt_tokens == 0
+        assert summary.total_completion_tokens == 0
+        assert summary.total_cost == pytest.approx(0.0)
+
+    def test_nick_summary_for_nonexistent_nick(self, test_db: LLMDatabase) -> None:
+        """GIVEN usage from alice WHEN querying for nonexistent nick THEN returns zeros."""
+        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
+
+        summary = test_db.get_usage_summary_for_nick("nobody")
+        assert summary.total_requests == 0
+        assert summary.total_prompt_tokens == 0
+        assert summary.total_completion_tokens == 0
+        assert summary.total_cost == pytest.approx(0.0)
+
+    def test_channel_summary_for_nonexistent_channel(self, test_db: LLMDatabase) -> None:
+        """GIVEN usage in #test WHEN querying nonexistent channel THEN returns zeros."""
+        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
+
+        summary = test_db.get_usage_summary_for_channel("#nonexistent")
+        assert summary.total_requests == 0
+        assert summary.total_prompt_tokens == 0
+        assert summary.total_completion_tokens == 0
+        assert summary.total_cost == pytest.approx(0.0)
+
+
+class TestZeroCostRank:
+    """Test rank computation when usage exists but cost is zero."""
+
+    def test_zero_cost_usage_has_rank_one(self, test_db: LLMDatabase) -> None:
+        """GIVEN usage with zero cost WHEN get_nick_rank THEN rank is 1 (not 0)."""
+        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.0)
+
+        rank = test_db.get_nick_rank("alice")
+        assert rank == UsageRank(rank=1, total=1)
+
+    def test_nick_rank_no_usage_at_all(self, test_db: LLMDatabase) -> None:
+        """GIVEN empty database WHEN get_nick_rank('nobody') THEN rank is 0."""
+        rank = test_db.get_nick_rank("nobody")
+        assert rank == UsageRank(rank=0, total=0)
+
+    def test_zero_cost_ranked_below_nonzero(self, test_db: LLMDatabase) -> None:
+        """GIVEN one nick with cost and one with zero cost WHEN ranking THEN zero-cost is rank 2."""
+        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.05)
+        test_db.log_usage("bob", "#test", "ask", "gpt-4", 10, 5, 0.0)
+
+        rank_bob = test_db.get_nick_rank("bob")
+        assert rank_bob == UsageRank(rank=2, total=2)
+
+        rank_alice = test_db.get_nick_rank("alice")
+        assert rank_alice == UsageRank(rank=1, total=2)
