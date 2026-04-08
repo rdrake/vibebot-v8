@@ -693,6 +693,14 @@ class TestGetChannelTopic:
 
         assert result is None
 
+    def test_get_channel_topic_no_state(self) -> None:
+        """GIVEN irc object without state attr WHEN getting topic THEN returns None."""
+        irc = self.mocker.Mock(spec=[])  # No state attribute
+
+        result = self.service._get_channel_topic(irc, "#test")
+
+        assert result is None
+
 
 class TestTypingIndicators:
     """Tests for IRCv3 typing indicator support."""
@@ -1521,6 +1529,30 @@ class TestBuildContextMessage:
         assert result is not None
         assert "Bot help: https://bot.example.com/llm" in result["content"]
 
+    def test_build_context_message_full_path(self) -> None:
+        """GIVEN channel msg with topic WHEN building context THEN output contains Date and Channel."""
+        self.mocker.patch("llm.service.ircutils.isChannel", return_value=True)
+        self.mocker.patch("llm.service.ircutils.nickFromHostmask", return_value="user")
+        self.mocker.patch.object(
+            self.service, "get_http_paths", return_value=("/tmp", "http://example.com")
+        )
+
+        ch_state = self.mocker.Mock(topic="Welcome!", ops=set(), halfops=set(), voices=set())
+        mock_irc = self.mocker.Mock()
+        mock_irc.state.channels = {"#test": ch_state}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ["#test"]
+        mock_msg.prefix = "user!user@host"
+
+        result = self.service._build_context_message(mock_irc, mock_msg)
+
+        assert result is not None
+        assert "Date:" in result["content"]
+        assert "Channel: #test" in result["content"]
+        assert "Topic: Welcome!" in result["content"]
+        assert "Speaking with: user" in result["content"]
+
 
 class TestRoleDetection:
     """Tests for _get_bot_role() and _get_channel_role() methods."""
@@ -1739,6 +1771,15 @@ class TestGetUptimeInfo:
         """GIVEN startedAt is invalid type WHEN getting uptime THEN returns None."""
         mock_world = self.mocker.patch("llm.service.world")
         mock_world.startedAt = "invalid"
+        result = self.service._get_uptime_info()
+        assert result is None
+
+    def test_get_uptime_info_negative(self) -> None:
+        """GIVEN startedAt in the future WHEN getting uptime THEN returns None."""
+        mock_world = self.mocker.patch("llm.service.world")
+        mock_time = self.mocker.patch("llm.service.time.time")
+        mock_world.startedAt = 2000.0
+        mock_time.return_value = 1000.0  # Current time before startedAt
         result = self.service._get_uptime_info()
         assert result is None
 
@@ -3437,3 +3478,57 @@ class TestMemoryCleanup:
 
         assert "keep" not in _MEMORY_CLEANUP_PROMPT.lower()
         assert "Be aggressive" in _MEMORY_CLEANUP_PROMPT
+
+
+class TestCompletionValidation:
+    """Tests for completion() early validation error paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.make_service = make_service
+        self.service, self.mock_plugin = make_service()
+
+    def test_completion_invalid_prompt(self) -> None:
+        """GIVEN empty prompt WHEN completion called THEN returns error in result content."""
+        result = self.service.completion("", command="ask")
+
+        assert result.error is not None
+        assert "Error" in result.content
+
+    def test_completion_missing_api_key(self) -> None:
+        """GIVEN service with empty askApiKey WHEN completion called THEN returns API key error."""
+        service, _ = self.make_service(askApiKey="")
+
+        result = service.completion("Hello world", command="ask")
+
+        assert result.error is not None
+        assert "API key" in result.content
+
+
+class TestImageGenerationValidation:
+    """Tests for image_generation() early validation error paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.make_service = make_service
+        self.service, self.mock_plugin = make_service()
+
+    def test_image_generation_invalid_prompt(self) -> None:
+        """GIVEN empty prompt WHEN image_generation called THEN returns error in result."""
+        result = self.service.image_generation("")
+
+        assert result.error is not None
+        assert "Error" in result.content
+
+    def test_image_generation_missing_draw_key(self) -> None:
+        """GIVEN service with empty drawApiKey WHEN image_generation called THEN returns API key error."""
+        service, _ = self.make_service(drawApiKey="")
+
+        result = service.image_generation("A beautiful sunset")
+
+        assert result.error is not None
+        assert "API key" in result.content
