@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import TYPE_CHECKING
 
-from llm.context import ContextConfig, ConversationContext
+from llm.context import ContextConfig, Conversation, ConversationContext
 from llm.persistence import LLMDatabase
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 
 
 class TestConversationContext:
@@ -500,3 +504,94 @@ class TestPersistentContext:
         assert len(msgs) == 1
         ctx.clear("user1", "#chan")
         assert ctx.get_messages("user1", "#chan") == []
+
+
+class TestUpdateConfig:
+    """Test ConversationContext.update_config."""
+
+    def test_update_config_replaces_config(self) -> None:
+        """GIVEN context with initial config WHEN update_config THEN config is replaced."""
+        old_config = ContextConfig(max_messages=10, timeout_minutes=5, enabled=True)
+        ctx = ConversationContext(old_config)
+
+        new_config = ContextConfig(max_messages=50, timeout_minutes=60, enabled=False)
+        ctx.update_config(new_config)
+
+        assert ctx.config is new_config
+        assert ctx.config.max_messages == 50
+        assert ctx.config.timeout_minutes == 60
+        assert ctx.config.enabled is False
+
+
+class TestRepr:
+    """Test ConversationContext.__repr__."""
+
+    def test_repr_contains_state(self) -> None:
+        """GIVEN context with one conversation WHEN repr THEN contains conversations=1 and enabled=True."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#chan", "user", "Hello")
+
+        result = repr(ctx)
+        assert "conversations=1" in result
+        assert "enabled=True" in result
+
+
+class TestIsExpiredDisabled:
+    """Test Conversation._is_expired when context is disabled."""
+
+    def test_is_expired_returns_true_when_disabled(self) -> None:
+        """GIVEN disabled config WHEN _is_expired called THEN returns True."""
+        disabled_config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
+        conv = Conversation(messages=[{"role": "user", "content": "Hello"}])
+
+        ctx = ConversationContext(disabled_config)
+        assert ctx._is_expired(conv, disabled_config) is True
+
+
+class TestPruneDeletesFromDb:
+    """Test that pruning expired conversations deletes them from the database."""
+
+    def test_prune_deletes_expired_from_db(
+        self, test_db: LLMDatabase, mocker: MockerFixture
+    ) -> None:
+        """GIVEN persisted conversation WHEN expired and prune runs THEN db has 0 rows."""
+        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
+        ctx = ConversationContext(config, db=test_db)
+
+        # Add a message (persisted to db)
+        ctx.add_message("user1", "#chan", "user", "Hello")
+        assert len(test_db.load_conversations()) == 1
+
+        # Mock time.time to return a value well past the 1-minute timeout
+        future = time.time() + 3600  # 1 hour in the future
+        mocker.patch("llm.context.time.time", return_value=future)
+
+        # get_stats() calls _prune_expired(force=True), bypassing throttle
+        stats = ctx.get_stats()
+
+        assert stats["active_conversations"] == 0
+        assert len(test_db.load_conversations()) == 0
+
+
+class TestChannelContextPrune:
+    """Test that pruning clears expired channel contexts."""
+
+    def test_channel_context_pruned_on_expiry(self, mocker: MockerFixture) -> None:
+        """GIVEN channel context WHEN expired and prune runs THEN channel contexts cleared."""
+        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "Hello everyone")
+        assert len(ctx.get_channel_messages("#channel")) == 1
+
+        # Mock time.time to return a value well past the 1-minute timeout
+        future = time.time() + 3600  # 1 hour in the future
+        mocker.patch("llm.context.time.time", return_value=future)
+
+        # get_stats() calls _prune_expired(force=True), bypassing throttle
+        stats = ctx.get_stats()
+
+        assert stats["active_channels"] == 0
+        assert stats["channel_messages"] == 0
