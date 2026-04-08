@@ -158,6 +158,26 @@ class TestSpontaneousDoPrivmsg:
 
         mock_schedule.assert_not_called()
 
+    def test_skips_when_context_disabled(
+        self, spontaneous_env: Callable, mocker: MockerFixture
+    ) -> None:
+        """GIVEN contextEnabled=False and spontaneousEnabled=True WHEN doPrivmsg fires THEN no spontaneous scheduled."""
+        plugin, mock_irc, mock_add_event = spontaneous_env(
+            contextEnabled=False,
+            spontaneousEnabled=True,
+            spontaneousChance=100,
+            spontaneousCooldown=0,
+        )
+        mock_msg = self._make_msg(mocker)
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        # No addEvent calls should be spontaneous-related
+        for call in mock_add_event.call_args_list:
+            if len(call[0]) >= 2:
+                event_name = call[0][1] if len(call[0]) > 1 else ""
+                assert "spontaneous" not in str(event_name).lower()
+
 
 # =============================================================================
 # _evaluate callback tests

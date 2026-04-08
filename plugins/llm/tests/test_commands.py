@@ -2208,3 +2208,107 @@ class TestAskWithInstruction:
         plugin.ask(mock_irc, mock_msg, ["hello"])
         call_kwargs = plugin.llm_service.completion.call_args.kwargs
         assert call_kwargs.get("system_prompt") is None
+
+
+# ---------------------------------------------------------------------------
+# _check_pending_tasks
+# ---------------------------------------------------------------------------
+
+
+class TestCheckPendingTasks:
+    """Tests for the _check_pending_tasks polling loop."""
+
+    def test_delivery_exception_does_not_propagate(self, mock_irc, mocker: MockerFixture) -> None:
+        """GIVEN _deliver_pending_result raises WHEN _check_pending_tasks runs THEN no exception propagates and error is logged."""
+        from llm.service import PendingTaskResult
+
+        from .conftest import plugin_init_patches
+
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+
+        # Provide a deliverable result
+        mock_result = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="testnick",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            content="Hello from AI",
+            task_id=42,
+        )
+        mocker.patch("llm.plugin.world.ircs", [])
+        plugin.llm_service.check_pending_tasks.return_value = [mock_result]
+        mocker.patch.object(
+            plugin, "_deliver_pending_result", side_effect=RuntimeError("delivery failed")
+        )
+
+        # Should NOT raise
+        plugin._check_pending_tasks()
+
+        plugin.log.error.assert_called()
+        # Verify the error message mentions the task_id
+        error_args = plugin.log.error.call_args[0]
+        assert "42" in str(error_args)
+
+    def test_delivery_exception_does_not_block_other_results(
+        self, mock_irc, mocker: MockerFixture
+    ) -> None:
+        """GIVEN two results and first delivery raises WHEN _check_pending_tasks runs THEN second result is still delivered."""
+        from llm.service import PendingTaskResult
+
+        from .conftest import plugin_init_patches
+
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        plugin_init_patches(mocker)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+
+        result_a = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            content="Reply A",
+            task_id=1,
+        )
+        result_b = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="bob",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="world",
+            model="gpt-4",
+            content="Reply B",
+            task_id=2,
+        )
+
+        mocker.patch("llm.plugin.world.ircs", [])
+        plugin.llm_service.check_pending_tasks.return_value = [result_a, result_b]
+
+        call_count = 0
+
+        def deliver_side_effect(r: PendingTaskResult) -> None:
+            nonlocal call_count
+            call_count += 1
+            if r.task_id == 1:
+                raise RuntimeError("delivery failed for first")
+
+        mocker.patch.object(plugin, "_deliver_pending_result", side_effect=deliver_side_effect)
+
+        plugin._check_pending_tasks()
+
+        # Both results were attempted
+        assert call_count == 2
