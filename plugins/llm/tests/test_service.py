@@ -1207,6 +1207,91 @@ class TestCleanupLock:
         assert len(errors) == 0
 
 
+class TestHTTPFileManagement:
+    """Tests for HTTP file storage, URL generation, and cleanup."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_get_http_paths_localhost_fallback(self) -> None:
+        """GIVEN no httpRoot/httpUrlBase and no publicUrl WHEN get_http_paths called THEN falls back to localhost with port."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, *a, **kw: {"httpRoot": "", "httpUrlBase": ""}.get(key, "")
+        )
+        mock_conf = self.mocker.patch("llm.service.conf")
+        mock_conf.supybot.directories.data.web.dirize.return_value = "/tmp/web"
+        mock_conf.supybot.servers.http.publicUrl.return_value = ""
+        mock_conf.supybot.servers.http.port.return_value = 8080
+
+        http_root, url_base = self.service.get_http_paths()
+
+        assert http_root == "/tmp/web"
+        assert "localhost:8080" in url_base
+
+    def test_save_code_to_http_oserror_returns_none(self) -> None:
+        """GIVEN mkdir raises OSError WHEN save_code_to_http called THEN returns None."""
+        self.mocker.patch.object(
+            self.service,
+            "get_http_paths",
+            return_value=("/nonexistent/path", "http://x"),
+        )
+        self.mocker.patch("llm.service.Path.mkdir", side_effect=OSError("disk full"))
+
+        result = self.service.save_code_to_http("# hello world")
+
+        assert result is None
+
+    def test_cleanup_old_files_deletes_old_preserves_new(self, tmp_path: object) -> None:
+        """GIVEN old and new files WHEN _cleanup_old_files called THEN deletes old, keeps new."""
+        import os
+        import time
+        from pathlib import Path
+
+        dir_path = Path(str(tmp_path))
+        old_file = dir_path / "old_code.html"
+        new_file = dir_path / "new_code.html"
+        old_file.write_text("old")
+        new_file.write_text("new")
+
+        # Backdate old file by 25 hours
+        old_mtime = time.time() - (25 * 3600)
+        os.utime(str(old_file), (old_mtime, old_mtime))
+
+        self.service._cleanup_old_files(str(dir_path), max_age_hours=24, max_files=100)
+
+        assert not old_file.exists()
+        assert new_file.exists()
+
+    def test_cleanup_old_files_caps_recent_files(self, tmp_path: object) -> None:
+        """GIVEN 5 recent files WHEN max_files=2 THEN only 2 newest remain."""
+        import time
+        from pathlib import Path
+
+        dir_path = Path(str(tmp_path))
+        files = []
+        for i in range(5):
+            f = dir_path / f"code_{i}.html"
+            f.write_text(f"content {i}")
+            # Stagger mtimes so ordering is deterministic
+            import os
+
+            mtime = time.time() - (10 * (4 - i))  # oldest first
+            os.utime(str(f), (mtime, mtime))
+            files.append(f)
+
+        self.service._cleanup_old_files(str(dir_path), max_age_hours=9999, max_files=2)
+
+        remaining = list(dir_path.glob("*.html"))
+        assert len(remaining) == 2
+
+    def test_cleanup_old_files_nonexistent_dir_no_error(self) -> None:
+        """GIVEN nonexistent directory WHEN _cleanup_old_files called THEN no error raised."""
+        self.service._cleanup_old_files("/nonexistent/path", max_age_hours=24, max_files=100)
+
+
 class TestDrawContext:
     """Tests for context integration in image generation."""
 
@@ -3532,6 +3617,122 @@ class TestImageGenerationValidation:
 
         assert result.error is not None
         assert "API key" in result.content
+
+
+class TestImageGenerationPaths:
+    """Tests for image generation rewrite loop and error paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service(
+            drawApiKey="test-draw-key",
+            drawModel="dall-e-3",
+            askApiKey="test-ask-key",
+            askModel="gemini/gemini-flash-latest",
+            timeout=30,
+            drawTimeout=30,
+            maxPromptLength=10000,
+            httpRoot="/tmp/test",
+            httpUrlBase="https://example.com/llm",
+            drawAutoRewriteMax=3,
+        )
+
+    def test_rewrite_empty_response(self) -> None:
+        """GIVEN LLM returns empty content WHEN _rewrite_prompt_for_safety called THEN returns None tuple."""
+        response = self.mocker.Mock()
+        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=""))]
+
+        self.mocker.patch("llm.service.litellm.completion", return_value=response)
+
+        result = self.service._rewrite_prompt_for_safety("bad prompt", "blocked", [], "#chan")
+
+        assert result == (None, 0, 0, 0.0)
+
+    def test_xai_model_kwargs(self) -> None:
+        """GIVEN xai model WHEN _attempt_image_generation called THEN passes extra kwargs."""
+        mock_response = self.mocker.Mock()
+        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
+
+        mock_img_gen = self.mocker.patch(
+            "llm.service.litellm.image_generation", return_value=mock_response
+        )
+        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
+        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+
+        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30)
+
+        call_kwargs = mock_img_gen.call_args
+        assert call_kwargs[1]["aspect_ratio"] == "9:16"
+
+    def test_b64_json_save_failure(self) -> None:
+        """GIVEN b64_json data but save fails WHEN _attempt_image_generation called THEN returns error."""
+        image_data = self.mocker.Mock()
+        image_data.url = None
+        image_data.b64_json = "base64data"
+
+        mock_response = self.mocker.Mock()
+        mock_response.data = [image_data]
+
+        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
+        self.mocker.patch.object(self.service, "save_image_to_http", return_value=None)
+
+        result = self.service._attempt_image_generation("cat", "dall-e-3", 30)
+
+        assert result is not None
+        assert result.error is not None
+
+    def test_timeout_not_stashed(self) -> None:
+        """GIVEN image_generation times out and stashing fails WHEN called THEN returns error."""
+        import litellm as litellm_module
+
+        self.mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=litellm_module.Timeout(
+                message="Request timed out", model="dall-e-3", llm_provider="openai"
+            ),
+        )
+        self.mocker.patch.object(self.service, "_stash_timeout", return_value=False)
+
+        result = self.service.image_generation("a cat")
+
+        assert result.error is not None
+
+    def test_non_content_error_in_rewrite_loop(self) -> None:
+        """GIVEN first attempt blocked and retry raises non-content error WHEN generating THEN returns error."""
+        self.mocker.patch.object(
+            self.service,
+            "_attempt_image_generation",
+            side_effect=[None, RuntimeError("network")],
+        )
+        self.mocker.patch.object(
+            self.service,
+            "_rewrite_prompt_for_safety",
+            return_value=("rewritten", 10, 5, 0.01),
+        )
+        self.mocker.patch.object(
+            self.service,
+            "_is_content_safety_error",
+            return_value=False,
+        )
+
+        result = self.service.image_generation("a cat")
+
+        assert result.error is not None
+
+    def test_outer_exception_handler(self) -> None:
+        """GIVEN unexpected error in validate_prompt WHEN image_generation called THEN returns graceful error."""
+        self.mocker.patch.object(
+            self.service,
+            "validate_prompt",
+            side_effect=RuntimeError("unexpected"),
+        )
+
+        result = self.service.image_generation("a cat")
+
+        assert result.error is not None
 
 
 class TestCompletionWithToolFallback:
