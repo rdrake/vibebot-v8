@@ -4020,3 +4020,141 @@ class TestCheckPendingTasksDispatch:
         call_kwargs = self.mock_db.release_pending_task.call_args
         assert call_kwargs[0][0] == task.id
         assert call_kwargs[1]["increment_attempt"] is False
+
+
+class TestBuildMessages:
+    """Tests for _build_messages multimodal and channel history branches."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_build_messages_with_images(self) -> None:
+        """GIVEN image URL list WHEN _build_messages called THEN last message has multimodal content."""
+        msgs = self.service._build_messages("describe this", ["https://img.png"])
+        last_msg = msgs[-1]
+        assert isinstance(last_msg["content"], list)
+        assert any(p["type"] == "image_url" for p in last_msg["content"])
+        assert any(p["type"] == "text" for p in last_msg["content"])
+
+    def test_build_messages_with_channel_history(self) -> None:
+        """GIVEN channel history WHEN _build_messages called THEN 'channel discussion' appears."""
+        history = [{"nick": "alice", "role": "user", "content": "hello"}]
+        msgs = self.service._build_messages("hi", None, channel_history=history)
+        assert any("channel discussion" in str(m.get("content", "")).lower() for m in msgs)
+
+    def test_format_channel_history_truncation(self) -> None:
+        """GIVEN content exceeding CHANNEL_MSG_TRUNCATE_LEN WHEN formatted THEN truncated with ellipsis."""
+        from llm.service import CHANNEL_MSG_TRUNCATE_LEN
+
+        history = [{"nick": "alice", "content": "x" * (CHANNEL_MSG_TRUNCATE_LEN + 100)}]
+        result = self.service._format_channel_history(history)
+        assert result.endswith("...")
+        # Content portion (after "alice: ") should be exactly CHANNEL_MSG_TRUNCATE_LEN chars
+        content_part = result[len("alice: ") :]
+        assert len(content_part) == CHANNEL_MSG_TRUNCATE_LEN
+
+
+class TestExtractMemories:
+    """Test extract_memories API key fallback from memoryApiKey to askApiKey."""
+
+    def test_api_key_fallback_to_ask_key(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN memoryApiKey is empty WHEN extract_memories called THEN uses askApiKey."""
+        service, mock_plugin = make_service(memoryApiKey="")
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.Mock()
+        mock_response.choices = [mocker.Mock()]
+        mock_response.choices[0].message.content = '{"add": ["likes cats"]}'
+        mock_completion.return_value = mock_response
+
+        result = service.extract_memories("nick", "#chan", "I like cats", "Cool!", [])
+
+        assert result.add == ["likes cats"]
+        actual_key = mock_completion.call_args.kwargs.get("api_key")
+        assert actual_key == "test-key"
+
+
+class TestCleanupMemoriesValidation:
+    """Tests for cleanup_memories validation logic at lines 2694-2723."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        """Set up test fixtures."""
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def _mock_cleanup_response(self, parsed: object) -> None:
+        """Mock litellm.completion to return a JSON-encoded response."""
+        import json
+
+        response = self.mocker.Mock()
+        response.choices = [self.mocker.Mock()]
+        response.choices[0].message.content = json.dumps(parsed)
+        self.mocker.patch("llm.service.litellm.completion", return_value=response)
+
+    def _make_rows(self, count: int) -> list:
+        """Create a list of MemoryRow objects for testing."""
+        from llm.persistence import MemoryRow
+
+        return [
+            MemoryRow(id=i, nick="u", fact=f"fact{i}", source_channel="#c", created_at=0.0)
+            for i in range(count)
+        ]
+
+    def test_not_a_dict(self) -> None:
+        """GIVEN LLM returns a JSON string WHEN cleanup validates THEN error contains 'not a JSON object'."""
+        self._mock_cleanup_response("just a string")
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "not a JSON object" in result.error
+
+    def test_drop_not_list(self) -> None:
+        """GIVEN drop is not a list WHEN cleanup validates THEN error contains 'must be arrays'."""
+        self._mock_cleanup_response({"drop": "x", "merge": []})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "must be arrays" in result.error
+
+    def test_invalid_drop_index(self) -> None:
+        """GIVEN drop index out of range WHEN cleanup validates THEN error contains 'Invalid drop index'."""
+        self._mock_cleanup_response({"drop": [99], "merge": []})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "Invalid drop index" in result.error
+
+    def test_non_dict_merge_entry(self) -> None:
+        """GIVEN merge entry is a string WHEN cleanup validates THEN error contains 'Invalid merge entry'."""
+        self._mock_cleanup_response({"drop": [], "merge": ["x"]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "Invalid merge entry" in result.error
+
+    def test_merge_with_zero_indices(self) -> None:
+        """GIVEN merge entry with empty indices WHEN cleanup validates THEN error contains 'at least'."""
+        self._mock_cleanup_response({"drop": [], "merge": [{"indices": [], "text": "merged"}]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "at least" in result.error
+
+    def test_empty_merge_text(self) -> None:
+        """GIVEN merge entry with empty text WHEN cleanup validates THEN error contains 'non-empty'."""
+        self._mock_cleanup_response({"drop": [], "merge": [{"indices": [0, 1], "text": ""}]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "non-empty" in result.error
+
+    def test_duplicate_indices(self) -> None:
+        """GIVEN index appears in both drop and merge WHEN cleanup validates THEN error contains 'Duplicate'."""
+        self._mock_cleanup_response({"drop": [0], "merge": [{"indices": [0, 1], "text": "merged"}]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "Duplicate" in result.error
+
+    def test_merge_index_out_of_range(self) -> None:
+        """GIVEN merge index exceeds memory count WHEN cleanup validates THEN error contains 'out of range'."""
+        self._mock_cleanup_response({"drop": [], "merge": [{"indices": [0, 99], "text": "merged"}]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "out of range" in result.error
