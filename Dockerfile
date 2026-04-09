@@ -1,6 +1,6 @@
 # Stage 1: Builder
 FROM python:3.14-slim AS builder
-COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /bin/
 WORKDIR /app
 ENV UV_LINK_MODE=copy
 
