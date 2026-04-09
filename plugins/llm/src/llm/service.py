@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import litellm
 import markdown
 import nh3
+import openai
 import supybot.conf as conf
 import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
@@ -986,7 +987,7 @@ class LLMService:
             return _("Error: Invalid API key for %s. Please check your configuration.") % operation
         if isinstance(error, litellm.ContentPolicyViolationError):
             return _("Error: Content violates AI safety policies. Please rephrase your request.")
-        if isinstance(error, litellm.APIError):
+        if isinstance(error, openai.APIError):
             sanitized = self._sanitize(str(error))[:150]
             self.log.error("LLM API error (%s): %s", operation, sanitized)
             return _("Error: API returned an error. Check logs for details.")
