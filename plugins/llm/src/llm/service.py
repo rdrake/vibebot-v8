@@ -405,8 +405,8 @@ class LLMService:
             if text[0] not in inner.replace(f"\\{text[0]}", ""):
                 text = inner.replace(f"\\{text[0]}", text[0])
 
-        # Replace literal \n sequences that LLMs sometimes produce with spaces
-        text = text.replace("\\n", " ")
+        # Replace literal \n sequences and real newlines with spaces
+        text = text.replace("\\n", " ").replace("\n", " ")
 
         # Get configurable prefixes (default: . and /)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))
