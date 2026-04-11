@@ -1565,6 +1565,12 @@ class TestSanitizeOutput:
         assert service.sanitize_output(".dot") == ".dot"
         assert service.sanitize_output("/slash") == "/slash"
 
+    def test_sanitize_output_replaces_literal_newlines_with_spaces(self) -> None:
+        """GIVEN text with literal backslash-n WHEN sanitizing THEN replaces with spaces."""
+        text = "Oven: 400°F for 15 minutes.\\nStovetop: medium heat."
+        result = self.service.sanitize_output(text)
+        assert result == "Oven: 400°F for 15 minutes. Stovetop: medium heat."
+
     def test_sanitize_output_empty_prefixes(self) -> None:
         """GIVEN empty prefix list WHEN sanitizing THEN no changes made."""
         self.mock_plugin.registryValue = self.mocker.Mock(

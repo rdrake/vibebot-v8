@@ -397,6 +397,9 @@ class LLMService:
         if not text:
             return ""
 
+        # Replace literal \n sequences that LLMs sometimes produce with spaces
+        text = text.replace("\\n", " ")
+
         # Get configurable prefixes (default: . and /)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))
         if not prefixes:
