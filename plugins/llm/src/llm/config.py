@@ -714,3 +714,49 @@ conf.registerGlobalValue(
         _("""Time window in seconds for counting draw requests (unregistered tier)."""),
     ),
 )
+
+# ============================================================================
+# Meta Command (natural language configuration)
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "metaEnabled",
+    registry.Boolean(
+        True,
+        _("""Enable the meta command and unknown-command routing.
+        When enabled, unrecognized commands are routed through a tool-calling
+        LLM that can manage instructions, memories, and context. Falls back
+        to ask if the request is not a configuration operation."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "metaModel",
+    ValidatedModelName(
+        "",
+        _("""Model for meta command (must support function/tool calling).
+        If empty, falls back to askModel."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "metaApiKey",
+    registry.String(
+        "",
+        _("""API key for meta command. Falls back to askApiKey if empty."""),
+        private=True,
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "metaMaxSteps",
+    registry.PositiveInteger(
+        5,
+        _("""Maximum tool-call round trips per meta invocation.
+        Prevents runaway tool loops."""),
+    ),
+)

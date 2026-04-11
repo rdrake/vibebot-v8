@@ -433,6 +433,8 @@ class TestDoPrivmsg:
         plugin.startup_time = time.time()
         plugin.registryValue = mocker.MagicMock(return_value=True)
         plugin.context = mocker.MagicMock()
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
         plugin._spontaneous_cooldowns = {}
         plugin._spontaneous_events = set()
 
@@ -1021,6 +1023,10 @@ class TestInvalidCommand:
         plugin = LLM.__new__(LLM)
         plugin.startup_time = time.time()
         plugin.ask = mocker.MagicMock()
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
+        plugin.context = mocker.MagicMock()
+        plugin.registryValue = mocker.MagicMock(return_value=True)
         # Limnoria's MetaSynchronized requires this lock for synchronized methods
         plugin._MetaSynchronized_rlock = threading.RLock()
 
@@ -1060,10 +1066,19 @@ class TestInvalidCommand:
     def test_invalid_command_delegates_to_ask(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN valid tokens and capability WHEN invalidCommand THEN delegates to ask."""
+        """GIVEN valid tokens and capability WHEN invalidCommand THEN delegates to ask.
+
+        The meta handler runs first (metaEnabled defaults to True) and returns
+        NOT_META, so the command falls through to ask.
+        """
+        from llm.service import MetaResult
+
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.llm_service.meta_completion.return_value = MetaResult(
+            content="NOT_META", is_meta=False
+        )
         plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin.ask.assert_called_once_with(mock_irc, mock_msg, ["hello", "there"])
@@ -2244,7 +2259,17 @@ class TestCommandRegistry:
         from llm.plugin import COMMAND_REGISTRY
 
         names = {cmd.name for cmd in COMMAND_REGISTRY}
-        expected = {"ask", "code", "draw", "forget", "memories", "instruct", "remind", "usage"}
+        expected = {
+            "ask",
+            "code",
+            "draw",
+            "forget",
+            "memories",
+            "instruct",
+            "meta",
+            "remind",
+            "usage",
+        }
         assert names == expected
 
     def test_registry_entries_have_required_fields(self) -> None:

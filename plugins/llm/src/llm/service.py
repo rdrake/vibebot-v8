@@ -200,6 +200,18 @@ class CleanupResult(NamedTuple):
     error: str | None = None
 
 
+class MetaResult(NamedTuple):
+    """Result of a meta command tool-calling loop."""
+
+    content: str
+    is_meta: bool = True
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    model: str = ""
+    error: str | None = None
+
+
 class PendingTaskResult(NamedTuple):
     """Result from checking a single pending task."""
 
@@ -235,7 +247,8 @@ if TYPE_CHECKING:
     from supybot.callbacks import Irc
     from supybot.ircmsgs import IrcMsg
 
-    from .persistence import MemoryRow
+    from .context import ConversationContext
+    from .persistence import LLMDatabase, MemoryRow
     from .plugin import LLM
 
 
@@ -295,6 +308,7 @@ class LLMService:
             "codeApiKey",
             "drawApiKey",
             "memoryApiKey",
+            "metaApiKey",
             "spontaneousApiKey",
         ):
             key = self.plugin.registryValue(key_name)
@@ -1972,6 +1986,192 @@ Rules:
 
         # No image data — content was blocked
         return None
+
+    def meta_completion(
+        self,
+        prompt: str,
+        *,
+        nick: str,
+        channel: str,
+        db: LLMDatabase,
+        context: ConversationContext,
+        bot_nick: str,
+        api_key: str | None = None,
+        model_override: str | None = None,
+    ) -> MetaResult:
+        """Run a meta command through a multi-turn tool-calling loop.
+
+        Unlike completion(), this method:
+        - Preserves tool_calls on the LLM response
+        - Does NOT use _completion_with_tool_fallback (no silent tool stripping)
+        - Runs a loop until the LLM produces text or the step cap is hit
+        - Calls _extract_usage() for proper cost tracking
+
+        Args:
+            prompt: User's natural language request
+            nick: IRC nick (all tools scoped to this user)
+            channel: IRC channel (injected into tools, not LLM-controlled)
+            db: Database instance for persistence operations
+            context: Conversation context instance
+            bot_nick: Bot's IRC nick for system prompt personalization
+            api_key: Optional API key override
+            model_override: Optional model override
+
+        Returns:
+            MetaResult with the final text, is_meta flag, and usage stats
+        """
+        from .meta import META_SYSTEM_PROMPT, META_TOOLS, MetaToolExecutor
+
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cost = 0.0
+
+        try:
+            # Resolve model and API key with fallback to ask config
+            target = channel if channel.startswith(("#", "&")) else None
+            model = (
+                model_override
+                or self.plugin.registryValue("metaModel", target)
+                or self.plugin.registryValue("askModel", target)
+            )
+            effective_api_key = (
+                api_key
+                or self.plugin.registryValue("metaApiKey")
+                or self.plugin.registryValue("askApiKey")
+            )
+            if not effective_api_key:
+                return MetaResult(
+                    content="Error: No API key configured.",
+                    is_meta=True,
+                    error="No API key configured for meta command.",
+                )
+
+            max_steps = self.plugin.registryValue("metaMaxSteps")
+            timeout = self.plugin.registryValue("timeout")
+
+            system_prompt = META_SYSTEM_PROMPT.format(bot_nick=bot_nick)
+
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+
+            # Safety settings but NO grounding tools — meta uses its own
+            # tools= kwarg passed explicitly below.
+            optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
+
+            executor = MetaToolExecutor(db=db, context=context, nick=nick, channel=channel)
+
+            for _step in range(max_steps):
+                self.log.info(
+                    "meta_completion step %d: model=%s messages=%d",
+                    _step + 1,
+                    model,
+                    len(messages),
+                )
+
+                response = litellm.completion(
+                    model=model,
+                    messages=messages,
+                    api_key=effective_api_key,
+                    timeout=timeout,
+                    tools=META_TOOLS,
+                    **optional_kwargs,
+                )
+
+                # Accumulate usage via _extract_usage for proper cost
+                p, c, cost = self._extract_usage(response, model)
+                total_prompt_tokens += p
+                total_completion_tokens += c
+                total_cost += cost
+
+                choice = response.choices[0]
+                message = choice.message
+
+                # If the LLM returned text (no tool calls), we're done
+                if not message.tool_calls:
+                    content = message.content or ""
+
+                    # Exact sentinel check (not substring)
+                    if content.strip() == "NOT_META":
+                        return MetaResult(
+                            content=content,
+                            is_meta=False,
+                            prompt_tokens=total_prompt_tokens,
+                            completion_tokens=total_completion_tokens,
+                            cost=total_cost,
+                            model=model,
+                        )
+
+                    return MetaResult(
+                        content=self.sanitize_output(content),
+                        is_meta=True,
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost,
+                        model=model,
+                    )
+
+                # Append assistant message with tool_calls to history
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in message.tool_calls
+                        ],
+                    }
+                )
+
+                # Execute each tool call and append results
+                for tc in message.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+
+                    self.log.info(
+                        "meta tool call: %s(%s)",
+                        tc.function.name,
+                        args,
+                    )
+
+                    result_str = executor.execute(tc.function.name, args)
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result_str,
+                        }
+                    )
+
+            # Step cap reached
+            return MetaResult(
+                content="Sorry, I hit the tool call limit. Try a simpler request.",
+                is_meta=True,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                cost=total_cost,
+                model=model,
+                error="Meta command exceeded maximum steps.",
+            )
+
+        except Exception as e:
+            self.log.error("meta_completion failed: %s", self._sanitize(str(e)))
+            return MetaResult(
+                content="Sorry, something went wrong.",
+                is_meta=True,
+                error=self._sanitize(str(e)),
+            )
 
     def image_generation(
         self,

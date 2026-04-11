@@ -37,6 +37,7 @@ from .service import (
     CompletionResult,
     ImageResult,
     LLMService,
+    MetaResult,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
@@ -176,6 +177,20 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="[nick | #channel]",
         description="Show API usage statistics.",
         examples=("%usage", "%usage someone", "%usage #channel"),
+        category="utility",
+    ),
+    CommandInfo(
+        name="meta",
+        args="<request>",
+        description=(
+            "Manage your settings with natural language (instructions, memories, context)."
+        ),
+        examples=(
+            "%meta always respond in haiku",
+            "%meta what are my memories?",
+            "%meta delete any memories about cats",
+            "%meta clear my conversation context",
+        ),
         category="utility",
     ),
 )
@@ -1012,10 +1027,12 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         tokens: list[str],
     ) -> None:
-        """Handle unrecognized commands as 'ask' by default.
+        """Handle unrecognized commands: try meta first, fall back to ask.
 
-        When someone says "vibebot hello there" without a command,
-        treat it as "%ask hello there".
+        When someone says "vibebot always respond in haiku" without a command:
+        1. If metaEnabled, route through meta handler
+        2. If meta returns NOT_META (not a config request), fall through to ask
+        3. If metaEnabled is False, go straight to ask
         """
         if not tokens:
             return
@@ -1028,7 +1045,43 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        # Reconstruct the prompt from tokens and call ask
+        channel = self._get_channel(msg)
+
+        # Try meta handler first (if enabled)
+        if self.registryValue("metaEnabled", channel):
+            text = " ".join(tokens)
+            # Use "ask" for rate limiting — meta shares the ask tier
+            preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
+            if preflight.blocked:
+                return  # Rate limited — do not fall through to ask
+
+            result: MetaResult = self.llm_service.meta_completion(
+                prompt=text,
+                nick=preflight.nick,
+                channel=preflight.channel,
+                db=self.db,
+                context=self.context,
+                bot_nick=irc.nick,
+            )
+
+            if result.is_meta:
+                # Meta handled it — relay the response
+                if result.content:
+                    irc.reply(result.content, prefixNick=False)
+                self.db.log_usage(
+                    preflight.nick,
+                    preflight.channel,
+                    "meta",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
+                return
+
+            # NOT_META — fall through to ask below
+
+        # Fall through to ask (original behavior)
         # wrap() replaces ask's signature at runtime; ty sees the pre-wrap params
         self.ask(irc, msg, tokens[:])  # ty: ignore[missing-argument]
 
@@ -2034,6 +2087,66 @@ class LLM(callbacks.Plugin):
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
+
+    @wrap(["text"])
+    def meta(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """Manage settings via natural language.
+
+        Uses tool calling to interpret your request and perform the
+        appropriate action (set instructions, manage memories, etc.).
+        """
+        channel = self._get_channel(msg)
+
+        if not self.registryValue("metaEnabled", channel):
+            irc.reply(_("The meta command is not enabled in this channel."))
+            return
+
+        # Use "ask" for rate limiting — meta shares the ask tier
+        preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
+        if preflight.blocked:
+            return
+
+        result: MetaResult = self.llm_service.meta_completion(
+            prompt=text,
+            nick=preflight.nick,
+            channel=preflight.channel,
+            db=self.db,
+            context=self.context,
+            bot_nick=irc.nick,
+        )
+
+        if result.error:
+            self.log.warning("meta command error: %s", result.error)
+
+        if not result.is_meta:
+            # Explicit @meta for a non-config request — helpful message
+            irc.reply(
+                _(
+                    "I can manage your instructions, memories, "
+                    "and conversation context. Try: @meta list my "
+                    "memories"
+                ),
+                prefixNick=False,
+            )
+        elif result.content:
+            irc.reply(result.content, prefixNick=False)
+
+        # Log usage as "meta" command type
+        self.db.log_usage(
+            preflight.nick,
+            preflight.channel,
+            "meta",
+            result.model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            result.cost,
+        )
 
     def usage(
         self,
