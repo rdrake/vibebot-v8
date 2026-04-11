@@ -270,6 +270,46 @@ if TYPE_CHECKING:
     from .plugin import LLM
 
 
+def validate_external_url(url: str) -> bool:
+    """Validate an external URL for safety (SSRF prevention).
+
+    Checks applied:
+    - Only http/https schemes allowed (blocks javascript:, data:, file:, ftp:, etc.)
+    - Blocks private/reserved IPs (RFC 1918), loopback (127.x), and link-local (169.254.x)
+    - Does NOT perform DNS resolution — hostnames are accepted and resolved at fetch time
+
+    Args:
+        url: URL to validate
+
+    Returns:
+        True if the URL appears safe, False otherwise
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    # Check if hostname is a literal IP address
+    try:
+        ip_obj = ipaddress.ip_address(hostname)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved:
+            return False
+    except ValueError:
+        pass  # Not an IP literal — regular hostname, allow it
+
+    return True
+
+
 class LLMService:
     """Service layer for LiteLLM interactions.
 
