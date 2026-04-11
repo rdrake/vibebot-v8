@@ -4328,3 +4328,201 @@ class TestValidateExternalUrl:
     def test_rejects_no_scheme(self) -> None:
         """GIVEN URL without scheme WHEN validated THEN rejected."""
         assert validate_external_url("example.com") is False
+
+
+# ---------------------------------------------------------------------------
+# Search / URL completion helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_litellm_response(mocker, content="result text", grounding=False):
+    """Build a minimal mock that looks like a litellm completion response."""
+    msg = mocker.Mock()
+    msg.content = content
+    msg.tool_calls = None
+
+    choice = mocker.Mock()
+    choice.message = msg
+    choice.grounding_metadata = None
+
+    response = mocker.Mock()
+    response.choices = [choice]
+    response._hidden_params = (
+        {"vertex_ai_grounding_metadata": {"search_queries": ["q"]}} if grounding else {}
+    )
+    response.model_extra = {}
+
+    usage = mocker.Mock()
+    usage.prompt_tokens = 10
+    usage.completion_tokens = 20
+    response.usage = usage
+
+    return response
+
+
+class TestSearchCompletion:
+    """Tests for LLMService.search_completion()."""
+
+    @pytest.fixture()
+    def service(self, make_service) -> LLMService:
+        service, self.plugin = make_service(
+            askModel="gemini/gemini-2.5-flash",
+            askApiKey="test-ask-key",
+            searchModel="",
+            searchApiKey="",
+        )
+        return service
+
+    def test_returns_tool_result_with_content(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """search_completion returns ToolResult with response content."""
+        from llm.meta import ToolResult
+
+        resp = _make_litellm_response(mocker, content="Search answer")
+        mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        result = service.search_completion("what is Python?", channel="#test")
+
+        assert isinstance(result, ToolResult)
+        assert result.content == "Search answer"
+
+    def test_uses_search_model_when_configured(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """search_completion prefers searchModel over askModel."""
+        # Override to provide a searchModel
+        service.plugin = mocker.Mock()
+        service.plugin.registryValue = mocker.Mock(
+            side_effect=lambda key, *a: {
+                "searchModel": "gemini/gemini-2.5-pro",
+                "askModel": "gemini/gemini-2.5-flash",
+                "searchApiKey": "search-key",
+                "askApiKey": "ask-key",
+                "timeout": 30,
+            }.get(key, "")
+        )
+
+        resp = _make_litellm_response(mocker)
+        mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.search_completion("test", channel="#test")
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["model"] == "gemini/gemini-2.5-pro"
+
+    def test_falls_back_to_ask_model(self, service: LLMService, mocker: MockerFixture) -> None:
+        """search_completion uses askModel when searchModel is empty."""
+        resp = _make_litellm_response(mocker)
+        mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.search_completion("test", channel="#test")
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["model"] == "gemini/gemini-2.5-flash"
+
+    def test_passes_google_search_tool(self, service: LLMService, mocker: MockerFixture) -> None:
+        """search_completion passes googleSearch tool to completion call."""
+        resp = _make_litellm_response(mocker)
+        mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.search_completion("test query", channel="#test")
+
+        call_kwargs = mock_completion.call_args
+        # tools should be in the call (may be in kwargs or unpacked from optional_kwargs)
+        all_kwargs = call_kwargs.kwargs
+        assert "tools" in all_kwargs
+        assert all_kwargs["tools"] == [{"googleSearch": {}}]
+
+    def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
+        """search_completion returns error ToolResult on failure."""
+        import json
+
+        from llm.meta import ToolResult
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=RuntimeError("API down"),
+        )
+
+        result = service.search_completion("test", channel="#test")
+
+        assert isinstance(result, ToolResult)
+        parsed = json.loads(result.content)
+        assert "error" in parsed
+        assert "API down" in parsed["error"]
+
+
+class TestUrlCompletion:
+    """Tests for LLMService.url_completion()."""
+
+    @pytest.fixture()
+    def service(self, make_service) -> LLMService:
+        service, self.plugin = make_service(
+            askModel="gemini/gemini-2.5-flash",
+            askApiKey="test-ask-key",
+            searchModel="",
+            searchApiKey="",
+        )
+        return service
+
+    def test_returns_summary(self, service: LLMService, mocker: MockerFixture) -> None:
+        """url_completion returns page summary as ToolResult."""
+        from llm.meta import ToolResult
+
+        resp = _make_litellm_response(mocker, content="Page summary here")
+        mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        result = service.url_completion("https://example.com/article", channel="#test")
+
+        assert isinstance(result, ToolResult)
+        assert result.content == "Page summary here"
+
+    def test_rejects_unsafe_url(self, service: LLMService, mocker: MockerFixture) -> None:
+        """url_completion returns error for private IPs."""
+        import json
+
+        from llm.meta import ToolResult
+
+        result = service.url_completion("http://192.168.1.1/admin", channel="#test")
+
+        assert isinstance(result, ToolResult)
+        parsed = json.loads(result.content)
+        assert "error" in parsed
+        assert "not allowed" in parsed["error"].lower()
+
+    def test_passes_url_context_tool(self, service: LLMService, mocker: MockerFixture) -> None:
+        """url_completion passes urlContext tool to completion call."""
+        resp = _make_litellm_response(mocker)
+        mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.url_completion("https://example.com/page", channel="#test")
+
+        call_kwargs = mock_completion.call_args
+        all_kwargs = call_kwargs.kwargs
+        assert "tools" in all_kwargs
+        assert all_kwargs["tools"] == [{"urlContext": {}}]
+
+    def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
+        """url_completion returns error ToolResult on failure."""
+        import json
+
+        from llm.meta import ToolResult
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=RuntimeError("connection refused"),
+        )
+
+        result = service.url_completion("https://example.com", channel="#test")
+
+        assert isinstance(result, ToolResult)
+        parsed = json.loads(result.content)
+        assert "error" in parsed
+        assert "connection refused" in parsed["error"]

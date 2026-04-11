@@ -266,6 +266,7 @@ if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
     from .context import ConversationContext
+    from .meta import ToolResult
     from .persistence import LLMDatabase, MemoryRow
     from .plugin import LLM
 
@@ -1699,6 +1700,115 @@ class LLMService:
         finally:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
+
+    def search_completion(self, query: str, *, channel: str) -> ToolResult:
+        """Run a grounded Google Search completion and return a ToolResult.
+
+        Args:
+            query: The search query text
+            channel: Channel name for config lookup
+
+        Returns:
+            ToolResult with the response content and usage metadata
+        """
+        from .meta import ToolResult
+
+        try:
+            target = channel if channel.startswith(("#", "&")) else None
+            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
+                "askModel", target
+            )
+            api_key = self.plugin.registryValue("searchApiKey") or self.plugin.registryValue(
+                "askApiKey"
+            )
+            timeout = self.plugin.registryValue("timeout")
+
+            messages: list[dict[str, object]] = [{"role": "user", "content": query}]
+
+            optional_kwargs = self._get_provider_kwargs(model)
+            # Force Google Search grounding only
+            optional_kwargs["tools"] = [{"googleSearch": {}}]
+
+            response = self._completion_with_tool_fallback(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=timeout,
+                optional_kwargs=optional_kwargs,
+            )
+
+            content = response.choices[0].message.content
+            grounding_used = self._check_grounding_used(response)
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+
+            return ToolResult(
+                content=content,
+                grounding_used=grounding_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=cost,
+            )
+        except Exception as e:
+            self.log.exception("search_completion failed: %s", self._sanitize(str(e)))
+            return ToolResult(content=json.dumps({"error": str(e)}))
+
+    def url_completion(self, url: str, *, channel: str) -> ToolResult:
+        """Fetch and summarize a URL using Gemini URL Context grounding.
+
+        Args:
+            url: The URL to summarize
+            channel: Channel name for config lookup
+
+        Returns:
+            ToolResult with the summary content and usage metadata
+        """
+        from .meta import ToolResult
+
+        if not validate_external_url(url):
+            return ToolResult(
+                content='{"error": "URL is not allowed (invalid scheme or private address)."}'
+            )
+
+        try:
+            target = channel if channel.startswith(("#", "&")) else None
+            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
+                "askModel", target
+            )
+            api_key = self.plugin.registryValue("searchApiKey") or self.plugin.registryValue(
+                "askApiKey"
+            )
+            timeout = self.plugin.registryValue("timeout")
+
+            messages: list[dict[str, object]] = [
+                {"role": "user", "content": f"Summarize the content at this URL: {url}"}
+            ]
+
+            optional_kwargs = self._get_provider_kwargs(model)
+            # Force URL Context grounding only
+            optional_kwargs["tools"] = [{"urlContext": {}}]
+
+            response = self._completion_with_tool_fallback(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                timeout=timeout,
+                optional_kwargs=optional_kwargs,
+            )
+
+            content = response.choices[0].message.content
+            grounding_used = self._check_grounding_used(response)
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+
+            return ToolResult(
+                content=content,
+                grounding_used=grounding_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=cost,
+            )
+        except Exception as e:
+            self.log.exception("url_completion failed: %s", self._sanitize(str(e)))
+            return ToolResult(content=json.dumps({"error": str(e)}))
 
     def assistant_request(
         self,
