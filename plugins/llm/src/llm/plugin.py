@@ -1200,19 +1200,13 @@ class LLM(callbacks.Plugin):
         return result
 
     def _draw_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
-        """Generate an image and return the result string for meta."""
+        """Generate an image and return the result string for meta.
+
+        Usage logging is handled by the outer command wrapper via
+        ``_store_context_and_log_usage``; leaf tool handlers do not log
+        independently.
+        """
         result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
-        nick = self._get_identity(irc, msg)
-        channel = self._get_channel(msg)
-        self.db.log_usage(
-            nick,
-            channel,
-            "draw",
-            result.model,
-            result.prompt_tokens,
-            result.completion_tokens,
-            result.cost,
-        )
         return result.content
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:

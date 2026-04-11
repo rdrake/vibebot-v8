@@ -1369,6 +1369,75 @@ class TestReminderMetaHelpers:
         assert "not found" in result.lower()
 
 
+class TestDrawForMeta:
+    """Tests for _draw_for_meta helper used by meta generate_image tool."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
+        import threading
+
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect())
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        return plugin
+
+    def test_draw_for_meta_does_not_log_usage(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """_draw_for_meta does not call db.log_usage.
+
+        Usage logging is consolidated in the outer command wrapper via
+        _store_context_and_log_usage; leaf tool handlers must not log
+        independently to avoid double-counting.
+        """
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="dall-e-3",
+            prompt_tokens=10,
+            completion_tokens=0,
+            cost=0.04,
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_meta(mock_irc, msg, "a cat")
+
+        assert result == "https://img.example/cat.png"
+        plugin.db.log_usage.assert_not_called()
+
+    def test_draw_for_meta_returns_content(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """_draw_for_meta returns the image result content string."""
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/sunset.png",
+            model="dall-e-3",
+            prompt_tokens=5,
+            completion_tokens=0,
+            cost=0.02,
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_meta(mock_irc, msg, "a sunset")
+
+        assert result == "https://img.example/sunset.png"
+        plugin.llm_service.image_generation.assert_called_once_with(
+            "a sunset", irc=mock_irc, msg=msg
+        )
+
+
 class TestCodeForAssistant:
     """Tests for _code_for_assistant helper used by meta generate_code tool."""
 
