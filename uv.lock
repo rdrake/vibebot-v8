@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "llm",
+    "nickinmiddle",
     "rpg",
     "vibebot-v8",
 ]
@@ -1120,6 +1121,17 @@ wheels = [
 ]
 
 [[package]]
+name = "nickinmiddle"
+version = "0.1.0"
+source = { editable = "plugins/nickinmiddle" }
+dependencies = [
+    { name = "limnoria" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "limnoria", specifier = ">=2023.1.20" }]
+
+[[package]]
 name = "openai"
 version = "2.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1967,6 +1979,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "llm" },
+    { name = "nickinmiddle" },
     { name = "rpg" },
 ]
 
@@ -1984,6 +1997,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "llm", editable = "plugins/llm" },
+    { name = "nickinmiddle", editable = "plugins/nickinmiddle" },
     { name = "rpg", editable = "plugins/rpg" },
 ]
 

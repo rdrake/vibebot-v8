@@ -3,13 +3,14 @@ name = "vibebot-v8"
 version = "0.1.0"
 description = "VibeBot v8 - Modern IRC bot with AI capabilities"
 requires-python = ">=3.12"
-dependencies = ["llm", "rpg"]
+dependencies = ["llm", "nickinmiddle", "rpg"]
 
 [tool.uv.workspace]
-members = ["plugins/llm", "plugins/rpg"]
+members = ["plugins/llm", "plugins/nickinmiddle", "plugins/rpg"]
 
 [tool.uv.sources]
 llm = { workspace = true }
+nickinmiddle = { workspace = true }
 rpg = { workspace = true }
 
 [tool.ruff]
@@ -37,7 +38,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["plugins/llm/tests", "plugins/rpg/tests"]
+testpaths = ["plugins/llm/tests", "plugins/nickinmiddle/tests", "plugins/rpg/tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
@@ -63,7 +64,7 @@ unresolved-import = "ignore"  # External deps (supybot, litellm) not in workspac
 unresolved-attribute = "ignore"  # Supybot has no type stubs
 
 [tool.coverage.run]
-source = ["plugins/llm/src", "plugins/rpg/src"]
+source = ["plugins/llm/src", "plugins/nickinmiddle/src", "plugins/rpg/src"]
 branch = true
 
 [tool.coverage.report]
