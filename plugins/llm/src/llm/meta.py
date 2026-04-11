@@ -85,12 +85,18 @@ META_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "list_memories",
             "description": (
-                "List all stored memories (facts) about the user. "
-                "Returns ID and text for each memory."
+                "List stored memories (facts) about a user. "
+                "Omit nick to list the caller's own memories. "
+                "Specifying another user's nick requires owner privileges."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick to list memories for (optional, default: caller).",
+                    },
+                },
                 "required": [],
             },
         },
@@ -99,13 +105,21 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "save_memory",
-            "description": "Save a new memory (fact) about the user.",
+            "description": (
+                "Save a new memory (fact) about a user. "
+                "Omit nick to save for the caller. "
+                "Specifying another user's nick requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
                         "description": "The fact to remember.",
+                    },
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick to save memory for (optional, default: caller).",
                     },
                 },
                 "required": ["text"],
@@ -116,13 +130,21 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "delete_memory",
-            "description": "Delete a specific memory by its ID.",
+            "description": (
+                "Delete a specific memory by its ID. "
+                "Omit nick to delete from the caller's memories. "
+                "Specifying another user's nick requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "integer",
                         "description": "The memory ID to delete.",
+                    },
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick who owns the memory (optional, default: caller).",
                     },
                 },
                 "required": ["id"],
@@ -133,7 +155,11 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "update_memory",
-            "description": "Update the text of an existing memory.",
+            "description": (
+                "Update the text of an existing memory. "
+                "Omit nick to update the caller's memory. "
+                "Specifying another user's nick requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -145,6 +171,10 @@ META_TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "The new text for this memory.",
                     },
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick who owns the memory (optional, default: caller).",
+                    },
                 },
                 "required": ["id", "text"],
             },
@@ -154,10 +184,19 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "clear_memories",
-            "description": ("Delete ALL stored memories about the user. Destructive."),
+            "description": (
+                "Delete ALL stored memories about a user. Destructive. "
+                "Omit nick to clear the caller's memories. "
+                "Specifying another user's nick requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick to clear memories for (optional, default: caller).",
+                    },
+                },
                 "required": [],
             },
         },
@@ -213,11 +252,17 @@ META_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Run automatic memory cleanup — deduplicates, merges related "
                 "facts, and removes low-quality entries. Requires at least 2 "
-                "stored memories."
+                "stored memories. Specifying another user's nick requires "
+                "owner privileges."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick to clean up memories for (optional, default: caller).",
+                    },
+                },
                 "required": [],
             },
         },
@@ -288,7 +333,8 @@ class MetaToolExecutor:
         context: ConversationContext,
         nick: str,
         channel: str,
-        cleanup_fn: Callable[[], str] | None = None,
+        is_owner: bool = False,
+        cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
@@ -297,6 +343,7 @@ class MetaToolExecutor:
         self.context = context
         self.nick = nick
         self.channel = channel
+        self.is_owner = is_owner
         self._cleanup_fn = cleanup_fn
         self._list_reminders_fn = list_reminders_fn
         self._set_reminder_fn = set_reminder_fn
@@ -320,6 +367,24 @@ class MetaToolExecutor:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def _resolve_target_nick(self, args: dict[str, Any]) -> str | None:
+        """Resolve target nick from tool args with owner access control.
+
+        Returns the target nick to operate on, or None if access is denied.
+        When None is returned, an error JSON string has already been prepared
+        — the caller should return the result of ``_deny_access()``.
+        """
+        target = args.get("nick")
+        if not target or target.lower() == self.nick.lower():
+            return self.nick
+        if not self.is_owner:
+            return None
+        return target
+
+    @staticmethod
+    def _deny_access() -> str:
+        return json.dumps({"error": "Only bot owners can access other users' data."})
+
     def _tool_get_instruction(self, _args: dict[str, Any]) -> str:
         instruction = self.db.get_instruction(self.nick)
         if instruction:
@@ -337,38 +402,51 @@ class MetaToolExecutor:
             return json.dumps({"status": "ok", "message": "Instruction cleared."})
         return json.dumps({"status": "ok", "message": "No instruction was set."})
 
-    def _tool_list_memories(self, _args: dict[str, Any]) -> str:
-        memories = self.db.get_memories(self.nick)
+    def _tool_list_memories(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
+        memories = self.db.get_memories(target)
         if not memories:
-            return json.dumps({"memories": [], "message": "No memories stored."})
+            return json.dumps({"memories": [], "message": f"No memories stored for {target}."})
         return json.dumps(
             {
                 "memories": [{"id": m.id, "fact": m.fact} for m in memories],
+                "nick": target,
             }
         )
 
     def _tool_save_memory(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
         text = args["text"]
-        memory_id = self.db.save_memory(self.nick, text, self.channel)
+        memory_id = self.db.save_memory(target, text, self.channel)
         return json.dumps(
             {
                 "status": "ok",
                 "id": memory_id,
-                "message": f"Saved memory (ID {memory_id}).",
+                "message": f"Saved memory (ID {memory_id}) for {target}.",
             }
         )
 
     def _tool_delete_memory(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
         memory_id = args["id"]
-        deleted = self.db.delete_memory(self.nick, memory_id)
+        deleted = self.db.delete_memory(target, memory_id)
         if deleted:
             return json.dumps({"status": "ok", "message": f"Deleted memory {memory_id}."})
         return json.dumps({"error": f"Memory {memory_id} not found."})
 
     def _tool_update_memory(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
         memory_id = args["id"]
         text = args["text"]
-        updated = self.db.update_memory(self.nick, memory_id, text)
+        updated = self.db.update_memory(target, memory_id, text)
         if updated:
             return json.dumps(
                 {
@@ -378,9 +456,12 @@ class MetaToolExecutor:
             )
         return json.dumps({"error": f"Memory {memory_id} not found."})
 
-    def _tool_clear_memories(self, _args: dict[str, Any]) -> str:
-        count = self.db.delete_all_memories(self.nick)
-        return json.dumps({"status": "ok", "message": f"Cleared {count} memories."})
+    def _tool_clear_memories(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
+        count = self.db.delete_all_memories(target)
+        return json.dumps({"status": "ok", "message": f"Cleared {count} memories for {target}."})
 
     def _tool_forget_context(self, _args: dict[str, Any]) -> str:
         cleared = self.context.clear(self.nick, self.channel)
@@ -412,10 +493,13 @@ class MetaToolExecutor:
             }
         )
 
-    def _tool_cleanup_memories(self, _args: dict[str, Any]) -> str:
+    def _tool_cleanup_memories(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
         if self._cleanup_fn is None:
             return json.dumps({"error": "Memory cleanup is not available."})
-        result = self._cleanup_fn()
+        result = self._cleanup_fn(target)
         return json.dumps({"status": "ok", "message": result})
 
     def _tool_list_reminders(self, _args: dict[str, Any]) -> str:

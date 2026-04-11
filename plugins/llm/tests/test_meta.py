@@ -213,7 +213,7 @@ class TestMetaToolExecutor:
     def test_cleanup_memories(self, executor: MetaToolExecutor, mock_cleanup_fn: MagicMock) -> None:
         """GIVEN cleanup_memories tool WHEN called THEN runs cleanup callable."""
         result = executor.execute("cleanup_memories", {})
-        mock_cleanup_fn.assert_called_once()
+        mock_cleanup_fn.assert_called_once_with("testuser")
         assert "Before: 8" in result
 
     def test_cleanup_memories_not_available(
@@ -225,6 +225,79 @@ class TestMetaToolExecutor:
         )
         result = executor.execute("cleanup_memories", {})
         assert "not available" in result.lower() or "error" in result.lower()
+
+    def test_list_memories_other_user_as_owner(
+        self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
+    ) -> None:
+        """GIVEN owner WHEN listing another user's memories THEN allowed."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="owner",
+            channel="#test",
+            is_owner=True,
+            cleanup_fn=mock_cleanup_fn,
+        )
+        result = executor.execute("list_memories", {"nick": "someone"})
+        mock_db.get_memories.assert_called_with("someone")
+        assert "someone" in result
+
+    def test_list_memories_other_user_denied(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """GIVEN non-owner WHEN listing another user's memories THEN denied."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="regular",
+            channel="#test",
+        )
+        result = executor.execute("list_memories", {"nick": "someone"})
+        assert "owner" in result.lower()
+        mock_db.get_memories.assert_not_called()
+
+    def test_delete_memory_other_user_as_owner(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """GIVEN owner WHEN deleting another user's memory THEN allowed."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="owner",
+            channel="#test",
+            is_owner=True,
+        )
+        executor.execute("delete_memory", {"id": 5, "nick": "someone"})
+        mock_db.delete_memory.assert_called_once_with("someone", 5)
+
+    def test_clear_memories_other_user_denied(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """GIVEN non-owner WHEN clearing another user's memories THEN denied."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="regular",
+            channel="#test",
+        )
+        result = executor.execute("clear_memories", {"nick": "someone"})
+        assert "owner" in result.lower()
+        mock_db.delete_all_memories.assert_not_called()
+
+    def test_cleanup_other_user_as_owner(
+        self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
+    ) -> None:
+        """GIVEN owner WHEN cleaning up another user's memories THEN allowed."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="owner",
+            channel="#test",
+            is_owner=True,
+            cleanup_fn=mock_cleanup_fn,
+        )
+        executor.execute("cleanup_memories", {"nick": "someone"})
+        mock_cleanup_fn.assert_called_once_with("someone")
 
     def test_list_reminders(
         self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
