@@ -2221,11 +2221,15 @@ Rules:
         route_profile: str = "meta",
         capabilities: frozenset[str] | None = None,
         account: str | None = None,
+        system_prompt: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
         draw_fn: Callable[[str], str] | None = None,
+        search_fn: Callable[..., Any] | None = None,
+        fetch_fn: Callable[..., Any] | None = None,
+        code_fn: Callable[..., Any] | None = None,
     ) -> MetaResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
@@ -2286,10 +2290,13 @@ Rules:
             max_steps = self.plugin.registryValue("metaMaxSteps")
             timeout = self.plugin.registryValue("timeout")
 
-            system_prompt = META_SYSTEM_PROMPT.format(bot_nick=bot_nick)
+            if system_prompt is None:
+                effective_prompt = META_SYSTEM_PROMPT.format(bot_nick=bot_nick)
+            else:
+                effective_prompt = system_prompt.format(bot_nick=bot_nick)
 
             messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": effective_prompt},
                 {"role": "user", "content": prompt},
             ]
 
@@ -2311,6 +2318,9 @@ Rules:
                 set_reminder_fn=set_reminder_fn,
                 delete_reminder_fn=delete_reminder_fn,
                 draw_fn=draw_fn,
+                search_fn=search_fn,
+                fetch_fn=fetch_fn,
+                code_fn=code_fn,
             )
 
             profile_tools = get_tools_for_profile(route_profile)
@@ -2343,6 +2353,11 @@ Rules:
 
                 # If the LLM returned text (no tool calls), we're done
                 if not message.tool_calls:
+                    # Fold in any costs accumulated by leaf tool calls
+                    total_prompt_tokens += executor.accumulated_prompt_tokens
+                    total_completion_tokens += executor.accumulated_completion_tokens
+                    total_cost += executor.accumulated_cost
+
                     content = message.content or ""
 
                     # Exact sentinel check (not substring)
@@ -2363,6 +2378,7 @@ Rules:
                         completion_tokens=total_completion_tokens,
                         cost=total_cost,
                         model=model,
+                        grounding_used=executor.grounding_used,
                     )
 
                 # Append assistant message with tool_calls to history
@@ -2423,7 +2439,10 @@ Rules:
                         }
                     )
 
-            # Step cap reached
+            # Step cap reached — fold in leaf tool costs
+            total_prompt_tokens += executor.accumulated_prompt_tokens
+            total_completion_tokens += executor.accumulated_completion_tokens
+            total_cost += executor.accumulated_cost
             return MetaResult(
                 content="Sorry, I hit the tool call limit. Try a simpler request.",
                 is_meta=True,

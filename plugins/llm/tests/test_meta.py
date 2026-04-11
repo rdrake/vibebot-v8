@@ -880,6 +880,213 @@ class TestMetaCompletion:
 
         assert result.cost > 0
 
+    def test_meta_completion_accepts_system_prompt(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """meta_completion uses provided system_prompt instead of META_SYSTEM_PROMPT."""
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.meta_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a helpful assistant named {bot_nick}.",
+        )
+
+        assert captured_messages[0]["role"] == "system"
+        assert "helpful assistant" in captured_messages[0]["content"]
+        assert "VibeBot" in captured_messages[0]["content"]
+
+    def test_meta_completion_defaults_to_meta_prompt(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """meta_completion uses META_SYSTEM_PROMPT when no system_prompt given."""
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.meta_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert captured_messages[0]["role"] == "system"
+        # META_SYSTEM_PROMPT contains "configuration assistant" — verify default
+        assert "configuration assistant" in captured_messages[0]["content"].lower()
+
+    def test_meta_completion_passes_search_fn_to_executor(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """meta_completion passes search_fn/fetch_fn/code_fn to MetaToolExecutor."""
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        mock_executor_cls = mocker.patch("llm.meta.MetaToolExecutor")
+
+        sentinel_search = mocker.Mock()
+        sentinel_fetch = mocker.Mock()
+        sentinel_code = mocker.Mock()
+
+        service.meta_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            search_fn=sentinel_search,
+            fetch_fn=sentinel_fetch,
+            code_fn=sentinel_code,
+        )
+
+        call_kwargs = mock_executor_cls.call_args[1]
+        assert call_kwargs["search_fn"] is sentinel_search
+        assert call_kwargs["fetch_fn"] is sentinel_fetch
+        assert call_kwargs["code_fn"] is sentinel_code
+
+    def test_meta_result_includes_grounding_used(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """MetaResult.grounding_used reflects executor state after tool calls."""
+        # First response: tool call; second response: text
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "web_search"
+        tool_call.function.arguments = '{"query": "test"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Here are results."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        # Mock the executor to set grounding_used when execute is called
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = True
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mock_executor.execute.return_value = ToolResult(
+            content='{"results": []}', grounding_used=True
+        )
+        mocker.patch("llm.meta.MetaToolExecutor", return_value=mock_executor)
+
+        result = service.meta_completion(
+            prompt="search for test",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.grounding_used is True
+
+    def test_meta_result_includes_leaf_tool_costs(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """MetaResult totals include costs from leaf tool calls."""
+        # First response: tool call; second response: text
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "web_search"
+        tool_call.function.arguments = '{"query": "test"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Here are results."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        # Mock executor with accumulated leaf costs
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 200
+        mock_executor.accumulated_completion_tokens = 100
+        mock_executor.accumulated_cost = 0.05
+        mock_executor.execute.return_value = ToolResult(content='{"results": []}')
+        mocker.patch("llm.meta.MetaToolExecutor", return_value=mock_executor)
+
+        # _extract_usage returns (10, 5, 0.001) for each LLM call
+        mocker.patch.object(service, "_extract_usage", return_value=(10, 5, 0.001))
+
+        result = service.meta_completion(
+            prompt="search for test",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        # LLM loop: 2 calls * (10, 5, 0.001) = (20, 10, 0.002)
+        # Executor: (200, 100, 0.05)
+        # Total: (220, 110, 0.052)
+        assert result.prompt_tokens == 220
+        assert result.completion_tokens == 110
+        assert result.cost == pytest.approx(0.052)
+
 
 # =========================================================================
 # Plugin-level command tests
