@@ -397,6 +397,14 @@ class LLMService:
         if not text:
             return ""
 
+        # Strip wrapping quotes that some models produce (repr-style output)
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+            inner = text[1:-1]
+            # Only strip if the inner text doesn't contain unescaped instances
+            # of the quote character (i.e., it looks like a quoted string)
+            if text[0] not in inner.replace(f"\\{text[0]}", ""):
+                text = inner.replace(f"\\{text[0]}", text[0])
+
         # Replace literal \n sequences that LLMs sometimes produce with spaces
         text = text.replace("\\n", " ")
 
