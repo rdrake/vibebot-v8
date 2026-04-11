@@ -41,10 +41,18 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_instruction",
-            "description": "Get the user's current persistent instruction.",
+            "description": (
+                "Get a user's current persistent instruction. "
+                "Omit nick for the caller. Another user requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick (optional, default: caller).",
+                    },
+                },
                 "required": [],
             },
         },
@@ -54,7 +62,8 @@ META_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "set_instruction",
             "description": (
-                "Set a persistent instruction that applies to all future AI responses."
+                "Set a persistent instruction that applies to all future AI responses. "
+                "Omit nick for the caller. Another user requires owner privileges."
             ),
             "parameters": {
                 "type": "object",
@@ -62,6 +71,10 @@ META_TOOLS: list[dict[str, Any]] = [
                     "text": {
                         "type": "string",
                         "description": "The instruction text to set.",
+                    },
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick (optional, default: caller).",
                     },
                 },
                 "required": ["text"],
@@ -72,10 +85,18 @@ META_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "clear_instruction",
-            "description": "Remove the user's persistent instruction.",
+            "description": (
+                "Remove a user's persistent instruction. "
+                "Omit nick for the caller. Another user requires owner privileges."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "nick": {
+                        "type": "string",
+                        "description": "IRC nick (optional, default: caller).",
+                    },
+                },
                 "required": [],
             },
         },
@@ -385,22 +406,31 @@ class MetaToolExecutor:
     def _deny_access() -> str:
         return json.dumps({"error": "Only bot owners can access other users' data."})
 
-    def _tool_get_instruction(self, _args: dict[str, Any]) -> str:
-        instruction = self.db.get_instruction(self.nick)
+    def _tool_get_instruction(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
+        instruction = self.db.get_instruction(target)
         if instruction:
-            return json.dumps({"instruction": instruction})
-        return json.dumps({"instruction": None, "message": "No instruction set."})
+            return json.dumps({"instruction": instruction, "nick": target})
+        return json.dumps({"instruction": None, "message": f"No instruction set for {target}."})
 
     def _tool_set_instruction(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
         text = args["text"]
-        self.db.save_instruction(self.nick, text)
-        return json.dumps({"status": "ok", "message": f"Instruction set: {text}"})
+        self.db.save_instruction(target, text)
+        return json.dumps({"status": "ok", "message": f"Instruction set for {target}: {text}"})
 
-    def _tool_clear_instruction(self, _args: dict[str, Any]) -> str:
-        deleted = self.db.delete_instruction(self.nick)
+    def _tool_clear_instruction(self, args: dict[str, Any]) -> str:
+        target = self._resolve_target_nick(args)
+        if target is None:
+            return self._deny_access()
+        deleted = self.db.delete_instruction(target)
         if deleted:
-            return json.dumps({"status": "ok", "message": "Instruction cleared."})
-        return json.dumps({"status": "ok", "message": "No instruction was set."})
+            return json.dumps({"status": "ok", "message": f"Instruction cleared for {target}."})
+        return json.dumps({"status": "ok", "message": f"No instruction was set for {target}."})
 
     def _tool_list_memories(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
