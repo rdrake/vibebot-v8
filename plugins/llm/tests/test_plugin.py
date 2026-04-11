@@ -1066,9 +1066,7 @@ class TestInvalidCommand:
     def test_invalid_command_delegates_to_ask(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN valid tokens and NOT_META WHEN invalidCommand THEN delegates to _ask_impl."""
-        from llm.service import MetaResult
-
+        """GIVEN valid tokens WHEN invalidCommand THEN delegates to _ask_impl."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
@@ -1080,14 +1078,32 @@ class TestInvalidCommand:
                 account=None,
             )
         )
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="NOT_META", is_meta=False
-        )
         plugin._ask_impl = mocker.MagicMock()
         plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin._ask_impl.assert_called_once()
         plugin._run_preflight.assert_called_once()
+
+    def test_invalid_command_does_not_call_meta(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN valid tokens WHEN invalidCommand THEN does not call _run_meta."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin._run_preflight = mocker.MagicMock(
+            return_value=mocker.MagicMock(
+                blocked=False,
+                nick="testuser",
+                channel="#channel",
+                account=None,
+            )
+        )
+        plugin._run_meta = mocker.MagicMock()
+        plugin._ask_impl = mocker.MagicMock()
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        plugin._run_meta.assert_not_called()
 
 
 class TestReminderDelivery:

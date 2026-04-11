@@ -1459,8 +1459,8 @@ class TestCodeForAssistant:
         assert data["error"] == "Content blocked"
 
 
-class TestInvalidCommandMetaFallback:
-    """Tests for invalidCommand routing through meta then to ask."""
+class TestInvalidCommandRouting:
+    """Tests for invalidCommand routing directly through chat profile."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
@@ -1473,19 +1473,15 @@ class TestInvalidCommandMetaFallback:
         plugin.db = mocker.MagicMock()
         return plugin
 
-    def test_not_meta_falls_through_to_ask(
+    def test_invalid_command_routes_through_ask_impl(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN meta returns NOT_META THEN ask called."""
+        """GIVEN unknown command WHEN invalidCommand THEN routes to _ask_impl with chat profile."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="NOT_META",
-            is_meta=False,
-        )
         plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
@@ -1502,20 +1498,20 @@ class TestInvalidCommandMetaFallback:
         plugin.invalidCommand(mock_irc, msg, ["what", "is", "python"])
 
         plugin._ask_impl.assert_called_once()
+        call_kwargs = plugin._ask_impl.call_args
+        assert call_kwargs[1]["entry_route"] == "invalid_command"
 
-    def test_meta_disabled_skips_to_ask(
+    def test_invalid_command_no_meta_dispatch(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN metaEnabled=False WHEN unknown command THEN straight to ask."""
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaEnabled": False})
-        )
+        """GIVEN unknown command WHEN invalidCommand THEN does not call _run_meta."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
         plugin._ask_impl = mocker.MagicMock()
+        plugin._run_meta = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
                 blocked=False,
@@ -1524,45 +1520,31 @@ class TestInvalidCommandMetaFallback:
                 account=None,
             )
         )
+
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin._is_old_message = mocker.MagicMock(return_value=False)
 
         plugin.invalidCommand(mock_irc, msg, ["hello", "there"])
 
-        plugin._ask_impl.assert_called_once()
+        plugin._run_meta.assert_not_called()
         plugin.llm_service.meta_completion.assert_not_called()
 
-    def test_meta_handled_does_not_call_ask(
+    def test_invalid_command_still_checks_capability(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN meta handles it THEN ask NOT called."""
+        """GIVEN user without llm.ask capability WHEN invalidCommand THEN returns early."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="Instruction set to haiku.",
-            is_meta=True,
-            model="gpt-4",
-        )
         plugin._ask_impl = mocker.MagicMock()
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
-        )
 
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        plugin._is_old_message = mocker.MagicMock(return_value=False)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
 
         plugin.invalidCommand(mock_irc, msg, ["always", "respond", "in", "haiku"])
 
         plugin._ask_impl.assert_not_called()
-        mock_irc.reply.assert_called()
 
 
 # =========================================================================

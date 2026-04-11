@@ -1040,13 +1040,12 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         tokens: list[str],
     ) -> None:
-        """Route unrecognized addressed text through meta then ask.
+        """Route unrecognized addressed text through the chat profile.
 
-        When someone says "vibebot draw a cat" or "vibebot always respond
-        in haiku" without a command prefix:
-        1. If metaEnabled, route through meta handler (config, draw, etc.)
-        2. If meta returns NOT_META (not actionable), fall through to ask
-        3. If metaEnabled is False, go straight to ask
+        When someone says "vibebot draw a cat" or "vibebot what time is it"
+        without a command prefix, the chat profile handles everything — general
+        questions AND tool-based operations — via ``_ask_impl`` with the
+        ``assistant_request`` facade.
         """
         if not tokens:
             return
@@ -1063,31 +1062,6 @@ class LLM(callbacks.Plugin):
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if preflight.blocked:
             return
-
-        channel = self._get_channel(msg)
-        if self.registryValue("metaEnabled", channel):
-            result = self._run_meta(
-                irc,
-                msg,
-                text,
-                preflight,
-                entry_route="invalid_command",
-                profile="meta",
-            )
-            if result.is_meta:
-                if result.content:
-                    irc.reply(self._collapse_for_irc(result.content), prefixNick=False)
-                self.db.log_usage(
-                    preflight.nick,
-                    preflight.channel,
-                    "meta",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
-                return
-            # NOT_META — fall through to ask
 
         self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
 
