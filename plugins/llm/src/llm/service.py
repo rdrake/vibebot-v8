@@ -2413,13 +2413,13 @@ Rules:
                         tc.function.name,
                     )
 
-                    result_str = executor.execute(tc.function.name, args)
+                    tool_result = executor.execute(tc.function.name, args)
 
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": result_str,
+                            "content": tool_result.content,
                         }
                     )
 

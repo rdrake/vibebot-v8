@@ -581,6 +581,9 @@ class MetaToolExecutor:
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
         draw_fn: Callable[[str], str] | None = None,
+        search_fn: Callable[[str], ToolResult] | None = None,
+        fetch_fn: Callable[[str], ToolResult] | None = None,
+        code_fn: Callable[[str], ToolResult] | None = None,
     ) -> None:
         self.db = db
         self.context = context
@@ -595,6 +598,15 @@ class MetaToolExecutor:
         self._set_reminder_fn = set_reminder_fn
         self._delete_reminder_fn = delete_reminder_fn
         self._draw_fn = draw_fn
+        self._search_fn = search_fn
+        self._fetch_fn = fetch_fn
+        self._code_fn = code_fn
+
+        # Accumulator fields for structured returns
+        self.grounding_used: bool = False
+        self.accumulated_prompt_tokens: int = 0
+        self.accumulated_completion_tokens: int = 0
+        self.accumulated_cost: float = 0.0
 
     @staticmethod
     def _ok(message: str) -> str:
@@ -606,33 +618,41 @@ class MetaToolExecutor:
         """Return an error JSON response."""
         return json.dumps({"error": message})
 
-    def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        """Execute a tool call and return a JSON string result for the LLM.
+    def execute(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Execute a tool call and return a structured ToolResult.
 
         Args:
             tool_name: Name of the tool to execute.
             arguments: Parsed arguments from the LLM's tool call.
 
         Returns:
-            A JSON string result to feed back to the LLM as a tool response.
+            A ToolResult with the JSON content and optional cost metadata.
         """
         spec = META_TOOL_REGISTRY.get(tool_name)
         if spec is None:
-            return self._err(f"Unknown tool: {tool_name}")
+            return ToolResult(content=self._err(f"Unknown tool: {tool_name}"))
         denial_reason = spec.denial_reason(
             route_profile=self.route_profile,
             capabilities=self.capabilities,
             account=self.account,
         )
         if denial_reason is not None:
-            return self._err(denial_reason)
+            return ToolResult(content=self._err(denial_reason))
         handler = getattr(self, spec.handler_name, None)
         if handler is None:
-            return self._err(f"Unknown tool implementation: {tool_name}")
+            return ToolResult(content=self._err(f"Unknown tool implementation: {tool_name}"))
         try:
-            return handler(arguments)
+            raw = handler(arguments)
+            result = ToolResult(content=raw) if isinstance(raw, str) else raw
+            # Accumulate cost and grounding metadata
+            if result.grounding_used:
+                self.grounding_used = True
+            self.accumulated_prompt_tokens += result.prompt_tokens
+            self.accumulated_completion_tokens += result.completion_tokens
+            self.accumulated_cost += result.cost
+            return result
         except Exception as e:
-            return self._err(str(e))
+            return ToolResult(content=self._err(str(e)))
 
     def _resolve_target_nick(self, args: dict[str, Any]) -> str | None:
         """Resolve target nick from tool args with owner access control.
@@ -820,6 +840,24 @@ class MetaToolExecutor:
         if result.startswith("Error"):
             return self._err(result)
         return self._ok(result)
+
+    def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:
+        if not self._search_fn:
+            return ToolResult(content=json.dumps({"error": "Search is unavailable."}))
+        query = arguments.get("query", "")
+        return self._search_fn(query)
+
+    def _tool_fetch_url(self, arguments: dict[str, Any]) -> ToolResult:
+        if not self._fetch_fn:
+            return ToolResult(content=json.dumps({"error": "URL fetching is unavailable."}))
+        url = arguments.get("url", "")
+        return self._fetch_fn(url)
+
+    def _tool_generate_code(self, arguments: dict[str, Any]) -> ToolResult:
+        if not self._code_fn:
+            return ToolResult(content=json.dumps({"error": "Code generation is unavailable."}))
+        prompt = arguments.get("prompt", "")
+        return self._code_fn(prompt)
 
     @staticmethod
     def _month_start() -> float:

@@ -13,6 +13,7 @@ from llm.meta import (
     META_TOOL_SPECS,
     META_TOOLS,
     MetaToolExecutor,
+    ToolResult,
     get_tools_for_profile,
 )
 from llm.plugin import LLM
@@ -120,66 +121,66 @@ class TestMetaToolExecutor:
     def test_get_instruction(self, executor: MetaToolExecutor) -> None:
         """GIVEN get_instruction tool WHEN called THEN returns current instruction."""
         result = executor.execute("get_instruction", {})
-        assert "respond in haiku" in result
+        assert "respond in haiku" in result.content
 
     def test_set_instruction(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN set_instruction tool WHEN called THEN saves instruction."""
         result = executor.execute("set_instruction", {"text": "be brief"})
         mock_db.save_instruction.assert_called_once_with("testuser", "be brief")
-        assert "ok" in result.lower()
+        assert "ok" in result.content.lower()
 
     def test_clear_instruction(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN clear_instruction tool WHEN called THEN deletes instruction."""
         result = executor.execute("clear_instruction", {})
         mock_db.delete_instruction.assert_called_once_with("testuser")
-        assert "clear" in result.lower()
+        assert "clear" in result.content.lower()
 
     def test_list_memories(self, executor: MetaToolExecutor) -> None:
         """GIVEN list_memories tool WHEN called THEN returns formatted memories."""
         result = executor.execute("list_memories", {})
-        assert "likes Python" in result
-        assert "owns a cat" in result
+        assert "likes Python" in result.content
+        assert "owns a cat" in result.content
 
     def test_save_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN save_memory tool WHEN called THEN saves to db."""
         result = executor.execute("save_memory", {"text": "prefers vim"})
         mock_db.save_memory.assert_called_once_with("testuser", "prefers vim", "#test")
-        assert "saved" in result.lower() or "3" in result
+        assert "saved" in result.content.lower() or "3" in result.content
 
     def test_delete_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN delete_memory tool WHEN called THEN deletes by ID."""
         result = executor.execute("delete_memory", {"id": 1})
         mock_db.delete_memory.assert_called_once_with("testuser", 1)
-        assert "delete" in result.lower()
+        assert "delete" in result.content.lower()
 
     def test_delete_memory_not_found(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN delete_memory tool WHEN ID not found THEN returns error."""
         mock_db.delete_memory.return_value = False
         result = executor.execute("delete_memory", {"id": 999})
-        assert "not found" in result.lower() or "error" in result.lower()
+        assert "not found" in result.content.lower() or "error" in result.content.lower()
 
     def test_update_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN update_memory tool WHEN called THEN updates in db."""
         result = executor.execute("update_memory", {"id": 1, "text": "loves Python"})
         mock_db.update_memory.assert_called_once_with("testuser", 1, "loves Python")
-        assert "update" in result.lower()
+        assert "update" in result.content.lower()
 
     def test_clear_memories(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN clear_memories tool WHEN called THEN deletes all."""
         result = executor.execute("clear_memories", {})
         mock_db.delete_all_memories.assert_called_once_with("testuser")
-        assert "2" in result  # count returned
+        assert "2" in result.content  # count returned
 
     def test_forget_context(self, executor: MetaToolExecutor, mock_context: MagicMock) -> None:
         """GIVEN forget_context tool WHEN called THEN clears context for channel."""
         result = executor.execute("forget_context", {})
         mock_context.clear.assert_called_once_with("testuser", "#test")
-        assert "clear" in result.lower()
+        assert "clear" in result.content.lower()
 
     def test_unknown_tool(self, executor: MetaToolExecutor) -> None:
         """GIVEN unknown tool name WHEN called THEN returns error."""
         result = executor.execute("launch_missiles", {})
-        assert "error" in result.lower() or "unknown" in result.lower()
+        assert "error" in result.content.lower() or "unknown" in result.content.lower()
 
     def test_executor_catches_exceptions(
         self, executor: MetaToolExecutor, mock_db: MagicMock
@@ -187,7 +188,7 @@ class TestMetaToolExecutor:
         """GIVEN tool raises exception WHEN executed THEN returns error string."""
         mock_db.get_memories.side_effect = RuntimeError("db error")
         result = executor.execute("list_memories", {})
-        assert "error" in result.lower()
+        assert "error" in result.content.lower()
 
     def test_execute_denies_when_capability_missing(
         self,
@@ -213,7 +214,7 @@ class TestMetaToolExecutor:
 
         result = executor.execute("list_memories", {})
 
-        assert "not allowed" in result.lower() or "capability" in result.lower()
+        assert "not allowed" in result.content.lower() or "capability" in result.content.lower()
         mock_db.get_memories.assert_not_called()
 
     def test_execute_denies_when_route_profile_not_visible(
@@ -240,7 +241,7 @@ class TestMetaToolExecutor:
 
         result = executor.execute("list_memories", {})
 
-        assert "not allowed" in result.lower() or "profile" in result.lower()
+        assert "not allowed" in result.content.lower() or "profile" in result.content.lower()
         mock_db.get_memories.assert_not_called()
 
     def test_get_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
@@ -254,8 +255,8 @@ class TestMetaToolExecutor:
             total_cost=0.12,
         )
         result = executor.execute("get_usage", {})
-        assert "47" in result
-        assert "0.12" in result
+        assert "47" in result.content
+        assert "0.12" in result.content
         mock_db.get_usage_summary_for_nick.assert_called_once()
 
     def test_get_channel_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
@@ -269,15 +270,15 @@ class TestMetaToolExecutor:
             total_cost=0.85,
         )
         result = executor.execute("get_channel_usage", {})
-        assert "200" in result
-        assert "0.85" in result
+        assert "200" in result.content
+        assert "0.85" in result.content
         mock_db.get_usage_summary_for_channel.assert_called_once()
 
     def test_cleanup_memories(self, executor: MetaToolExecutor, mock_cleanup_fn: MagicMock) -> None:
         """GIVEN cleanup_memories tool WHEN called THEN runs cleanup callable."""
         result = executor.execute("cleanup_memories", {})
         mock_cleanup_fn.assert_called_once_with("testuser")
-        assert "Before: 8" in result
+        assert "Before: 8" in result.content
 
     def test_cleanup_memories_not_available(
         self, mock_db: MagicMock, mock_context: MagicMock
@@ -287,7 +288,7 @@ class TestMetaToolExecutor:
             db=mock_db, context=mock_context, nick="testuser", channel="#test"
         )
         result = executor.execute("cleanup_memories", {})
-        assert "not available" in result.lower() or "error" in result.lower()
+        assert "not available" in result.content.lower() or "error" in result.content.lower()
 
     def test_list_memories_other_user_as_owner(
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
@@ -303,7 +304,7 @@ class TestMetaToolExecutor:
         )
         result = executor.execute("list_memories", {"nick": "someone"})
         mock_db.get_memories.assert_called_with("someone")
-        assert "someone" in result
+        assert "someone" in result.content
 
     def test_list_memories_other_user_denied(
         self, mock_db: MagicMock, mock_context: MagicMock
@@ -316,7 +317,7 @@ class TestMetaToolExecutor:
             channel="#test",
         )
         result = executor.execute("list_memories", {"nick": "someone"})
-        assert "owner" in result.lower()
+        assert "owner" in result.content.lower()
         mock_db.get_memories.assert_not_called()
 
     def test_delete_memory_other_user_as_owner(
@@ -344,7 +345,7 @@ class TestMetaToolExecutor:
             channel="#test",
         )
         result = executor.execute("clear_memories", {"nick": "someone"})
-        assert "owner" in result.lower()
+        assert "owner" in result.content.lower()
         mock_db.delete_all_memories.assert_not_called()
 
     def test_cleanup_other_user_as_owner(
@@ -368,9 +369,9 @@ class TestMetaToolExecutor:
         """GIVEN list_reminders tool WHEN called THEN returns formatted reminders."""
         result = executor.execute("list_reminders", {})
         mock_list_reminders_fn.assert_called_once()
-        assert "check build" in result
-        assert "deploy app" in result
-        assert "abc123" in result
+        assert "check build" in result.content
+        assert "deploy app" in result.content
+        assert "abc123" in result.content
 
     def test_list_reminders_empty(
         self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
@@ -378,7 +379,7 @@ class TestMetaToolExecutor:
         """GIVEN no reminders WHEN list_reminders THEN returns empty message."""
         mock_list_reminders_fn.return_value = []
         result = executor.execute("list_reminders", {})
-        assert "no" in result.lower() or "[]" in result
+        assert "no" in result.content.lower() or "[]" in result.content
 
     def test_set_reminder(
         self, executor: MetaToolExecutor, mock_set_reminder_fn: MagicMock
@@ -386,7 +387,7 @@ class TestMetaToolExecutor:
         """GIVEN set_reminder tool WHEN called THEN schedules via callable."""
         result = executor.execute("set_reminder", {"text": "check build in 1 hour"})
         mock_set_reminder_fn.assert_called_once_with("check build in 1 hour")
-        assert "remind" in result.lower() or "hour" in result.lower()
+        assert "remind" in result.content.lower() or "hour" in result.content.lower()
 
     def test_delete_reminder(
         self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
@@ -394,7 +395,7 @@ class TestMetaToolExecutor:
         """GIVEN delete_reminder tool WHEN called THEN deletes via callable."""
         result = executor.execute("delete_reminder", {"id": "abc123"})
         mock_delete_reminder_fn.assert_called_once_with("abc123")
-        assert "delete" in result.lower()
+        assert "delete" in result.content.lower()
 
     def test_delete_reminder_not_found(
         self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
@@ -402,7 +403,220 @@ class TestMetaToolExecutor:
         """GIVEN nonexistent reminder WHEN delete_reminder THEN returns error."""
         mock_delete_reminder_fn.return_value = "Reminder xyz not found."
         result = executor.execute("delete_reminder", {"id": "xyz"})
-        assert "not found" in result.lower()
+        assert "not found" in result.content.lower()
+
+    # -- Task 6: Structured returns and new callables ----------------------
+
+    def test_executor_accepts_search_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """MetaToolExecutor accepts search_fn callable."""
+        search_fn = mocker.MagicMock(return_value=ToolResult(content="results"))
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            search_fn=search_fn,
+        )
+        assert executor._search_fn is search_fn
+
+    def test_executor_accepts_fetch_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """MetaToolExecutor accepts fetch_fn callable."""
+        fetch_fn = mocker.MagicMock(return_value=ToolResult(content="page"))
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            fetch_fn=fetch_fn,
+        )
+        assert executor._fetch_fn is fetch_fn
+
+    def test_executor_accepts_code_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """MetaToolExecutor accepts code_fn callable."""
+        code_fn = mocker.MagicMock(return_value=ToolResult(content="code"))
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            code_fn=code_fn,
+        )
+        assert executor._code_fn is code_fn
+
+    def test_execute_returns_tool_result(self, executor: MetaToolExecutor) -> None:
+        """execute() returns ToolResult for existing tools."""
+        result = executor.execute("get_instruction", {})
+        assert isinstance(result, ToolResult)
+        assert "respond in haiku" in result.content
+
+    def test_execute_denied_returns_tool_result(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """execute() returns ToolResult for denied tools."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            capabilities=frozenset(),
+        )
+        result = executor.execute("list_memories", {})
+        assert isinstance(result, ToolResult)
+        assert "capability" in result.content.lower() or "not allowed" in result.content.lower()
+
+    def test_executor_tracks_grounding_used(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Executor sets grounding_used when tool returns grounding_used=True."""
+        search_fn = mocker.MagicMock(
+            return_value=ToolResult(content="web results", grounding_used=True),
+        )
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+            search_fn=search_fn,
+        )
+        assert executor.grounding_used is False
+        executor.execute("search_web", {"query": "test"})
+        assert executor.grounding_used is True
+
+    def test_executor_accumulates_cost(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Executor accumulates cost from ToolResult."""
+        search_fn = mocker.MagicMock(
+            return_value=ToolResult(
+                content="results",
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost=0.01,
+            ),
+        )
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+            search_fn=search_fn,
+        )
+        executor.execute("search_web", {"query": "a"})
+        executor.execute("search_web", {"query": "b"})
+        assert executor.accumulated_prompt_tokens == 200
+        assert executor.accumulated_completion_tokens == 100
+        assert executor.accumulated_cost == pytest.approx(0.02)
+
+    # -- Task 7: Tool handlers --------------------------------------------
+
+    def test_tool_search_web_calls_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """search_web handler calls search_fn with query."""
+        search_fn = mocker.MagicMock(
+            return_value=ToolResult(content="web results"),
+        )
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+            search_fn=search_fn,
+        )
+        result = executor.execute("search_web", {"query": "python async"})
+        search_fn.assert_called_once_with("python async")
+        assert result.content == "web results"
+
+    def test_tool_search_web_no_fn_returns_error(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """search_web returns error when search_fn is None."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+        )
+        result = executor.execute("search_web", {"query": "test"})
+        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
+
+    def test_tool_fetch_url_calls_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """fetch_url handler calls fetch_fn with url."""
+        fetch_fn = mocker.MagicMock(
+            return_value=ToolResult(content="page content"),
+        )
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+            fetch_fn=fetch_fn,
+        )
+        result = executor.execute("fetch_url", {"url": "https://example.com"})
+        fetch_fn.assert_called_once_with("https://example.com")
+        assert result.content == "page content"
+
+    def test_tool_fetch_url_no_fn_returns_error(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """fetch_url returns error when fetch_fn is None."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+        )
+        result = executor.execute("fetch_url", {"url": "https://example.com"})
+        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
+
+    def test_tool_generate_code_calls_fn(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """generate_code handler calls code_fn with prompt."""
+        code_fn = mocker.MagicMock(
+            return_value=ToolResult(content="https://paste.example/abc"),
+        )
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="code",
+            capabilities=frozenset({"llm.ask", "llm.code"}),
+            code_fn=code_fn,
+        )
+        result = executor.execute("generate_code", {"prompt": "fizzbuzz in rust"})
+        code_fn.assert_called_once_with("fizzbuzz in rust")
+        assert result.content == "https://paste.example/abc"
+
+    def test_tool_generate_code_no_fn_returns_error(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """generate_code returns error when code_fn is None."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="code",
+            capabilities=frozenset({"llm.ask", "llm.code"}),
+        )
+        result = executor.execute("generate_code", {"prompt": "hello world"})
+        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
 
 
 # =========================================================================
@@ -1390,8 +1604,6 @@ class TestToolResult:
 
     def test_defaults(self) -> None:
         """GIVEN ToolResult with only content WHEN created THEN defaults are correct."""
-        from llm.meta import ToolResult
-
         result = ToolResult(content="search result")
         assert result.content == "search result"
         assert result.grounding_used is False
@@ -1401,8 +1613,6 @@ class TestToolResult:
 
     def test_all_fields_set(self) -> None:
         """GIVEN ToolResult with all fields WHEN created THEN all values stored."""
-        from llm.meta import ToolResult
-
         result = ToolResult(
             content="fetched page",
             grounding_used=True,
@@ -1418,8 +1628,6 @@ class TestToolResult:
 
     def test_frozen(self) -> None:
         """GIVEN a ToolResult WHEN attempting mutation THEN raises FrozenInstanceError."""
-        from llm.meta import ToolResult
-
         result = ToolResult(content="immutable")
         with pytest.raises(AttributeError):
             result.content = "changed"  # type: ignore[misc]
