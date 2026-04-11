@@ -1111,7 +1111,7 @@ class TestImageGenerationWithBase64:
         return msg
 
     def test_image_generation_with_url_response(self) -> None:
-        """GIVEN provider returns URL WHEN generating THEN downloads and returns local URL."""
+        """GIVEN provider returns URL WHEN generating THEN caches locally and returns remote URL."""
         mock_response = self.mocker.Mock()
         mock_response.data = [self.mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
 
@@ -1124,7 +1124,7 @@ class TestImageGenerationWithBase64:
         result = self.service.image_generation("a cat")
 
         mock_download.assert_called_once_with("https://provider.com/image.png")
-        assert result.content == "https://example.com/llm/img_abc123.png"
+        assert result.content == "https://provider.com/image.png"
 
     def test_image_generation_url_download_failure_falls_back(self) -> None:
         """GIVEN provider returns URL and download fails WHEN generating THEN falls back to provider URL."""
@@ -1230,7 +1230,7 @@ class TestImageGenerationWithBase64:
         )
         result = self.service.image_generation("a cat")
 
-        assert result.content == "https://example.com/llm/img_local.png"
+        assert result.content == "https://example.com/image.png"
 
 
 class TestCleanupWithImages:
@@ -2430,7 +2430,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("a dangerous cat")
 
-        assert result.content == "https://example.com/llm/img_local.png"
+        assert result.content == "https://example.com/img.png"
         assert result.rewritten_prompt == "a friendly cat"
 
     def test_auto_rewrite_on_content_policy_error_succeeds(self) -> None:
@@ -2458,7 +2458,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/llm/img_local.png"
+        assert result.content == "https://example.com/img.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_auto_rewrite_multiple_retries_succeeds_on_third(self) -> None:
@@ -2484,7 +2484,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("test prompt")
 
-        assert result.content == "https://example.com/llm/img_local.png"
+        assert result.content == "https://example.com/img.png"
         assert result.rewritten_prompt == "rewrite v2"
 
     def test_auto_rewrite_exhausts_all_retries(self) -> None:
@@ -2673,7 +2673,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/llm/img_local.png"
+        assert result.content == "https://example.com/img.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:
