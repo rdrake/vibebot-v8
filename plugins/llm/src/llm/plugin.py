@@ -307,7 +307,11 @@ class LLM(callbacks.Plugin):
         Args:
             irc: IRC connection instance
         """
+        import sys
+
+        print("[LLM __init__] starting super().__init__", file=sys.stderr, flush=True)
         super().__init__(irc)
+        print("[LLM __init__] creating LLMService", file=sys.stderr, flush=True)
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.log.addFilter(TraceFilter())
@@ -316,15 +320,18 @@ class LLM(callbacks.Plugin):
         self._apply_log_level()
 
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
+        print("[LLM __init__] getting build info", file=sys.stderr, flush=True)
         self.build_info = self._get_build_info()
 
         # Initialize database for persistence (before context, which loads from DB)
+        print("[LLM __init__] opening database", file=sys.stderr, flush=True)
         db_path = self.registryValue("databasePath")
         if not db_path:
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
 
         # Initialize conversation context (loads persisted conversations from DB)
+        print("[LLM __init__] init context", file=sys.stderr, flush=True)
         self._init_context()
 
         # Track nicks already migrated to account-based identity this session
@@ -344,6 +351,7 @@ class LLM(callbacks.Plugin):
         self._spontaneous_events: set[str] = set()
 
         # Reload persisted reminders from database
+        print("[LLM __init__] reloading reminders", file=sys.stderr, flush=True)
         self._reload_reminders(irc)
 
         # Startup notification tracking
@@ -353,6 +361,7 @@ class LLM(callbacks.Plugin):
         # Only register HTTP callback if using Limnoria's built-in web directory
         # (i.e., httpRoot is not configured). When httpRoot is set, an external
         # web server (e.g., nginx) is expected to serve files from that path.
+        print("[LLM __init__] setting up HTTP", file=sys.stderr, flush=True)
         if not self.registryValue("httpRoot"):
             self._http_callback = LLMHTTPCallback(self)
             httpserver.hook("llm", self._http_callback)
@@ -388,6 +397,7 @@ class LLM(callbacks.Plugin):
 
         # Register callback for live log level changes
         conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
+        print("[LLM __init__] done", file=sys.stderr, flush=True)
 
     def _apply_log_level(self) -> None:
         """Set plugin logger levels from the logLevel config value."""
