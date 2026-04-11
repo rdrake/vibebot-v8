@@ -1039,7 +1039,14 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         tokens: list[str],
     ) -> None:
-        """Handle unrecognized addressed text as a normal chat request."""
+        """Route unrecognized addressed text through meta then ask.
+
+        When someone says "vibebot draw a cat" or "vibebot always respond
+        in haiku" without a command prefix:
+        1. If metaEnabled, route through meta handler (config, draw, etc.)
+        2. If meta returns NOT_META (not actionable), fall through to ask
+        3. If metaEnabled is False, go straight to ask
+        """
         if not tokens:
             return
 
@@ -1055,6 +1062,32 @@ class LLM(callbacks.Plugin):
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if preflight.blocked:
             return
+
+        channel = self._get_channel(msg)
+        if self.registryValue("metaEnabled", channel):
+            result = self._run_meta(
+                irc,
+                msg,
+                text,
+                preflight,
+                entry_route="invalid_command",
+                profile="meta",
+            )
+            if result.is_meta:
+                if result.content:
+                    irc.reply(self._collapse_for_irc(result.content), prefixNick=False)
+                self.db.log_usage(
+                    preflight.nick,
+                    preflight.channel,
+                    "meta",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                )
+                return
+            # NOT_META — fall through to ask
+
         self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
 
     def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
@@ -1157,17 +1190,17 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         text: str,
         preflight: PreflightResult,
+        *,
+        entry_route: str = "meta",
+        profile: str = "meta",
     ) -> MetaResult:
-        """Run meta tool-calling loop with concurrency release.
-
-        Shared implementation for explicit ``@meta`` requests.
-        """
+        """Run meta tool-calling loop with concurrency release."""
         request_context = self._build_request_context(
             irc,
             msg,
             preflight,
-            entry_route="meta",
-            profile="meta",
+            entry_route=entry_route,
+            profile=profile,
         )
         with self._allow_concurrent():
             result: MetaResult = self.llm_service.meta_completion(
@@ -1185,10 +1218,27 @@ class LLM(callbacks.Plugin):
                 list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
                 set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
                 delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
+                draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
             )
         if result.error:
             self.log.warning("meta command error: %s", result.error)
         return result
+
+    def _draw_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
+        """Generate an image and return the result string for meta."""
+        result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
+        nick = self._get_identity(irc, msg)
+        channel = self._get_channel(msg)
+        self.db.log_usage(
+            nick,
+            channel,
+            "draw",
+            result.model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            result.cost,
+        )
+        return result.content
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Return account name if the user is logged in, else fall back to nick.

@@ -22,7 +22,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN META_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(META_TOOLS) == 15
+        assert len(META_TOOLS) == 16
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -940,7 +940,7 @@ class TestReminderMetaHelpers:
 
 
 class TestInvalidCommandMetaFallback:
-    """Tests for invalidCommand routing through the shared ask-style path."""
+    """Tests for invalidCommand routing through meta then to ask."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
@@ -956,12 +956,16 @@ class TestInvalidCommandMetaFallback:
     def test_not_meta_falls_through_to_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN invalidCommand runs THEN _ask_impl called directly."""
+        """GIVEN unknown command WHEN meta returns NOT_META THEN ask called."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
+        plugin.llm_service.meta_completion.return_value = MetaResult(
+            content="NOT_META",
+            is_meta=False,
+        )
         plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
@@ -978,12 +982,11 @@ class TestInvalidCommandMetaFallback:
         plugin.invalidCommand(mock_irc, msg, ["what", "is", "python"])
 
         plugin._ask_impl.assert_called_once()
-        plugin.llm_service.meta_completion.assert_not_called()
 
     def test_meta_disabled_skips_to_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN metaEnabled=False WHEN unknown command THEN still uses _ask_impl."""
+        """GIVEN metaEnabled=False WHEN unknown command THEN straight to ask."""
         plugin.registryValue = mocker.Mock(
             side_effect=make_registry_side_effect({"metaEnabled": False})
         )
@@ -1012,12 +1015,17 @@ class TestInvalidCommandMetaFallback:
     def test_meta_handled_does_not_call_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN routed THEN meta is not consulted."""
+        """GIVEN unknown command WHEN meta handles it THEN ask NOT called."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
+        plugin.llm_service.meta_completion.return_value = MetaResult(
+            content="Instruction set to haiku.",
+            is_meta=True,
+            model="gpt-4",
+        )
         plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
@@ -1033,8 +1041,8 @@ class TestInvalidCommandMetaFallback:
 
         plugin.invalidCommand(mock_irc, msg, ["always", "respond", "in", "haiku"])
 
-        plugin._ask_impl.assert_called_once()
-        plugin.llm_service.meta_completion.assert_not_called()
+        plugin._ask_impl.assert_not_called()
+        mock_irc.reply.assert_called()
 
 
 # =========================================================================

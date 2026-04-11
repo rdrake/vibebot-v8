@@ -1066,12 +1066,8 @@ class TestInvalidCommand:
     def test_invalid_command_delegates_to_ask(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN valid tokens and capability WHEN invalidCommand THEN delegates to _ask_impl.
-
-        The unified chat path no longer probes meta first; invalidCommand
-        goes straight through the shared ask-style facade without a second
-        dispatch step.
-        """
+        """GIVEN valid tokens and NOT_META WHEN invalidCommand THEN delegates to _ask_impl."""
+        from llm.service import MetaResult
 
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
@@ -1084,11 +1080,13 @@ class TestInvalidCommand:
                 account=None,
             )
         )
+        plugin.llm_service.meta_completion.return_value = MetaResult(
+            content="NOT_META", is_meta=False
+        )
         plugin._ask_impl = mocker.MagicMock()
         plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
 
         plugin._ask_impl.assert_called_once()
-        plugin.llm_service.meta_completion.assert_not_called()
         plugin._run_preflight.assert_called_once()
 
 

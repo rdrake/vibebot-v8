@@ -2073,6 +2073,7 @@ Rules:
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
+        draw_fn: Callable[[str], str] | None = None,
     ) -> MetaResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
@@ -2157,6 +2158,7 @@ Rules:
                 list_reminders_fn=list_reminders_fn,
                 set_reminder_fn=set_reminder_fn,
                 delete_reminder_fn=delete_reminder_fn,
+                draw_fn=draw_fn,
             )
 
             profile_tools = get_tools_for_profile(route_profile)
