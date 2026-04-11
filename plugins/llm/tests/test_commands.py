@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
-from llm.service import CompletionResult, ImageResult, ReminderParseResult
+from llm.service import CompletionResult, ImageResult, MetaResult, ReminderParseResult
 
 from .conftest import make_registry_side_effect
 
@@ -84,6 +84,9 @@ def plugin_env(mocker: MockerFixture):
         prompt: str,
         *,
         request_context,
+        db=None,
+        context=None,
+        bot_nick=None,
         images=None,
         history=None,
         channel_history=None,
@@ -91,6 +94,14 @@ def plugin_env(mocker: MockerFixture):
         msg=None,
         system_prompt=None,
         memories=None,
+        search_fn=None,
+        fetch_fn=None,
+        code_fn=None,
+        draw_fn=None,
+        cleanup_fn=None,
+        list_reminders_fn=None,
+        set_reminder_fn=None,
+        delete_reminder_fn=None,
     ):
         return plugin.llm_service.completion(
             prompt,
@@ -125,7 +136,7 @@ class TestAskCommand:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = CompletionResult(
+        plugin.llm_service.assistant_request.return_value = MetaResult(
             content="Hello from unified assistant",
             grounding_used=False,
             prompt_tokens=10,

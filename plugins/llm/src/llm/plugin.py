@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import json
 import logging
 import mimetypes
 import random
@@ -44,6 +45,8 @@ from .tracing import TraceFilter, generate_request_id, request_id
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
+
+    from .meta import ToolResult
 
 _ = PluginInternationalization("LLM")
 
@@ -1240,6 +1243,28 @@ class LLM(callbacks.Plugin):
         )
         return result.content
 
+    def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
+        """Generate code and save to HTTP for the generate_code tool."""
+        from .meta import ToolResult
+
+        try:
+            result = self.llm_service.completion(
+                prompt,
+                command="code",
+                system_prompt=self.registryValue("codeSystemPrompt", channel),
+            )
+            if result.error:
+                return ToolResult(content=json.dumps({"error": result.error}))
+            url = self.llm_service.save_code_to_http(result.content)
+            return ToolResult(
+                content=json.dumps({"url": url or "", "code": result.content}),
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                cost=result.cost,
+            )
+        except Exception as e:
+            return ToolResult(content=json.dumps({"error": str(e)}))
+
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Return account name if the user is logged in, else fall back to nick.
 
@@ -1713,7 +1738,7 @@ class LLM(callbacks.Plugin):
         command: str,
         text: str,
         response: str,
-        result: CompletionResult | ImageResult,
+        result: CompletionResult | ImageResult | MetaResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
     ) -> None:
@@ -1852,6 +1877,9 @@ class LLM(callbacks.Plugin):
                 result = self.llm_service.assistant_request(
                     request_text,
                     request_context=request_context,
+                    db=self.db,
+                    context=self.context,
+                    bot_nick=irc.nick,
                     images=images,
                     history=history,
                     channel_history=channel_history,
@@ -1859,6 +1887,14 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=memories,
                     system_prompt=effective_prompt,
+                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                    code_fn=lambda p: self._code_for_assistant(p, channel),
+                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
+                    set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, pf.nick, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_meta(pf.nick, r),
                 )
 
                 # Format response with grounding icon if search was used

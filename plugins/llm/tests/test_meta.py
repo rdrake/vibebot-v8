@@ -1369,6 +1369,96 @@ class TestReminderMetaHelpers:
         assert "not found" in result.lower()
 
 
+class TestCodeForAssistant:
+    """Tests for _code_for_assistant helper used by meta generate_code tool."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
+        import threading
+
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect({"codeSystemPrompt": "You are a coder."})
+        )
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        return plugin
+
+    def test_code_for_assistant_returns_url(self, plugin) -> None:
+        """_code_for_assistant saves code to HTTP and returns URL."""
+        from llm.service import CompletionResult
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="print('hello')",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = "https://example.com/code/abc123"
+
+        result = plugin._code_for_assistant("write hello world", "#test")
+
+        import json
+
+        data = json.loads(result.content)
+        assert data["url"] == "https://example.com/code/abc123"
+        plugin.llm_service.save_code_to_http.assert_called_once_with("print('hello')")
+
+    def test_code_for_assistant_includes_code_in_result(self, plugin) -> None:
+        """_code_for_assistant includes code content for context."""
+        from llm.service import CompletionResult
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="def foo(): pass",
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+        plugin.llm_service.save_code_to_http.return_value = "https://example.com/code/xyz"
+
+        result = plugin._code_for_assistant("write a function", "#test")
+
+        import json
+
+        data = json.loads(result.content)
+        assert data["code"] == "def foo(): pass"
+        assert result.prompt_tokens == 10
+        assert result.completion_tokens == 5
+        assert result.cost == 0.001
+
+    def test_code_for_assistant_handles_error(self, plugin) -> None:
+        """_code_for_assistant returns error ToolResult on failure."""
+        plugin.llm_service.completion.side_effect = RuntimeError("API down")
+
+        result = plugin._code_for_assistant("write something", "#test")
+
+        import json
+
+        data = json.loads(result.content)
+        assert "error" in data
+        assert "API down" in data["error"]
+
+    def test_code_for_assistant_handles_completion_error(self, plugin) -> None:
+        """_code_for_assistant returns error ToolResult when completion has error."""
+        from llm.service import CompletionResult
+
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="",
+            error="Content blocked",
+        )
+
+        result = plugin._code_for_assistant("bad prompt", "#test")
+
+        import json
+
+        data = json.loads(result.content)
+        assert data["error"] == "Content blocked"
+
+
 class TestInvalidCommandMetaFallback:
     """Tests for invalidCommand routing through meta then to ask."""
 
