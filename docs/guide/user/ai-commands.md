@@ -62,7 +62,7 @@ Use `@instruct` to set persistent instructions that shape how `@ask` responds to
 
 ## code
 
-Generate code with syntax highlighting, delivered as an HTTP link.
+Generate code with syntax highlighting, delivered as an HTTP link. The bot can search the web for current documentation and patterns before generating code.
 
 **Usage:** `@code <request>`
 
@@ -71,7 +71,7 @@ Generate code with syntax highlighting, delivered as an HTTP link.
 ```
 @code Python function to calculate fibonacci numbers
 @code JavaScript async fetch with error handling
-@code Rust struct for a binary tree with insert and search
+@code FastAPI endpoint using the latest middleware patterns
 ```
 
 ### Iterating on code

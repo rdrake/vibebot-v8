@@ -23,6 +23,7 @@ Each command has its own API key setting. Keys are stored as private values -- t
 | `askApiKey` | API key for the `@ask` command |
 | `codeApiKey` | API key for the `@code` command |
 | `drawApiKey` | API key for the `@draw` command |
+| `searchApiKey` | API key for web search and URL fetching. Falls back to `askApiKey` if empty |
 | `memoryApiKey` | API key for memory extraction. Falls back to `askApiKey` if empty |
 | `spontaneousApiKey` | API key for spontaneous participation. Falls back to `askApiKey` if empty |
 
@@ -45,6 +46,7 @@ Each command uses a separate model setting. Models follow [LiteLLM's provider/mo
 | `drawModel` | `vertex_ai/imagen-4.0-generate-001` | Model for `@draw` |
 | `memoryExtractionModel` | `gemini/gemini-2.0-flash-lite` | Model for memory extraction |
 | `memoryCleanupModel` | `gemini/gemini-3.1-flash-lite-preview` | Model for memory cleanup |
+| `searchModel` | (empty, falls back to `askModel`) | Model for web search and URL fetching |
 | `spontaneousModel` | `gemini/gemini-2.0-flash-lite` | Model for spontaneous replies |
 
 Model names are validated against LiteLLM's known providers. If you set an unrecognized model, the bot will reject it and suggest alternatives.
