@@ -1815,6 +1815,9 @@ class LLMService:
         prompt: str,
         *,
         request_context: AssistantRequestContext,
+        db: LLMDatabase,
+        context: ConversationContext,
+        bot_nick: str,
         images: list[str] | None = None,
         history: list[dict[str, str]] | None = None,
         channel_history: list[dict[str, str]] | None = None,
@@ -1822,13 +1825,29 @@ class LLMService:
         msg: IrcMsg | None = None,
         system_prompt: str | None = None,
         memories: list[str] | None = None,
-    ) -> CompletionResult:
-        """Shared assistant facade for ask-like chat routes.
+        cleanup_fn: Callable[[str], str] | None = None,
+        list_reminders_fn: Callable[[], list] | None = None,
+        set_reminder_fn: Callable[[str], str] | None = None,
+        delete_reminder_fn: Callable[[str], str] | None = None,
+        draw_fn: Callable[[str], str] | None = None,
+        search_fn: Callable[..., Any] | None = None,
+        fetch_fn: Callable[..., Any] | None = None,
+        code_fn: Callable[..., Any] | None = None,
+    ) -> MetaResult:
+        """Unified assistant facade that dispatches to meta_completion.
 
-        This initial milestone keeps the existing grounded ``completion()``
-        path as the implementation for ``chat`` requests until grounded leaf
-        tools are available to the planner path.
+        Selects the per-profile system prompt (chat, code, draw) and
+        delegates to the planner loop so that all assistant routes share
+        a single entry point with full tool access.
         """
+        from .meta import CHAT_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, DRAW_SYSTEM_PROMPT
+
+        profile_prompts = {
+            "chat": CHAT_SYSTEM_PROMPT,
+            "code": CODE_SYSTEM_PROMPT,
+            "draw": DRAW_SYSTEM_PROMPT,
+        }
+
         self.log.info(
             "assistant_request route=%s profile=%s channel=%s nick=%s",
             request_context.entry_route,
@@ -1837,27 +1856,30 @@ class LLMService:
             request_context.nick,
         )
 
-        if request_context.profile != "chat":
-            error_content = (
-                _("Error: Unsupported assistant profile for assistant_request: %s")
-                % request_context.profile
-            )
-            return CompletionResult(
-                content=error_content,
-                grounding_used=False,
-                error=error_content,
-            )
+        profile = request_context.profile
+        if system_prompt is None:
+            system_prompt = profile_prompts.get(profile, CHAT_SYSTEM_PROMPT)
 
-        return self.completion(
+        return self.meta_completion(
             prompt,
-            command="ask",
-            images=images,
-            history=history,
-            channel_history=channel_history,
-            irc=irc,
-            msg=msg,
+            nick=request_context.nick,
+            channel=request_context.channel or "",
+            db=db,
+            context=context,
+            bot_nick=bot_nick,
+            route_profile=profile,
+            capabilities=request_context.capabilities,
+            account=request_context.account,
+            is_owner=request_context.is_owner,
             system_prompt=system_prompt,
-            memories=memories,
+            cleanup_fn=cleanup_fn,
+            list_reminders_fn=list_reminders_fn,
+            set_reminder_fn=set_reminder_fn,
+            delete_reminder_fn=delete_reminder_fn,
+            draw_fn=draw_fn,
+            search_fn=search_fn,
+            fetch_fn=fetch_fn,
+            code_fn=code_fn,
         )
 
     def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
