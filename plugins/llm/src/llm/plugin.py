@@ -1067,7 +1067,9 @@ class LLM(callbacks.Plugin):
             if result.is_meta:
                 # Meta handled it — relay the response
                 if result.content:
-                    irc.reply(result.content, prefixNick=False)
+                    # Collapse newlines for IRC (single-line protocol)
+                    reply = " | ".join(line for line in result.content.splitlines() if line.strip())
+                    irc.reply(reply, prefixNick=False)
                 self.db.log_usage(
                     preflight.nick,
                     preflight.channel,
@@ -2135,7 +2137,9 @@ class LLM(callbacks.Plugin):
                 prefixNick=False,
             )
         elif result.content:
-            irc.reply(result.content, prefixNick=False)
+            # Collapse newlines for IRC (single-line protocol)
+            reply = " | ".join(line for line in result.content.splitlines() if line.strip())
+            irc.reply(reply, prefixNick=False)
 
         # Log usage as "meta" command type
         self.db.log_usage(
