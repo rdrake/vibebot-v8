@@ -242,6 +242,7 @@ class ReminderParseResult(NamedTuple):
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import Any
 
     from supybot.callbacks import Irc
@@ -1998,6 +1999,10 @@ Rules:
         bot_nick: str,
         api_key: str | None = None,
         model_override: str | None = None,
+        cleanup_fn: Callable[[], str] | None = None,
+        list_reminders_fn: Callable[[], list] | None = None,
+        set_reminder_fn: Callable[[str], str] | None = None,
+        delete_reminder_fn: Callable[[str], str] | None = None,
     ) -> MetaResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
@@ -2016,6 +2021,10 @@ Rules:
             bot_nick: Bot's IRC nick for system prompt personalization
             api_key: Optional API key override
             model_override: Optional model override
+            cleanup_fn: Optional callable that runs memory cleanup
+            list_reminders_fn: Optional callable that lists user reminders
+            set_reminder_fn: Optional callable that sets a reminder
+            delete_reminder_fn: Optional callable that deletes a reminder
 
         Returns:
             MetaResult with the final text, is_meta flag, and usage stats
@@ -2060,7 +2069,16 @@ Rules:
             # tools= kwarg passed explicitly below.
             optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
 
-            executor = MetaToolExecutor(db=db, context=context, nick=nick, channel=channel)
+            executor = MetaToolExecutor(
+                db=db,
+                context=context,
+                nick=nick,
+                channel=channel,
+                cleanup_fn=cleanup_fn,
+                list_reminders_fn=list_reminders_fn,
+                set_reminder_fn=set_reminder_fn,
+                delete_reminder_fn=delete_reminder_fn,
+            )
 
             for _step in range(max_steps):
                 self.log.info(

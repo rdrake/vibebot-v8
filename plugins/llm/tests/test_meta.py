@@ -22,7 +22,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN META_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(META_TOOLS) == 9
+        assert len(META_TOOLS) == 15
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -61,8 +61,52 @@ class TestMetaToolExecutor:
         return ctx
 
     @pytest.fixture
-    def executor(self, mock_db: MagicMock, mock_context: MagicMock) -> MetaToolExecutor:
-        return MetaToolExecutor(db=mock_db, context=mock_context, nick="testuser", channel="#test")
+    def mock_cleanup_fn(self, mocker: MockerFixture) -> MagicMock:
+        fn = mocker.MagicMock()
+        fn.return_value = "Before: 8 | dropped: 2, merged: 4 \u2192 2 | after: 4"
+        return fn
+
+    @pytest.fixture
+    def mock_list_reminders_fn(self, mocker: MockerFixture) -> MagicMock:
+        fn = mocker.MagicMock()
+        fn.return_value = [
+            ("llm_remind_abc123", ("testuser", "#test", "check build")),
+            ("llm_remind_def456", ("testuser", "#test", "deploy app")),
+        ]
+        return fn
+
+    @pytest.fixture
+    def mock_set_reminder_fn(self, mocker: MockerFixture) -> MagicMock:
+        fn = mocker.MagicMock()
+        fn.return_value = "I'll remind you in 1 hour"
+        return fn
+
+    @pytest.fixture
+    def mock_delete_reminder_fn(self, mocker: MockerFixture) -> MagicMock:
+        fn = mocker.MagicMock()
+        fn.return_value = "Deleted reminder abc123."
+        return fn
+
+    @pytest.fixture
+    def executor(
+        self,
+        mock_db: MagicMock,
+        mock_context: MagicMock,
+        mock_cleanup_fn: MagicMock,
+        mock_list_reminders_fn: MagicMock,
+        mock_set_reminder_fn: MagicMock,
+        mock_delete_reminder_fn: MagicMock,
+    ) -> MetaToolExecutor:
+        return MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            cleanup_fn=mock_cleanup_fn,
+            list_reminders_fn=mock_list_reminders_fn,
+            set_reminder_fn=mock_set_reminder_fn,
+            delete_reminder_fn=mock_delete_reminder_fn,
+        )
 
     def test_get_instruction(self, executor: MetaToolExecutor) -> None:
         """GIVEN get_instruction tool WHEN called THEN returns current instruction."""
@@ -136,6 +180,94 @@ class TestMetaToolExecutor:
         result = executor.execute("list_memories", {})
         assert "error" in result.lower()
 
+    def test_get_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+        """GIVEN get_usage tool WHEN called THEN returns user's usage summary."""
+        from llm.persistence import UsageSummary
+
+        mock_db.get_usage_summary_for_nick.return_value = UsageSummary(
+            total_requests=47,
+            total_prompt_tokens=12000,
+            total_completion_tokens=3000,
+            total_cost=0.12,
+        )
+        result = executor.execute("get_usage", {})
+        assert "47" in result
+        assert "0.12" in result
+        mock_db.get_usage_summary_for_nick.assert_called_once()
+
+    def test_get_channel_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+        """GIVEN get_channel_usage tool WHEN called THEN returns channel summary."""
+        from llm.persistence import UsageSummary
+
+        mock_db.get_usage_summary_for_channel.return_value = UsageSummary(
+            total_requests=200,
+            total_prompt_tokens=50000,
+            total_completion_tokens=10000,
+            total_cost=0.85,
+        )
+        result = executor.execute("get_channel_usage", {})
+        assert "200" in result
+        assert "0.85" in result
+        mock_db.get_usage_summary_for_channel.assert_called_once()
+
+    def test_cleanup_memories(self, executor: MetaToolExecutor, mock_cleanup_fn: MagicMock) -> None:
+        """GIVEN cleanup_memories tool WHEN called THEN runs cleanup callable."""
+        result = executor.execute("cleanup_memories", {})
+        mock_cleanup_fn.assert_called_once()
+        assert "Before: 8" in result
+
+    def test_cleanup_memories_not_available(
+        self, mock_db: MagicMock, mock_context: MagicMock
+    ) -> None:
+        """GIVEN no cleanup_fn WHEN cleanup_memories called THEN returns error."""
+        executor = MetaToolExecutor(
+            db=mock_db, context=mock_context, nick="testuser", channel="#test"
+        )
+        result = executor.execute("cleanup_memories", {})
+        assert "not available" in result.lower() or "error" in result.lower()
+
+    def test_list_reminders(
+        self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
+    ) -> None:
+        """GIVEN list_reminders tool WHEN called THEN returns formatted reminders."""
+        result = executor.execute("list_reminders", {})
+        mock_list_reminders_fn.assert_called_once()
+        assert "check build" in result
+        assert "deploy app" in result
+        assert "abc123" in result
+
+    def test_list_reminders_empty(
+        self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
+    ) -> None:
+        """GIVEN no reminders WHEN list_reminders THEN returns empty message."""
+        mock_list_reminders_fn.return_value = []
+        result = executor.execute("list_reminders", {})
+        assert "no" in result.lower() or "[]" in result
+
+    def test_set_reminder(
+        self, executor: MetaToolExecutor, mock_set_reminder_fn: MagicMock
+    ) -> None:
+        """GIVEN set_reminder tool WHEN called THEN schedules via callable."""
+        result = executor.execute("set_reminder", {"text": "check build in 1 hour"})
+        mock_set_reminder_fn.assert_called_once_with("check build in 1 hour")
+        assert "remind" in result.lower() or "hour" in result.lower()
+
+    def test_delete_reminder(
+        self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
+    ) -> None:
+        """GIVEN delete_reminder tool WHEN called THEN deletes via callable."""
+        result = executor.execute("delete_reminder", {"id": "abc123"})
+        mock_delete_reminder_fn.assert_called_once_with("abc123")
+        assert "delete" in result.lower()
+
+    def test_delete_reminder_not_found(
+        self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
+    ) -> None:
+        """GIVEN nonexistent reminder WHEN delete_reminder THEN returns error."""
+        mock_delete_reminder_fn.return_value = "Reminder xyz not found."
+        result = executor.execute("delete_reminder", {"id": "xyz"})
+        assert "not found" in result.lower()
+
 
 # =========================================================================
 # meta_completion() service-level tests
@@ -154,7 +286,7 @@ class TestMetaCompletion:
         """GIVEN LLM returns text WHEN no tool calls THEN returns text."""
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done — instruction set."
+        mock_choice.message.content = "Done \u2014 instruction set."
         mock_choice.message.tool_calls = None
         mock_response.choices = [mock_choice]
 
@@ -176,7 +308,7 @@ class TestMetaCompletion:
             bot_nick="VibeBot",
         )
 
-        assert result.content == "Done — instruction set."
+        assert result.content == "Done \u2014 instruction set."
         assert result.is_meta is True
         assert result.error is None
 
@@ -246,7 +378,7 @@ class TestMetaCompletion:
 
         second_response = mocker.MagicMock()
         second_choice = mocker.MagicMock()
-        second_choice.message.content = "Done — I'll respond in haiku."
+        second_choice.message.content = "Done \u2014 I'll respond in haiku."
         second_choice.message.tool_calls = None
         second_response.choices = [second_choice]
 
@@ -268,7 +400,7 @@ class TestMetaCompletion:
             bot_nick="VibeBot",
         )
 
-        assert result.content == "Done — I'll respond in haiku."
+        assert result.content == "Done \u2014 I'll respond in haiku."
         assert result.is_meta is True
         db.save_instruction.assert_called_once_with("testuser", "respond in haiku")
         assert mock_completion.call_count == 2
@@ -427,7 +559,7 @@ class TestMetaCommand:
         msg.args = ["#test", "@meta set my instruction"]
 
         plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="Done — instruction set.",
+            content="Done \u2014 instruction set.",
             is_meta=True,
         )
         plugin._run_preflight = mocker.MagicMock(
@@ -514,6 +646,166 @@ class TestMetaCommand:
         # Fourth positional arg is the command name
         call_args = plugin._run_preflight.call_args[0]
         assert call_args[3] == "ask"
+
+
+class TestReminderMetaHelpers:
+    """Tests for plugin reminder helper methods used by meta."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
+        import threading
+
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect({"metaEnabled": True})
+        )
+        plugin.llm_service = mocker.MagicMock()
+        plugin.llm_service.sanitize_output.side_effect = lambda s: s
+        plugin.db = mocker.MagicMock()
+        plugin._reminders = {}
+        plugin._reminders_lock = threading.Lock()
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        return plugin
+
+    def test_remind_set_for_meta_success(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN valid reminder text WHEN _remind_set_for_meta THEN returns confirmation."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=3600,
+            message="check the build",
+            confirmation="I'll remind you in 1 hour",
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "check the build in 1 hour")
+
+        assert "remind" in result.lower() or "hour" in result.lower()
+        assert plugin.db.save_reminder.called
+
+    def test_remind_set_for_meta_with_note(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN reminder with note WHEN _remind_set_for_meta THEN includes note."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=3600,
+            message="deploy",
+            confirmation="I'll remind you in 1 hour",
+            note="assuming Eastern time",
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "deploy in 1 hour")
+
+        assert "Eastern" in result
+
+    def test_remind_set_for_meta_parse_failure(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN unparseable reminder WHEN _remind_set_for_meta THEN returns error."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=None,
+        )
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "maybe sometime")
+
+        assert "could not" in result.lower()
+
+    def test_remind_set_for_meta_too_short(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN reminder < 10 seconds WHEN _remind_set_for_meta THEN returns error."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=5,
+            message="now",
+            confirmation="OK",
+        )
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me now")
+
+        assert "10 second" in result.lower() or "at least" in result.lower()
+
+    def test_remind_set_for_meta_too_long(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN reminder > 7 days WHEN _remind_set_for_meta THEN returns error."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=700000,
+            message="later",
+            confirmation="OK",
+        )
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me in 2 weeks")
+
+        assert "7 day" in result.lower()
+
+    def test_remind_set_for_meta_clarify(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN clarify action WHEN _remind_set_for_meta THEN returns clarification."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="clarify",
+            confirmation="When exactly should I remind you?",
+        )
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me")
+
+        assert "when" in result.lower()
+
+    def test_remind_delete_for_meta_success(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN valid reminder ID WHEN _remind_delete_for_meta THEN deletes."""
+        event_name = "llm_remind_abc123def456"
+        plugin._reminders = {event_name: ("testuser", "#test", "check build")}
+        mocker.patch("llm.plugin.schedule.removeEvent")
+
+        result = plugin._remind_delete_for_meta("testuser", "abc123def456")
+
+        assert "delete" in result.lower() or "cancel" in result.lower()
+        assert event_name not in plugin._reminders
+
+    def test_remind_delete_for_meta_not_found(self, plugin) -> None:
+        """GIVEN unknown reminder ID WHEN _remind_delete_for_meta THEN error."""
+        plugin._reminders = {}
+
+        result = plugin._remind_delete_for_meta("testuser", "nonexistent")
+
+        assert "not found" in result.lower()
 
 
 class TestInvalidCommandMetaFallback:
@@ -653,7 +945,7 @@ class TestMetaIntegration:
 
         second_response = mocker.MagicMock()
         second_choice = mocker.MagicMock()
-        second_choice.message.content = "Done — I'll respond in haiku."
+        second_choice.message.content = "Done \u2014 I'll respond in haiku."
         second_choice.message.tool_calls = None
         second_response.choices = [second_choice]
 
@@ -776,6 +1068,163 @@ class TestMetaIntegration:
         assert summary.total_requests == 1
 
         db.close()
+
+    def test_get_usage_via_meta(self, mocker: MockerFixture) -> None:
+        """GIVEN user asks about usage WHEN meta handles it THEN returns stats."""
+        from llm.persistence import LLMDatabase
+
+        db = LLMDatabase(":memory:")
+        db.log_usage("testuser", "#test", "ask", "gpt-4", 100, 50, 0.01)
+        db.log_usage("testuser", "#test", "ask", "gpt-4", 200, 100, 0.02)
+
+        svc, _plugin = self._make_service(mocker)
+
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_usage"
+        tool_call.function.name = "get_usage"
+        tool_call.function.arguments = "{}"
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "You've made 2 requests costing $0.03."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        from llm.context import ContextConfig, ConversationContext
+
+        result = svc.meta_completion(
+            prompt="how much have I used?",
+            nick="testuser",
+            channel="#test",
+            db=db,
+            context=ConversationContext(
+                ContextConfig(
+                    max_messages=20,
+                    timeout_minutes=5,
+                    channel_max_messages=10,
+                )
+            ),
+            bot_nick="VibeBot",
+        )
+
+        assert result.is_meta is True
+        assert "2" in result.content
+        db.close()
+
+    def test_cleanup_via_meta(self, mocker: MockerFixture) -> None:
+        """GIVEN cleanup_fn callable WHEN meta calls it THEN cleanup runs."""
+        svc, _plugin = self._make_service(mocker)
+
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_cleanup"
+        tool_call.function.name = "cleanup_memories"
+        tool_call.function.arguments = "{}"
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Cleaned up your memories."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        from llm.context import ContextConfig, ConversationContext
+
+        cleanup_fn = mocker.MagicMock(return_value="Before: 5 | dropped: 1 | after: 4")
+
+        result = svc.meta_completion(
+            prompt="clean up my memories",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=ConversationContext(
+                ContextConfig(
+                    max_messages=20,
+                    timeout_minutes=5,
+                    channel_max_messages=10,
+                )
+            ),
+            bot_nick="VibeBot",
+            cleanup_fn=cleanup_fn,
+        )
+
+        assert result.is_meta is True
+        cleanup_fn.assert_called_once()
+
+    def test_set_reminder_via_meta(self, mocker: MockerFixture) -> None:
+        """GIVEN set_reminder callable WHEN meta calls it THEN reminder set."""
+        svc, _plugin = self._make_service(mocker)
+
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_remind"
+        tool_call.function.name = "set_reminder"
+        tool_call.function.arguments = '{"text": "deploy in 2 hours"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Reminder set: deploy (in 2 hours)."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        from llm.context import ContextConfig, ConversationContext
+
+        set_reminder_fn = mocker.MagicMock(return_value="I'll remind you in 2 hours")
+
+        result = svc.meta_completion(
+            prompt="remind me to deploy in 2 hours",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=ConversationContext(
+                ContextConfig(
+                    max_messages=20,
+                    timeout_minutes=5,
+                    channel_max_messages=10,
+                )
+            ),
+            bot_nick="VibeBot",
+            set_reminder_fn=set_reminder_fn,
+        )
+
+        assert result.is_meta is True
+        set_reminder_fn.assert_called_once_with("deploy in 2 hours")
 
     @staticmethod
     def _make_service(mocker: MockerFixture) -> tuple:

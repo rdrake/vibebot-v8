@@ -8,9 +8,12 @@ context methods. All tools are scoped to a single user's nick.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .context import ConversationContext
     from .persistence import LLMDatabase
 
@@ -26,7 +29,8 @@ META_SYSTEM_PROMPT = (
     "(clear_memories, clear_instruction) unless the user explicitly asked "
     "you to in their current message.\n"
     "- If the user's request is not about managing settings, instructions, "
-    "memories, or conversation context, respond with exactly: NOT_META\n"
+    "memories, conversation context, usage statistics, memory cleanup, "
+    "or reminders, respond with exactly: NOT_META\n"
     "- Do not explain NOT_META to the user. Just return it."
 )
 
@@ -172,6 +176,101 @@ META_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_usage",
+            "description": (
+                "Get the user's API usage statistics for the current month "
+                "(request count, tokens, cost)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_channel_usage",
+            "description": (
+                "Get API usage statistics for the current channel this month "
+                "(request count, tokens, cost)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cleanup_memories",
+            "description": (
+                "Run automatic memory cleanup — deduplicates, merges related "
+                "facts, and removes low-quality entries. Requires at least 2 "
+                "stored memories."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "List the user's pending reminders with IDs and messages.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": (
+                "Set a reminder using natural language time. "
+                "Examples: 'check build in 30 minutes', 'deploy tomorrow at 3pm'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": ("Reminder text with time, e.g. 'check build in 1 hour'."),
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_reminder",
+            "description": "Delete a reminder by its short hex ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": ("The reminder's hex ID (e.g. 'abc123def456')."),
+                    },
+                },
+                "required": ["id"],
+            },
+        },
+    },
 ]
 
 
@@ -189,11 +288,19 @@ class MetaToolExecutor:
         context: ConversationContext,
         nick: str,
         channel: str,
+        cleanup_fn: Callable[[], str] | None = None,
+        list_reminders_fn: Callable[[], list] | None = None,
+        set_reminder_fn: Callable[[str], str] | None = None,
+        delete_reminder_fn: Callable[[str], str] | None = None,
     ) -> None:
         self.db = db
         self.context = context
         self.nick = nick
         self.channel = channel
+        self._cleanup_fn = cleanup_fn
+        self._list_reminders_fn = list_reminders_fn
+        self._set_reminder_fn = set_reminder_fn
+        self._delete_reminder_fn = delete_reminder_fn
 
     def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """Execute a tool call and return a JSON string result for the LLM.
@@ -280,3 +387,74 @@ class MetaToolExecutor:
         if cleared:
             return json.dumps({"status": "ok", "message": "Conversation context cleared."})
         return json.dumps({"status": "ok", "message": "No context to clear."})
+
+    def _tool_get_usage(self, _args: dict[str, Any]) -> str:
+        since = self._month_start()
+        summary = self.db.get_usage_summary_for_nick(self.nick, since=since)
+        return json.dumps(
+            {
+                "requests": summary.total_requests,
+                "prompt_tokens": summary.total_prompt_tokens,
+                "completion_tokens": summary.total_completion_tokens,
+                "cost": round(summary.total_cost, 4),
+            }
+        )
+
+    def _tool_get_channel_usage(self, _args: dict[str, Any]) -> str:
+        since = self._month_start()
+        summary = self.db.get_usage_summary_for_channel(self.channel, since=since)
+        return json.dumps(
+            {
+                "requests": summary.total_requests,
+                "prompt_tokens": summary.total_prompt_tokens,
+                "completion_tokens": summary.total_completion_tokens,
+                "cost": round(summary.total_cost, 4),
+            }
+        )
+
+    def _tool_cleanup_memories(self, _args: dict[str, Any]) -> str:
+        if self._cleanup_fn is None:
+            return json.dumps({"error": "Memory cleanup is not available."})
+        result = self._cleanup_fn()
+        return json.dumps({"status": "ok", "message": result})
+
+    def _tool_list_reminders(self, _args: dict[str, Any]) -> str:
+        if self._list_reminders_fn is None:
+            return json.dumps({"error": "Reminders are not available."})
+        reminders = self._list_reminders_fn()
+        if not reminders:
+            return json.dumps({"reminders": [], "message": "No pending reminders."})
+        return json.dumps(
+            {
+                "reminders": [
+                    {
+                        "id": name.split("_")[-1],
+                        "message": data[2],
+                        "channel": data[1],
+                    }
+                    for name, data in reminders
+                ],
+            }
+        )
+
+    def _tool_set_reminder(self, args: dict[str, Any]) -> str:
+        if self._set_reminder_fn is None:
+            return json.dumps({"error": "Reminders are not available."})
+        text = args["text"]
+        result = self._set_reminder_fn(text)
+        return json.dumps({"status": "ok", "message": result})
+
+    def _tool_delete_reminder(self, args: dict[str, Any]) -> str:
+        if self._delete_reminder_fn is None:
+            return json.dumps({"error": "Reminders are not available."})
+        reminder_id = args["id"]
+        result = self._delete_reminder_fn(reminder_id)
+        if "not found" in result.lower():
+            return json.dumps({"error": result})
+        return json.dumps({"status": "ok", "message": result})
+
+    @staticmethod
+    def _month_start() -> float:
+        """Return Unix timestamp for midnight UTC on the 1st of this month."""
+        now = datetime.now(UTC)
+        return datetime(now.year, now.month, 1, tzinfo=UTC).timestamp()

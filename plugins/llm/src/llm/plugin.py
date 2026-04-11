@@ -188,8 +188,9 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=(
             "%meta always respond in haiku",
             "%meta what are my memories?",
-            "%meta delete any memories about cats",
-            "%meta clear my conversation context",
+            "%meta how much have I used this month?",
+            "%meta remind me to deploy in 2 hours",
+            "%meta show my reminders",
         ),
         category="utility",
     ),
@@ -1062,6 +1063,10 @@ class LLM(callbacks.Plugin):
                 db=self.db,
                 context=self.context,
                 bot_nick=irc.nick,
+                cleanup_fn=lambda: self._run_memory_cleanup(preflight.nick, preflight.channel),
+                list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
+                set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
+                delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
             )
 
             if result.is_meta:
@@ -2121,6 +2126,10 @@ class LLM(callbacks.Plugin):
             db=self.db,
             context=self.context,
             bot_nick=irc.nick,
+            cleanup_fn=lambda: self._run_memory_cleanup(preflight.nick, preflight.channel),
+            list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
+            set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
+            delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
         )
 
         if result.error:
@@ -2131,8 +2140,8 @@ class LLM(callbacks.Plugin):
             irc.reply(
                 _(
                     "I can manage your instructions, memories, "
-                    "and conversation context. Try: @meta list my "
-                    "memories"
+                    "context, usage stats, and reminders. "
+                    "Try: @meta list my memories"
                 ),
                 prefixNick=False,
             )
@@ -2419,6 +2428,67 @@ class LLM(callbacks.Plugin):
             except Exception as e:
                 self.log.error("Failed to schedule reminder: %s", e)
                 irc.error(_("Failed to set reminder."))
+
+    def _remind_set_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> str:
+        """Parse and schedule a reminder, returning a result string for meta.
+
+        Same logic as _remind_set() but returns a string instead of
+        calling irc.reply().
+        """
+        channel = self._get_channel(msg)
+
+        with self._trace_request("remind", nick, channel), self._allow_concurrent():
+            result = self.llm_service.parse_reminder(text, channel)
+
+        if result.action == "clarify":
+            return result.confirmation
+
+        if result.seconds is None:
+            return "Could not determine when to set the reminder."
+
+        if result.seconds < 10:
+            return "Reminder must be at least 10 seconds from now."
+
+        if result.seconds > 604800:  # 7 days
+            return "Reminder can't be more than 7 days out."
+
+        reminder_message = result.message or text
+        event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
+        deliver = self._make_reminder_delivery_closure(nick, channel, reminder_message, event_name)
+
+        try:
+            schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
+            with self._reminders_lock:
+                self._reminders[event_name] = (nick, channel, reminder_message)
+
+            self.db.save_reminder(
+                event_name,
+                nick,
+                channel,
+                reminder_message,
+                time.time() + result.seconds,
+            )
+
+            reply = self.llm_service.sanitize_output(result.confirmation)
+            if result.note:
+                reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
+            return reply
+        except Exception as e:
+            self.log.error("Failed to schedule reminder: %s", e)
+            return "Failed to set reminder."
+
+    def _remind_delete_for_meta(self, nick: str, reminder_id: str) -> str:
+        """Delete a reminder by ID, returning a result string for meta."""
+        target = self._find_user_reminder(nick, reminder_id)
+        if target is None:
+            return f"Reminder {reminder_id} not found."
+
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(target)
+        with self._reminders_lock:
+            self._reminders.pop(target, None)
+        self.db.delete_reminder(target)
+        return f"Deleted reminder {reminder_id}."
 
     def remind(
         self,
