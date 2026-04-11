@@ -10,8 +10,10 @@ from llm.meta import (
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
     META_SYSTEM_PROMPT,
+    META_TOOL_SPECS,
     META_TOOLS,
     MetaToolExecutor,
+    get_tools_for_profile,
 )
 from llm.plugin import LLM
 from llm.service import LLMService, MetaResult
@@ -29,7 +31,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN META_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(META_TOOLS) == 16
+        assert len(META_TOOLS) == 19
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -1445,3 +1447,59 @@ class TestProfileSystemPrompts:
     def test_meta_system_prompt_unchanged(self) -> None:
         """GIVEN META_SYSTEM_PROMPT WHEN checked THEN still contains NOT_META."""
         assert "NOT_META" in META_SYSTEM_PROMPT
+
+
+class TestToolSpecVisibility:
+    """GIVEN tool specs WHEN inspected THEN visibility and capability are correct."""
+
+    def test_search_web_visible_in_chat(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert "chat" in specs["search_web"].visible_in
+
+    def test_search_web_visible_in_code(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert "code" in specs["search_web"].visible_in
+
+    def test_search_web_not_visible_in_draw(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert "draw" not in specs["search_web"].visible_in
+
+    def test_fetch_url_visible_in_chat_and_code(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert specs["fetch_url"].visible_in == frozenset({"chat", "code"})
+
+    def test_generate_code_capability_is_llm_code(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert specs["generate_code"].capability == "llm.code"
+
+    def test_generate_code_visible_in_chat_and_code(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert specs["generate_code"].visible_in == frozenset({"chat", "code"})
+
+    def test_generate_image_only_visible_in_draw(self) -> None:
+        specs = {s.name: s for s in META_TOOL_SPECS}
+        assert specs["generate_image"].visible_in == frozenset({"draw"})
+
+    def test_profile_tools_chat_includes_search(self) -> None:
+        tools = get_tools_for_profile("chat")
+        names = {t["function"]["name"] for t in tools}
+        assert "search_web" in names
+        assert "generate_code" in names
+
+    def test_profile_tools_draw_includes_generate_image(self) -> None:
+        tools = get_tools_for_profile("draw")
+        names = {t["function"]["name"] for t in tools}
+        assert "generate_image" in names
+
+    def test_profile_tools_draw_excludes_search(self) -> None:
+        tools = get_tools_for_profile("draw")
+        names = {t["function"]["name"] for t in tools}
+        assert "search_web" not in names
+        assert "generate_code" not in names
+
+    def test_profile_tools_code_includes_search_and_code(self) -> None:
+        tools = get_tools_for_profile("code")
+        names = {t["function"]["name"] for t in tools}
+        assert "search_web" in names
+        assert "fetch_url" in names
+        assert "generate_code" in names

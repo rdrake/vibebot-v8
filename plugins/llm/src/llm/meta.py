@@ -398,6 +398,71 @@ META_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": (
+                "Search the web for current information. Use when the user asks "
+                "about recent events, current data, or anything that needs "
+                "up-to-date facts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": (
+                "Fetch and summarize the content at a URL. Use when the user "
+                "shares a link or you need to read a specific web page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to fetch.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_code",
+            "description": (
+                "Generate code based on the user's request. Returns a "
+                "syntax-highlighted link. Pass any relevant context from "
+                "prior tool calls in the prompt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "The code generation request, including any "
+                            "context from search results."
+                        ),
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
 ]
 
 
@@ -450,6 +515,17 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "generate_image": {
         "capability": "llm.draw",
         "require_account": True,
+        "visible_in": frozenset({"draw"}),
+    },
+    "search_web": {
+        "visible_in": frozenset({"chat", "code"}),
+    },
+    "fetch_url": {
+        "visible_in": frozenset({"chat", "code"}),
+    },
+    "generate_code": {
+        "capability": "llm.code",
+        "visible_in": frozenset({"chat", "code"}),
     },
 }
 
