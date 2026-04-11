@@ -195,6 +195,23 @@ class TestNickInMiddle:
         result = plugin.inFilter(irc, msg)
         assert result.args[1] == "Vibe[bot] can you, help"
 
+    def test_nick_with_trailing_question_mark(self) -> None:
+        """'Why is X, vibebot?  What's up' should be rewritten."""
+        plugin = FakePlugin()
+        irc = FakeIrc()
+        msg = _chan_msg("Why is Eric Adams now Albanian, vibebot?  What's up with that?")
+        result = plugin.inFilter(irc, msg)
+        assert result.args[1].startswith("vibebot")
+        assert "Eric Adams" in result.args[1]
+
+    def test_nick_with_trailing_exclamation(self) -> None:
+        """'help me, vibebot! I need you' should be rewritten."""
+        plugin = FakePlugin()
+        irc = FakeIrc()
+        msg = _chan_msg("help me, vibebot! I need you")
+        result = plugin.inFilter(irc, msg)
+        assert result.args[1].startswith("vibebot")
+
     def test_configured_addressing_alias_is_rewritten(self) -> None:
         """Configured address aliases should work in middle-position rewrites."""
         plugin = FakePlugin(addressing_nicks=("assistant",))

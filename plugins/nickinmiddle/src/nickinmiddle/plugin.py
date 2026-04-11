@@ -55,7 +55,7 @@ class NickInMiddle(callbacks.Plugin):
             if text[start - 1] not in _SEPARATOR_CHARS or text[end] not in _SEPARATOR_CHARS:
                 continue
 
-            candidate = match.group(0)
+            candidate = match.group(0).rstrip("?.!")
             if not any(ircutils.nickEqual(candidate, nick) for nick in addressing_nicks):
                 continue
 
