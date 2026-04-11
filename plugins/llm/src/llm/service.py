@@ -2215,9 +2215,9 @@ Rules:
             image_data = response.data[0]
 
             if hasattr(image_data, "url") and image_data.url:
-                local_url = self._download_and_save_image(image_data.url)
+                self._download_and_save_image(image_data.url)  # cache locally
                 return ImageResult(
-                    content=local_url or image_data.url,
+                    content=image_data.url,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     cost=cost,
