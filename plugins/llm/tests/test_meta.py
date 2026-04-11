@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.meta import META_TOOLS, MetaToolExecutor
+from llm.meta import (
+    CHAT_SYSTEM_PROMPT,
+    CODE_SYSTEM_PROMPT,
+    DRAW_SYSTEM_PROMPT,
+    META_SYSTEM_PROMPT,
+    META_TOOLS,
+    MetaToolExecutor,
+)
 from llm.plugin import LLM
 from llm.service import LLMService, MetaResult
 
@@ -1414,3 +1421,27 @@ class TestToolResult:
         result = ToolResult(content="immutable")
         with pytest.raises(AttributeError):
             result.content = "changed"  # type: ignore[misc]
+
+
+class TestProfileSystemPrompts:
+    """GIVEN per-profile system prompts WHEN inspected THEN they have correct content."""
+
+    def test_chat_system_prompt_no_not_meta(self) -> None:
+        """GIVEN CHAT_SYSTEM_PROMPT WHEN checked THEN does not contain NOT_META."""
+        assert "NOT_META" not in CHAT_SYSTEM_PROMPT
+
+    def test_chat_system_prompt_has_bot_nick_placeholder(self) -> None:
+        """GIVEN CHAT_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick} placeholder."""
+        assert "{bot_nick}" in CHAT_SYSTEM_PROMPT
+
+    def test_code_system_prompt_mentions_generate_code(self) -> None:
+        """GIVEN CODE_SYSTEM_PROMPT WHEN checked THEN mentions generate_code tool."""
+        assert "generate_code" in CODE_SYSTEM_PROMPT
+
+    def test_draw_system_prompt_mentions_generate_image(self) -> None:
+        """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
+        assert "generate_image" in DRAW_SYSTEM_PROMPT
+
+    def test_meta_system_prompt_unchanged(self) -> None:
+        """GIVEN META_SYSTEM_PROMPT WHEN checked THEN still contains NOT_META."""
+        assert "NOT_META" in META_SYSTEM_PROMPT
