@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
-from llm.service import CompletionResult, ImageResult, MetaResult, ReminderParseResult
+from llm.service import CompletionResult, MetaResult, ReminderParseResult
 
 from .conftest import make_registry_side_effect
 
@@ -530,42 +530,65 @@ class TestCodeCommand:
 
 
 class TestDrawCommand:
-    """Tests for the real LLM.draw method."""
+    """Tests for the real LLM.draw method (thin wrapper over assistant facade)."""
 
-    def test_draw_requires_nickserv_auth(self, plugin_env, mocker: MockerFixture):
-        """GIVEN unidentified user WHEN draw called THEN error about NickServ identification."""
+    def _make_draw_result(self, **overrides):
+        """Build a MetaResult with sensible defaults for draw tests."""
+        defaults = {
+            "content": "Here is your image: http://img.example/gen.png",
+            "grounding_used": False,
+            "prompt_tokens": 5,
+            "completion_tokens": 0,
+            "cost": 0.02,
+            "model": "dall-e-3",
+        }
+        defaults.update(overrides)
+        return MetaResult(**defaults)
+
+    def test_draw_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
+        """@draw calls assistant_request with draw profile."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
+        assert ctx.profile == "draw"
+        assert ctx.entry_route == "draw"
+
+    def test_draw_requires_account(self, plugin_env, mocker: MockerFixture):
+        """@draw still requires authenticated account."""
         plugin, mock_irc, mock_msg = plugin_env
         # nickToAccount returns None (default in plugin_env)
 
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         mock_irc.error.assert_called_once()
-        error_text = mock_irc.error.call_args[0][0]
-        assert "NickServ" in error_text
-        plugin.llm_service.image_generation.assert_not_called()
+        plugin.llm_service.assistant_request.assert_not_called()
 
-    def test_draw_replies_with_image_url(self, plugin_env, mocker: MockerFixture):
-        """GIVEN image generation succeeds WHEN draw called THEN irc.reply has image URL."""
+    def test_draw_replies_with_planner_content(self, plugin_env, mocker: MockerFixture):
+        """GIVEN planner returns image URL WHEN draw called THEN reply contains it."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+            content="Here is your image: http://img.example/gen.png",
         )
 
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
-        mock_irc.reply.assert_called_once_with("http://img.example/gen.png")
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "http://img.example/gen.png" in reply_text
 
     def test_draw_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
             prompt_tokens=10,
             completion_tokens=0,
             cost=0.04,
@@ -591,8 +614,8 @@ class TestDrawCommand:
         """GIVEN draw with zero cost/tokens WHEN draw succeeds THEN usage is still logged."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
             prompt_tokens=0,
             completion_tokens=0,
             cost=0.0,
@@ -618,13 +641,13 @@ class TestDrawCommand:
         """GIVEN draw content blocked WHEN draw completes THEN usage logged with status=content_blocked."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
             content="Error: content blocked",
+            error="Error: content blocked",
             prompt_tokens=0,
             completion_tokens=0,
             cost=0.0,
-            model="dall-e-3",
-            error="Error: content blocked",
         )
 
         plugin.draw(mock_irc, mock_msg, ["test"])
@@ -646,13 +669,13 @@ class TestDrawCommand:
         """GIVEN draw that errors (non-content) WHEN draw completes THEN usage logged with status=error."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
             content="Error: timeout exceeded",
+            error="Error: timeout exceeded",
             prompt_tokens=0,
             completion_tokens=0,
             cost=0.0,
-            model="dall-e-3",
-            error="Error: timeout exceeded",
         )
 
         plugin.draw(mock_irc, mock_msg, ["test"])
@@ -683,13 +706,8 @@ class TestDrawCommand:
         """GIVEN draw succeeds WHEN executed THEN personal and channel context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-        )
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
 
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
@@ -698,13 +716,13 @@ class TestDrawCommand:
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "a sunset"
         assert messages[1]["role"] == "assistant"
-        assert "[Generated image:" in messages[1]["content"]
 
     def test_draw_does_not_store_context_on_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw returns error WHEN executed THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
             content="Error: something went wrong",
             error="Error: something went wrong",
         )
@@ -718,13 +736,8 @@ class TestDrawCommand:
         """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-            model="dall-e-3",
-        )
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
 
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
@@ -734,6 +747,35 @@ class TestDrawCommand:
 
         messages = plugin.context.get_messages("test_account", "#test")
         assert len(messages) == 0
+
+    def test_draw_grounding_icon_in_reply(self, plugin_env, mocker: MockerFixture):
+        """GIVEN grounding_used is True WHEN draw response returned THEN reply has globe icon."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+            content="image — http://x/img.png",
+            grounding_used=True,
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["test"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("\U0001f310")
+
+    def test_draw_preserves_preflight(self, plugin_env, mocker: MockerFixture):
+        """GIVEN draw WHEN preflight blocks THEN assistant_request is not called."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(
+            plugin,
+            "_run_preflight",
+            return_value=mocker.MagicMock(blocked=True),
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["test"])
+
+        plugin.llm_service.assistant_request.assert_not_called()
+        mock_irc.reply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1513,8 +1555,10 @@ class TestAccountBasedIdentity:
     def test_draw_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=10,
             completion_tokens=0,
             cost=0.04,
@@ -1564,8 +1608,10 @@ class TestAccountBasedIdentity:
     def test_draw_stores_context_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,
@@ -1953,7 +1999,7 @@ class TestRateLimitIntegration:
 
         mock_irc.error.assert_called_once()
         assert "Rate limit" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.image_generation.assert_not_called()
+        plugin.llm_service.assistant_request.assert_not_called()
 
     def test_draw_over_threshold_logs_shadow_when_not_enforced(
         self, plugin_env, mocker: MockerFixture
@@ -1961,8 +2007,10 @@ class TestRateLimitIntegration:
         """GIVEN enforce=False and over limit WHEN draw called THEN request runs and shadow log is emitted."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,
@@ -1981,7 +2029,7 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.image_generation.assert_called_once()
+        plugin.llm_service.assistant_request.assert_called_once()
         assert any(
             "rate_limit_shadow" in c.args[0] for c in plugin.log.info.call_args_list if c.args
         )
@@ -2022,8 +2070,10 @@ class TestRateLimitIntegration:
         """GIVEN owner user over limit WHEN draw called THEN not blocked."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "owner_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,
@@ -2052,14 +2102,16 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.image_generation.assert_called_once()
+        plugin.llm_service.assistant_request.assert_called_once()
 
     def test_trusted_gets_relaxed_limits(self, plugin_env, mocker: MockerFixture):
         """GIVEN trusted user within trusted limit but over registered limit WHEN draw called THEN allowed."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "trusted_account"
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,
@@ -2089,7 +2141,7 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.image_generation.assert_called_once()
+        plugin.llm_service.assistant_request.assert_called_once()
 
     def test_ask_rate_limited_for_unregistered(self, plugin_env, mocker: MockerFixture):
         """GIVEN unregistered user over unreg limit WHEN ask called THEN blocked."""

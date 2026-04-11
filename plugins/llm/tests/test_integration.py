@@ -252,7 +252,7 @@ class TestRateLimitFullFlow:
         3. After window expires, user can draw again
         4. Unflag flow works independently of rate limiting
         """
-        from llm.service import ImageResult
+        from llm.service import MetaResult
 
         plugin, mock_irc = plugin_with_real_db
 
@@ -271,8 +271,10 @@ class TestRateLimitFullFlow:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen.png",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,
@@ -287,12 +289,12 @@ class TestRateLimitFullFlow:
 
         # Step 2: 3rd draw is rate limited
         mock_irc.reset_mock()
-        plugin.llm_service.image_generation.reset_mock()
+        plugin.llm_service.assistant_request.reset_mock()
         plugin.draw(mock_irc, mock_msg, ["one too many"])
 
         mock_irc.error.assert_called_once()
         assert "Rate limit" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.image_generation.assert_not_called()
+        plugin.llm_service.assistant_request.assert_not_called()
 
         # Verify rate_limited was logged in the real database
         conn = plugin.db._connect()
@@ -304,8 +306,9 @@ class TestRateLimitFullFlow:
         # Step 3: Simulate window expiration by clearing buckets
         plugin._rate_buckets.clear()
         mock_irc.reset_mock()
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="http://img.example/gen2.png",
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="Here is your image: http://img.example/gen2.png",
+            grounding_used=False,
             prompt_tokens=5,
             completion_tokens=0,
             cost=0.02,

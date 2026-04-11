@@ -2061,23 +2061,52 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
+        request_context = self._build_request_context(
+            irc,
+            msg,
+            pf,
+            entry_route="draw",
+            profile="draw",
+        )
+
         with self._trace_request("draw", nick, channel):
-            # Typing indicator sent by service - no "Generating..." message needed
             with self._allow_concurrent():
-                result = self.llm_service.image_generation(text, irc=irc, msg=msg)
-                self.log.info("replying to %s/%s", channel, nick)
-                sanitized_content = self.llm_service.sanitize_output(result.content)
-                irc.reply(sanitized_content)
+                result = self.llm_service.assistant_request(
+                    text,
+                    request_context=request_context,
+                    db=self.db,
+                    context=self.context,
+                    bot_nick=irc.nick,
+                    history=[],
+                    channel_history=[],
+                    irc=irc,
+                    msg=msg,
+                    memories=[],
+                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                )
+
+                response = result.content
+                if not response or not response.strip():
+                    irc.error(_("The model returned an empty response. Please try again."))
+                    return
+
+                action_text = self._extract_action(irc, response)
+                if action_text:
+                    if result.grounding_used:
+                        action_text = f"{GROUNDING_ICON} {action_text}"
+                    self.log.info("sending action to %s/%s", channel, nick)
+                    target = channel if ircutils.isChannel(channel) else nick
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    response = f"* {irc.nick} {action_text}"
+                else:
+                    display_response = (
+                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                    )
+                    self.log.info("replying to %s/%s", channel, nick)
+                    irc.reply(display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
-                nick,
-                channel,
-                "draw",
-                text,
-                f"[Generated image: {result.content}]",
-                result,
-                irc,
-                msg,
+                nick, channel, "draw", text, response, result, irc, msg
             )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
