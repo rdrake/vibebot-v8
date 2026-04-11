@@ -1822,8 +1822,7 @@ class LLM(callbacks.Plugin):
                     if result.grounding_used:
                         action_text = f"{GROUNDING_ICON} {action_text}"
                     self.log.info("sending action to %s/%s", channel, nick)
-                    target = msg.args[0]
-                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    irc.queueMsg(ircmsgs.action(channel, action_text))
                     # Store context as "* BotNick action_text" so follow-ups
                     # understand the bot emoted rather than said something
                     response = f"* {irc.nick} {action_text}"
