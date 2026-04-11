@@ -2,6 +2,22 @@
 
 Quick reference for all VibeBot commands. For detailed usage and examples, see the [User Guide](../user/getting-started.md).
 
+## Natural language
+
+Most bot features are available through natural language. Mention the bot by name in a channel or send it a PM:
+
+```
+VibeBot, what's the weather like on Mars?
+VibeBot, remind me in 2 hours to deploy
+VibeBot, what do you remember about me?
+VibeBot, how much have I used this month?
+VibeBot, set my instruction to respond in haiku
+```
+
+The bot uses tools internally to handle your request -- managing memories, setting reminders, checking usage, and more. Natural language is especially useful for combining multiple actions in a single message.
+
+Use the following commands when you want direct, predictable behavior.
+
 ## Commands at a glance
 
 | Command | Arguments | Description |
@@ -115,6 +131,7 @@ See [Reminders & Usage -- usage](../user/reminders-usage.md#usage) for full deta
 
 ## Features
 
+- **Natural language interaction** -- Mention the bot by name or send a PM to ask questions, manage memories, set reminders, and more without commands.
 - **Volatile memory** -- The bot remembers your recent conversation for follow-up questions. Context is per-user, per-channel, and expires after a period of inactivity.
 - **Non-volatile memory** -- Store facts about yourself that persist across conversations and sessions.
 - **Vision** -- Include image URLs in your `@ask` messages and the bot will describe or reason about them.

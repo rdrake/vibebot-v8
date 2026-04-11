@@ -1,5 +1,21 @@
 # AI Commands
 
+## Talking naturally
+
+You do not need commands to ask the bot questions. Mention it by name in a channel or send a PM:
+
+```
+<you>     VibeBot, what causes the northern lights?
+<VibeBot> The northern lights happen when charged particles from the sun
+          collide with gases in Earth's atmosphere...
+```
+
+Natural language also works for managing memories, reminders, instructions, and usage. See [Getting Started](getting-started.md#commands-and-natural-language) for details.
+
+Use the following commands when you want direct, predictable behavior or specific features like code generation and image creation.
+
+---
+
 ## ask
 
 Ask the AI a question. The bot remembers your recent conversation, so you can ask follow-up questions naturally.

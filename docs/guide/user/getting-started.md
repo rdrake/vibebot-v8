@@ -2,9 +2,32 @@
 
 Chat with large language models, generate code, create images, and more -- all from IRC.
 
-## Your first conversation
+## Talking to the bot
 
-All commands use the `@` prefix. Try asking a question:
+The easiest way to interact with the bot is to mention it by name in a channel or send it a private message:
+
+```
+<you>     VibeBot, what's the tallest mountain on each continent?
+<VibeBot> Everest (Asia), Aconcagua (South America), Denali (North America),
+          Kilimanjaro (Africa), Elbrus (Europe), Vinson (Antarctica),
+          Puncak Jaya (Oceania).
+```
+
+The bot understands natural language for most things -- questions, reminders, memory management, and more:
+
+```
+<you>     VibeBot, remind me in 2 hours to check the build
+<VibeBot> Reminder set: check the build (in 2 hours).
+
+<you>     VibeBot, what's my usage this month?
+<VibeBot> You've made 47 requests this month, costing $0.12.
+```
+
+You can also send a PM for the same behavior.
+
+## Using commands
+
+All commands use the `@` prefix. Commands are useful when you want predictable, direct behavior:
 
 ```
 <you>     @ask What's the tallest mountain on each continent?
@@ -49,10 +72,21 @@ Set persistent instructions to change how the bot talks to you:
 
 ```
 @instruct Explain things like I'm a senior developer, skip the basics
-@instruct You are Captain Picard. Respond in character.
 ```
 
-The bot also picks up facts from your conversations automatically -- such as your preferred language or what you're working on. View and manage them with `@memories`.
+Natural language works too:
+
+```
+<you>     VibeBot, from now on explain things like I'm a senior developer
+<VibeBot> Instruction set.
+```
+
+The bot also picks up facts from your conversations automatically -- such as your preferred language or what you're working on. View and manage them with `@memories` or just ask:
+
+```
+<you>     VibeBot, what do you remember about me?
+<VibeBot> I have 3 memories: [1] Prefers Python | [2] Works on infrastructure | ...
+```
 
 See [Memory & Instructions](memory.md) for details.
 
@@ -69,6 +103,15 @@ Commands are rate-limited to prevent misuse. Your limits depend on your account 
 Your bot operator controls who can use each command through Limnoria's capability system. If a command tells you that you lack permission, ask your channel operator to grant you access.
 
 See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html) for details.
+
+## Commands and natural language
+
+You can interact with the bot two ways:
+
+- **Natural language** -- Mention the bot or PM it. Good for conversational requests and combining multiple actions. ("VibeBot, delete memory 3 and remind me tomorrow to add it back")
+- **Commands** -- Use `@` prefix commands for direct, predictable behavior. Good for specific operations. (`@memories delete 3`)
+
+Both approaches have access to the same capabilities. Use whichever feels more natural for the task.
 
 ## All commands
 

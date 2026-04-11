@@ -2,6 +2,9 @@
 
 VibeBot has two kinds of memory: **volatile context** (short-term conversation history) and **non-volatile memory** (long-term stored facts). You also have **custom instructions** to personalize how the bot responds.
 
+!!! tip "Natural language"
+    You can manage all of these by mentioning the bot or sending a PM. For example: "VibeBot, what do you remember about me?" or "VibeBot, forget our conversation." Use the commands when you want direct control.
+
 ## Volatile context
 
 Every time you use `@ask` or `@code`, the bot remembers the conversation. This lets you ask follow-up questions without repeating yourself.
@@ -37,6 +40,16 @@ This lists all stored facts with their IDs:
 
 ### Managing memories
 
+You can manage memories with commands or natural language:
+
+```
+VibeBot, delete the memory about Python
+VibeBot, update memory 2 to say cloud infrastructure
+VibeBot, clean up my memories
+```
+
+Or use commands directly:
+
 **Delete one or more memories:**
 
 ```
@@ -67,6 +80,13 @@ This runs an AI pass over your memories to merge duplicates and remove outdated 
 ## Custom instructions
 
 Set persistent instructions that change how `@ask` responds to you. Your instruction is prepended to the system prompt for every `@ask` call.
+
+You can set instructions with natural language or with the command:
+
+```
+VibeBot, from now on respond in French
+VibeBot, what's my current instruction?
+```
 
 **Set an instruction:**
 

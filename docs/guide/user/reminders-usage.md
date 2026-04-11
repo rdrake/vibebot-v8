@@ -1,5 +1,8 @@
 # Reminders & Usage
 
+!!! tip "Natural language"
+    You can manage reminders and check usage by mentioning the bot or sending a PM. For example: "VibeBot, remind me in 2 hours to check the build" or "VibeBot, how much have I used this month?" Use the commands when you want direct control.
+
 ## remind
 
 Set reminders using natural language. When the time comes, the bot delivers the reminder via PM.
@@ -7,6 +10,21 @@ Set reminders using natural language. When the time comes, the bot delivers the 
 **Usage:** `@remind <natural language time and message>`
 
 ### Examples
+
+Via natural language:
+
+```
+<you>     VibeBot, remind me in 30 minutes to check the build
+<VibeBot> Reminder set: check the build (in 30 minutes).
+
+<you>     VibeBot, show my reminders
+<VibeBot> You have 2 reminders: 1) abc123: check the build (in 28m) ...
+
+<you>     VibeBot, cancel the build reminder
+<VibeBot> Deleted reminder abc123.
+```
+
+Or with commands:
 
 ```
 @remind in 30 minutes check the build
@@ -51,6 +69,16 @@ Reminders are delivered via private message (PM) from the bot. Make sure you can
 View API usage statistics to see how much you and your channel have been using the bot.
 
 **Usage:** `@usage [nick | #channel]`
+
+### Natural language
+
+```
+<you>     VibeBot, how much have I used this month?
+<VibeBot> You've made 47 requests this month, costing $0.12.
+
+<you>     VibeBot, what's the channel usage?
+<VibeBot> #dev has made 312 requests this month, costing $1.45.
+```
 
 ### Your stats in a channel
 

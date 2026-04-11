@@ -18,6 +18,7 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 
 ## Features
 
+- **Natural language interaction** -- Just mention the bot by name or send it a PM. No commands needed -- ask questions, manage reminders, check usage, and more through plain conversation.
 - **Conversation memory** -- Follow up on previous questions. The bot tracks context per user and channel.
 - **Vision** -- Drop an image URL into `@ask` and the bot will describe or reason about it.
 - **Code generation** -- `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
