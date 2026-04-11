@@ -1374,3 +1374,43 @@ class TestMetaIntegration:
         )
         plugin.log = mocker.Mock()
         return LLMService(plugin), plugin
+
+
+class TestToolResult:
+    """Tests for the ToolResult frozen dataclass."""
+
+    def test_defaults(self) -> None:
+        """GIVEN ToolResult with only content WHEN created THEN defaults are correct."""
+        from llm.meta import ToolResult
+
+        result = ToolResult(content="search result")
+        assert result.content == "search result"
+        assert result.grounding_used is False
+        assert result.prompt_tokens == 0
+        assert result.completion_tokens == 0
+        assert result.cost == 0.0
+
+    def test_all_fields_set(self) -> None:
+        """GIVEN ToolResult with all fields WHEN created THEN all values stored."""
+        from llm.meta import ToolResult
+
+        result = ToolResult(
+            content="fetched page",
+            grounding_used=True,
+            prompt_tokens=200,
+            completion_tokens=100,
+            cost=0.005,
+        )
+        assert result.content == "fetched page"
+        assert result.grounding_used is True
+        assert result.prompt_tokens == 200
+        assert result.completion_tokens == 100
+        assert result.cost == 0.005
+
+    def test_frozen(self) -> None:
+        """GIVEN a ToolResult WHEN attempting mutation THEN raises FrozenInstanceError."""
+        from llm.meta import ToolResult
+
+        result = ToolResult(content="immutable")
+        with pytest.raises(AttributeError):
+            result.content = "changed"  # type: ignore[misc]

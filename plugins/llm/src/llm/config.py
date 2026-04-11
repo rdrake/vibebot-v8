@@ -140,6 +140,16 @@ conf.registerGlobalValue(
     registry.String("", _("""API key for draw command"""), private=True),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "searchApiKey",
+    registry.String(
+        "",
+        _("""API key for search/fetch tools. Falls back to askApiKey if empty."""),
+        private=True,
+    ),
+)
+
 # ============================================================================
 # System Prompts (channel-specific with global defaults)
 # ============================================================================
@@ -193,6 +203,15 @@ conf.registerChannelValue(
     ValidatedModelName(
         "vertex_ai/imagen-4.0-generate-001",
         _("""Model for image generation"""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "searchModel",
+    ValidatedModelName(
+        "",
+        _("""Model for search/fetch tools. Falls back to askModel if empty."""),
     ),
 )
 
@@ -755,7 +774,7 @@ conf.registerGlobalValue(
     LLM,
     "metaMaxSteps",
     registry.PositiveInteger(
-        5,
+        7,
         _("""Maximum tool-call round trips per meta invocation.
         Prevents runaway tool loops."""),
     ),

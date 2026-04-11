@@ -187,11 +187,14 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,
         "drawUnregRateLimitWindow": 60,
+        # Search/fetch tools
+        "searchApiKey": "",
+        "searchModel": "",
         # Meta command
         "metaEnabled": True,
         "metaModel": "",
         "metaApiKey": "",
-        "metaMaxSteps": 5,
+        "metaMaxSteps": 7,
     }
     if overrides:
         defaults.update(overrides)

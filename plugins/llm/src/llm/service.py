@@ -210,6 +210,7 @@ class MetaResult(NamedTuple):
     completion_tokens: int = 0
     cost: float = 0.0
     model: str = ""
+    grounding_used: bool = False
     error: str | None = None
 
 
@@ -324,6 +325,7 @@ class LLMService:
             "askApiKey",
             "codeApiKey",
             "drawApiKey",
+            "searchApiKey",
             "memoryApiKey",
             "metaApiKey",
             "spontaneousApiKey",

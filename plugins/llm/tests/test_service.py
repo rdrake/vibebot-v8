@@ -4229,3 +4229,41 @@ class TestCleanupMemoriesValidation:
         result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
         assert result.error is not None
         assert "out of range" in result.error
+
+
+class TestMetaResultGroundingUsed:
+    """Tests for MetaResult.grounding_used field."""
+
+    def test_grounding_used_defaults_to_false(self) -> None:
+        """GIVEN MetaResult with no grounding_used WHEN accessed THEN defaults to False."""
+        from llm.service import MetaResult
+
+        result = MetaResult(content="hello")
+        assert result.grounding_used is False
+
+    def test_grounding_used_can_be_set_true(self) -> None:
+        """GIVEN MetaResult with grounding_used=True WHEN accessed THEN is True."""
+        from llm.service import MetaResult
+
+        result = MetaResult(content="hello", grounding_used=True)
+        assert result.grounding_used is True
+
+    def test_grounding_used_coexists_with_other_fields(self) -> None:
+        """GIVEN MetaResult with all fields WHEN accessed THEN all fields correct."""
+        from llm.service import MetaResult
+
+        result = MetaResult(
+            content="response",
+            is_meta=True,
+            prompt_tokens=100,
+            completion_tokens=50,
+            cost=0.01,
+            model="gpt-4",
+            grounding_used=True,
+            error=None,
+        )
+        assert result.content == "response"
+        assert result.grounding_used is True
+        assert result.prompt_tokens == 100
+        assert result.model == "gpt-4"
+        assert result.error is None

@@ -367,6 +367,17 @@ META_TOOLS: list[dict[str, Any]] = [
 
 
 @dataclass(frozen=True)
+class ToolResult:
+    """Structured result from a tool handler, carrying cost and metadata."""
+
+    content: str
+    grounding_used: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+
+
+@dataclass(frozen=True)
 class ToolSpec:
     """Server-side metadata for a model-visible assistant tool."""
 
