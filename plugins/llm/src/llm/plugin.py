@@ -33,8 +33,6 @@ from supybot.i18n import PluginInternationalization
 from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase
 from .service import (
-    CODE_PREVIEW_MAX_LEN,
-    CODE_PREVIEW_TRUNCATE_LEN,
     AssistantRequestContext,
     CompletionResult,
     ImageResult,
@@ -1957,6 +1955,14 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
+        request_context = self._build_request_context(
+            irc,
+            msg,
+            pf,
+            entry_route="code",
+            profile="code",
+        )
+
         with self._trace_request("code", nick, channel):
             # Get conversation history (personal + shared channel) if context enabled
             if self._get_context_enabled(channel):
@@ -1969,43 +1975,55 @@ class LLM(callbacks.Plugin):
                 history, channel_history = [], []
 
             memories = self._get_user_memories(nick)
+            user_instruction = self.db.get_instruction(nick)
+            effective_prompt = (
+                f"{user_instruction}\n\n{self.registryValue('codeSystemPrompt', channel)}"
+                if user_instruction
+                else None
+            )
 
             with self._allow_concurrent():
-                result = self.llm_service.completion(
+                result = self.llm_service.assistant_request(
                     text,
-                    command="code",
+                    request_context=request_context,
+                    db=self.db,
+                    context=self.context,
+                    bot_nick=irc.nick,
                     history=history,
                     channel_history=channel_history,
                     irc=irc,
                     msg=msg,
                     memories=memories,
+                    system_prompt=effective_prompt,
+                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                    code_fn=lambda p: self._code_for_assistant(p, channel),
+                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
+                    set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, pf.nick, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_meta(pf.nick, r),
                 )
 
                 response = result.content
-                grounding_prefix = f"{GROUNDING_ICON} " if result.grounding_used else ""
+                if not response or not response.strip():
+                    irc.error(_("The model returned an empty response. Please try again."))
+                    return
 
-                # Reply first, then store context
-                url = self.llm_service.save_code_to_http(response)
-                if url:
-                    # Try AI-generated summary first
-                    summary = self.llm_service.summarize(response, channel)
-                    if summary:
-                        preview = self.llm_service.sanitize_output(summary)
-                    else:
-                        # Fallback to truncation if summarization fails
-                        preview = response.replace("\n", " ").strip()
-                        if len(preview) > CODE_PREVIEW_MAX_LEN:
-                            preview = preview[:CODE_PREVIEW_TRUNCATE_LEN] + "..."
-                        preview = self.llm_service.sanitize_output(preview)
-                    self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(f"{grounding_prefix}{preview} — {url}")
+                action_text = self._extract_action(irc, response)
+                if action_text:
+                    if result.grounding_used:
+                        action_text = f"{GROUNDING_ICON} {action_text}"
+                    self.log.info("sending action to %s/%s", channel, nick)
+                    target = channel if ircutils.isChannel(channel) else nick
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    response = f"* {irc.nick} {action_text}"
                 else:
-                    # Fallback to IRC paging if save failed
                     display_response = (
-                        f"{grounding_prefix}{response}" if grounding_prefix else response
+                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
                     )
                     self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(display_response)
+                    irc.reply(display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "code", text, response, result, irc, msg

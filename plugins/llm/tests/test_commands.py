@@ -404,76 +404,53 @@ class TestAskCommand:
 class TestCodeCommand:
     """Tests for the real LLM.code method."""
 
-    def test_code_replies_with_url_and_preview(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code generation succeeds WHEN code called THEN reply has preview and URL."""
+    def _make_code_result(self, **overrides):
+        """Build a MetaResult with sensible defaults for code tests."""
+        defaults = {
+            "content": "Here is your code — http://x/code.html",
+            "grounding_used": False,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost": 0.001,
+            "model": "gpt-4",
+        }
+        defaults.update(overrides)
+        return MetaResult(**defaults)
+
+    def test_code_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
+        """GIVEN code WHEN executed THEN it uses assistant_request with code profile."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="def hello(): pass",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result()
+
+        plugin.code(mock_irc, mock_msg, ["Python", "hello"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
+        assert ctx.profile == "code"
+        assert ctx.entry_route == "code"
+
+    def test_code_replies_with_planner_content(self, plugin_env, mocker: MockerFixture):
+        """GIVEN planner returns summary with URL WHEN code called THEN reply contains it."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+            content="Fibonacci function — http://localhost:8080/llm/code_abc.html",
         )
-        plugin.llm_service.save_code_to_http.return_value = (
-            "http://localhost:8080/llm/code_abc.html"
-        )
-        plugin.llm_service.summarize.return_value = None  # fallback to truncation
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin.code(mock_irc, mock_msg, ["Python", "hello"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "http://localhost:8080/llm/code_abc.html" in reply_text
-
-    def test_code_uses_ai_summary_when_available(self, plugin_env, mocker: MockerFixture):
-        """GIVEN summarize returns a summary WHEN code called THEN reply uses AI summary."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="def fib(n):\n    return n if n <= 1 else fib(n-1) + fib(n-2)",
-            prompt_tokens=10,
-            completion_tokens=20,
-            cost=0.002,
-            model="gpt-4",
-        )
-        plugin.llm_service.save_code_to_http.return_value = "http://localhost:8080/llm/code_x.html"
-        plugin.llm_service.summarize.return_value = "Recursive Fibonacci function"
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
-
-        plugin.code(mock_irc, mock_msg, ["fibonacci"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "Recursive Fibonacci function" in reply_text
-
-    def test_code_falls_back_to_irc_on_save_failure(self, plugin_env, mocker: MockerFixture):
-        """GIVEN save_code_to_http returns None WHEN code called THEN raw response is sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="print('hello')",
-            prompt_tokens=5,
-            completion_tokens=3,
-            cost=0.0,
-            model="gpt-4",
-        )
-        plugin.llm_service.save_code_to_http.return_value = None
-
-        plugin.code(mock_irc, mock_msg, ["print", "hello"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "print('hello')" in reply_text
+        assert "Fibonacci function" in reply_text
 
     def test_code_stores_context(self, plugin_env, mocker: MockerFixture):
         """GIVEN code command succeeds WHEN executed THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result(
             content="code output",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
-        plugin.llm_service.summarize.return_value = None
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin.code(mock_irc, mock_msg, ["generate", "something"])
 
@@ -485,14 +462,13 @@ class TestCodeCommand:
     def test_code_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN code completion with cost WHEN code completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result(
             content="x = 1",
             prompt_tokens=50,
             completion_tokens=20,
             cost=0.003,
-            model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = None
 
         plugin.code(mock_irc, mock_msg, ["assign"])
 
@@ -519,24 +495,33 @@ class TestCodeCommand:
         mock_irc.reply.assert_not_called()
 
     def test_code_grounding_icon_in_reply(self, plugin_env, mocker: MockerFixture):
-        """GIVEN grounding_used is True WHEN code saved to URL THEN reply has globe icon."""
+        """GIVEN grounding_used is True WHEN code response returned THEN reply has globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="code",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+            content="summary — http://x/c.html",
             grounding_used=True,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = "http://x/c.html"
-        plugin.llm_service.summarize.return_value = "summary"
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin.code(mock_irc, mock_msg, ["test"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310")
+
+    def test_code_preserves_preflight(self, plugin_env, mocker: MockerFixture):
+        """GIVEN code WHEN executed THEN preflight checks still run."""
+        plugin, mock_irc, mock_msg = plugin_env
+        # Make preflight block the request (e.g. rate limited)
+        mocker.patch.object(
+            plugin,
+            "_run_preflight",
+            return_value=mocker.MagicMock(blocked=True),
+        )
+
+        plugin.code(mock_irc, mock_msg, ["test"])
+
+        plugin.llm_service.assistant_request.assert_not_called()
+        mock_irc.reply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1501,14 +1486,14 @@ class TestAccountBasedIdentity:
     def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
             content="x = 1",
             prompt_tokens=50,
             completion_tokens=20,
             cost=0.003,
             model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = None
 
         plugin.code(mock_irc, mock_msg, ["assign"])
 
@@ -1855,14 +1840,14 @@ class TestCodeEdgeCases:
     def test_code_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN code called THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
             content="print('hi')",
             prompt_tokens=10,
             completion_tokens=5,
             cost=0.001,
             model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = None
 
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
@@ -1874,29 +1859,22 @@ class TestCodeEdgeCases:
         messages = plugin.context.get_messages("testnick", "#test")
         assert len(messages) == 0
 
-    def test_code_truncates_long_preview_without_summary(self, plugin_env, mocker: MockerFixture):
-        """GIVEN long code and no AI summary WHEN code called THEN preview is truncated."""
+    def test_code_empty_response_triggers_error(self, plugin_env, mocker: MockerFixture):
+        """GIVEN planner returns empty content WHEN code called THEN irc.error is sent."""
         plugin, mock_irc, mock_msg = plugin_env
-        long_code = "x" * 200  # > CODE_PREVIEW_MAX_LEN (60)
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content=long_code,
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="",
             prompt_tokens=10,
-            completion_tokens=50,
-            cost=0.002,
+            completion_tokens=0,
+            cost=0.0,
             model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
-        plugin.llm_service.summarize.return_value = None  # no AI summary
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         plugin.code(mock_irc, mock_msg, ["generate"])
 
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "..." in reply_text
-        assert "http://x/code.html" in reply_text
-        # Preview should be truncated to ~60 chars
-        preview_part = reply_text.split(" — ")[0]
-        assert len(preview_part) <= 61  # 57 + "..."
+        mock_irc.error.assert_called_once()
+        mock_irc.reply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2027,15 +2005,14 @@ class TestRateLimitIntegration:
     def test_code_succeeds_under_limit(self, plugin_env, mocker: MockerFixture):
         """GIVEN user under code rate limit WHEN code called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="print('hi')",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = MetaResult(
+            content="print('hi') — http://x/code.html",
             prompt_tokens=5,
             completion_tokens=10,
             cost=0.001,
             model="gpt-4",
         )
-        plugin.llm_service.save_code_to_http.return_value = "http://x/code.html"
-        plugin.llm_service.summarize.return_value = "small summary"
 
         plugin.code(mock_irc, mock_msg, ["hello"])
 
