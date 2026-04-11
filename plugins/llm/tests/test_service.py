@@ -919,6 +919,43 @@ class TestImageSaving:
         assert result is not None
         assert result.endswith(".jpg")
 
+    def test_save_image_bytes_magic_bytes_override_extension(self, tmp_path: object) -> None:
+        """GIVEN JPEG magic bytes but extension='png' WHEN saving THEN uses jpg."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        jpeg_data = b"\xff\xd8\xff\xe0" + b"fake jpeg payload"
+        result = self.service._save_image_bytes(jpeg_data, extension="png")
+
+        assert result is not None
+        assert result.endswith(".jpg")
+
+    # --- _detect_image_format tests ---
+
+    def test_detect_image_format_png(self) -> None:
+        """GIVEN PNG magic bytes THEN returns 'png'."""
+        assert self.service._detect_image_format(b"\x89PNG\r\n\x1a\ndata") == "png"
+
+    def test_detect_image_format_jpeg(self) -> None:
+        """GIVEN JPEG magic bytes THEN returns 'jpg'."""
+        assert self.service._detect_image_format(b"\xff\xd8\xff\xe0data") == "jpg"
+
+    def test_detect_image_format_webp(self) -> None:
+        """GIVEN WebP magic bytes THEN returns 'webp'."""
+        assert self.service._detect_image_format(b"RIFF\x00\x00\x00\x00WEBPdata") == "webp"
+
+    def test_detect_image_format_gif(self) -> None:
+        """GIVEN GIF magic bytes THEN returns 'gif'."""
+        assert self.service._detect_image_format(b"GIF89adata") == "gif"
+
+    def test_detect_image_format_unknown(self) -> None:
+        """GIVEN unknown bytes THEN returns None."""
+        assert self.service._detect_image_format(b"unknown data") is None
+
     def test_save_image_bytes_writes_file(self, tmp_path: object) -> None:
         """GIVEN image bytes WHEN saving THEN file exists on disk."""
         from pathlib import Path

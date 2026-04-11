@@ -2843,16 +2843,38 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             self.log.error("Failed to save code file: %s", e)
             return None
 
+    @staticmethod
+    def _detect_image_format(image_bytes: bytes) -> str | None:
+        """Detect image format from magic bytes.
+
+        Returns:
+            Extension string ("png", "jpg", "webp", "gif") or None if unknown.
+        """
+        if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+            return "png"
+        if image_bytes[:3] == b"\xff\xd8\xff":
+            return "jpg"
+        if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+            return "webp"
+        if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+            return "gif"
+        return None
+
     def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
         """Save raw image bytes to HTTP server and return public URL.
 
         Args:
             image_bytes: Raw image bytes
-            extension: Image file extension (default: png)
+            extension: Fallback file extension if magic-byte detection fails
 
         Returns:
             Public URL to saved image or None on error
         """
+        # Prefer actual format from magic bytes over caller-supplied extension
+        detected = self._detect_image_format(image_bytes)
+        if detected:
+            extension = detected
+
         http_root, url_base = self.get_http_paths()
 
         # Generate unique filename
