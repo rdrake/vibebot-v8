@@ -9,6 +9,7 @@ import json
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -210,6 +211,21 @@ class MetaResult(NamedTuple):
     cost: float = 0.0
     model: str = ""
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class AssistantRequestContext:
+    """Normalized route metadata for a unified assistant request."""
+
+    entry_route: str
+    profile: str
+    nick: str
+    raw_nick: str
+    account: str | None
+    channel: str | None
+    is_private: bool
+    is_owner: bool
+    capabilities: frozenset[str]
 
 
 class PendingTaskResult(NamedTuple):
@@ -1642,6 +1658,56 @@ class LLMService:
             if irc and target:
                 self.send_typing_indicator(irc, target, "done")
 
+    def assistant_request(
+        self,
+        prompt: str,
+        *,
+        request_context: AssistantRequestContext,
+        images: list[str] | None = None,
+        history: list[dict[str, str]] | None = None,
+        channel_history: list[dict[str, str]] | None = None,
+        irc: Irc | None = None,
+        msg: IrcMsg | None = None,
+        system_prompt: str | None = None,
+        memories: list[str] | None = None,
+    ) -> CompletionResult:
+        """Shared assistant facade for ask-like chat routes.
+
+        This initial milestone keeps the existing grounded ``completion()``
+        path as the implementation for ``chat`` requests until grounded leaf
+        tools are available to the planner path.
+        """
+        self.log.info(
+            "assistant_request route=%s profile=%s channel=%s nick=%s",
+            request_context.entry_route,
+            request_context.profile,
+            request_context.channel,
+            request_context.nick,
+        )
+
+        if request_context.profile != "chat":
+            error_content = (
+                _("Error: Unsupported assistant profile for assistant_request: %s")
+                % request_context.profile
+            )
+            return CompletionResult(
+                content=error_content,
+                grounding_used=False,
+                error=error_content,
+            )
+
+        return self.completion(
+            prompt,
+            command="ask",
+            images=images,
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
+            system_prompt=system_prompt,
+            memories=memories,
+        )
+
     def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
         """Parse a natural language reminder request using LLM.
 
@@ -2000,6 +2066,9 @@ Rules:
         api_key: str | None = None,
         model_override: str | None = None,
         is_owner: bool = False,
+        route_profile: str = "meta",
+        capabilities: frozenset[str] | None = None,
+        account: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
@@ -2030,7 +2099,12 @@ Rules:
         Returns:
             MetaResult with the final text, is_meta flag, and usage stats
         """
-        from .meta import META_SYSTEM_PROMPT, META_TOOLS, MetaToolExecutor
+        from .meta import (
+            META_SYSTEM_PROMPT,
+            NOT_META_SENTINEL,
+            MetaToolExecutor,
+            get_tools_for_profile,
+        )
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -2076,11 +2150,16 @@ Rules:
                 nick=nick,
                 channel=channel,
                 is_owner=is_owner,
+                route_profile=route_profile,
+                capabilities=capabilities or frozenset({"llm.ask"}),
+                account=account,
                 cleanup_fn=cleanup_fn,
                 list_reminders_fn=list_reminders_fn,
                 set_reminder_fn=set_reminder_fn,
                 delete_reminder_fn=delete_reminder_fn,
             )
+
+            profile_tools = get_tools_for_profile(route_profile)
 
             for _step in range(max_steps):
                 self.log.info(
@@ -2095,7 +2174,7 @@ Rules:
                     messages=messages,
                     api_key=effective_api_key,
                     timeout=timeout,
-                    tools=META_TOOLS,
+                    tools=profile_tools,
                     **optional_kwargs,
                 )
 
@@ -2113,7 +2192,7 @@ Rules:
                     content = message.content or ""
 
                     # Exact sentinel check (not substring)
-                    if content.strip() == "NOT_META":
+                    if content.strip() == NOT_META_SENTINEL:
                         return MetaResult(
                             content=content,
                             is_meta=False,
@@ -2156,12 +2235,28 @@ Rules:
                     try:
                         args = json.loads(tc.function.arguments)
                     except (json.JSONDecodeError, TypeError):
-                        args = {}
+                        # Don't execute with empty args — destructive tools
+                        # like clear_instruction accept no required args and
+                        # would silently run on malformed input.
+                        self.log.warning(
+                            "meta tool call %s: malformed arguments, skipping",
+                            tc.function.name,
+                        )
+                        result_str = json.dumps(
+                            {"error": "Malformed tool arguments — call skipped."}
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": result_str,
+                            }
+                        )
+                        continue
 
                     self.log.info(
-                        "meta tool call: %s(%s)",
+                        "meta tool call: %s",
                         tc.function.name,
-                        args,
                     )
 
                     result_str = executor.execute(tc.function.name, args)

@@ -78,6 +78,34 @@ def plugin_env(mocker: MockerFixture):
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
+    # During the unified-assistant transition, ask-style command tests still
+    # exercise the existing completion bridge through assistant_request().
+    def _assistant_request_bridge(
+        prompt: str,
+        *,
+        request_context,
+        images=None,
+        history=None,
+        channel_history=None,
+        irc=None,
+        msg=None,
+        system_prompt=None,
+        memories=None,
+    ):
+        return plugin.llm_service.completion(
+            prompt,
+            command="ask",
+            images=images,
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
+            system_prompt=system_prompt,
+            memories=memories,
+        )
+
+    plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+
     # migrate_nick returns an int (0 = nothing to migrate) by default.
     plugin.db.migrate_nick.return_value = 0
 
@@ -91,6 +119,28 @@ def plugin_env(mocker: MockerFixture):
 
 class TestAskCommand:
     """Tests for the real LLM.ask method."""
+
+    def test_ask_routes_through_assistant_request(self, plugin_env):
+        """GIVEN ask WHEN executed THEN it uses the shared assistant_request facade."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = CompletionResult(
+            content="Hello from unified assistant",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        request_context = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
+        assert request_context.profile == "chat"
+        assert request_context.entry_route == "ask"
+        mock_irc.reply.assert_called_once_with("Hello from unified assistant", prefixNick=False)
 
     def test_ask_replies_with_completion_content(self, plugin_env, mocker: MockerFixture):
         """GIVEN a normal prompt WHEN ask is called THEN irc.reply receives the completion content."""
@@ -1182,8 +1232,8 @@ class TestRemindSetCommand:
 
         plugin.remind(mock_irc, mock_msg, ["test"])
 
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "couldn't determine" in reply_text.lower()
+        reply_text = mock_irc.error.call_args[0][0]
+        assert "could not determine" in reply_text.lower()
 
     def test_remind_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
         """GIVEN schedule.addEvent raises WHEN remind called THEN error is reported."""

@@ -180,6 +180,60 @@ class TestMetaToolExecutor:
         result = executor.execute("list_memories", {})
         assert "error" in result.lower()
 
+    def test_execute_denies_when_capability_missing(
+        self,
+        mock_db: MagicMock,
+        mock_context: MagicMock,
+        mock_cleanup_fn: MagicMock,
+        mock_list_reminders_fn: MagicMock,
+        mock_set_reminder_fn: MagicMock,
+        mock_delete_reminder_fn: MagicMock,
+    ) -> None:
+        """GIVEN missing tool capability WHEN executed THEN dispatch denies it server-side."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            capabilities=frozenset(),
+            cleanup_fn=mock_cleanup_fn,
+            list_reminders_fn=mock_list_reminders_fn,
+            set_reminder_fn=mock_set_reminder_fn,
+            delete_reminder_fn=mock_delete_reminder_fn,
+        )
+
+        result = executor.execute("list_memories", {})
+
+        assert "not allowed" in result.lower() or "capability" in result.lower()
+        mock_db.get_memories.assert_not_called()
+
+    def test_execute_denies_when_route_profile_not_visible(
+        self,
+        mock_db: MagicMock,
+        mock_context: MagicMock,
+        mock_cleanup_fn: MagicMock,
+        mock_list_reminders_fn: MagicMock,
+        mock_set_reminder_fn: MagicMock,
+        mock_delete_reminder_fn: MagicMock,
+    ) -> None:
+        """GIVEN a hidden route profile WHEN executed THEN dispatch denies it server-side."""
+        executor = MetaToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="draw",
+            cleanup_fn=mock_cleanup_fn,
+            list_reminders_fn=mock_list_reminders_fn,
+            set_reminder_fn=mock_set_reminder_fn,
+            delete_reminder_fn=mock_delete_reminder_fn,
+        )
+
+        result = executor.execute("list_memories", {})
+
+        assert "not allowed" in result.lower() or "profile" in result.lower()
+        mock_db.get_memories.assert_not_called()
+
     def test_get_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN get_usage tool WHEN called THEN returns user's usage summary."""
         from llm.persistence import UsageSummary
@@ -630,6 +684,7 @@ class TestMetaCommand:
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test", "@meta set my instruction"]
+        msg.time = float("inf")  # Not a replay
 
         plugin.llm_service.meta_completion.return_value = MetaResult(
             content="Done \u2014 instruction set.",
@@ -657,6 +712,7 @@ class TestMetaCommand:
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test", "@meta do something"]
+        msg.time = float("inf")
 
         plugin.meta(mock_irc, msg, ["do", "something"])
 
@@ -670,6 +726,7 @@ class TestMetaCommand:
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
+        msg.time = float("inf")
 
         plugin.llm_service.meta_completion.return_value = MetaResult(
             content="NOT_META",
@@ -698,6 +755,7 @@ class TestMetaCommand:
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
+        msg.time = float("inf")
 
         plugin.llm_service.meta_completion.return_value = MetaResult(
             content="Done.",
@@ -882,7 +940,7 @@ class TestReminderMetaHelpers:
 
 
 class TestInvalidCommandMetaFallback:
-    """Tests for invalidCommand routing through meta then to ask."""
+    """Tests for invalidCommand routing through the shared ask-style path."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
@@ -898,17 +956,13 @@ class TestInvalidCommandMetaFallback:
     def test_not_meta_falls_through_to_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN meta returns NOT_META THEN ask called."""
+        """GIVEN unknown command WHEN invalidCommand runs THEN _ask_impl called directly."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="NOT_META",
-            is_meta=False,
-        )
-        plugin.ask = mocker.MagicMock()
+        plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
                 blocked=False,
@@ -923,12 +977,13 @@ class TestInvalidCommandMetaFallback:
 
         plugin.invalidCommand(mock_irc, msg, ["what", "is", "python"])
 
-        plugin.ask.assert_called_once()
+        plugin._ask_impl.assert_called_once()
+        plugin.llm_service.meta_completion.assert_not_called()
 
     def test_meta_disabled_skips_to_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN metaEnabled=False WHEN unknown command THEN straight to ask."""
+        """GIVEN metaEnabled=False WHEN unknown command THEN still uses _ask_impl."""
         plugin.registryValue = mocker.Mock(
             side_effect=make_registry_side_effect({"metaEnabled": False})
         )
@@ -937,30 +992,33 @@ class TestInvalidCommandMetaFallback:
         msg.nick = "testuser"
         msg.args = ["#test"]
 
-        plugin.ask = mocker.MagicMock()
+        plugin._ask_impl = mocker.MagicMock()
+        plugin._run_preflight = mocker.MagicMock(
+            return_value=mocker.MagicMock(
+                blocked=False,
+                nick="testuser",
+                channel="#test",
+                account=None,
+            )
+        )
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin._is_old_message = mocker.MagicMock(return_value=False)
 
         plugin.invalidCommand(mock_irc, msg, ["hello", "there"])
 
-        plugin.ask.assert_called_once()
+        plugin._ask_impl.assert_called_once()
         plugin.llm_service.meta_completion.assert_not_called()
 
     def test_meta_handled_does_not_call_ask(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unknown command WHEN meta handles it THEN ask NOT called."""
+        """GIVEN unknown command WHEN routed THEN meta is not consulted."""
         msg = mocker.MagicMock()
         msg.prefix = "user!ident@host"
         msg.nick = "testuser"
         msg.args = ["#test"]
 
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="Instruction set to haiku.",
-            is_meta=True,
-            model="gpt-4",
-        )
-        plugin.ask = mocker.MagicMock()
+        plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
             return_value=mocker.MagicMock(
                 blocked=False,
@@ -975,8 +1033,8 @@ class TestInvalidCommandMetaFallback:
 
         plugin.invalidCommand(mock_irc, msg, ["always", "respond", "in", "haiku"])
 
-        plugin.ask.assert_not_called()
-        mock_irc.reply.assert_called()
+        plugin._ask_impl.assert_called_once()
+        plugin.llm_service.meta_completion.assert_not_called()
 
 
 # =========================================================================

@@ -8,6 +8,7 @@ context methods. All tools are scoped to a single user's nick.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +16,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .context import ConversationContext
-    from .persistence import LLMDatabase
+    from .persistence import LLMDatabase, UsageSummary
+
+# Sentinel string the LLM returns to signal "this is not a config request".
+# Shared between the system prompt (meta.py) and the check in service.py.
+NOT_META_SENTINEL = "NOT_META"
 
 # System prompt for the meta LLM — kept here alongside the tools it governs.
 META_SYSTEM_PROMPT = (
@@ -340,6 +345,66 @@ META_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+@dataclass(frozen=True)
+class ToolSpec:
+    """Server-side metadata for a model-visible assistant tool."""
+
+    name: str
+    schema: dict[str, Any]
+    handler_name: str
+    capability: str | None = "llm.ask"
+    require_account: bool = False
+    rate_bucket: str = "ask"
+    destructive: bool = False
+    visible_in: frozenset[str] = frozenset({"chat", "meta"})
+
+    def as_tool(self) -> dict[str, Any]:
+        """Return the OpenAI/LiteLLM tool schema for model calls."""
+        return {"type": "function", "function": self.schema}
+
+    def denial_reason(
+        self,
+        *,
+        route_profile: str,
+        capabilities: frozenset[str],
+        account: str | None,
+    ) -> str | None:
+        """Return a server-side denial reason if this tool is not allowed."""
+        if route_profile not in self.visible_in:
+            return f"Tool {self.name} is not allowed from the {route_profile} profile."
+        if self.capability and self.capability not in capabilities:
+            return f"Tool {self.name} requires capability {self.capability}."
+        if self.require_account and not account:
+            return f"Tool {self.name} requires an authenticated account."
+        return None
+
+
+def _build_tool_specs() -> tuple[ToolSpec, ...]:
+    destructive_tools = {"clear_instruction", "clear_memories"}
+    specs: list[ToolSpec] = []
+    for tool in META_TOOLS:
+        fn = tool["function"]
+        name = fn["name"]
+        specs.append(
+            ToolSpec(
+                name=name,
+                schema=fn,
+                handler_name=f"_tool_{name}",
+                destructive=name in destructive_tools,
+            )
+        )
+    return tuple(specs)
+
+
+META_TOOL_SPECS: tuple[ToolSpec, ...] = _build_tool_specs()
+META_TOOL_REGISTRY: dict[str, ToolSpec] = {spec.name: spec for spec in META_TOOL_SPECS}
+
+
+def get_tools_for_profile(route_profile: str) -> list[dict[str, Any]]:
+    """Return model-visible tool schemas that are allowed for a route profile."""
+    return [spec.as_tool() for spec in META_TOOL_SPECS if route_profile in spec.visible_in]
+
+
 class MetaToolExecutor:
     """Execute meta tool calls against the database and context.
 
@@ -355,6 +420,9 @@ class MetaToolExecutor:
         nick: str,
         channel: str,
         is_owner: bool = False,
+        route_profile: str = "meta",
+        capabilities: frozenset[str] = frozenset({"llm.ask"}),
+        account: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
@@ -365,10 +433,23 @@ class MetaToolExecutor:
         self.nick = nick
         self.channel = channel
         self.is_owner = is_owner
+        self.route_profile = route_profile
+        self.capabilities = capabilities
+        self.account = account
         self._cleanup_fn = cleanup_fn
         self._list_reminders_fn = list_reminders_fn
         self._set_reminder_fn = set_reminder_fn
         self._delete_reminder_fn = delete_reminder_fn
+
+    @staticmethod
+    def _ok(message: str) -> str:
+        """Return a success JSON response."""
+        return json.dumps({"status": "ok", "message": message})
+
+    @staticmethod
+    def _err(message: str) -> str:
+        """Return an error JSON response."""
+        return json.dumps({"error": message})
 
     def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """Execute a tool call and return a JSON string result for the LLM.
@@ -380,13 +461,23 @@ class MetaToolExecutor:
         Returns:
             A JSON string result to feed back to the LLM as a tool response.
         """
-        handler = getattr(self, f"_tool_{tool_name}", None)
+        spec = META_TOOL_REGISTRY.get(tool_name)
+        if spec is None:
+            return self._err(f"Unknown tool: {tool_name}")
+        denial_reason = spec.denial_reason(
+            route_profile=self.route_profile,
+            capabilities=self.capabilities,
+            account=self.account,
+        )
+        if denial_reason is not None:
+            return self._err(denial_reason)
+        handler = getattr(self, spec.handler_name, None)
         if handler is None:
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return self._err(f"Unknown tool implementation: {tool_name}")
         try:
             return handler(arguments)
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return self._err(str(e))
 
     def _resolve_target_nick(self, args: dict[str, Any]) -> str | None:
         """Resolve target nick from tool args with owner access control.
@@ -404,7 +495,7 @@ class MetaToolExecutor:
 
     @staticmethod
     def _deny_access() -> str:
-        return json.dumps({"error": "Only bot owners can access other users' data."})
+        return MetaToolExecutor._err("Only bot owners can access other users' data.")
 
     def _tool_get_instruction(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
@@ -421,7 +512,7 @@ class MetaToolExecutor:
             return self._deny_access()
         text = args["text"]
         self.db.save_instruction(target, text)
-        return json.dumps({"status": "ok", "message": f"Instruction set for {target}: {text}"})
+        return self._ok(f"Instruction set for {target}: {text}")
 
     def _tool_clear_instruction(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
@@ -429,8 +520,8 @@ class MetaToolExecutor:
             return self._deny_access()
         deleted = self.db.delete_instruction(target)
         if deleted:
-            return json.dumps({"status": "ok", "message": f"Instruction cleared for {target}."})
-        return json.dumps({"status": "ok", "message": f"No instruction was set for {target}."})
+            return self._ok(f"Instruction cleared for {target}.")
+        return self._ok(f"No instruction was set for {target}.")
 
     def _tool_list_memories(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
@@ -467,8 +558,8 @@ class MetaToolExecutor:
         memory_id = args["id"]
         deleted = self.db.delete_memory(target, memory_id)
         if deleted:
-            return json.dumps({"status": "ok", "message": f"Deleted memory {memory_id}."})
-        return json.dumps({"error": f"Memory {memory_id} not found."})
+            return self._ok(f"Deleted memory {memory_id}.")
+        return self._err(f"Memory {memory_id} not found.")
 
     def _tool_update_memory(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
@@ -478,63 +569,58 @@ class MetaToolExecutor:
         text = args["text"]
         updated = self.db.update_memory(target, memory_id, text)
         if updated:
-            return json.dumps(
-                {
-                    "status": "ok",
-                    "message": f"Updated memory {memory_id}.",
-                }
-            )
-        return json.dumps({"error": f"Memory {memory_id} not found."})
+            return self._ok(f"Updated memory {memory_id}.")
+        return self._err(f"Memory {memory_id} not found.")
 
     def _tool_clear_memories(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
         if target is None:
             return self._deny_access()
         count = self.db.delete_all_memories(target)
-        return json.dumps({"status": "ok", "message": f"Cleared {count} memories for {target}."})
+        return self._ok(f"Cleared {count} memories for {target}.")
 
     def _tool_forget_context(self, _args: dict[str, Any]) -> str:
         cleared = self.context.clear(self.nick, self.channel)
         if cleared:
-            return json.dumps({"status": "ok", "message": "Conversation context cleared."})
-        return json.dumps({"status": "ok", "message": "No context to clear."})
+            return self._ok("Conversation context cleared.")
+        return self._ok("No context to clear.")
+
+    @staticmethod
+    def _format_usage_summary(summary: UsageSummary) -> str:
+        """Serialize a UsageSummary to JSON for the LLM."""
+        return json.dumps(
+            {
+                "requests": summary.total_requests,
+                "prompt_tokens": summary.total_prompt_tokens,
+                "completion_tokens": summary.total_completion_tokens,
+                "cost": round(summary.total_cost, 4),
+            }
+        )
 
     def _tool_get_usage(self, _args: dict[str, Any]) -> str:
         since = self._month_start()
         summary = self.db.get_usage_summary_for_nick(self.nick, since=since)
-        return json.dumps(
-            {
-                "requests": summary.total_requests,
-                "prompt_tokens": summary.total_prompt_tokens,
-                "completion_tokens": summary.total_completion_tokens,
-                "cost": round(summary.total_cost, 4),
-            }
-        )
+        return self._format_usage_summary(summary)
 
     def _tool_get_channel_usage(self, _args: dict[str, Any]) -> str:
         since = self._month_start()
         summary = self.db.get_usage_summary_for_channel(self.channel, since=since)
-        return json.dumps(
-            {
-                "requests": summary.total_requests,
-                "prompt_tokens": summary.total_prompt_tokens,
-                "completion_tokens": summary.total_completion_tokens,
-                "cost": round(summary.total_cost, 4),
-            }
-        )
+        return self._format_usage_summary(summary)
 
     def _tool_cleanup_memories(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
         if target is None:
             return self._deny_access()
         if self._cleanup_fn is None:
-            return json.dumps({"error": "Memory cleanup is not available."})
+            return self._err("Memory cleanup is not available.")
         result = self._cleanup_fn(target)
-        return json.dumps({"status": "ok", "message": result})
+        if "failed" in result.lower() or "error" in result.lower():
+            return self._err(result)
+        return self._ok(result)
 
     def _tool_list_reminders(self, _args: dict[str, Any]) -> str:
         if self._list_reminders_fn is None:
-            return json.dumps({"error": "Reminders are not available."})
+            return self._err("Reminders are not available.")
         reminders = self._list_reminders_fn()
         if not reminders:
             return json.dumps({"reminders": [], "message": "No pending reminders."})
@@ -553,19 +639,21 @@ class MetaToolExecutor:
 
     def _tool_set_reminder(self, args: dict[str, Any]) -> str:
         if self._set_reminder_fn is None:
-            return json.dumps({"error": "Reminders are not available."})
+            return self._err("Reminders are not available.")
         text = args["text"]
         result = self._set_reminder_fn(text)
-        return json.dumps({"status": "ok", "message": result})
+        if "failed" in result.lower() or "could not" in result.lower():
+            return self._err(result)
+        return self._ok(result)
 
     def _tool_delete_reminder(self, args: dict[str, Any]) -> str:
         if self._delete_reminder_fn is None:
-            return json.dumps({"error": "Reminders are not available."})
+            return self._err("Reminders are not available.")
         reminder_id = args["id"]
         result = self._delete_reminder_fn(reminder_id)
         if "not found" in result.lower():
-            return json.dumps({"error": result})
-        return json.dumps({"status": "ok", "message": result})
+            return self._err(result)
+        return self._ok(result)
 
     @staticmethod
     def _month_start() -> float:

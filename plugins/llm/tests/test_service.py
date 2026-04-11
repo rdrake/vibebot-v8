@@ -6,7 +6,7 @@ import threading
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.service import LLMService
+from llm.service import AssistantRequestContext, CompletionResult, LLMService
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -26,6 +26,77 @@ class TestLLMService:
     def test_service_initialization(self) -> None:
         """GIVEN plugin WHEN service initialized THEN stores plugin reference."""
         assert self.service.plugin == self.mock_plugin
+
+    def test_assistant_request_chat_bridges_to_completion(self) -> None:
+        """GIVEN a chat request WHEN assistant_request is used THEN it bridges to completion()."""
+        request_context = AssistantRequestContext(
+            entry_route="ask",
+            profile="chat",
+            nick="testuser",
+            raw_nick="testuser",
+            account=None,
+            channel="#test",
+            is_private=False,
+            is_owner=False,
+            capabilities=frozenset({"llm.ask"}),
+        )
+        expected = CompletionResult(
+            content="Hello from assistant facade",
+            grounding_used=True,
+            prompt_tokens=12,
+            completion_tokens=7,
+            cost=0.002,
+            model="gpt-4",
+        )
+        mock_irc = self.mocker.Mock()
+        mock_msg = self.mocker.Mock()
+        self.service.completion = self.mocker.Mock(return_value=expected)
+
+        result = self.service.assistant_request(
+            "hello there",
+            request_context=request_context,
+            images=["https://example.com/cat.jpg"],
+            history=[{"role": "user", "content": "before"}],
+            channel_history=[{"role": "assistant", "content": "earlier"}],
+            irc=mock_irc,
+            msg=mock_msg,
+            system_prompt="You are helpful.",
+            memories=["likes Python"],
+        )
+
+        assert result == expected
+        self.service.completion.assert_called_once_with(
+            "hello there",
+            command="ask",
+            images=["https://example.com/cat.jpg"],
+            history=[{"role": "user", "content": "before"}],
+            channel_history=[{"role": "assistant", "content": "earlier"}],
+            irc=mock_irc,
+            msg=mock_msg,
+            system_prompt="You are helpful.",
+            memories=["likes Python"],
+        )
+
+    def test_assistant_request_rejects_unsupported_profile(self) -> None:
+        """GIVEN a non-chat profile WHEN assistant_request is used THEN it errors cleanly."""
+        request_context = AssistantRequestContext(
+            entry_route="meta",
+            profile="meta",
+            nick="testuser",
+            raw_nick="testuser",
+            account=None,
+            channel="#test",
+            is_private=False,
+            is_owner=False,
+            capabilities=frozenset({"llm.ask"}),
+        )
+        self.service.completion = self.mocker.Mock()
+
+        result = self.service.assistant_request("hello", request_context=request_context)
+
+        assert result.error is not None
+        assert "unsupported" in result.error.lower()
+        self.service.completion.assert_not_called()
 
     def test_validate_prompt_rejects_empty(self) -> None:
         """GIVEN empty prompt WHEN validated THEN rejected."""

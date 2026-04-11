@@ -338,6 +338,14 @@ class TestMemoryIntegration:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        # Bridge assistant_request to completion so integration tests that
+        # mock completion continue to work through the unified facade.
+        def _assistant_request_bridge(prompt, *, request_context, **kwargs):
+            return plugin.llm_service.completion(prompt, command="ask", **kwargs)
+
+        plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+
         return plugin, mock_irc
 
     def test_ask_passes_memories_to_completion(
@@ -441,6 +449,11 @@ class TestMemoryIntegration:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        def _assistant_request_bridge(prompt, *, request_context, **kwargs):
+            return plugin.llm_service.completion(prompt, command="ask", **kwargs)
+
+        plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
 
         from llm.service import CompletionResult
 

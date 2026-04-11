@@ -34,6 +34,7 @@ from .persistence import LLMDatabase
 from .service import (
     CODE_PREVIEW_MAX_LEN,
     CODE_PREVIEW_TRUNCATE_LEN,
+    AssistantRequestContext,
     CompletionResult,
     ImageResult,
     LLMService,
@@ -56,6 +57,16 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
 # brackets crash Limnoria's nested-command tokenizer.
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_REQUEST_CONTEXT_CAPABILITIES = frozenset(
+    {"llm.ask", "llm.code", "llm.draw", "owner", "admin", "trusted"}
+)
+
+
+class ReminderScheduleResult(NamedTuple):
+    """Result of scheduling a reminder."""
+
+    ok: bool
+    message: str
 
 
 class PreflightResult(NamedTuple):
@@ -1028,13 +1039,7 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         tokens: list[str],
     ) -> None:
-        """Handle unrecognized commands: try meta first, fall back to ask.
-
-        When someone says "vibebot always respond in haiku" without a command:
-        1. If metaEnabled, route through meta handler
-        2. If meta returns NOT_META (not a config request), fall through to ask
-        3. If metaEnabled is False, go straight to ask
-        """
+        """Handle unrecognized addressed text as a normal chat request."""
         if not tokens:
             return
 
@@ -1046,52 +1051,11 @@ class LLM(callbacks.Plugin):
         if self._is_old_message(msg):
             return
 
-        channel = self._get_channel(msg)
-
-        # Try meta handler first (if enabled)
-        if self.registryValue("metaEnabled", channel):
-            text = " ".join(tokens)
-            # Use "ask" for rate limiting — meta shares the ask tier
-            preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
-            if preflight.blocked:
-                return  # Rate limited — do not fall through to ask
-
-            result: MetaResult = self.llm_service.meta_completion(
-                prompt=text,
-                nick=preflight.nick,
-                channel=preflight.channel,
-                db=self.db,
-                context=self.context,
-                bot_nick=irc.nick,
-                is_owner=ircdb.checkCapability(msg.prefix, "owner"),
-                cleanup_fn=lambda n: self._run_memory_cleanup(n, preflight.channel),
-                list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
-                set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
-                delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
-            )
-
-            if result.is_meta:
-                # Meta handled it — relay the response
-                if result.content:
-                    # Collapse newlines for IRC (single-line protocol)
-                    reply = " | ".join(line for line in result.content.splitlines() if line.strip())
-                    irc.reply(reply, prefixNick=False)
-                self.db.log_usage(
-                    preflight.nick,
-                    preflight.channel,
-                    "meta",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                )
-                return
-
-            # NOT_META — fall through to ask below
-
-        # Fall through to ask (original behavior)
-        # wrap() replaces ask's signature at runtime; ty sees the pre-wrap params
-        self.ask(irc, msg, tokens[:])  # ty: ignore[missing-argument]
+        text = " ".join(tokens)
+        preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
+        if preflight.blocked:
+            return
+        self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
 
     def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
         """Resolve a plain nick to its NickServ account, falling back to nick.
@@ -1153,6 +1117,78 @@ class LLM(callbacks.Plugin):
         if response.startswith(star_prefix) and len(response) > len(star_prefix):
             return response[len(star_prefix) :]
         return None
+
+    @staticmethod
+    def _collapse_for_irc(text: str) -> str:
+        """Collapse multi-line text into a single IRC-safe line."""
+        return " | ".join(line for line in text.splitlines() if line.strip())
+
+    def _build_request_context(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        preflight: PreflightResult,
+        *,
+        entry_route: str,
+        profile: str,
+    ) -> AssistantRequestContext:
+        """Normalize route metadata into a shared assistant request context."""
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
+        capabilities = frozenset(
+            capability
+            for capability in _REQUEST_CONTEXT_CAPABILITIES
+            if ircdb.checkCapability(msg.prefix, capability)
+        )
+        return AssistantRequestContext(
+            entry_route=entry_route,
+            profile=profile,
+            nick=preflight.nick,
+            raw_nick=raw_nick,
+            account=preflight.account,
+            channel=preflight.channel,
+            is_private=not ircutils.isChannel(preflight.channel),
+            is_owner="owner" in capabilities,
+            capabilities=capabilities,
+        )
+
+    def _run_meta(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        preflight: PreflightResult,
+    ) -> MetaResult:
+        """Run meta tool-calling loop with concurrency release.
+
+        Shared implementation for explicit ``@meta`` requests.
+        """
+        request_context = self._build_request_context(
+            irc,
+            msg,
+            preflight,
+            entry_route="meta",
+            profile="meta",
+        )
+        with self._allow_concurrent():
+            result: MetaResult = self.llm_service.meta_completion(
+                prompt=text,
+                nick=preflight.nick,
+                channel=preflight.channel,
+                db=self.db,
+                context=self.context,
+                bot_nick=irc.nick,
+                is_owner=request_context.is_owner,
+                route_profile=request_context.profile,
+                capabilities=request_context.capabilities,
+                account=request_context.account,
+                cleanup_fn=lambda n: self._run_memory_cleanup(n, preflight.channel),
+                list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
+                set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
+                delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
+            )
+        if result.error:
+            self.log.warning("meta command error: %s", result.error)
+        return result
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Return account name if the user is logged in, else fall back to nick.
@@ -1711,7 +1747,29 @@ class LLM(callbacks.Plugin):
         )
         if pf.blocked:
             return
+
+        self._ask_impl(irc, msg, text, pf, entry_route="ask")
+
+    ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
+
+    def _ask_impl(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        pf: PreflightResult,
+        *,
+        entry_route: str = "ask",
+    ) -> None:
+        """Core ask logic, separated so invalidCommand can reuse without double-preflight."""
         nick, channel = pf.nick, pf.channel
+        request_context = self._build_request_context(
+            irc,
+            msg,
+            pf,
+            entry_route=entry_route,
+            profile="chat",
+        )
 
         with self._trace_request("ask", nick, channel):
             # Detect images for vision
@@ -1735,34 +1793,23 @@ class LLM(callbacks.Plugin):
             effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
 
             with self._allow_concurrent():
+                request_text = text
                 if images:
                     # Clean prompt by removing image URLs
-                    clean_prompt = text
                     for img in images:
-                        clean_prompt = clean_prompt.replace(img, "").strip()
+                        request_text = request_text.replace(img, "").strip()
 
-                    result = self.llm_service.completion(
-                        clean_prompt,
-                        command="ask",
-                        images=images,
-                        history=history,
-                        channel_history=channel_history,
-                        irc=irc,
-                        msg=msg,
-                        memories=memories,
-                        system_prompt=effective_prompt,
-                    )
-                else:
-                    result = self.llm_service.completion(
-                        text,
-                        command="ask",
-                        history=history,
-                        channel_history=channel_history,
-                        irc=irc,
-                        msg=msg,
-                        memories=memories,
-                        system_prompt=effective_prompt,
-                    )
+                result = self.llm_service.assistant_request(
+                    request_text,
+                    request_context=request_context,
+                    images=images,
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                    memories=memories,
+                    system_prompt=effective_prompt,
+                )
 
                 # Format response with grounding icon if search was used
                 response = result.content
@@ -1791,8 +1838,6 @@ class LLM(callbacks.Plugin):
             self._store_context_and_log_usage(
                 nick, channel, "ask", text, response, result, irc, msg
             )
-
-    ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
     def code(
         self,
@@ -2109,6 +2154,11 @@ class LLM(callbacks.Plugin):
         Uses tool calling to interpret your request and perform the
         appropriate action (set instructions, manage memories, etc.).
         """
+        # Skip ZNC playback — meta can mutate state (set instructions,
+        # delete memories, schedule reminders).
+        if self._is_old_message(msg):
+            return
+
         channel = self._get_channel(msg)
 
         if not self.registryValue("metaEnabled", channel):
@@ -2120,22 +2170,7 @@ class LLM(callbacks.Plugin):
         if preflight.blocked:
             return
 
-        result: MetaResult = self.llm_service.meta_completion(
-            prompt=text,
-            nick=preflight.nick,
-            channel=preflight.channel,
-            db=self.db,
-            context=self.context,
-            bot_nick=irc.nick,
-            is_owner=ircdb.checkCapability(msg.prefix, "owner"),
-            cleanup_fn=lambda n: self._run_memory_cleanup(n, preflight.channel),
-            list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
-            set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
-            delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
-        )
-
-        if result.error:
-            self.log.warning("meta command error: %s", result.error)
+        result = self._run_meta(irc, msg, text, preflight)
 
         if not result.is_meta:
             # Explicit @meta for a non-config request — helpful message
@@ -2148,9 +2183,7 @@ class LLM(callbacks.Plugin):
                 prefixNick=False,
             )
         elif result.content:
-            # Collapse newlines for IRC (single-line protocol)
-            reply = " | ".join(line for line in result.content.splitlines() if line.strip())
-            irc.reply(reply, prefixNick=False)
+            irc.reply(self._collapse_for_irc(result.content), prefixNick=False)
 
         # Log usage as "meta" command type
         self.db.log_usage(
@@ -2380,79 +2413,43 @@ class LLM(callbacks.Plugin):
             return
         irc.reply(self._format_reminders(user_reminders))
 
-    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> None:
-        """Parse and schedule a natural language reminder."""
-        channel = self._get_channel(msg)
+    # Maximum reminder duration (7 days in seconds)
+    _REMINDER_MAX_SECONDS = 604800
 
-        with self._trace_request("remind", nick, channel):
-            with self._allow_concurrent():
-                result = self.llm_service.parse_reminder(text, channel)
+    def _cancel_reminder(self, event_name: str) -> None:
+        """Remove a single reminder from scheduler, in-memory dict, and database."""
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(event_name)
+        with self._reminders_lock:
+            self._reminders.pop(event_name, None)
+        self.db.delete_reminder(event_name)
 
-            if result.action == "clarify":
-                irc.reply(result.confirmation)
-                return
-
-            if result.seconds is None:
-                irc.reply(_("I couldn't determine when to remind you. Please try again."))
-                return
-
-            if result.seconds < 10:
-                irc.error(_("Reminder must be at least 10 seconds from now."))
-                return
-
-            if result.seconds > 604800:  # 7 days
-                irc.error(_("Reminder can't be more than 7 days out."))
-                return
-
-            reminder_message = result.message or text
-            event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
-            deliver = self._make_reminder_delivery_closure(
-                nick, channel, reminder_message, event_name
-            )
-
-            try:
-                schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
-                with self._reminders_lock:
-                    self._reminders[event_name] = (nick, channel, reminder_message)
-
-                self.db.save_reminder(
-                    event_name,
-                    nick,
-                    channel,
-                    reminder_message,
-                    time.time() + result.seconds,
-                )
-
-                reply = self.llm_service.sanitize_output(result.confirmation)
-                if result.note:
-                    reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
-                irc.reply(reply)
-            except Exception as e:
-                self.log.error("Failed to schedule reminder: %s", e)
-                irc.error(_("Failed to set reminder."))
-
-    def _remind_set_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> str:
-        """Parse and schedule a reminder, returning a result string for meta.
-
-        Same logic as _remind_set() but returns a string instead of
-        calling irc.reply().
-        """
+    def _schedule_reminder(
+        self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str
+    ) -> ReminderScheduleResult:
+        """Parse, validate, and schedule a reminder."""
         channel = self._get_channel(msg)
 
         with self._trace_request("remind", nick, channel), self._allow_concurrent():
             result = self.llm_service.parse_reminder(text, channel)
 
         if result.action == "clarify":
-            return result.confirmation
+            return ReminderScheduleResult(ok=True, message=result.confirmation)
 
         if result.seconds is None:
-            return "Could not determine when to set the reminder."
+            return ReminderScheduleResult(
+                ok=False, message="Could not determine when to set the reminder."
+            )
 
         if result.seconds < 10:
-            return "Reminder must be at least 10 seconds from now."
+            return ReminderScheduleResult(
+                ok=False, message="Reminder must be at least 10 seconds from now."
+            )
 
-        if result.seconds > 604800:  # 7 days
-            return "Reminder can't be more than 7 days out."
+        if result.seconds > self._REMINDER_MAX_SECONDS:
+            return ReminderScheduleResult(
+                ok=False, message="Reminder can't be more than 7 days out."
+            )
 
         reminder_message = result.message or text
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
@@ -2474,10 +2471,22 @@ class LLM(callbacks.Plugin):
             reply = self.llm_service.sanitize_output(result.confirmation)
             if result.note:
                 reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
-            return reply
+            return ReminderScheduleResult(ok=True, message=reply)
         except Exception as e:
             self.log.error("Failed to schedule reminder: %s", e)
-            return "Failed to set reminder."
+            return ReminderScheduleResult(ok=False, message="Failed to set reminder.")
+
+    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> None:
+        """Parse and schedule a natural language reminder via IRC."""
+        result = self._schedule_reminder(irc, msg, nick, text)
+        if result.ok:
+            irc.reply(result.message)
+        else:
+            irc.error(_(result.message))
+
+    def _remind_set_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> str:
+        """Parse and schedule a reminder, returning a result string for meta."""
+        return self._schedule_reminder(irc, msg, nick, text).message
 
     def _remind_delete_for_meta(self, nick: str, reminder_id: str) -> str:
         """Delete a reminder by ID, returning a result string for meta."""
@@ -2485,11 +2494,7 @@ class LLM(callbacks.Plugin):
         if target is None:
             return f"Reminder {reminder_id} not found."
 
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent(target)
-        with self._reminders_lock:
-            self._reminders.pop(target, None)
-        self.db.delete_reminder(target)
+        self._cancel_reminder(target)
         return f"Deleted reminder {reminder_id}."
 
     def remind(
@@ -2527,11 +2532,7 @@ class LLM(callbacks.Plugin):
             for rid in raw_ids:
                 target = self._find_user_reminder(nick, rid)
                 if target:
-                    with contextlib.suppress(KeyError):
-                        schedule.removeEvent(target)
-                    with self._reminders_lock:
-                        self._reminders.pop(target, None)
-                    self.db.delete_reminder(target)
+                    self._cancel_reminder(target)
                     deleted += 1
             if deleted == 0:
                 irc.error(_("No matching reminders found."))
@@ -2546,11 +2547,7 @@ class LLM(callbacks.Plugin):
                 irc.reply(_("No reminders to clear."), prefixNick=False)
                 return
             for name, _data in user_reminders:
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent(name)
-                with self._reminders_lock:
-                    self._reminders.pop(name, None)
-                self.db.delete_reminder(name)
+                self._cancel_reminder(name)
             label = "reminder" if len(user_reminders) == 1 else "reminders"
             irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
 
