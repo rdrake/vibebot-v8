@@ -1874,6 +1874,7 @@ class LLMService:
             capabilities=request_context.capabilities,
             account=request_context.account,
             is_owner=request_context.is_owner,
+            images=images,
             system_prompt=system_prompt,
             cleanup_fn=cleanup_fn,
             list_reminders_fn=list_reminders_fn,
@@ -2246,6 +2247,7 @@ Rules:
         route_profile: str = "meta",
         capabilities: frozenset[str] | None = None,
         account: str | None = None,
+        images: list[str] | None = None,
         system_prompt: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
@@ -2320,9 +2322,19 @@ Rules:
             else:
                 effective_prompt = system_prompt.format(bot_nick=bot_nick)
 
+            # Build user message — multipart if images are present
+            valid_images = [url for url in (images or []) if self.validate_image_url(url)]
+            if valid_images:
+                user_content: str | list[dict[str, Any]] = [
+                    {"type": "text", "text": prompt},
+                    *[{"type": "image_url", "image_url": {"url": u}} for u in valid_images],
+                ]
+            else:
+                user_content = prompt
+
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": effective_prompt},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_content},
             ]
 
             # Safety settings but NO grounding tools — meta uses its own
