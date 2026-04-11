@@ -956,6 +956,69 @@ class TestImageSaving:
         """GIVEN unknown bytes THEN returns None."""
         assert self.service._detect_image_format(b"unknown data") is None
 
+    def test_convert_png_to_jpeg(self) -> None:
+        """GIVEN a real PNG image WHEN converting THEN returns JPEG bytes."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        # Create a real 1x1 red PNG
+        img = Image.new("RGB", (1, 1), color=(255, 0, 0))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        jpeg_bytes, ext = self.service._convert_png_to_jpeg(png_bytes)
+        assert ext == "jpg"
+        assert jpeg_bytes[:3] == b"\xff\xd8\xff"
+
+    def test_convert_png_to_jpeg_rgba(self) -> None:
+        """GIVEN RGBA PNG WHEN converting THEN strips alpha and returns JPEG."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("RGBA", (1, 1), color=(255, 0, 0, 128))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        jpeg_bytes, ext = self.service._convert_png_to_jpeg(png_bytes)
+        assert ext == "jpg"
+        assert jpeg_bytes[:3] == b"\xff\xd8\xff"
+
+    def test_convert_invalid_png_falls_back(self) -> None:
+        """GIVEN invalid PNG data WHEN converting THEN falls back to original."""
+        bad_data = b"\x89PNG\r\n\x1a\ngarbage"
+        result_bytes, ext = self.service._convert_png_to_jpeg(bad_data)
+        assert ext == "png"
+        assert result_bytes == bad_data
+
+    def test_save_real_png_becomes_jpeg(self, tmp_path: object) -> None:
+        """GIVEN a real PNG image WHEN saving THEN file is saved as JPEG."""
+        from io import BytesIO
+        from pathlib import Path
+
+        from PIL import Image
+
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        img = Image.new("RGB", (1, 1), color=(0, 128, 255))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+
+        result = self.service._save_image_bytes(buf.getvalue())
+        assert result is not None
+        assert result.endswith(".jpg")
+
+        jpg_files = list(Path(str(tmp_path)).glob("img_*.jpg"))
+        assert len(jpg_files) == 1
+
     def test_save_image_bytes_writes_file(self, tmp_path: object) -> None:
         """GIVEN image bytes WHEN saving THEN file exists on disk."""
         from pathlib import Path
@@ -1111,7 +1174,7 @@ class TestImageGenerationWithBase64:
         return msg
 
     def test_image_generation_with_url_response(self) -> None:
-        """GIVEN provider returns URL WHEN generating THEN caches locally and returns remote URL."""
+        """GIVEN provider returns URL WHEN generating THEN downloads and returns local URL."""
         mock_response = self.mocker.Mock()
         mock_response.data = [self.mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
 
@@ -1124,7 +1187,7 @@ class TestImageGenerationWithBase64:
         result = self.service.image_generation("a cat")
 
         mock_download.assert_called_once_with("https://provider.com/image.png")
-        assert result.content == "https://provider.com/image.png"
+        assert result.content == "https://example.com/llm/img_abc123.png"
 
     def test_image_generation_url_download_failure_falls_back(self) -> None:
         """GIVEN provider returns URL and download fails WHEN generating THEN falls back to provider URL."""
@@ -1230,7 +1293,7 @@ class TestImageGenerationWithBase64:
         )
         result = self.service.image_generation("a cat")
 
-        assert result.content == "https://example.com/image.png"
+        assert result.content == "https://example.com/llm/img_local.png"
 
 
 class TestCleanupWithImages:
@@ -2430,7 +2493,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("a dangerous cat")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a friendly cat"
 
     def test_auto_rewrite_on_content_policy_error_succeeds(self) -> None:
@@ -2458,7 +2521,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_auto_rewrite_multiple_retries_succeeds_on_third(self) -> None:
@@ -2484,7 +2547,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("test prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "rewrite v2"
 
     def test_auto_rewrite_exhausts_all_retries(self) -> None:
@@ -2673,7 +2736,7 @@ class TestDrawAutoRewrite:
         )
         result = self.service.image_generation("bad prompt")
 
-        assert result.content == "https://example.com/img.png"
+        assert result.content == "https://example.com/llm/img_local.png"
         assert result.rewritten_prompt == "a safe prompt"
 
     def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:

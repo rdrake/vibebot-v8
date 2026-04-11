@@ -2215,9 +2215,9 @@ Rules:
             image_data = response.data[0]
 
             if hasattr(image_data, "url") and image_data.url:
-                self._download_and_save_image(image_data.url)  # cache locally
+                local_url = self._download_and_save_image(image_data.url)
                 return ImageResult(
-                    content=image_data.url,
+                    content=local_url or image_data.url,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     cost=cost,
@@ -2880,6 +2880,33 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             return "gif"
         return None
 
+    def _convert_png_to_jpeg(self, image_bytes: bytes, quality: int = 90) -> tuple[bytes, str]:
+        """Convert PNG bytes to JPEG for smaller file size.
+
+        Falls back to the original PNG bytes on any error.
+
+        Args:
+            image_bytes: Raw PNG image bytes
+            quality: JPEG quality (1-100)
+
+        Returns:
+            Tuple of (image_bytes, extension) — JPEG on success, original PNG on failure.
+        """
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(image_bytes)) as img:
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGB")
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality)
+                return buf.getvalue(), "jpg"
+        except Exception:
+            self.log.debug("PNG→JPEG conversion failed, keeping PNG")
+            return image_bytes, "png"
+
     def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
         """Save raw image bytes to HTTP server and return public URL.
 
@@ -2894,6 +2921,10 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         detected = self._detect_image_format(image_bytes)
         if detected:
             extension = detected
+
+        # Convert PNG to JPEG for smaller file size
+        if extension == "png":
+            image_bytes, extension = self._convert_png_to_jpeg(image_bytes)
 
         http_root, url_base = self.get_http_paths()
 
