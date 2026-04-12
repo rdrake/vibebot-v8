@@ -8,6 +8,7 @@ context methods. All tools are scoped to a single user's nick.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
 
     from .context import ConversationContext
     from .persistence import LLMDatabase, UsageSummary
+
+_log = logging.getLogger("supybot.plugins.LLM.assistant")
 
 # Sentinel string the LLM returns to signal "this is not a config request".
 # Shared between the system prompt (meta.py) and the check in service.py.
@@ -630,6 +633,12 @@ class MetaToolExecutor:
         """
         spec = META_TOOL_REGISTRY.get(tool_name)
         if spec is None:
+            _log.warning(
+                "tool=%s profile=%s nick=%s decision=deny reason=unknown_tool",
+                tool_name,
+                self.route_profile,
+                self.nick,
+            )
             return ToolResult(content=self._err(f"Unknown tool: {tool_name}"))
         denial_reason = spec.denial_reason(
             route_profile=self.route_profile,
@@ -637,10 +646,31 @@ class MetaToolExecutor:
             account=self.account,
         )
         if denial_reason is not None:
+            _log.info(
+                "tool=%s profile=%s nick=%s bucket=%s decision=deny reason=%s",
+                tool_name,
+                self.route_profile,
+                self.nick,
+                spec.rate_bucket,
+                denial_reason,
+            )
             return ToolResult(content=self._err(denial_reason))
         handler = getattr(self, spec.handler_name, None)
         if handler is None:
+            _log.error(
+                "tool=%s profile=%s decision=deny reason=missing_handler",
+                tool_name,
+                self.route_profile,
+            )
             return ToolResult(content=self._err(f"Unknown tool implementation: {tool_name}"))
+        _log.info(
+            "tool=%s profile=%s nick=%s bucket=%s destructive=%s decision=allow",
+            tool_name,
+            self.route_profile,
+            self.nick,
+            spec.rate_bucket,
+            spec.destructive,
+        )
         try:
             raw = handler(arguments)
             result = ToolResult(content=raw) if isinstance(raw, str) else raw
@@ -652,6 +682,13 @@ class MetaToolExecutor:
             self.accumulated_cost += result.cost
             return result
         except Exception as e:
+            _log.warning(
+                "tool=%s profile=%s nick=%s decision=error reason=%s",
+                tool_name,
+                self.route_profile,
+                self.nick,
+                e,
+            )
             return ToolResult(content=self._err(str(e)))
 
     def _resolve_target_nick(self, args: dict[str, Any]) -> str | None:
