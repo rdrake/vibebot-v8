@@ -735,28 +735,16 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# Meta Command (natural language configuration)
+# Assistant Tool-Calling Backend (shared by @ask, @code, @draw, invalidCommand)
 # ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "metaEnabled",
-    registry.Boolean(
-        True,
-        _("""Enable the meta command and unknown-command routing.
-        When enabled, unrecognized commands are routed through a tool-calling
-        LLM that can manage instructions, memories, and context. Falls back
-        to ask if the request is not a configuration operation."""),
-    ),
-)
 
 conf.registerChannelValue(
     LLM,
     "metaModel",
     ValidatedModelName(
         "",
-        _("""Model for meta command (must support function/tool calling).
-        If empty, falls back to askModel."""),
+        _("""Model for the shared assistant tool-calling backend.
+        Must support function/tool calling. If empty, falls back to askModel."""),
     ),
 )
 
@@ -765,7 +753,7 @@ conf.registerGlobalValue(
     "metaApiKey",
     registry.String(
         "",
-        _("""API key for meta command. Falls back to askApiKey if empty."""),
+        _("""API key for the shared assistant backend. Falls back to askApiKey if empty."""),
         private=True,
     ),
 )
@@ -775,7 +763,7 @@ conf.registerGlobalValue(
     "metaMaxSteps",
     registry.PositiveInteger(
         7,
-        _("""Maximum tool-call round trips per meta invocation.
+        _("""Maximum tool-call round trips per assistant invocation.
         Prevents runaway tool loops."""),
     ),
 )

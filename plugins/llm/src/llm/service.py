@@ -202,10 +202,9 @@ class CleanupResult(NamedTuple):
 
 
 class MetaResult(NamedTuple):
-    """Result of a meta command tool-calling loop."""
+    """Result of an assistant tool-calling loop."""
 
     content: str
-    is_meta: bool = True
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
@@ -2252,7 +2251,7 @@ Rules:
         api_key: str | None = None,
         model_override: str | None = None,
         is_owner: bool = False,
-        route_profile: str = "meta",
+        route_profile: str = "chat",
         capabilities: frozenset[str] | None = None,
         account: str | None = None,
         images: list[str] | None = None,
@@ -2292,8 +2291,7 @@ Rules:
             MetaResult with the final text, is_meta flag, and usage stats
         """
         from .meta import (
-            META_SYSTEM_PROMPT,
-            NOT_META_SENTINEL,
+            CHAT_SYSTEM_PROMPT,
             MetaToolExecutor,
             get_tools_for_profile,
         )
@@ -2318,17 +2316,13 @@ Rules:
             if not effective_api_key:
                 return MetaResult(
                     content="Error: No API key configured.",
-                    is_meta=True,
-                    error="No API key configured for meta command.",
+                    error="No API key configured for assistant backend.",
                 )
 
             max_steps = self.plugin.registryValue("metaMaxSteps")
             timeout = self.plugin.registryValue("timeout")
 
-            if system_prompt is None:
-                effective_prompt = META_SYSTEM_PROMPT.format(bot_nick=bot_nick)
-            else:
-                effective_prompt = system_prompt.format(bot_nick=bot_nick)
+            effective_prompt = (system_prompt or CHAT_SYSTEM_PROMPT).format(bot_nick=bot_nick)
 
             # Build user message — multipart if images are present
             valid_images = [url for url in (images or []) if self.validate_image_url(url)]
@@ -2405,20 +2399,8 @@ Rules:
 
                     content = message.content or ""
 
-                    # Exact sentinel check (not substring)
-                    if content.strip() == NOT_META_SENTINEL:
-                        return MetaResult(
-                            content=content,
-                            is_meta=False,
-                            prompt_tokens=total_prompt_tokens,
-                            completion_tokens=total_completion_tokens,
-                            cost=total_cost,
-                            model=model,
-                        )
-
                     return MetaResult(
                         content=self.sanitize_output(content),
-                        is_meta=True,
                         prompt_tokens=total_prompt_tokens,
                         completion_tokens=total_completion_tokens,
                         cost=total_cost,
@@ -2490,19 +2472,17 @@ Rules:
             total_cost += executor.accumulated_cost
             return MetaResult(
                 content="Sorry, I hit the tool call limit. Try a simpler request.",
-                is_meta=True,
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
                 cost=total_cost,
                 model=model,
-                error="Meta command exceeded maximum steps.",
+                error="Assistant exceeded maximum tool-call steps.",
             )
 
         except Exception as e:
             self.log.error("meta_completion failed: %s", self._sanitize(str(e)))
             return MetaResult(
                 content="Sorry, something went wrong.",
-                is_meta=True,
                 error=self._sanitize(str(e)),
             )
 

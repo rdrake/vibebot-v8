@@ -4345,7 +4345,6 @@ class TestMetaResultGroundingUsed:
 
         result = MetaResult(
             content="response",
-            is_meta=True,
             prompt_tokens=100,
             completion_tokens=50,
             cost=0.01,

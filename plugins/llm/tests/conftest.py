@@ -190,8 +190,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Search/fetch tools
         "searchApiKey": "",
         "searchModel": "",
-        # Meta command
-        "metaEnabled": True,
+        # Assistant tool-calling backend
         "metaModel": "",
         "metaApiKey": "",
         "metaMaxSteps": 7,

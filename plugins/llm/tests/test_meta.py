@@ -9,7 +9,6 @@ from llm.meta import (
     CHAT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
-    META_SYSTEM_PROMPT,
     META_TOOL_SPECS,
     META_TOOLS,
     MetaToolExecutor,
@@ -17,7 +16,7 @@ from llm.meta import (
     get_tools_for_profile,
 )
 from llm.plugin import LLM
-from llm.service import LLMService, MetaResult
+from llm.service import LLMService
 
 from .conftest import make_registry_side_effect, plugin_init_patches
 
@@ -659,58 +658,7 @@ class TestMetaCompletion:
         )
 
         assert result.content == "Done \u2014 instruction set."
-        assert result.is_meta is True
         assert result.error is None
-
-    def test_not_meta_sentinel(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN LLM returns NOT_META WHEN not config THEN is_meta=False."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "NOT_META"
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
-
-        mocker.patch(
-            "llm.service.litellm.completion",
-            return_value=mock_response,
-        )
-
-        result = service.meta_completion(
-            prompt="what is the capital of France",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-        )
-
-        assert result.is_meta is False
-
-    def test_not_meta_exact_match(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN LLM mentions NOT_META in longer text WHEN checked THEN not sentinel."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "I returned NOT_META because this isn't config."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
-
-        mocker.patch(
-            "llm.service.litellm.completion",
-            return_value=mock_response,
-        )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
-
-        result = service.meta_completion(
-            prompt="explain NOT_META",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-        )
-
-        # Substring match would incorrectly flag this; exact match should not
-        assert result.is_meta is True
 
     def test_tool_call_then_text(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM calls a tool then responds WHEN executed THEN tool runs."""
@@ -751,7 +699,6 @@ class TestMetaCompletion:
         )
 
         assert result.content == "Done \u2014 I'll respond in haiku."
-        assert result.is_meta is True
         db.save_instruction.assert_called_once_with("testuser", "respond in haiku")
         assert mock_completion.call_count == 2
 
@@ -807,7 +754,6 @@ class TestMetaCompletion:
         )
 
         assert result.error is not None
-        assert result.is_meta is True
 
     def test_parallel_tool_calls(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM returns multiple tool calls WHEN executed THEN all run."""
@@ -913,10 +859,10 @@ class TestMetaCompletion:
         assert "helpful assistant" in captured_messages[0]["content"]
         assert "VibeBot" in captured_messages[0]["content"]
 
-    def test_meta_completion_defaults_to_meta_prompt(
+    def test_meta_completion_defaults_to_chat_prompt(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """meta_completion uses META_SYSTEM_PROMPT when no system_prompt given."""
+        """meta_completion uses CHAT_SYSTEM_PROMPT when no system_prompt given."""
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
         mock_choice.message.content = "Done."
@@ -942,8 +888,7 @@ class TestMetaCompletion:
         )
 
         assert captured_messages[0]["role"] == "system"
-        # META_SYSTEM_PROMPT contains "configuration assistant" — verify default
-        assert "configuration assistant" in captured_messages[0]["content"].lower()
+        assert captured_messages[0]["content"] == CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot")
 
     def test_meta_completion_passes_search_fn_to_executor(
         self, service: LLMService, mocker: MockerFixture
@@ -1093,122 +1038,6 @@ class TestMetaCompletion:
 # =========================================================================
 
 
-class TestMetaCommand:
-    """Tests for the @meta IRC command in plugin.py."""
-
-    @pytest.fixture
-    def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
-        """Create an LLM plugin with mocked dependencies."""
-        plugin_init_patches(mocker)
-        plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaEnabled": True})
-        )
-        plugin.llm_service = mocker.MagicMock()
-        plugin.db = mocker.MagicMock()
-        return plugin
-
-    def test_meta_calls_service(self, plugin, mocker: MockerFixture, mock_irc: MagicMock) -> None:
-        """GIVEN @meta command WHEN invoked THEN calls meta_completion."""
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.nick = "testuser"
-        msg.args = ["#test", "@meta set my instruction"]
-        msg.time = float("inf")  # Not a replay
-
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="Done \u2014 instruction set.",
-            is_meta=True,
-        )
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
-        )
-
-        plugin.meta(mock_irc, msg, ["set", "my", "instruction"])
-
-        plugin.llm_service.meta_completion.assert_called_once()
-
-    def test_meta_disabled(self, plugin, mocker: MockerFixture, mock_irc: MagicMock) -> None:
-        """GIVEN metaEnabled=False WHEN @meta invoked THEN error reply."""
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaEnabled": False})
-        )
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.nick = "testuser"
-        msg.args = ["#test", "@meta do something"]
-        msg.time = float("inf")
-
-        plugin.meta(mock_irc, msg, ["do", "something"])
-
-        mock_irc.reply.assert_called()
-
-    def test_meta_not_meta_does_not_echo_sentinel(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN explicit @meta WHEN NOT_META returned THEN helpful message."""
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.nick = "testuser"
-        msg.args = ["#test"]
-        msg.time = float("inf")
-
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="NOT_META",
-            is_meta=False,
-        )
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
-        )
-
-        plugin.meta(mock_irc, msg, ["what", "is", "Python"])
-
-        # Should NOT echo "NOT_META" — should give a helpful message
-        call_args = mock_irc.reply.call_args[0][0]
-        assert "NOT_META" not in call_args
-
-    def test_meta_uses_ask_rate_limit(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN @meta command WHEN preflight runs THEN uses ask rate limit."""
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.nick = "testuser"
-        msg.args = ["#test"]
-        msg.time = float("inf")
-
-        plugin.llm_service.meta_completion.return_value = MetaResult(
-            content="Done.",
-            is_meta=True,
-        )
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
-        )
-
-        plugin.meta(mock_irc, msg, ["set", "instruction"])
-
-        # Preflight should be called with command="ask" for rate limiting
-        plugin._run_preflight.assert_called_once()
-        # Fourth positional arg is the command name
-        call_args = plugin._run_preflight.call_args[0]
-        assert call_args[3] == "ask"
-
-
 class TestReminderMetaHelpers:
     """Tests for plugin reminder helper methods used by meta."""
 
@@ -1218,9 +1047,7 @@ class TestReminderMetaHelpers:
 
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaEnabled": True})
-        )
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect({}))
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda s: s
         plugin.db = mocker.MagicMock()
@@ -1535,9 +1362,7 @@ class TestInvalidCommandRouting:
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaEnabled": True})
-        )
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect({}))
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
         return plugin
@@ -1673,8 +1498,6 @@ class TestMetaIntegration:
             context=context,
             bot_nick="VibeBot",
         )
-
-        assert result.is_meta is True
         assert "haiku" in result.content.lower()
         assert db.get_instruction("testuser") == "always respond in haiku"
 
@@ -1749,8 +1572,6 @@ class TestMetaIntegration:
             context=context,
             bot_nick="VibeBot",
         )
-
-        assert result.is_meta is True
         assert "cat" in result.content.lower()
 
         remaining = db.get_memories("testuser")
@@ -1829,8 +1650,6 @@ class TestMetaIntegration:
             ),
             bot_nick="VibeBot",
         )
-
-        assert result.is_meta is True
         assert "2" in result.content
         db.close()
 
@@ -1866,7 +1685,7 @@ class TestMetaIntegration:
 
         cleanup_fn = mocker.MagicMock(return_value="Before: 5 | dropped: 1 | after: 4")
 
-        result = svc.meta_completion(
+        svc.meta_completion(
             prompt="clean up my memories",
             nick="testuser",
             channel="#test",
@@ -1881,8 +1700,6 @@ class TestMetaIntegration:
             bot_nick="VibeBot",
             cleanup_fn=cleanup_fn,
         )
-
-        assert result.is_meta is True
         cleanup_fn.assert_called_once()
 
     def test_set_reminder_via_meta(self, mocker: MockerFixture) -> None:
@@ -1917,7 +1734,7 @@ class TestMetaIntegration:
 
         set_reminder_fn = mocker.MagicMock(return_value="I'll remind you in 2 hours")
 
-        result = svc.meta_completion(
+        svc.meta_completion(
             prompt="remind me to deploy in 2 hours",
             nick="testuser",
             channel="#test",
@@ -1932,8 +1749,6 @@ class TestMetaIntegration:
             bot_nick="VibeBot",
             set_reminder_fn=set_reminder_fn,
         )
-
-        assert result.is_meta is True
         set_reminder_fn.assert_called_once_with("deploy in 2 hours")
 
     @staticmethod
@@ -1999,10 +1814,6 @@ class TestProfileSystemPrompts:
     def test_draw_system_prompt_mentions_generate_image(self) -> None:
         """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
         assert "generate_image" in DRAW_SYSTEM_PROMPT
-
-    def test_meta_system_prompt_unchanged(self) -> None:
-        """GIVEN META_SYSTEM_PROMPT WHEN checked THEN still contains NOT_META."""
-        assert "NOT_META" in META_SYSTEM_PROMPT
 
 
 class TestToolSpecVisibility:

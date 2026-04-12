@@ -2288,7 +2288,6 @@ class TestCommandRegistry:
             "forget",
             "memories",
             "instruct",
-            "meta",
             "remind",
             "usage",
         }

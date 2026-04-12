@@ -191,21 +191,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%usage", "%usage someone", "%usage #channel"),
         category="utility",
     ),
-    CommandInfo(
-        name="meta",
-        args="<request>",
-        description=(
-            "Manage your settings with natural language (instructions, memories, context)."
-        ),
-        examples=(
-            "%meta always respond in haiku",
-            "%meta what are my memories?",
-            "%meta how much have I used this month?",
-            "%meta remind me to deploy in 2 hours",
-            "%meta show my reminders",
-        ),
-        category="utility",
-    ),
 )
 
 
@@ -1169,48 +1154,8 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
-    def _run_meta(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        text: str,
-        preflight: PreflightResult,
-        *,
-        entry_route: str = "meta",
-        profile: str = "meta",
-    ) -> MetaResult:
-        """Run meta tool-calling loop with concurrency release."""
-        request_context = self._build_request_context(
-            irc,
-            msg,
-            preflight,
-            entry_route=entry_route,
-            profile=profile,
-        )
-        with self._allow_concurrent():
-            result: MetaResult = self.llm_service.meta_completion(
-                prompt=text,
-                nick=preflight.nick,
-                channel=preflight.channel,
-                db=self.db,
-                context=self.context,
-                bot_nick=irc.nick,
-                is_owner=request_context.is_owner,
-                route_profile=request_context.profile,
-                capabilities=request_context.capabilities,
-                account=request_context.account,
-                cleanup_fn=lambda n: self._run_memory_cleanup(n, preflight.channel),
-                list_reminders_fn=lambda: self._get_user_reminders(preflight.nick),
-                set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, preflight.nick, t),
-                delete_reminder_fn=lambda rid: self._remind_delete_for_meta(preflight.nick, rid),
-                draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
-            )
-        if result.error:
-            self.log.warning("meta command error: %s", result.error)
-        return result
-
     def _draw_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
-        """Generate an image and return the result string for meta.
+        """Generate an image for the generate_image tool.
 
         Usage logging is handled by the outer command wrapper via
         ``_store_context_and_log_usage``; leaf tool handlers do not log
@@ -2251,61 +2196,6 @@ class LLM(callbacks.Plugin):
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
-
-    @wrap(["text"])
-    def meta(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """Manage settings via natural language.
-
-        Uses tool calling to interpret your request and perform the
-        appropriate action (set instructions, manage memories, etc.).
-        """
-        # Skip ZNC playback — meta can mutate state (set instructions,
-        # delete memories, schedule reminders).
-        if self._is_old_message(msg):
-            return
-
-        channel = self._get_channel(msg)
-
-        if not self.registryValue("metaEnabled", channel):
-            irc.reply(_("The meta command is not enabled in this channel."))
-            return
-
-        # Use "ask" for rate limiting — meta shares the ask tier
-        preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
-        if preflight.blocked:
-            return
-
-        result = self._run_meta(irc, msg, text, preflight)
-
-        if not result.is_meta:
-            # Explicit @meta for a non-config request — helpful message
-            irc.reply(
-                _(
-                    "I can manage your instructions, memories, "
-                    "context, usage stats, and reminders. "
-                    "Try: @meta list my memories"
-                ),
-                prefixNick=False,
-            )
-        elif result.content:
-            irc.reply(self._collapse_for_irc(result.content), prefixNick=False)
-
-        # Log usage as "meta" command type
-        self.db.log_usage(
-            preflight.nick,
-            preflight.channel,
-            "meta",
-            result.model,
-            result.prompt_tokens,
-            result.completion_tokens,
-            result.cost,
-        )
 
     def usage(
         self,
