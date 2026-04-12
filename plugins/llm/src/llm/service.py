@@ -2880,7 +2880,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             return "gif"
         return None
 
-    def _convert_png_to_jpeg(self, image_bytes: bytes, quality: int = 90) -> tuple[bytes, str]:
+    def _convert_png_to_jpeg(self, image_bytes: bytes, quality: int = 85) -> tuple[bytes, str]:
         """Convert PNG bytes to JPEG for smaller file size.
 
         Falls back to the original PNG bytes on any error.
