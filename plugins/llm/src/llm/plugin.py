@@ -755,7 +755,7 @@ class LLM(callbacks.Plugin):
                 if result.error or result.content.strip().upper() == "PASS":
                     return
 
-                response = result.content
+                response = self.llm_service.sanitize_output(result.content)
                 action_text = self._extract_action(irc, response)
                 if action_text:
                     irc.queueMsg(ircmsgs.action(channel, action_text))

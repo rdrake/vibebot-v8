@@ -1259,8 +1259,7 @@ class LLMService:
             optional_kwargs=optional_kwargs,
         )
 
-        raw_content = response.choices[0].message.content
-        content = self.sanitize_output(raw_content)
+        content = response.choices[0].message.content or ""
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, task.model)
 
         return PendingTaskResult(
@@ -1647,8 +1646,7 @@ class LLMService:
             self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
             self._log_server_headers(response)
 
-            raw_content = response.choices[0].message.content
-            content = self.sanitize_output(raw_content)
+            content = response.choices[0].message.content or ""
             grounding_used = self._check_grounding_used(response)
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
 

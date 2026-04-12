@@ -53,7 +53,8 @@ def spontaneous_env(
 
         registry_side_effect = make_registry_side_effect(defaults)
         mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
-        plugin_init_patches(mocker)
+        patches = plugin_init_patches(mocker)
+        patches["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
         mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
         plugin = LLM(mock_irc)
         plugin.registryValue = mocker.MagicMock(side_effect=registry_side_effect)
