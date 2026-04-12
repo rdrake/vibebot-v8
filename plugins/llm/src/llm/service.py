@@ -201,7 +201,7 @@ class CleanupResult(NamedTuple):
     error: str | None = None
 
 
-class MetaResult(NamedTuple):
+class AssistantResult(NamedTuple):
     """Result of an assistant tool-calling loop."""
 
     content: str
@@ -264,8 +264,8 @@ if TYPE_CHECKING:
     from supybot.callbacks import Irc
     from supybot.ircmsgs import IrcMsg
 
+    from .assistant import ToolResult
     from .context import ConversationContext
-    from .meta import ToolResult
     from .persistence import LLMDatabase, MemoryRow
     from .plugin import LLM
 
@@ -1721,7 +1721,7 @@ class LLMService:
         Returns:
             ToolResult with the response content and usage metadata
         """
-        from .meta import ToolResult
+        from .assistant import ToolResult
 
         try:
             target = channel if channel.startswith(("#", "&")) else None
@@ -1772,7 +1772,7 @@ class LLMService:
         Returns:
             ToolResult with the summary content and usage metadata
         """
-        from .meta import ToolResult
+        from .assistant import ToolResult
 
         if not validate_external_url(url):
             return ToolResult(
@@ -1843,14 +1843,14 @@ class LLMService:
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
-    ) -> MetaResult:
-        """Unified assistant facade that dispatches to meta_completion.
+    ) -> AssistantResult:
+        """Unified assistant facade that dispatches to assistant_completion.
 
         Selects the per-profile system prompt (chat, code, draw) and
         delegates to the planner loop so that all assistant routes share
         a single entry point with full tool access.
         """
-        from .meta import CHAT_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, DRAW_SYSTEM_PROMPT
+        from .assistant import CHAT_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, DRAW_SYSTEM_PROMPT
 
         profile_prompts = {
             "chat": CHAT_SYSTEM_PROMPT,
@@ -1870,7 +1870,7 @@ class LLMService:
         if system_prompt is None:
             system_prompt = profile_prompts.get(profile, CHAT_SYSTEM_PROMPT)
 
-        return self.meta_completion(
+        return self.assistant_completion(
             prompt,
             nick=request_context.nick,
             channel=request_context.channel or "",
@@ -2239,7 +2239,7 @@ Rules:
         # No image data — content was blocked
         return None
 
-    def meta_completion(
+    def assistant_completion(
         self,
         prompt: str,
         *,
@@ -2264,7 +2264,7 @@ Rules:
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
-    ) -> MetaResult:
+    ) -> AssistantResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
         Unlike completion(), this method:
@@ -2288,11 +2288,11 @@ Rules:
             delete_reminder_fn: Optional callable that deletes a reminder
 
         Returns:
-            MetaResult with the final text, is_meta flag, and usage stats
+            AssistantResult with the final text, is_meta flag, and usage stats
         """
-        from .meta import (
+        from .assistant import (
             CHAT_SYSTEM_PROMPT,
-            MetaToolExecutor,
+            AssistantToolExecutor,
             get_tools_for_profile,
         )
 
@@ -2314,7 +2314,7 @@ Rules:
                 or self.plugin.registryValue("askApiKey")
             )
             if not effective_api_key:
-                return MetaResult(
+                return AssistantResult(
                     content="Error: No API key configured.",
                     error="No API key configured for assistant backend.",
                 )
@@ -2343,7 +2343,7 @@ Rules:
             # tools= kwarg passed explicitly below.
             optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
 
-            executor = MetaToolExecutor(
+            executor = AssistantToolExecutor(
                 db=db,
                 context=context,
                 nick=nick,
@@ -2366,7 +2366,7 @@ Rules:
 
             for _step in range(max_steps):
                 self.log.info(
-                    "meta_completion step %d: model=%s messages=%d",
+                    "assistant_completion step %d: model=%s messages=%d",
                     _step + 1,
                     model,
                     len(messages),
@@ -2399,7 +2399,7 @@ Rules:
 
                     content = message.content or ""
 
-                    return MetaResult(
+                    return AssistantResult(
                         content=self.sanitize_output(content),
                         prompt_tokens=total_prompt_tokens,
                         completion_tokens=total_completion_tokens,
@@ -2470,7 +2470,7 @@ Rules:
             total_prompt_tokens += executor.accumulated_prompt_tokens
             total_completion_tokens += executor.accumulated_completion_tokens
             total_cost += executor.accumulated_cost
-            return MetaResult(
+            return AssistantResult(
                 content="Sorry, I hit the tool call limit. Try a simpler request.",
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
@@ -2480,8 +2480,8 @@ Rules:
             )
 
         except Exception as e:
-            self.log.error("meta_completion failed: %s", self._sanitize(str(e)))
-            return MetaResult(
+            self.log.error("assistant_completion failed: %s", self._sanitize(str(e)))
+            return AssistantResult(
                 content="Sorry, something went wrong.",
                 error=self._sanitize(str(e)),
             )

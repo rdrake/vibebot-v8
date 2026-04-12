@@ -34,17 +34,17 @@ from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase
 from .service import (
     AssistantRequestContext,
+    AssistantResult,
     CompletionResult,
     ImageResult,
     LLMService,
-    MetaResult,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
-    from .meta import ToolResult
+    from .assistant import ToolResult
 
 _ = PluginInternationalization("LLM")
 
@@ -1154,7 +1154,7 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
-    def _draw_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
+    def _draw_for_assistant(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
         """Generate an image for the generate_image tool.
 
         Usage logging is handled by the outer command wrapper via
@@ -1166,7 +1166,7 @@ class LLM(callbacks.Plugin):
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
         """Generate code and save to HTTP for the generate_code tool."""
-        from .meta import ToolResult
+        from .assistant import ToolResult
 
         try:
             result = self.llm_service.completion(
@@ -1659,7 +1659,7 @@ class LLM(callbacks.Plugin):
         command: str,
         text: str,
         response: str,
-        result: CompletionResult | ImageResult | MetaResult,
+        result: CompletionResult | ImageResult | AssistantResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
     ) -> None:
@@ -1811,11 +1811,11 @@ class LLM(callbacks.Plugin):
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
-                    set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, pf.nick, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_meta(pf.nick, r),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
                 )
 
                 # Format response with grounding icon if search was used
@@ -1921,11 +1921,11 @@ class LLM(callbacks.Plugin):
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
-                    set_reminder_fn=lambda t: self._remind_set_for_meta(irc, msg, pf.nick, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_meta(pf.nick, r),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
                 )
 
                 response = result.content
@@ -2005,7 +2005,7 @@ class LLM(callbacks.Plugin):
                     irc=irc,
                     msg=msg,
                     memories=[],
-                    draw_fn=lambda p: self._draw_for_meta(irc, msg, p),
+                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                 )
 
                 response = result.content
@@ -2485,11 +2485,13 @@ class LLM(callbacks.Plugin):
         else:
             irc.error(_(result.message))
 
-    def _remind_set_for_meta(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> str:
+    def _remind_set_for_assistant(
+        self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str
+    ) -> str:
         """Parse and schedule a reminder, returning a result string for meta."""
         return self._schedule_reminder(irc, msg, nick, text).message
 
-    def _remind_delete_for_meta(self, nick: str, reminder_id: str) -> str:
+    def _remind_delete_for_assistant(self, nick: str, reminder_id: str) -> str:
         """Delete a reminder by ID, returning a result string for meta."""
         target = self._find_user_reminder(nick, reminder_id)
         if target is None:

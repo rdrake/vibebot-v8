@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.service import (
     AssistantRequestContext,
+    AssistantResult,
     CompletionResult,
     LLMService,
-    MetaResult,
     validate_external_url,
 )
 
@@ -33,8 +33,8 @@ class TestLLMService:
         """GIVEN plugin WHEN service initialized THEN stores plugin reference."""
         assert self.service.plugin == self.mock_plugin
 
-    def test_assistant_request_chat_dispatches_to_meta_completion(self) -> None:
-        """GIVEN a chat request WHEN assistant_request is used THEN it dispatches to meta_completion()."""
+    def test_assistant_request_chat_dispatches_to_assistant_completion(self) -> None:
+        """GIVEN a chat request WHEN assistant_request is used THEN it dispatches to assistant_completion()."""
         request_context = AssistantRequestContext(
             entry_route="ask",
             profile="chat",
@@ -46,8 +46,8 @@ class TestLLMService:
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
-        expected = MetaResult(content="Hello from assistant facade", grounding_used=True)
-        self.service.meta_completion = self.mocker.Mock(return_value=expected)
+        expected = AssistantResult(content="Hello from assistant facade", grounding_used=True)
+        self.service.assistant_completion = self.mocker.Mock(return_value=expected)
 
         result = self.service.assistant_request(
             "hello there",
@@ -58,15 +58,15 @@ class TestLLMService:
         )
 
         assert result == expected
-        assert isinstance(result, MetaResult)
-        call_kwargs = self.service.meta_completion.call_args.kwargs
+        assert isinstance(result, AssistantResult)
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert call_kwargs["route_profile"] == "chat"
         assert call_kwargs["nick"] == "testuser"
         assert call_kwargs["channel"] == "#test"
 
     def test_assistant_request_unknown_profile_falls_back_to_chat_prompt(self) -> None:
         """GIVEN an unknown profile WHEN assistant_request is used THEN it falls back to chat prompt."""
-        from llm.meta import CHAT_SYSTEM_PROMPT
+        from llm.assistant import CHAT_SYSTEM_PROMPT
 
         request_context = AssistantRequestContext(
             entry_route="meta",
@@ -79,8 +79,8 @@ class TestLLMService:
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="ok"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
         )
 
         self.service.assistant_request(
@@ -91,7 +91,7 @@ class TestLLMService:
             bot_nick="Bot",
         )
 
-        call_kwargs = self.service.meta_completion.call_args.kwargs
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert call_kwargs["system_prompt"] == CHAT_SYSTEM_PROMPT
 
     def test_validate_prompt_rejects_empty(self) -> None:
@@ -4327,23 +4327,23 @@ class TestCleanupMemoriesValidation:
         assert "out of range" in result.error
 
 
-class TestMetaResultGroundingUsed:
-    """Tests for MetaResult.grounding_used field."""
+class TestAssistantResultGroundingUsed:
+    """Tests for AssistantResult.grounding_used field."""
 
     def test_grounding_used_defaults_to_false(self) -> None:
-        """GIVEN MetaResult with no grounding_used WHEN accessed THEN defaults to False."""
-        result = MetaResult(content="hello")
+        """GIVEN AssistantResult with no grounding_used WHEN accessed THEN defaults to False."""
+        result = AssistantResult(content="hello")
         assert result.grounding_used is False
 
     def test_grounding_used_can_be_set_true(self) -> None:
-        """GIVEN MetaResult with grounding_used=True WHEN accessed THEN is True."""
-        result = MetaResult(content="hello", grounding_used=True)
+        """GIVEN AssistantResult with grounding_used=True WHEN accessed THEN is True."""
+        result = AssistantResult(content="hello", grounding_used=True)
         assert result.grounding_used is True
 
     def test_grounding_used_coexists_with_other_fields(self) -> None:
-        """GIVEN MetaResult with all fields WHEN accessed THEN all fields correct."""
+        """GIVEN AssistantResult with all fields WHEN accessed THEN all fields correct."""
 
-        result = MetaResult(
+        result = AssistantResult(
             content="response",
             prompt_tokens=100,
             completion_tokens=50,
@@ -4462,7 +4462,7 @@ class TestSearchCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """search_completion returns ToolResult with response content."""
-        from llm.meta import ToolResult
+        from llm.assistant import ToolResult
 
         resp = _make_litellm_response(mocker, content="Search answer")
         mocker.patch("llm.service.litellm.completion", return_value=resp)
@@ -4527,7 +4527,7 @@ class TestSearchCompletion:
         """search_completion returns error ToolResult on failure."""
         import json
 
-        from llm.meta import ToolResult
+        from llm.assistant import ToolResult
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -4557,7 +4557,7 @@ class TestUrlCompletion:
 
     def test_returns_summary(self, service: LLMService, mocker: MockerFixture) -> None:
         """url_completion returns page summary as ToolResult."""
-        from llm.meta import ToolResult
+        from llm.assistant import ToolResult
 
         resp = _make_litellm_response(mocker, content="Page summary here")
         mocker.patch("llm.service.litellm.completion", return_value=resp)
@@ -4572,7 +4572,7 @@ class TestUrlCompletion:
         """url_completion returns error for private IPs."""
         import json
 
-        from llm.meta import ToolResult
+        from llm.assistant import ToolResult
 
         result = service.url_completion("http://192.168.1.1/admin", channel="#test")
 
@@ -4598,7 +4598,7 @@ class TestUrlCompletion:
         """url_completion returns error ToolResult on failure."""
         import json
 
-        from llm.meta import ToolResult
+        from llm.assistant import ToolResult
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -4650,10 +4650,10 @@ class TestAssistantRequestFacade:
         )
 
     def test_chat_profile_uses_chat_prompt(self) -> None:
-        """Chat profile dispatches to meta_completion with CHAT_SYSTEM_PROMPT."""
+        """Chat profile dispatches to assistant_completion with CHAT_SYSTEM_PROMPT."""
         ctx = self._make_ctx(profile="chat")
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="answer"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="answer"),
         )
 
         self.service.assistant_request(
@@ -4664,19 +4664,19 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        call_kwargs = self.service.meta_completion.call_args.kwargs
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert "NOT_META" not in call_kwargs["system_prompt"]
         assert call_kwargs["route_profile"] == "chat"
 
     def test_code_profile_uses_code_prompt(self) -> None:
-        """Code profile dispatches to meta_completion with CODE_SYSTEM_PROMPT."""
+        """Code profile dispatches to assistant_completion with CODE_SYSTEM_PROMPT."""
         ctx = self._make_ctx(
             entry_route="code",
             profile="code",
             capabilities=frozenset({"llm.code"}),
         )
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="code link"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="code link"),
         )
 
         self.service.assistant_request(
@@ -4687,17 +4687,19 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert "generate_code" in self.service.meta_completion.call_args.kwargs["system_prompt"]
+        assert (
+            "generate_code" in self.service.assistant_completion.call_args.kwargs["system_prompt"]
+        )
 
     def test_draw_profile_uses_draw_prompt(self) -> None:
-        """Draw profile dispatches to meta_completion with DRAW_SYSTEM_PROMPT."""
+        """Draw profile dispatches to assistant_completion with DRAW_SYSTEM_PROMPT."""
         ctx = self._make_ctx(
             entry_route="draw",
             profile="draw",
             capabilities=frozenset({"llm.draw"}),
         )
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="image link"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="image link"),
         )
 
         self.service.assistant_request(
@@ -4708,13 +4710,15 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert "generate_image" in self.service.meta_completion.call_args.kwargs["system_prompt"]
+        assert (
+            "generate_image" in self.service.assistant_completion.call_args.kwargs["system_prompt"]
+        )
 
     def test_returns_meta_result(self) -> None:
-        """assistant_request returns MetaResult with all fields preserved."""
+        """assistant_request returns AssistantResult with all fields preserved."""
         ctx = self._make_ctx()
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="answer", grounding_used=True),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="answer", grounding_used=True),
         )
 
         result = self.service.assistant_request(
@@ -4725,16 +4729,16 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert isinstance(result, MetaResult)
+        assert isinstance(result, AssistantResult)
         assert result.grounding_used is True
 
     def test_passes_callables_through(self) -> None:
-        """Callable handlers are forwarded to meta_completion."""
+        """Callable handlers are forwarded to assistant_completion."""
         ctx = self._make_ctx()
         search_fn = self.mocker.Mock()
         draw_fn = self.mocker.Mock()
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="answer"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="answer"),
         )
 
         self.service.assistant_request(
@@ -4747,15 +4751,15 @@ class TestAssistantRequestFacade:
             draw_fn=draw_fn,
         )
 
-        call_kwargs = self.service.meta_completion.call_args.kwargs
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert call_kwargs["search_fn"] is search_fn
         assert call_kwargs["draw_fn"] is draw_fn
 
     def test_explicit_system_prompt_overrides_profile(self) -> None:
         """An explicit system_prompt kwarg takes priority over the profile default."""
         ctx = self._make_ctx(profile="chat")
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="ok"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
         )
 
         self.service.assistant_request(
@@ -4768,7 +4772,7 @@ class TestAssistantRequestFacade:
         )
 
         assert (
-            self.service.meta_completion.call_args.kwargs["system_prompt"]
+            self.service.assistant_completion.call_args.kwargs["system_prompt"]
             == "Custom prompt override"
         )
 
@@ -4781,8 +4785,8 @@ class TestAssistantRequestFacade:
             is_owner=True,
             capabilities=frozenset({"llm.ask", "llm.code"}),
         )
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="ok"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
         )
 
         self.service.assistant_request(
@@ -4793,7 +4797,7 @@ class TestAssistantRequestFacade:
             bot_nick="TestBot",
         )
 
-        kw = self.service.meta_completion.call_args.kwargs
+        kw = self.service.assistant_completion.call_args.kwargs
         assert kw["nick"] == "alice"
         assert kw["channel"] == "#dev"
         assert kw["account"] == "alice_acct"
@@ -4802,10 +4806,10 @@ class TestAssistantRequestFacade:
         assert kw["bot_nick"] == "TestBot"
 
     def test_none_channel_becomes_empty_string(self) -> None:
-        """Private messages (channel=None) pass empty string to meta_completion."""
+        """Private messages (channel=None) pass empty string to assistant_completion."""
         ctx = self._make_ctx(channel=None)
-        self.service.meta_completion = self.mocker.Mock(
-            return_value=MetaResult(content="ok"),
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
         )
 
         self.service.assistant_request(
@@ -4816,4 +4820,4 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert self.service.meta_completion.call_args.kwargs["channel"] == ""
+        assert self.service.assistant_completion.call_args.kwargs["channel"] == ""

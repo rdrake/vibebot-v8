@@ -252,7 +252,7 @@ class TestRateLimitFullFlow:
         3. After window expires, user can draw again
         4. Unflag flow works independently of rate limiting
         """
-        from llm.service import MetaResult
+        from llm.service import AssistantResult
 
         plugin, mock_irc = plugin_with_real_db
 
@@ -272,7 +272,7 @@ class TestRateLimitFullFlow:
         )
 
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=5,
@@ -306,7 +306,7 @@ class TestRateLimitFullFlow:
         # Step 3: Simulate window expiration by clearing buckets
         plugin._rate_buckets.clear()
         mock_irc.reset_mock()
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen2.png",
             grounding_used=False,
             prompt_tokens=5,

@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.meta import (
+from llm.assistant import (
+    ASSISTANT_TOOL_SPECS,
+    ASSISTANT_TOOLS,
     CHAT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
-    META_TOOL_SPECS,
-    META_TOOLS,
-    MetaToolExecutor,
+    AssistantToolExecutor,
     ToolResult,
     get_tools_for_profile,
 )
@@ -27,15 +27,15 @@ if TYPE_CHECKING:
 
 
 class TestMetaTools:
-    """GIVEN the META_TOOLS list WHEN inspected THEN it has correct structure."""
+    """GIVEN the ASSISTANT_TOOLS list WHEN inspected THEN it has correct structure."""
 
     def test_tool_count(self) -> None:
-        """GIVEN META_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(META_TOOLS) == 19
+        """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
+        assert len(ASSISTANT_TOOLS) == 19
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
-        for tool in META_TOOLS:
+        for tool in ASSISTANT_TOOLS:
             assert tool["type"] == "function"
             assert "function" in tool
             fn = tool["function"]
@@ -44,8 +44,8 @@ class TestMetaTools:
             assert "parameters" in fn
 
 
-class TestMetaToolExecutor:
-    """Tests for MetaToolExecutor dispatching tool calls."""
+class TestAssistantToolExecutor:
+    """Tests for AssistantToolExecutor dispatching tool calls."""
 
     @pytest.fixture
     def mock_db(self, mocker: MockerFixture) -> MagicMock:
@@ -105,8 +105,8 @@ class TestMetaToolExecutor:
         mock_list_reminders_fn: MagicMock,
         mock_set_reminder_fn: MagicMock,
         mock_delete_reminder_fn: MagicMock,
-    ) -> MetaToolExecutor:
-        return MetaToolExecutor(
+    ) -> AssistantToolExecutor:
+        return AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -117,72 +117,74 @@ class TestMetaToolExecutor:
             delete_reminder_fn=mock_delete_reminder_fn,
         )
 
-    def test_get_instruction(self, executor: MetaToolExecutor) -> None:
+    def test_get_instruction(self, executor: AssistantToolExecutor) -> None:
         """GIVEN get_instruction tool WHEN called THEN returns current instruction."""
         result = executor.execute("get_instruction", {})
         assert "respond in haiku" in result.content
 
-    def test_set_instruction(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_set_instruction(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN set_instruction tool WHEN called THEN saves instruction."""
         result = executor.execute("set_instruction", {"text": "be brief"})
         mock_db.save_instruction.assert_called_once_with("testuser", "be brief")
         assert "ok" in result.content.lower()
 
-    def test_clear_instruction(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_clear_instruction(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN clear_instruction tool WHEN called THEN deletes instruction."""
         result = executor.execute("clear_instruction", {})
         mock_db.delete_instruction.assert_called_once_with("testuser")
         assert "clear" in result.content.lower()
 
-    def test_list_memories(self, executor: MetaToolExecutor) -> None:
+    def test_list_memories(self, executor: AssistantToolExecutor) -> None:
         """GIVEN list_memories tool WHEN called THEN returns formatted memories."""
         result = executor.execute("list_memories", {})
         assert "likes Python" in result.content
         assert "owns a cat" in result.content
 
-    def test_save_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_save_memory(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN save_memory tool WHEN called THEN saves to db."""
         result = executor.execute("save_memory", {"text": "prefers vim"})
         mock_db.save_memory.assert_called_once_with("testuser", "prefers vim", "#test")
         assert "saved" in result.content.lower() or "3" in result.content
 
-    def test_delete_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_delete_memory(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN delete_memory tool WHEN called THEN deletes by ID."""
         result = executor.execute("delete_memory", {"id": 1})
         mock_db.delete_memory.assert_called_once_with("testuser", 1)
         assert "delete" in result.content.lower()
 
-    def test_delete_memory_not_found(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_delete_memory_not_found(
+        self, executor: AssistantToolExecutor, mock_db: MagicMock
+    ) -> None:
         """GIVEN delete_memory tool WHEN ID not found THEN returns error."""
         mock_db.delete_memory.return_value = False
         result = executor.execute("delete_memory", {"id": 999})
         assert "not found" in result.content.lower() or "error" in result.content.lower()
 
-    def test_update_memory(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_update_memory(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN update_memory tool WHEN called THEN updates in db."""
         result = executor.execute("update_memory", {"id": 1, "text": "loves Python"})
         mock_db.update_memory.assert_called_once_with("testuser", 1, "loves Python")
         assert "update" in result.content.lower()
 
-    def test_clear_memories(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_clear_memories(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN clear_memories tool WHEN called THEN deletes all."""
         result = executor.execute("clear_memories", {})
         mock_db.delete_all_memories.assert_called_once_with("testuser")
         assert "2" in result.content  # count returned
 
-    def test_forget_context(self, executor: MetaToolExecutor, mock_context: MagicMock) -> None:
+    def test_forget_context(self, executor: AssistantToolExecutor, mock_context: MagicMock) -> None:
         """GIVEN forget_context tool WHEN called THEN clears context for channel."""
         result = executor.execute("forget_context", {})
         mock_context.clear.assert_called_once_with("testuser", "#test")
         assert "clear" in result.content.lower()
 
-    def test_unknown_tool(self, executor: MetaToolExecutor) -> None:
+    def test_unknown_tool(self, executor: AssistantToolExecutor) -> None:
         """GIVEN unknown tool name WHEN called THEN returns error."""
         result = executor.execute("launch_missiles", {})
         assert "error" in result.content.lower() or "unknown" in result.content.lower()
 
     def test_executor_catches_exceptions(
-        self, executor: MetaToolExecutor, mock_db: MagicMock
+        self, executor: AssistantToolExecutor, mock_db: MagicMock
     ) -> None:
         """GIVEN tool raises exception WHEN executed THEN returns error string."""
         mock_db.get_memories.side_effect = RuntimeError("db error")
@@ -199,7 +201,7 @@ class TestMetaToolExecutor:
         mock_delete_reminder_fn: MagicMock,
     ) -> None:
         """GIVEN missing tool capability WHEN executed THEN dispatch denies it server-side."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -226,7 +228,7 @@ class TestMetaToolExecutor:
         mock_delete_reminder_fn: MagicMock,
     ) -> None:
         """GIVEN a hidden route profile WHEN executed THEN dispatch denies it server-side."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -243,7 +245,7 @@ class TestMetaToolExecutor:
         assert "not allowed" in result.content.lower() or "profile" in result.content.lower()
         mock_db.get_memories.assert_not_called()
 
-    def test_get_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_get_usage(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN get_usage tool WHEN called THEN returns user's usage summary."""
         from llm.persistence import UsageSummary
 
@@ -258,7 +260,7 @@ class TestMetaToolExecutor:
         assert "0.12" in result.content
         mock_db.get_usage_summary_for_nick.assert_called_once()
 
-    def test_get_channel_usage(self, executor: MetaToolExecutor, mock_db: MagicMock) -> None:
+    def test_get_channel_usage(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN get_channel_usage tool WHEN called THEN returns channel summary."""
         from llm.persistence import UsageSummary
 
@@ -273,7 +275,9 @@ class TestMetaToolExecutor:
         assert "0.85" in result.content
         mock_db.get_usage_summary_for_channel.assert_called_once()
 
-    def test_cleanup_memories(self, executor: MetaToolExecutor, mock_cleanup_fn: MagicMock) -> None:
+    def test_cleanup_memories(
+        self, executor: AssistantToolExecutor, mock_cleanup_fn: MagicMock
+    ) -> None:
         """GIVEN cleanup_memories tool WHEN called THEN runs cleanup callable."""
         result = executor.execute("cleanup_memories", {})
         mock_cleanup_fn.assert_called_once_with("testuser")
@@ -283,7 +287,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN no cleanup_fn WHEN cleanup_memories called THEN returns error."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db, context=mock_context, nick="testuser", channel="#test"
         )
         result = executor.execute("cleanup_memories", {})
@@ -293,7 +297,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
     ) -> None:
         """GIVEN owner WHEN listing another user's memories THEN allowed."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -309,7 +313,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN non-owner WHEN listing another user's memories THEN denied."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="regular",
@@ -323,7 +327,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN owner WHEN deleting another user's memory THEN allowed."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -337,7 +341,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN non-owner WHEN clearing another user's memories THEN denied."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="regular",
@@ -351,7 +355,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
     ) -> None:
         """GIVEN owner WHEN cleaning up another user's memories THEN allowed."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -363,7 +367,7 @@ class TestMetaToolExecutor:
         mock_cleanup_fn.assert_called_once_with("someone")
 
     def test_list_reminders(
-        self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
+        self, executor: AssistantToolExecutor, mock_list_reminders_fn: MagicMock
     ) -> None:
         """GIVEN list_reminders tool WHEN called THEN returns formatted reminders."""
         result = executor.execute("list_reminders", {})
@@ -373,7 +377,7 @@ class TestMetaToolExecutor:
         assert "abc123" in result.content
 
     def test_list_reminders_empty(
-        self, executor: MetaToolExecutor, mock_list_reminders_fn: MagicMock
+        self, executor: AssistantToolExecutor, mock_list_reminders_fn: MagicMock
     ) -> None:
         """GIVEN no reminders WHEN list_reminders THEN returns empty message."""
         mock_list_reminders_fn.return_value = []
@@ -381,7 +385,7 @@ class TestMetaToolExecutor:
         assert "no" in result.content.lower() or "[]" in result.content
 
     def test_set_reminder(
-        self, executor: MetaToolExecutor, mock_set_reminder_fn: MagicMock
+        self, executor: AssistantToolExecutor, mock_set_reminder_fn: MagicMock
     ) -> None:
         """GIVEN set_reminder tool WHEN called THEN schedules via callable."""
         result = executor.execute("set_reminder", {"text": "check build in 1 hour"})
@@ -389,7 +393,7 @@ class TestMetaToolExecutor:
         assert "remind" in result.content.lower() or "hour" in result.content.lower()
 
     def test_delete_reminder(
-        self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
+        self, executor: AssistantToolExecutor, mock_delete_reminder_fn: MagicMock
     ) -> None:
         """GIVEN delete_reminder tool WHEN called THEN deletes via callable."""
         result = executor.execute("delete_reminder", {"id": "abc123"})
@@ -397,7 +401,7 @@ class TestMetaToolExecutor:
         assert "delete" in result.content.lower()
 
     def test_delete_reminder_not_found(
-        self, executor: MetaToolExecutor, mock_delete_reminder_fn: MagicMock
+        self, executor: AssistantToolExecutor, mock_delete_reminder_fn: MagicMock
     ) -> None:
         """GIVEN nonexistent reminder WHEN delete_reminder THEN returns error."""
         mock_delete_reminder_fn.return_value = "Reminder xyz not found."
@@ -409,9 +413,9 @@ class TestMetaToolExecutor:
     def test_executor_accepts_search_fn(
         self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
     ) -> None:
-        """MetaToolExecutor accepts search_fn callable."""
+        """AssistantToolExecutor accepts search_fn callable."""
         search_fn = mocker.MagicMock(return_value=ToolResult(content="results"))
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -423,9 +427,9 @@ class TestMetaToolExecutor:
     def test_executor_accepts_fetch_fn(
         self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
     ) -> None:
-        """MetaToolExecutor accepts fetch_fn callable."""
+        """AssistantToolExecutor accepts fetch_fn callable."""
         fetch_fn = mocker.MagicMock(return_value=ToolResult(content="page"))
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -437,9 +441,9 @@ class TestMetaToolExecutor:
     def test_executor_accepts_code_fn(
         self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
     ) -> None:
-        """MetaToolExecutor accepts code_fn callable."""
+        """AssistantToolExecutor accepts code_fn callable."""
         code_fn = mocker.MagicMock(return_value=ToolResult(content="code"))
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -448,7 +452,7 @@ class TestMetaToolExecutor:
         )
         assert executor._code_fn is code_fn
 
-    def test_execute_returns_tool_result(self, executor: MetaToolExecutor) -> None:
+    def test_execute_returns_tool_result(self, executor: AssistantToolExecutor) -> None:
         """execute() returns ToolResult for existing tools."""
         result = executor.execute("get_instruction", {})
         assert isinstance(result, ToolResult)
@@ -458,7 +462,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """execute() returns ToolResult for denied tools."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -476,7 +480,7 @@ class TestMetaToolExecutor:
         search_fn = mocker.MagicMock(
             return_value=ToolResult(content="web results", grounding_used=True),
         )
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -500,7 +504,7 @@ class TestMetaToolExecutor:
                 cost=0.01,
             ),
         )
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -523,7 +527,7 @@ class TestMetaToolExecutor:
         search_fn = mocker.MagicMock(
             return_value=ToolResult(content="web results"),
         )
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -539,7 +543,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """search_web returns error when search_fn is None."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -556,7 +560,7 @@ class TestMetaToolExecutor:
         fetch_fn = mocker.MagicMock(
             return_value=ToolResult(content="page content"),
         )
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -572,7 +576,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """fetch_url returns error when fetch_fn is None."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -589,7 +593,7 @@ class TestMetaToolExecutor:
         code_fn = mocker.MagicMock(
             return_value=ToolResult(content="https://paste.example/abc"),
         )
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -606,7 +610,7 @@ class TestMetaToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """generate_code returns error when code_fn is None."""
-        executor = MetaToolExecutor(
+        executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -619,12 +623,12 @@ class TestMetaToolExecutor:
 
 
 # =========================================================================
-# meta_completion() service-level tests
+# assistant_completion() service-level tests
 # =========================================================================
 
 
 class TestMetaCompletion:
-    """Tests for LLMService.meta_completion() tool-calling loop."""
+    """Tests for LLMService.assistant_completion() tool-calling loop."""
 
     @pytest.fixture
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
@@ -648,7 +652,7 @@ class TestMetaCompletion:
             return_value=0.001,
         )
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="set my instruction to haiku",
             nick="testuser",
             channel="#test",
@@ -689,7 +693,7 @@ class TestMetaCompletion:
         db = mocker.MagicMock()
         db.save_instruction.return_value = None
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="always respond in haiku",
             nick="testuser",
             channel="#test",
@@ -724,7 +728,7 @@ class TestMetaCompletion:
         db = mocker.MagicMock()
         db.get_memories.return_value = []
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="do something",
             nick="testuser",
             channel="#test",
@@ -744,7 +748,7 @@ class TestMetaCompletion:
             side_effect=Exception("API down"),
         )
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="list my memories",
             nick="testuser",
             channel="#test",
@@ -789,7 +793,7 @@ class TestMetaCompletion:
         db = mocker.MagicMock()
         db.delete_memory.return_value = True
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="delete memories 14 and 27",
             nick="testuser",
             channel="#test",
@@ -815,7 +819,7 @@ class TestMetaCompletion:
         )
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.005)
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="get instruction",
             nick="testuser",
             channel="#test",
@@ -826,10 +830,10 @@ class TestMetaCompletion:
 
         assert result.cost > 0
 
-    def test_meta_completion_accepts_system_prompt(
+    def test_assistant_completion_accepts_system_prompt(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """meta_completion uses provided system_prompt instead of META_SYSTEM_PROMPT."""
+        """assistant_completion uses provided system_prompt instead of META_SYSTEM_PROMPT."""
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
         mock_choice.message.content = "Done."
@@ -845,7 +849,7 @@ class TestMetaCompletion:
         mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
-        service.meta_completion(
+        service.assistant_completion(
             prompt="hello",
             nick="testuser",
             channel="#test",
@@ -859,10 +863,10 @@ class TestMetaCompletion:
         assert "helpful assistant" in captured_messages[0]["content"]
         assert "VibeBot" in captured_messages[0]["content"]
 
-    def test_meta_completion_defaults_to_chat_prompt(
+    def test_assistant_completion_defaults_to_chat_prompt(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """meta_completion uses CHAT_SYSTEM_PROMPT when no system_prompt given."""
+        """assistant_completion uses CHAT_SYSTEM_PROMPT when no system_prompt given."""
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
         mock_choice.message.content = "Done."
@@ -878,7 +882,7 @@ class TestMetaCompletion:
         mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
-        service.meta_completion(
+        service.assistant_completion(
             prompt="hello",
             nick="testuser",
             channel="#test",
@@ -890,10 +894,10 @@ class TestMetaCompletion:
         assert captured_messages[0]["role"] == "system"
         assert captured_messages[0]["content"] == CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot")
 
-    def test_meta_completion_passes_search_fn_to_executor(
+    def test_assistant_completion_passes_search_fn_to_executor(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """meta_completion passes search_fn/fetch_fn/code_fn to MetaToolExecutor."""
+        """assistant_completion passes search_fn/fetch_fn/code_fn to AssistantToolExecutor."""
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
         mock_choice.message.content = "Done."
@@ -903,13 +907,13 @@ class TestMetaCompletion:
         mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
-        mock_executor_cls = mocker.patch("llm.meta.MetaToolExecutor")
+        mock_executor_cls = mocker.patch("llm.assistant.AssistantToolExecutor")
 
         sentinel_search = mocker.Mock()
         sentinel_fetch = mocker.Mock()
         sentinel_code = mocker.Mock()
 
-        service.meta_completion(
+        service.assistant_completion(
             prompt="hello",
             nick="testuser",
             channel="#test",
@@ -929,7 +933,7 @@ class TestMetaCompletion:
     def test_meta_result_includes_grounding_used(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """MetaResult.grounding_used reflects executor state after tool calls."""
+        """AssistantResult.grounding_used reflects executor state after tool calls."""
         # First response: tool call; second response: text
         tool_call = mocker.MagicMock()
         tool_call.id = "call_1"
@@ -963,9 +967,9 @@ class TestMetaCompletion:
         mock_executor.execute.return_value = ToolResult(
             content='{"results": []}', grounding_used=True
         )
-        mocker.patch("llm.meta.MetaToolExecutor", return_value=mock_executor)
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="search for test",
             nick="testuser",
             channel="#test",
@@ -979,7 +983,7 @@ class TestMetaCompletion:
     def test_meta_result_includes_leaf_tool_costs(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """MetaResult totals include costs from leaf tool calls."""
+        """AssistantResult totals include costs from leaf tool calls."""
         # First response: tool call; second response: text
         tool_call = mocker.MagicMock()
         tool_call.id = "call_1"
@@ -1011,12 +1015,12 @@ class TestMetaCompletion:
         mock_executor.accumulated_completion_tokens = 100
         mock_executor.accumulated_cost = 0.05
         mock_executor.execute.return_value = ToolResult(content='{"results": []}')
-        mocker.patch("llm.meta.MetaToolExecutor", return_value=mock_executor)
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
 
         # _extract_usage returns (10, 5, 0.001) for each LLM call
         mocker.patch.object(service, "_extract_usage", return_value=(10, 5, 0.001))
 
-        result = service.meta_completion(
+        result = service.assistant_completion(
             prompt="search for test",
             nick="testuser",
             channel="#test",
@@ -1056,10 +1060,10 @@ class TestReminderMetaHelpers:
         plugin._MetaSynchronized_rlock = threading.RLock()
         return plugin
 
-    def test_remind_set_for_meta_success(
+    def test_remind_set_for_assistant_success(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN valid reminder text WHEN _remind_set_for_meta THEN returns confirmation."""
+        """GIVEN valid reminder text WHEN _remind_set_for_assistant THEN returns confirmation."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1073,15 +1077,17 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "check the build in 1 hour")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, "testuser", "check the build in 1 hour"
+        )
 
         assert "remind" in result.lower() or "hour" in result.lower()
         assert plugin.db.save_reminder.called
 
-    def test_remind_set_for_meta_with_note(
+    def test_remind_set_for_assistant_with_note(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN reminder with note WHEN _remind_set_for_meta THEN includes note."""
+        """GIVEN reminder with note WHEN _remind_set_for_assistant THEN includes note."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1096,14 +1102,14 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "deploy in 1 hour")
+        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "deploy in 1 hour")
 
         assert "Eastern" in result
 
-    def test_remind_set_for_meta_parse_failure(
+    def test_remind_set_for_assistant_parse_failure(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN unparseable reminder WHEN _remind_set_for_meta THEN returns error."""
+        """GIVEN unparseable reminder WHEN _remind_set_for_assistant THEN returns error."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1114,14 +1120,14 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "maybe sometime")
+        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "maybe sometime")
 
         assert "could not" in result.lower()
 
-    def test_remind_set_for_meta_too_short(
+    def test_remind_set_for_assistant_too_short(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN reminder < 10 seconds WHEN _remind_set_for_meta THEN returns error."""
+        """GIVEN reminder < 10 seconds WHEN _remind_set_for_assistant THEN returns error."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1134,14 +1140,14 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me now")
+        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me now")
 
         assert "10 second" in result.lower() or "at least" in result.lower()
 
-    def test_remind_set_for_meta_too_long(
+    def test_remind_set_for_assistant_too_long(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN reminder > 7 days WHEN _remind_set_for_meta THEN returns error."""
+        """GIVEN reminder > 7 days WHEN _remind_set_for_assistant THEN returns error."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1154,14 +1160,14 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me in 2 weeks")
+        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me in 2 weeks")
 
         assert "7 day" in result.lower()
 
-    def test_remind_set_for_meta_clarify(
+    def test_remind_set_for_assistant_clarify(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN clarify action WHEN _remind_set_for_meta THEN returns clarification."""
+        """GIVEN clarify action WHEN _remind_set_for_assistant THEN returns clarification."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -1172,32 +1178,32 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_meta(mock_irc, msg, "testuser", "remind me")
+        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me")
 
         assert "when" in result.lower()
 
-    def test_remind_delete_for_meta_success(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN valid reminder ID WHEN _remind_delete_for_meta THEN deletes."""
+    def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
         event_name = "llm_remind_abc123def456"
         plugin._reminders = {event_name: ("testuser", "#test", "check build")}
         mocker.patch("llm.plugin.schedule.removeEvent")
 
-        result = plugin._remind_delete_for_meta("testuser", "abc123def456")
+        result = plugin._remind_delete_for_assistant("testuser", "abc123def456")
 
         assert "delete" in result.lower() or "cancel" in result.lower()
         assert event_name not in plugin._reminders
 
-    def test_remind_delete_for_meta_not_found(self, plugin) -> None:
-        """GIVEN unknown reminder ID WHEN _remind_delete_for_meta THEN error."""
+    def test_remind_delete_for_assistant_not_found(self, plugin) -> None:
+        """GIVEN unknown reminder ID WHEN _remind_delete_for_assistant THEN error."""
         plugin._reminders = {}
 
-        result = plugin._remind_delete_for_meta("testuser", "nonexistent")
+        result = plugin._remind_delete_for_assistant("testuser", "nonexistent")
 
         assert "not found" in result.lower()
 
 
 class TestDrawForMeta:
-    """Tests for _draw_for_meta helper used by meta generate_image tool."""
+    """Tests for _draw_for_assistant helper used by meta generate_image tool."""
 
     @pytest.fixture
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
@@ -1211,10 +1217,10 @@ class TestDrawForMeta:
         plugin._MetaSynchronized_rlock = threading.RLock()
         return plugin
 
-    def test_draw_for_meta_does_not_log_usage(
+    def test_draw_for_assistant_does_not_log_usage(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """_draw_for_meta does not call db.log_usage.
+        """_draw_for_assistant does not call db.log_usage.
 
         Usage logging is consolidated in the outer command wrapper via
         _store_context_and_log_usage; leaf tool handlers must not log
@@ -1234,15 +1240,15 @@ class TestDrawForMeta:
         msg.prefix = "user!ident@host"
         msg.args = ["#test"]
 
-        result = plugin._draw_for_meta(mock_irc, msg, "a cat")
+        result = plugin._draw_for_assistant(mock_irc, msg, "a cat")
 
         assert result == "https://img.example/cat.png"
         plugin.db.log_usage.assert_not_called()
 
-    def test_draw_for_meta_returns_content(
+    def test_draw_for_assistant_returns_content(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """_draw_for_meta returns the image result content string."""
+        """_draw_for_assistant returns the image result content string."""
         from llm.service import ImageResult
 
         plugin.llm_service.image_generation.return_value = ImageResult(
@@ -1257,7 +1263,7 @@ class TestDrawForMeta:
         msg.prefix = "user!ident@host"
         msg.args = ["#test"]
 
-        result = plugin._draw_for_meta(mock_irc, msg, "a sunset")
+        result = plugin._draw_for_assistant(mock_irc, msg, "a sunset")
 
         assert result == "https://img.example/sunset.png"
         plugin.llm_service.image_generation.assert_called_once_with(
@@ -1421,7 +1427,7 @@ class TestInvalidCommandRouting:
         plugin.invalidCommand(mock_irc, msg, ["hello", "there"])
 
         plugin._run_meta.assert_not_called()
-        plugin.llm_service.meta_completion.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
     def test_invalid_command_still_checks_capability(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -1490,7 +1496,7 @@ class TestMetaIntegration:
         )
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
-        result = svc.meta_completion(
+        result = svc.assistant_completion(
             prompt="always respond in haiku",
             nick="testuser",
             channel="#test",
@@ -1564,7 +1570,7 @@ class TestMetaIntegration:
         )
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
-        result = svc.meta_completion(
+        result = svc.assistant_completion(
             prompt="delete any memories about cats",
             nick="testuser",
             channel="#test",
@@ -1636,7 +1642,7 @@ class TestMetaIntegration:
 
         from llm.context import ContextConfig, ConversationContext
 
-        result = svc.meta_completion(
+        result = svc.assistant_completion(
             prompt="how much have I used?",
             nick="testuser",
             channel="#test",
@@ -1685,7 +1691,7 @@ class TestMetaIntegration:
 
         cleanup_fn = mocker.MagicMock(return_value="Before: 5 | dropped: 1 | after: 4")
 
-        svc.meta_completion(
+        svc.assistant_completion(
             prompt="clean up my memories",
             nick="testuser",
             channel="#test",
@@ -1734,7 +1740,7 @@ class TestMetaIntegration:
 
         set_reminder_fn = mocker.MagicMock(return_value="I'll remind you in 2 hours")
 
-        svc.meta_completion(
+        svc.assistant_completion(
             prompt="remind me to deploy in 2 hours",
             nick="testuser",
             channel="#test",
@@ -1820,31 +1826,31 @@ class TestToolSpecVisibility:
     """GIVEN tool specs WHEN inspected THEN visibility and capability are correct."""
 
     def test_search_web_visible_in_chat(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "chat" in specs["search_web"].visible_in
 
     def test_search_web_visible_in_code(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "code" in specs["search_web"].visible_in
 
     def test_search_web_not_visible_in_draw(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "draw" not in specs["search_web"].visible_in
 
     def test_fetch_url_visible_in_chat_and_code(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["fetch_url"].visible_in == frozenset({"chat", "code"})
 
     def test_generate_code_capability_is_llm_code(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_code"].capability == "llm.code"
 
     def test_generate_code_visible_in_chat_and_code(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_code"].visible_in == frozenset({"chat", "code"})
 
     def test_generate_image_only_visible_in_draw(self) -> None:
-        specs = {s.name: s for s in META_TOOL_SPECS}
+        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_image"].visible_in == frozenset({"draw"})
 
     def test_profile_tools_chat_includes_search(self) -> None:

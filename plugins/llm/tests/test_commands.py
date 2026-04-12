@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
-from llm.service import CompletionResult, MetaResult, ReminderParseResult
+from llm.service import AssistantResult, CompletionResult, ReminderParseResult
 
 from .conftest import make_registry_side_effect
 
@@ -136,7 +136,7 @@ class TestAskCommand:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Hello from unified assistant",
             grounding_used=False,
             prompt_tokens=10,
@@ -405,7 +405,7 @@ class TestCodeCommand:
     """Tests for the real LLM.code method."""
 
     def _make_code_result(self, **overrides):
-        """Build a MetaResult with sensible defaults for code tests."""
+        """Build a AssistantResult with sensible defaults for code tests."""
         defaults = {
             "content": "Here is your code — http://x/code.html",
             "grounding_used": False,
@@ -415,7 +415,7 @@ class TestCodeCommand:
             "model": "gpt-4",
         }
         defaults.update(overrides)
-        return MetaResult(**defaults)
+        return AssistantResult(**defaults)
 
     def test_code_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
         """GIVEN code WHEN executed THEN it uses assistant_request with code profile."""
@@ -533,7 +533,7 @@ class TestDrawCommand:
     """Tests for the real LLM.draw method (thin wrapper over assistant facade)."""
 
     def _make_draw_result(self, **overrides):
-        """Build a MetaResult with sensible defaults for draw tests."""
+        """Build a AssistantResult with sensible defaults for draw tests."""
         defaults = {
             "content": "Here is your image: http://img.example/gen.png",
             "grounding_used": False,
@@ -543,7 +543,7 @@ class TestDrawCommand:
             "model": "dall-e-3",
         }
         defaults.update(overrides)
-        return MetaResult(**defaults)
+        return AssistantResult(**defaults)
 
     def test_draw_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
         """@draw calls assistant_request with draw profile."""
@@ -1529,7 +1529,7 @@ class TestAccountBasedIdentity:
         """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="x = 1",
             prompt_tokens=50,
             completion_tokens=20,
@@ -1556,7 +1556,7 @@ class TestAccountBasedIdentity:
         """GIVEN user with NickServ account WHEN draw completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=10,
@@ -1609,7 +1609,7 @@ class TestAccountBasedIdentity:
         """GIVEN user with NickServ account WHEN draw completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=5,
@@ -1887,7 +1887,7 @@ class TestCodeEdgeCases:
         """GIVEN context disabled WHEN code called THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="print('hi')",
             prompt_tokens=10,
             completion_tokens=5,
@@ -1909,7 +1909,7 @@ class TestCodeEdgeCases:
         """GIVEN planner returns empty content WHEN code called THEN irc.error is sent."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
             prompt_tokens=10,
             completion_tokens=0,
@@ -2008,7 +2008,7 @@ class TestRateLimitIntegration:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=5,
@@ -2054,7 +2054,7 @@ class TestRateLimitIntegration:
         """GIVEN user under code rate limit WHEN code called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="print('hi') — http://x/code.html",
             prompt_tokens=5,
             completion_tokens=10,
@@ -2071,7 +2071,7 @@ class TestRateLimitIntegration:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "owner_account"
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=5,
@@ -2109,7 +2109,7 @@ class TestRateLimitIntegration:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "trusted_account"
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = MetaResult(
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             prompt_tokens=5,

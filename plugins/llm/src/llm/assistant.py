@@ -1,7 +1,7 @@
 """Shared assistant tool definitions and executor.
 
 Provides the tool schemas (OpenAI function-calling format) and a
-MetaToolExecutor that maps tool calls to existing persistence and
+AssistantToolExecutor that maps tool calls to existing persistence and
 context methods. All tools are scoped to a single user's nick.
 """
 
@@ -59,7 +59,7 @@ DRAW_SYSTEM_PROMPT = (
 
 # Tool definitions in OpenAI function-calling format.
 # LiteLLM passes these through to any provider that supports tool calling.
-META_TOOLS: list[dict[str, Any]] = [
+ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -514,7 +514,7 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
 def _build_tool_specs() -> tuple[ToolSpec, ...]:
     destructive_tools = {"clear_instruction", "clear_memories"}
     specs: list[ToolSpec] = []
-    for tool in META_TOOLS:
+    for tool in ASSISTANT_TOOLS:
         fn = tool["function"]
         name = fn["name"]
         overrides = _TOOL_SPEC_OVERRIDES.get(name, {})
@@ -530,16 +530,16 @@ def _build_tool_specs() -> tuple[ToolSpec, ...]:
     return tuple(specs)
 
 
-META_TOOL_SPECS: tuple[ToolSpec, ...] = _build_tool_specs()
-META_TOOL_REGISTRY: dict[str, ToolSpec] = {spec.name: spec for spec in META_TOOL_SPECS}
+ASSISTANT_TOOL_SPECS: tuple[ToolSpec, ...] = _build_tool_specs()
+ASSISTANT_TOOL_REGISTRY: dict[str, ToolSpec] = {spec.name: spec for spec in ASSISTANT_TOOL_SPECS}
 
 
 def get_tools_for_profile(route_profile: str) -> list[dict[str, Any]]:
     """Return model-visible tool schemas that are allowed for a route profile."""
-    return [spec.as_tool() for spec in META_TOOL_SPECS if route_profile in spec.visible_in]
+    return [spec.as_tool() for spec in ASSISTANT_TOOL_SPECS if route_profile in spec.visible_in]
 
 
-class MetaToolExecutor:
+class AssistantToolExecutor:
     """Execute meta tool calls against the database and context.
 
     All operations are scoped to the nick and channel provided at
@@ -609,7 +609,7 @@ class MetaToolExecutor:
         Returns:
             A ToolResult with the JSON content and optional cost metadata.
         """
-        spec = META_TOOL_REGISTRY.get(tool_name)
+        spec = ASSISTANT_TOOL_REGISTRY.get(tool_name)
         if spec is None:
             _log.warning(
                 "tool=%s profile=%s nick=%s decision=deny reason=unknown_tool",
@@ -685,7 +685,7 @@ class MetaToolExecutor:
 
     @staticmethod
     def _deny_access() -> str:
-        return MetaToolExecutor._err("Only bot owners can access other users' data.")
+        return AssistantToolExecutor._err("Only bot owners can access other users' data.")
 
     def _tool_get_instruction(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)
