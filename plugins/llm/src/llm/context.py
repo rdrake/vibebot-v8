@@ -224,7 +224,7 @@ class ConversationContext:
         channel: str,
         *,
         config: ContextConfig | None = None,
-        max_age_seconds: float | None = None,
+        max_age_seconds: int | None = None,
     ) -> list[dict[str, str]]:
         """Get conversation history for LiteLLM.
 
@@ -304,7 +304,7 @@ class ConversationContext:
         exclude_nick: str | None = None,
         *,
         config: ContextConfig | None = None,
-        max_age_seconds: float | None = None,
+        max_age_seconds: int | None = None,
     ) -> list[dict[str, str]]:
         """Get shared channel context.
 

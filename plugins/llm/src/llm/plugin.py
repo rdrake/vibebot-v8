@@ -1523,6 +1523,33 @@ class LLM(callbacks.Plugin):
         """
         return self.registryValue("contextEnabled", channel)
 
+    def _gather_history(
+        self,
+        nick: str,
+        channel: str,
+        *,
+        max_age_seconds: int | None = None,
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Return (personal_history, channel_history) for the given nick/channel.
+
+        Returns ([], []) when context is disabled for the channel. When
+        ``max_age_seconds`` is set, stale conversations are dropped at the
+        context layer.
+        """
+        if not self._get_context_enabled(channel):
+            return [], []
+        ctx_cfg = self._get_context_config(channel)
+        history = self.context.get_messages(
+            nick, channel, config=ctx_cfg, max_age_seconds=max_age_seconds
+        )
+        channel_history = self.context.get_channel_messages(
+            channel,
+            exclude_nick=nick,
+            config=ctx_cfg,
+            max_age_seconds=max_age_seconds,
+        )
+        return history, channel_history
+
     def _get_user_memories(self, nick: str) -> list[str]:
         """Get memory facts for a user as a list of strings."""
         if self.db is None:
@@ -1771,15 +1798,7 @@ class LLM(callbacks.Plugin):
             # Detect images for vision
             images = self.llm_service.detect_images(text)
 
-            # Get conversation history (personal + shared channel) if context enabled
-            if self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                history = self.context.get_messages(nick, channel, config=ctx_cfg)
-                channel_history = self.context.get_channel_messages(
-                    channel, exclude_nick=nick, config=ctx_cfg
-                )
-            else:
-                history, channel_history = [], []
+            history, channel_history = self._gather_history(nick, channel)
 
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
@@ -1887,15 +1906,7 @@ class LLM(callbacks.Plugin):
         )
 
         with self._trace_request("code", nick, channel):
-            # Get conversation history (personal + shared channel) if context enabled
-            if self._get_context_enabled(channel):
-                ctx_cfg = self._get_context_config(channel)
-                history = self.context.get_messages(nick, channel, config=ctx_cfg)
-                channel_history = self.context.get_channel_messages(
-                    channel, exclude_nick=nick, config=ctx_cfg
-                )
-            else:
-                history, channel_history = [], []
+            history, channel_history = self._gather_history(nick, channel)
 
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
@@ -1993,25 +2004,12 @@ class LLM(callbacks.Plugin):
         )
 
         with self._trace_request("draw", nick, channel):
-            # Draw uses recency-gated context: only pass history when the
-            # conversation's last activity is within drawContextMaxAgeSeconds.
-            # Keeps draw grounded in immediate discussion without overwhelming
-            # the image model with stale turns. Memories are excluded.
-            history: list[dict[str, str]] = []
-            channel_history: list[dict[str, str]] = []
-            if self._get_context_enabled(channel):
-                max_age = self.registryValue("drawContextMaxAgeSeconds", channel)
-                if max_age > 0:
-                    ctx_cfg = self._get_context_config(channel)
-                    history = self.context.get_messages(
-                        nick, channel, config=ctx_cfg, max_age_seconds=max_age
-                    )
-                    channel_history = self.context.get_channel_messages(
-                        channel,
-                        exclude_nick=nick,
-                        config=ctx_cfg,
-                        max_age_seconds=max_age,
-                    )
+            max_age = self.registryValue("drawContextMaxAgeSeconds", channel)
+            history, channel_history = (
+                self._gather_history(nick, channel, max_age_seconds=max_age)
+                if max_age > 0
+                else ([], [])
+            )
 
             with self._allow_concurrent():
                 result = self.llm_service.assistant_request(

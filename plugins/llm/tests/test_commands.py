@@ -2069,6 +2069,7 @@ class TestRateLimitIntegration:
                 "enforceRateLimits": False,
                 "drawRateLimitCount": 1,
                 "drawRateLimitWindow": 60,
+                "drawContextMaxAgeSeconds": 0,
             }.get(key, "")
         )
         plugin._record_rate_limit_hit("draw", "test_account", time.time() - 2)
