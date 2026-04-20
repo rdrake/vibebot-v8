@@ -224,6 +224,7 @@ class ConversationContext:
         channel: str,
         *,
         config: ContextConfig | None = None,
+        max_age_seconds: float | None = None,
     ) -> list[dict[str, str]]:
         """Get conversation history for LiteLLM.
 
@@ -231,6 +232,9 @@ class ConversationContext:
             nick: User's IRC nick
             channel: IRC channel
             config: Per-channel config override (uses instance default if None)
+            max_age_seconds: If set, return [] when the conversation's
+                last activity is older than this many seconds. Used by
+                routes like draw that only want very fresh context.
 
         Returns:
             List of message dicts for LiteLLM
@@ -246,6 +250,9 @@ class ConversationContext:
             conv = self._conversations.get(key)
 
             if conv is None or self._is_expired(conv, cfg):
+                return []
+
+            if max_age_seconds is not None and time.time() - conv.last_activity > max_age_seconds:
                 return []
 
             # Return deep copies to prevent external modification
@@ -297,6 +304,7 @@ class ConversationContext:
         exclude_nick: str | None = None,
         *,
         config: ContextConfig | None = None,
+        max_age_seconds: float | None = None,
     ) -> list[dict[str, str]]:
         """Get shared channel context.
 
@@ -305,6 +313,8 @@ class ConversationContext:
             exclude_nick: Optional nick to exclude (typically the current user,
                 since their messages are in personal context)
             config: Per-channel config override (uses instance default if None)
+            max_age_seconds: If set, return [] when the channel context's
+                last activity is older than this many seconds.
 
         Returns:
             List of channel messages with nick, role, and content
@@ -320,6 +330,9 @@ class ConversationContext:
             ctx = self._channel_contexts.get(ch_key)
 
             if ctx is None or self._is_expired(ctx, cfg):
+                return []
+
+            if max_age_seconds is not None and time.time() - ctx.last_activity > max_age_seconds:
                 return []
 
             # Filter out excluded nick if specified

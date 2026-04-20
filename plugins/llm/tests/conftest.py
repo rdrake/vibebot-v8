@@ -138,6 +138,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawModel": "dall-e-3",
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
+        "drawContextMaxAgeSeconds": 60,
         # Expiry (pending task retry)
         "askExpiry": 60,
         "codeExpiry": 60,

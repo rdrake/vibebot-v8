@@ -103,6 +103,46 @@ class TestConversationContext:
         messages = ctx.get_messages("user1", "#channel")
         assert len(messages) == 0
 
+    def test_get_messages_max_age_returns_fresh(self) -> None:
+        """GIVEN recent activity WHEN max_age_seconds set THEN messages returned."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#channel", "user", "Hello")
+
+        messages = ctx.get_messages("user1", "#channel", max_age_seconds=60)
+        assert len(messages) == 1
+
+    def test_get_messages_max_age_drops_stale(self) -> None:
+        """GIVEN stale activity WHEN max_age_seconds set THEN empty returned."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_message("user1", "#channel", "user", "Hello")
+        # Backdate last_activity beyond the max age window
+        ctx._conversations[("user1", "#channel")].last_activity -= 120
+
+        messages = ctx.get_messages("user1", "#channel", max_age_seconds=60)
+        assert messages == []
+
+        # Without the window, same conversation is still returned (not expired)
+        messages_unfiltered = ctx.get_messages("user1", "#channel")
+        assert len(messages_unfiltered) == 1
+
+    def test_get_channel_messages_max_age(self) -> None:
+        """GIVEN stale channel activity WHEN max_age_seconds set THEN empty."""
+        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        ctx = ConversationContext(config)
+
+        ctx.add_channel_message("#channel", "alice", "user", "hello")
+        ctx._channel_contexts["#channel"].last_activity -= 120
+
+        stale = ctx.get_channel_messages("#channel", max_age_seconds=60)
+        assert stale == []
+
+        fresh = ctx.get_channel_messages("#channel")
+        assert len(fresh) == 1
+
     def test_context_clear_specific_user(self) -> None:
         """GIVEN context WHEN clear specific user THEN only that context cleared."""
         config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)

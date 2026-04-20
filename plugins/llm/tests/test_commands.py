@@ -569,6 +569,53 @@ class TestDrawCommand:
         mock_irc.error.assert_called_once()
         plugin.llm_service.assistant_request.assert_not_called()
 
+    def test_draw_passes_recent_context(self, plugin_env, mocker: MockerFixture):
+        """@draw fetches history with the max-age window set on the context calls."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+
+        plugin.context = mocker.MagicMock()
+        plugin.context.get_messages.return_value = [{"role": "user", "content": "hi"}]
+        plugin.context.get_channel_messages.return_value = []
+
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+
+        get_msgs_kwargs = plugin.context.get_messages.call_args.kwargs
+        assert get_msgs_kwargs["max_age_seconds"] == 60
+        get_ch_kwargs = plugin.context.get_channel_messages.call_args.kwargs
+        assert get_ch_kwargs["max_age_seconds"] == 60
+
+        assistant_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert assistant_kwargs["history"] == [{"role": "user", "content": "hi"}]
+        assert assistant_kwargs["memories"] == []
+
+    def test_draw_skips_context_when_max_age_zero(self, plugin_env, mocker: MockerFixture):
+        """@draw with drawContextMaxAgeSeconds=0 skips context entirely."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+
+        original = plugin.registryValue.side_effect
+
+        def registry(key: str, *args: object) -> object:
+            if key == "drawContextMaxAgeSeconds":
+                return 0
+            return original(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        plugin.context = mocker.MagicMock()
+
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+
+        plugin.context.get_messages.assert_not_called()
+        plugin.context.get_channel_messages.assert_not_called()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["history"] == []
+        assert kwargs["channel_history"] == []
+
     def test_draw_replies_with_planner_content(self, plugin_env, mocker: MockerFixture):
         """GIVEN planner returns image URL WHEN draw called THEN reply contains it."""
         plugin, mock_irc, mock_msg = plugin_env

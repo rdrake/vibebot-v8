@@ -237,6 +237,19 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "drawContextMaxAgeSeconds",
+    registry.NonNegativeInteger(
+        60,
+        _("""Only pass conversation context to draw requests when the
+        conversation's last activity is within this many seconds. Keeps
+        draw calls grounded in very recent discussion without overwhelming
+        the image model with stale history. Set to 0 to disable (always
+        start fresh)."""),
+    ),
+)
+
 # ============================================================================
 # Memory Extraction
 # ============================================================================

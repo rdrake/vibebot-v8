@@ -1993,6 +1993,26 @@ class LLM(callbacks.Plugin):
         )
 
         with self._trace_request("draw", nick, channel):
+            # Draw uses recency-gated context: only pass history when the
+            # conversation's last activity is within drawContextMaxAgeSeconds.
+            # Keeps draw grounded in immediate discussion without overwhelming
+            # the image model with stale turns. Memories are excluded.
+            history: list[dict[str, str]] = []
+            channel_history: list[dict[str, str]] = []
+            if self._get_context_enabled(channel):
+                max_age = self.registryValue("drawContextMaxAgeSeconds", channel)
+                if max_age > 0:
+                    ctx_cfg = self._get_context_config(channel)
+                    history = self.context.get_messages(
+                        nick, channel, config=ctx_cfg, max_age_seconds=max_age
+                    )
+                    channel_history = self.context.get_channel_messages(
+                        channel,
+                        exclude_nick=nick,
+                        config=ctx_cfg,
+                        max_age_seconds=max_age,
+                    )
+
             with self._allow_concurrent():
                 result = self.llm_service.assistant_request(
                     text,
@@ -2000,8 +2020,8 @@ class LLM(callbacks.Plugin):
                     db=self.db,
                     context=self.context,
                     bot_nick=irc.nick,
-                    history=[],
-                    channel_history=[],
+                    history=history,
+                    channel_history=channel_history,
                     irc=irc,
                     msg=msg,
                     memories=[],
