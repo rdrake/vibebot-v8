@@ -1881,6 +1881,11 @@ class LLMService:
             is_owner=request_context.is_owner,
             images=images,
             system_prompt=system_prompt,
+            history=history,
+            channel_history=channel_history,
+            memories=memories,
+            irc=irc,
+            msg=msg,
             cleanup_fn=cleanup_fn,
             list_reminders_fn=list_reminders_fn,
             set_reminder_fn=set_reminder_fn,
@@ -2254,6 +2259,11 @@ Rules:
         account: str | None = None,
         images: list[str] | None = None,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        channel_history: list[dict[str, str]] | None = None,
+        memories: list[str] | None = None,
+        irc: Irc | None = None,
+        msg: IrcMsg | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
@@ -2322,6 +2332,14 @@ Rules:
 
             effective_prompt = (system_prompt or CHAT_SYSTEM_PROMPT).format(bot_nick=bot_nick)
 
+            # Fold user memories into the system prompt so the model can
+            # personalize responses (matches legacy completion() behavior).
+            if memories:
+                effective_prompt += (
+                    "\n\nWhat you know about this user from past conversations:\n"
+                    + "\n".join(f"- {fact}" for fact in memories)
+                )
+
             # Build user message — multipart if images are present
             valid_images = [url for url in (images or []) if self.validate_image_url(url)]
             if valid_images:
@@ -2334,8 +2352,32 @@ Rules:
 
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": effective_prompt},
-                {"role": "user", "content": user_content},
             ]
+
+            # Channel context primer (date, topic) as a user message — matches
+            # _build_messages(). Treats channel metadata as data, not instructions.
+            context_msg = self._build_context_message(irc, msg)
+            if context_msg:
+                messages.append(context_msg)
+                messages.append({"role": "assistant", "content": "Got it."})
+
+            # Shared channel history — other users' turns in this channel.
+            if channel_history:
+                channel_summary = self._format_channel_history(channel_history)
+                if channel_summary:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[Recent channel discussion]\n{channel_summary}",
+                        }
+                    )
+                    messages.append({"role": "assistant", "content": "I see the context."})
+
+            # Personal conversation history (this user's prior turns).
+            if history:
+                messages.extend(history)
+
+            messages.append({"role": "user", "content": user_content})
 
             # Safety settings but NO grounding tools — meta uses its own
             # tools= kwarg passed explicitly below.
