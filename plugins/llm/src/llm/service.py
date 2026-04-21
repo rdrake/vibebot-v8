@@ -1603,15 +1603,9 @@ class LLMService:
                 base_system_prompt = system_prompt
 
             # Build system prompt (context now injected as user message in _build_messages)
-            built_system_prompt = self._build_system_prompt(base_system_prompt)
-
-            # Inject user memories into system prompt
-            if memories:
-                memory_section = (
-                    "\n\nWhat you know about this user from past conversations:\n"
-                    + "\n".join(f"- {fact}" for fact in memories)
-                )
-                built_system_prompt += memory_section
+            built_system_prompt = self._inject_memories(
+                self._build_system_prompt(base_system_prompt), memories
+            )
 
             # Build messages with history, system prompt, and context
             messages = self._build_messages(
@@ -2330,54 +2324,21 @@ Rules:
             max_steps = self.plugin.registryValue("metaMaxSteps")
             timeout = self.plugin.registryValue("timeout")
 
-            effective_prompt = (system_prompt or CHAT_SYSTEM_PROMPT).format(bot_nick=bot_nick)
+            effective_prompt = self._inject_memories(
+                (system_prompt or CHAT_SYSTEM_PROMPT).format(bot_nick=bot_nick),
+                memories,
+            )
 
-            # Fold user memories into the system prompt so the model can
-            # personalize responses (matches legacy completion() behavior).
-            if memories:
-                effective_prompt += (
-                    "\n\nWhat you know about this user from past conversations:\n"
-                    + "\n".join(f"- {fact}" for fact in memories)
-                )
-
-            # Build user message — multipart if images are present
-            valid_images = [url for url in (images or []) if self.validate_image_url(url)]
-            if valid_images:
-                user_content: str | list[dict[str, Any]] = [
-                    {"type": "text", "text": prompt},
-                    *[{"type": "image_url", "image_url": {"url": u}} for u in valid_images],
-                ]
-            else:
-                user_content = prompt
-
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": effective_prompt},
-            ]
-
-            # Channel context primer (date, topic) as a user message — matches
-            # _build_messages(). Treats channel metadata as data, not instructions.
-            context_msg = self._build_context_message(irc, msg)
-            if context_msg:
-                messages.append(context_msg)
-                messages.append({"role": "assistant", "content": "Got it."})
-
-            # Shared channel history — other users' turns in this channel.
-            if channel_history:
-                channel_summary = self._format_channel_history(channel_history)
-                if channel_summary:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[Recent channel discussion]\n{channel_summary}",
-                        }
-                    )
-                    messages.append({"role": "assistant", "content": "I see the context."})
-
-            # Personal conversation history (this user's prior turns).
-            if history:
-                messages.extend(history)
-
-            messages.append({"role": "user", "content": user_content})
+            valid_images = [url for url in (images or []) if self.validate_image_url(url)] or None
+            messages = self._build_messages(
+                prompt,
+                valid_images,
+                history=history,
+                channel_history=channel_history,
+                system_prompt=effective_prompt,
+                irc=irc,
+                msg=msg,
+            )
 
             # Safety settings but NO grounding tools — meta uses its own
             # tools= kwarg passed explicitly below.
@@ -3037,6 +2998,16 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         except Exception as e:
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
             return None
+
+    @staticmethod
+    def _inject_memories(system_prompt: str, memories: list[str] | None) -> str:
+        """Append known user facts to the system prompt, if any."""
+        if not memories:
+            return system_prompt
+        return system_prompt + (
+            "\n\nWhat you know about this user from past conversations:\n"
+            + "\n".join(f"- {fact}" for fact in memories)
+        )
 
     def _build_messages(
         self,
