@@ -1532,11 +1532,12 @@ class LLM(callbacks.Plugin):
     ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """Return (personal_history, channel_history) for the given nick/channel.
 
-        Returns ([], []) when context is disabled for the channel. When
-        ``max_age_seconds`` is set, stale conversations are dropped at the
-        context layer.
+        Returns ([], []) when context is disabled for the channel or when
+        ``max_age_seconds`` is 0 (callers use 0 to opt out of context while
+        keeping a positive freshness window configurable). A positive value
+        filters stale conversations at the context layer.
         """
-        if not self._get_context_enabled(channel):
+        if not self._get_context_enabled(channel) or max_age_seconds == 0:
             return [], []
         ctx_cfg = self._get_context_config(channel)
         history = self.context.get_messages(
@@ -2004,11 +2005,10 @@ class LLM(callbacks.Plugin):
         )
 
         with self._trace_request("draw", nick, channel):
-            max_age = self.registryValue("drawContextMaxAgeSeconds", channel)
-            history, channel_history = (
-                self._gather_history(nick, channel, max_age_seconds=max_age)
-                if max_age > 0
-                else ([], [])
+            history, channel_history = self._gather_history(
+                nick,
+                channel,
+                max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
             )
 
             with self._allow_concurrent():

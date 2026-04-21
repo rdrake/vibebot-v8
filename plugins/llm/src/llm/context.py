@@ -145,6 +145,16 @@ class ConversationContext:
         timeout_seconds = cfg.timeout_minutes * 60
         return time.time() - conversation.last_activity > timeout_seconds
 
+    @staticmethod
+    def _is_stale(conversation: Conversation, max_age_seconds: int | None) -> bool:
+        """True when last activity is older than ``max_age_seconds``.
+
+        Returns False when ``max_age_seconds`` is None (no freshness gate).
+        """
+        if max_age_seconds is None:
+            return False
+        return time.time() - conversation.last_activity > max_age_seconds
+
     def _prune_expired(self, cfg: ContextConfig, *, force: bool = False) -> None:
         """Remove expired conversations. Must be called with lock held.
 
@@ -252,7 +262,7 @@ class ConversationContext:
             if conv is None or self._is_expired(conv, cfg):
                 return []
 
-            if max_age_seconds is not None and time.time() - conv.last_activity > max_age_seconds:
+            if self._is_stale(conv, max_age_seconds):
                 return []
 
             # Return deep copies to prevent external modification
@@ -332,7 +342,7 @@ class ConversationContext:
             if ctx is None or self._is_expired(ctx, cfg):
                 return []
 
-            if max_age_seconds is not None and time.time() - ctx.last_activity > max_age_seconds:
+            if self._is_stale(ctx, max_age_seconds):
                 return []
 
             # Filter out excluded nick if specified
