@@ -1454,6 +1454,7 @@ class TestDeliverPendingResult:
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
         r = self._make_result()
@@ -1499,6 +1500,7 @@ class TestDeliverPendingResult:
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {}
+        mock_irc.state.nickToAccount.return_value = "alice"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
         r = self._make_result(reply_target="alice", is_channel=False)
@@ -1621,6 +1623,7 @@ class TestDeliveryRetry:
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
         r = self._make_result(task_id=42)
@@ -2497,6 +2500,7 @@ class TestDeliverPendingResultCodeBranch:
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
         plugin.llm_service.save_code_to_http.return_value = "http://example.com/code_abc.html"
@@ -2523,6 +2527,7 @@ class TestDeliverPendingResultCodeBranch:
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
         plugin.llm_service.save_code_to_http.return_value = None
@@ -2692,3 +2697,18 @@ class TestPreflightOptionalAccountTag:
             mock_irc, mock_msg, text="hi", command="ask", require_account=False
         )
         assert result.account == "tag_acct"
+
+
+class TestMaybeMigrateNickCasemap:
+    def test_rfc1459_brackets_treated_as_same(self, plugin_env, mocker: MockerFixture):
+        plugin, _, _ = plugin_env
+        plugin.db.migrate_nick = mocker.MagicMock(return_value=0)
+        # In RFC1459, "[" lowers to "{". toLower("Foo[") == "foo{".
+        plugin._maybe_migrate_nick("Foo[", "foo{")
+        plugin.db.migrate_nick.assert_not_called()
+
+    def test_distinct_account_still_migrates(self, plugin_env, mocker: MockerFixture):
+        plugin, _, _ = plugin_env
+        plugin.db.migrate_nick = mocker.MagicMock(return_value=1)
+        plugin._maybe_migrate_nick("Foo", "BarAccount")
+        plugin.db.migrate_nick.assert_called_once_with("Foo", "BarAccount")

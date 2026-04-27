@@ -1143,9 +1143,9 @@ class LLM(callbacks.Plugin):
             old_nick: The user's current IRC nick.
             account: The resolved NickServ account name.
         """
-        if old_nick.lower() == account.lower():
+        if ircutils.toLower(old_nick) == ircutils.toLower(account):
             return
-        key = old_nick.lower()
+        key = ircutils.toLower(old_nick)
         if key in self._migrated_nicks:
             return
         self._migrated_nicks.add(key)
