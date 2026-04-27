@@ -265,6 +265,7 @@ class TestRateLimitFullFlow:
         mock_msg.time = time.time() + 100
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
+        mock_msg.server_tags = {}
 
         mocker.patch(
             "llm.plugin.ircdb.checkCapability",
@@ -370,6 +371,7 @@ class TestMemoryIntegration:
         mock_msg.time = time.time() + 100
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
+        mock_msg.server_tags = {}
 
         mocker.patch(
             "llm.plugin.ircdb.checkCapability",
@@ -409,6 +411,7 @@ class TestMemoryIntegration:
         mock_msg.time = time.time() + 100
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
+        mock_msg.server_tags = {}
 
         mocker.patch(
             "llm.plugin.ircdb.checkCapability",
@@ -468,6 +471,7 @@ class TestMemoryIntegration:
         mock_msg.time = time.time() + 100
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
+        mock_msg.server_tags = {}
 
         mocker.patch(
             "llm.plugin.ircdb.checkCapability",
@@ -526,6 +530,7 @@ class TestMemoriesCommand:
         mock_msg.channel = "#test"
         mock_msg.nick = "testuser"
         mock_msg.time = time.time() + 100
+        mock_msg.server_tags = {}
         return mock_msg
 
     def test_memories_list_shows_facts(
