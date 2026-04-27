@@ -1507,11 +1507,7 @@ class LLM(callbacks.Plugin):
             return "admin"
         if ircdb.checkCapability(prefix, "trusted"):
             return "trusted"
-        nick = ircutils.nickFromHostmask(prefix)
-        try:
-            account = irc.state.nickToAccount(nick)
-        except (KeyError, AttributeError):
-            account = None
+        account = self._account_from_msg(irc, msg)
         return "registered" if account else "unregistered"
 
     def _get_tier_limits(self, command: str, tier: str) -> tuple[int, int]:

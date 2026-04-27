@@ -2658,3 +2658,19 @@ class TestAccountFromMsg:
         mock_msg.server_tags = {"account": "*"}
 
         assert plugin._account_from_msg(mock_irc, mock_msg) == "cached_acct"
+
+
+class TestResolveTierUsesResolver:
+    def test_registered_tier_via_account_tag(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None  # cache empty
+        mock_msg.server_tags = {"account": "tag_acct"}
+
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "registered"
+
+    def test_unregistered_when_no_tag_no_cache(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        mock_msg.server_tags = {}
+
+        assert plugin._resolve_tier(mock_irc, mock_msg) == "unregistered"
