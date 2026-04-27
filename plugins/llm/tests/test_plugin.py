@@ -2786,3 +2786,137 @@ class TestDeliveryLogsAccountWhenPresent:
         mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
         plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
         plugin.db.log_usage.assert_not_called()
+
+
+class TestPatchedDoJoin:
+    """The plugin patches supybot.irclib.Irc.doJoin to skip slow auto-queries."""
+
+    def _self_join(self, mocker: MockerFixture, channel="#test", nick="testbot"):
+        msg = mocker.MagicMock()
+        msg.nick = nick
+        msg.args = (channel,)
+        return msg
+
+    def test_mode_b_never_queued(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        for call in mock_irc.queueMsg.call_args_list:
+            sent = call.args[0]
+            if getattr(sent, "command", "") == "MODE" and "+b" in getattr(sent, "args", ()):
+                pytest.fail(f"MODE +b should never be queued: {sent}")
+
+    def test_who_skipped_when_both_caps_and_flag_enabled(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
+        assert "WHO" not in commands
+
+    def test_who_kept_when_account_tag_missing(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"extended-join"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
+        assert "WHO" in commands
+
+    def test_who_kept_when_extended_join_missing(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"account-tag"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
+        assert "WHO" in commands
+
+    def test_who_kept_when_flag_disabled(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        # Override the registry default for this test.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: False if key == "skipAutoWhoOnJoin" else ""
+        )
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
+        assert "WHO" in commands
+
+    def test_channel_mode_always_queued(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
+        mock_irc.queueMsg = mocker.MagicMock()
+        msg = self._self_join(mocker)
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, msg)
+
+        mode_calls = [
+            c.args[0]
+            for c in mock_irc.queueMsg.call_args_list
+            if getattr(c.args[0], "command", "") == "MODE"
+        ]
+        # Plain MODE <channel> has args=(channel,) — length 1.
+        assert any(len(getattr(m, "args", ())) == 1 for m in mode_calls)
+
+
+class TestPluginDoJoinPendingChannels:
+    """Plugin's own doJoin must not add to _pending_channels when WHO is skipped."""
+
+    def test_pending_added_when_who_will_fire(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.nick = "testbot"
+        mock_irc.state.capabilities_ack = set()  # no caps → WHO fires
+        plugin._pending_channels.clear()
+        msg = mocker.MagicMock()
+        msg.nick = "testbot"
+        msg.args = ("#test",)
+
+        plugin.doJoin(mock_irc, msg)
+
+        assert "#test" in plugin._pending_channels
+
+    def test_pending_NOT_added_when_who_will_be_skipped(  # noqa: N802
+        self, plugin_env, mocker: MockerFixture
+    ):
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.nick = "testbot"
+        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
+        plugin._pending_channels.clear()
+        msg = mocker.MagicMock()
+        msg.nick = "testbot"
+        msg.args = ("#test",)
+
+        plugin.doJoin(mock_irc, msg)
+
+        assert "#test" not in plugin._pending_channels, (
+            "When WHO is skipped, do315 won't fire — the bot must not add to "
+            "_pending_channels or startup notification will never send."
+        )

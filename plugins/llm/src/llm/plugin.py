@@ -279,6 +279,36 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 pass
 
 
+def _patch_irc_dojoin(plugin: LLM) -> None:
+    """Replace supybot.irclib.Irc.doJoin to skip slow auto-queries on JOIN.
+
+    Always: skip MODE +b (ban-list) — nothing reads ban state.
+    Conditional: skip auto-WHO when ``plugin._will_skip_auto_who(irc)``.
+    The plain MODE <channel> query (channel modes; ends with 329) is kept
+    because Limnoria reads channel-mode state in many places.
+
+    Re-patches on every call (e.g., plugin reload) so the closure always
+    references the current LLM instance. Cheap; runs once per __init__.
+    """
+    from supybot import irclib, ircmsgs
+
+    def doJoin(self, msg):  # noqa: N802
+        if msg.nick != self.nick:
+            return
+        channel = msg.args[0]
+        skip_who = plugin._will_skip_auto_who(self)
+        if not skip_who:
+            self.queueMsg(ircmsgs.who(channel, args=("%tuhnairf,1",)))
+            # Track start of WHO sync so do315 can compute elapsed time.
+            self.startedSync[channel] = time.time()
+        self.queueMsg(ircmsgs.mode(channel))  # plain channel modes; ends with 329
+        # Always skip MODE +b — nothing in the codebase reads ban-list state.
+        # If WHO is skipped, do NOT touch startedSync — do315 will never arrive
+        # and the dict would leak across rejoins.
+
+    irclib.Irc.doJoin = doJoin  # ty: ignore[invalid-assignment]
+
+
 class LLM(callbacks.Plugin):
     """AI-powered commands using LiteLLM.
 
@@ -315,6 +345,9 @@ class LLM(callbacks.Plugin):
         if not db_path:
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
+
+        # Patch supybot.irclib.Irc.doJoin to drop slow auto-queries on JOIN.
+        _patch_irc_dojoin(self)
 
         # Initialize conversation context (loads persisted conversations from DB)
         print("[LLM __init__] init context", file=sys.stderr, flush=True)
@@ -775,15 +808,36 @@ class LLM(callbacks.Plugin):
         self._spontaneous_events.add(event_name)
         schedule.addEvent(_evaluate, time.time() + 0.5, name=event_name)
 
+    def _will_skip_auto_who(self, irc: callbacks.Irc) -> bool:
+        """Return True iff the auto-WHO on channel join should be suppressed.
+
+        Gate: both 'account-tag' AND 'extended-join' IRCv3 caps must be ACK'd
+        (account-tag rides on PRIVMSG-class messages; extended-join rides on
+        JOIN itself — together they obviate the auto-WHO scan), AND the
+        operator-controlled ``skipAutoWhoOnJoin`` config must be True.
+        """
+        caps = getattr(getattr(irc, "state", None), "capabilities_ack", set()) or set()
+        if "account-tag" not in caps or "extended-join" not in caps:
+            return False
+        return bool(self.registryValue("skipAutoWhoOnJoin"))
+
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Track channels the bot is joining for startup notification.
 
         When the bot joins a channel, we add it to _pending_channels.
         The channel is removed when we receive do315 (end of WHO).
+
+        If the auto-WHO on join is being suppressed (account-tag + extended-join
+        + skipAutoWhoOnJoin), do315 will never fire — so we must NOT add to
+        _pending_channels here. The do376 2-second fallback (line 828) is then
+        responsible for firing the startup notification.
         """
-        if ircutils.strEqual(irc.nick, msg.nick):
-            channel = msg.args[0]
-            self._pending_channels.add(channel)
+        if not ircutils.strEqual(irc.nick, msg.nick):
+            return
+        if self._will_skip_auto_who(irc):
+            return
+        channel = msg.args[0]
+        self._pending_channels.add(channel)
 
     def do315(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Handle end of WHO reply (channel sync complete).
