@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from llm.persistence import LLMDatabase
+from llm.plugin import LLM
 from llm.service import LLMService
 
 if TYPE_CHECKING:
@@ -102,6 +105,99 @@ def mock_irc(mocker: MockerFixture) -> MagicMock:
     # Default: no NickServ account (nick fallback)
     irc.state.nickToAccount = mocker.MagicMock(return_value=None)
     return irc
+
+
+@pytest.fixture
+def plugin_env(mocker: MockerFixture):
+    """Create an LLM plugin instance wired to mocked dependencies.
+
+    Returns (plugin, mock_irc, mock_msg) ready for command invocation.
+    """
+    registry = make_registry_side_effect()
+
+    mock_irc = mocker.MagicMock()
+    mock_irc.nick = "testbot"
+    mock_irc.state = mocker.MagicMock()
+    mock_irc.state.channels = {"#test": mocker.MagicMock(topic="Test topic")}
+    mock_irc.state.capabilities_ack = set()
+    # Default: no NickServ account (nick fallback)
+    mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+    mock_msg = mocker.MagicMock()
+    mock_msg.prefix = "testnick!user@host"
+    mock_msg.args = ("#test", "test message")
+    mock_msg.time = time.time() + 100  # future time -- not ZNC playback
+    mock_msg.channel = "#test"
+    mock_msg.nick = "testnick"
+
+    mocker.patch.object(LLM, "registryValue", side_effect=registry)
+    mocker.patch("llm.plugin.LLMService")
+    mocker.patch("llm.plugin.LLMDatabase")
+    mocker.patch("llm.plugin.log")
+    mocker.patch("llm.plugin.httpserver")
+    mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+    mocker.patch("llm.plugin.schedule.removeEvent")
+    mocker.patch("llm.plugin.schedule.addEvent")
+    # Default: registered user (grant llm.* command caps but not owner/admin/trusted)
+    mocker.patch(
+        "llm.plugin.ircdb.checkCapability",
+        side_effect=lambda prefix, cap: cap.startswith("llm."),
+    )
+
+    plugin = LLM(mock_irc)
+    # After __init__, swap registryValue to a plain MagicMock so
+    # each test can override specific keys while keeping defaults.
+    plugin.registryValue = mocker.MagicMock(side_effect=registry)
+
+    # Provide the MetaSynchronized RLock that _allow_concurrent expects.
+    plugin._MetaSynchronized_rlock = threading.RLock()
+
+    # sanitize_output is a passthrough in tests (the mock would return MagicMock).
+    plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+    # During the unified-assistant transition, ask-style command tests still
+    # exercise the existing completion bridge through assistant_request().
+    def _assistant_request_bridge(
+        prompt: str,
+        *,
+        request_context,
+        db=None,
+        context=None,
+        bot_nick=None,
+        images=None,
+        history=None,
+        channel_history=None,
+        irc=None,
+        msg=None,
+        system_prompt=None,
+        memories=None,
+        search_fn=None,
+        fetch_fn=None,
+        code_fn=None,
+        draw_fn=None,
+        cleanup_fn=None,
+        list_reminders_fn=None,
+        set_reminder_fn=None,
+        delete_reminder_fn=None,
+    ):
+        return plugin.llm_service.completion(
+            prompt,
+            command="ask",
+            images=images,
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
+            system_prompt=system_prompt,
+            memories=memories,
+        )
+
+    plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+
+    # migrate_nick returns an int (0 = nothing to migrate) by default.
+    plugin.db.migrate_nick.return_value = 0
+
+    return plugin, mock_irc, mock_msg
 
 
 def make_registry_side_effect(overrides: dict[str, Any] | None = None):
