@@ -734,6 +734,49 @@ class LLMService:
         )
         irc.queueMsg(msg)
 
+    def _begin_typing(
+        self,
+        irc: Irc | None,
+        msg: IrcMsg | None,
+        *,
+        refresh: float = 3.0,
+    ) -> Callable[[], None]:
+        """Start an IRCv3 +typing=active indicator with periodic refresh.
+
+        Clients expire +typing=active after ~6s without refresh, so a one-shot
+        active/done pair vanishes mid-call. Sends active immediately, re-emits
+        it every `refresh` seconds from a daemon thread, and returns a stop
+        callable that cancels the thread and sends +typing=done. Safe to call
+        without irc/msg — returns a no-op stopper.
+        """
+        target = msg.args[0] if (irc and msg and msg.args) else None
+        if not irc or not target:
+            return lambda: None
+
+        self.send_typing_indicator(irc, target, "active")
+        stop = threading.Event()
+
+        def _refresh_loop() -> None:
+            while not stop.wait(refresh):
+                try:
+                    self.send_typing_indicator(irc, target, "active")
+                except Exception:
+                    self.log.exception("typing keepalive refresh failed")
+                    return
+
+        thread = threading.Thread(target=_refresh_loop, name="typing-keepalive", daemon=True)
+        thread.start()
+
+        def stopper() -> None:
+            stop.set()
+            thread.join(timeout=1.0)
+            try:
+                self.send_typing_indicator(irc, target, "done")
+            except Exception:
+                self.log.exception("typing done send failed")
+
+        return stopper
+
     def detect_images(self, text: str) -> list[str]:
         """Extract image URLs from text for vision support.
 
@@ -1556,17 +1599,11 @@ class LLMService:
         Returns:
             CompletionResult with content and grounding_used flag
         """
-        target = None
-        if irc and msg and msg.args:
-            target = msg.args[0]
-
         model = ""
         messages: list[dict[str, Any]] = []
+        stop_typing = self._begin_typing(irc, msg)
 
         try:
-            if irc and target:
-                self.send_typing_indicator(irc, target, "active")
-
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
@@ -1575,15 +1612,7 @@ class LLMService:
                     content=error_content, grounding_used=False, error=error_content
                 )
 
-            # Validate and filter image URLs
-            if images:
-                valid_images = [url for url in images if self.validate_image_url(url)]
-                if len(valid_images) != len(images):
-                    self.log.warning(
-                        "Filtered out %d invalid image URLs",
-                        len(images) - len(valid_images),
-                    )
-                images = valid_images if valid_images else None
+            images = self._filter_images(images)
 
             # Get configuration (channel-specific for model/prompt, global for api key)
             channel = msg.args[0] if msg and msg.args else None
@@ -1700,8 +1729,7 @@ class LLMService:
                 error=error_content,
             )
         finally:
-            if irc and target:
-                self.send_typing_indicator(irc, target, "done")
+            stop_typing()
 
     def search_completion(self, query: str, *, channel: str) -> ToolResult:
         """Run a grounded Google Search completion and return a ToolResult.
@@ -2301,6 +2329,7 @@ Rules:
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_cost = 0.0
+        stop_typing = self._begin_typing(irc, msg)
 
         try:
             # Resolve model and API key with fallback to ask config
@@ -2329,10 +2358,9 @@ Rules:
                 memories,
             )
 
-            valid_images = [url for url in (images or []) if self.validate_image_url(url)] or None
             messages = self._build_messages(
                 prompt,
-                valid_images,
+                self._filter_images(images),
                 history=history,
                 channel_history=channel_history,
                 system_prompt=effective_prompt,
@@ -2486,6 +2514,8 @@ Rules:
                 content="Sorry, something went wrong.",
                 error=self._sanitize(str(e)),
             )
+        finally:
+            stop_typing()
 
     def image_generation(
         self,
@@ -2509,15 +2539,9 @@ Rules:
         Returns:
             ImageResult with URL to generated image or error message
         """
-        target = None
-        if irc and msg and msg.args:
-            target = msg.args[0]
+        stop_typing = self._begin_typing(irc, msg)
 
         try:
-            # Send typing indicator
-            if irc and target:
-                self.send_typing_indicator(irc, target, "active")
-
             # Validate prompt
             is_valid, error_msg = self.validate_prompt(prompt)
             if not is_valid:
@@ -2680,9 +2704,7 @@ Rules:
             error_content = self._handle_llm_error(e, "image generation")
             return ImageResult(content=error_content, error=error_content)
         finally:
-            # Send typing done indicator
-            if irc and target:
-                self.send_typing_indicator(irc, target, "done")
+            stop_typing()
 
     def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
         """Strip markdown code fences and extract language if present.
@@ -3008,6 +3030,15 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             "\n\nWhat you know about this user from past conversations:\n"
             + "\n".join(f"- {fact}" for fact in memories)
         )
+
+    def _filter_images(self, images: list[str] | None) -> list[str] | None:
+        """Drop invalid URLs, log how many were dropped, return None if empty."""
+        if not images:
+            return None
+        valid = [url for url in images if self.validate_image_url(url)]
+        if len(valid) != len(images):
+            self.log.warning("Filtered out %d invalid image URLs", len(images) - len(valid))
+        return valid or None
 
     def _build_messages(
         self,
