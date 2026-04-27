@@ -2574,3 +2574,57 @@ class TestCommandRegistryCompleteness:
                     f"Command '{name}' is registered with Limnoria but missing from "
                     f"COMMAND_REGISTRY. Add it to keep help in sync."
                 )
+
+
+class TestAccountFromMsg:
+    """Two-layer account resolver: server_tags then state cache."""
+
+    def test_layer1_account_tag_wins(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "cached_acct"
+        mock_msg.server_tags = {"account": "tag_acct"}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) == "tag_acct"
+
+    def test_layer2_state_cache_when_no_tag(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "cached_acct"
+        mock_msg.server_tags = {}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) == "cached_acct"
+
+    def test_returns_none_when_unknown(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        mock_msg.server_tags = {}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) is None
+
+    def test_state_cache_keyerror_returns_none(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.side_effect = KeyError
+        mock_msg.server_tags = {}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) is None
+
+    def test_state_cache_attributeerror_returns_none(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.side_effect = AttributeError
+        mock_msg.server_tags = {}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) is None
+
+    def test_empty_string_tag_falls_through(self, plugin_env, mocker: MockerFixture):
+        # account-tag value of "" or "*" means "logged out" per IRCv3 — treat as no tag.
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "cached_acct"
+        mock_msg.server_tags = {"account": ""}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) == "cached_acct"
+
+    def test_star_tag_falls_through(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "cached_acct"
+        mock_msg.server_tags = {"account": "*"}
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) == "cached_acct"

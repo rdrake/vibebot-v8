@@ -1060,6 +1060,50 @@ class LLM(callbacks.Plugin):
 
         self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
 
+    @staticmethod
+    def _account_from_server_tags(msg: IrcMsg) -> str | None:
+        """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
+
+        Returns the tag value when present and not the IRCv3 logout sentinel
+        (``"*"`` or empty string), otherwise None. No ``irc`` reference needed,
+        so this is callable from places (like the service-layer stash path)
+        that don't have one in scope.
+        """
+        if not msg.server_tags:
+            return None
+        tag = msg.server_tags.get("account")
+        if tag and tag != "*":
+            return tag
+        return None
+
+    def _account_from_msg(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
+        """Resolve the requesting user's account name from an incoming message.
+
+        Two layers, in order:
+        1. ``msg.server_tags['account']`` via :meth:`_account_from_server_tags`
+           — the IRCv3 ``account-tag`` capability. Rides on every
+           PRIVMSG/NOTICE/TAGMSG from an identified user, so it's valid even
+           for users idling in-channel since before bot start.
+        2. ``irc.state.nickToAccount(nick)`` — Limnoria's session cache.
+           Populated by account-tag ingest, account-notify, extended-join,
+           and WHO replies.
+
+        Returns ``None`` when the user is not identified or unknown.
+
+        Note: this resolver does NOT consult ``ircdb`` hostmask matching. That
+        path would silently promote unidentified users to the ``registered``
+        tier; owner/admin/trusted gating uses ``ircdb.checkCapability(prefix, …)``
+        separately and is unaffected.
+        """
+        tag_account = self._account_from_server_tags(msg)
+        if tag_account:
+            return tag_account
+        nick = ircutils.nickFromHostmask(msg.prefix)
+        try:
+            return irc.state.nickToAccount(nick)
+        except (KeyError, AttributeError):
+            return None
+
     def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
         """Resolve a plain nick to its NickServ account, falling back to nick.
 
