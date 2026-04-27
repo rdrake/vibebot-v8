@@ -1989,7 +1989,7 @@ class TestWakeupTriggers:
 
 
 class TestRequireAccount:
-    """Test _require_account NickServ gate helper."""
+    """Test _require_account account-identification gate helper."""
 
     def test_returns_account_when_identified(self, mocker: MockerFixture) -> None:
         """GIVEN identified user WHEN _require_account called THEN returns account name."""
@@ -2003,6 +2003,7 @@ class TestRequireAccount:
 
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
+        mock_msg.server_tags = {}
 
         result = plugin._require_account(mock_irc, mock_msg)
         assert result == "alice_account"
@@ -2020,11 +2021,14 @@ class TestRequireAccount:
 
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
+        mock_msg.server_tags = {}
 
         result = plugin._require_account(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
-        assert "NickServ" in mock_irc.error.call_args[0][0]
+        err_text = mock_irc.error.call_args[0][0]
+        assert "NickServ" not in err_text
+        assert "identified" in err_text.lower()
 
     def test_returns_none_on_key_error(self, mocker: MockerFixture) -> None:
         """GIVEN nickToAccount raises KeyError WHEN called THEN returns None."""
@@ -2038,6 +2042,7 @@ class TestRequireAccount:
 
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
+        mock_msg.server_tags = {}
 
         result = plugin._require_account(mock_irc, mock_msg)
         assert result is None
@@ -2057,10 +2062,34 @@ class TestRequireAccount:
 
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
+        mock_msg.server_tags = {}
 
         result = plugin._require_account(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
+
+
+class TestRequireAccountUsesResolver:
+    """_require_account must read account-tag via _account_from_msg."""
+
+    def test_returns_tag_when_present(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None  # cache empty
+        mock_msg.server_tags = {"account": "tag_acct"}
+
+        assert plugin._require_account(mock_irc, mock_msg) == "tag_acct"
+        mock_irc.error.assert_not_called()
+
+    def test_returns_none_and_errors_when_unidentified(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        mock_msg.server_tags = {}
+
+        assert plugin._require_account(mock_irc, mock_msg) is None
+        mock_irc.error.assert_called_once()
+        err_text = mock_irc.error.call_args[0][0]
+        assert "NickServ" not in err_text
+        assert "identified" in err_text.lower()
 
 
 class TestRateLimiter:
@@ -2219,6 +2248,7 @@ class TestRunPreflight:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "anon!user@host"
         mock_msg.args = ("#test", "draw me")
+        mock_msg.server_tags = {}
 
         result = plugin._run_preflight(mock_irc, mock_msg, "draw me", "draw", require_account=True)
         assert result.blocked is True

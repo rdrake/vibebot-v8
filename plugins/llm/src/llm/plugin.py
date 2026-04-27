@@ -1247,18 +1247,15 @@ class LLM(callbacks.Plugin):
         return self._resolve_nick_to_identity(irc, nick)
 
     def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
-        """Require NickServ identification. Returns account name or None.
+        """Require account identification. Returns account name or None.
 
-        If the user is not identified, sends an error reply and returns None.
-        Callers should ``return`` immediately when None is returned.
+        Uses the IRCv3 account-tag-aware resolver. When the user is not
+        identified, sends an error reply and returns None. Callers should
+        ``return`` immediately when None is returned.
         """
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
-        try:
-            account = irc.state.nickToAccount(raw_nick)
-        except (KeyError, AttributeError):
-            account = None
+        account = self._account_from_msg(irc, msg)
         if not account:
-            irc.error(_("You must be identified with NickServ to use this command."))
+            irc.error(_("You must be identified to use this command."))
             return None
         return account
 
