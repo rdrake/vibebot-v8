@@ -129,6 +129,7 @@ def plugin_env(mocker: MockerFixture):
     mock_msg.time = time.time() + 100  # future time -- not ZNC playback
     mock_msg.channel = "#test"
     mock_msg.nick = "testnick"
+    mock_msg.server_tags = {}  # default: no IRCv3 account-tag
 
     mocker.patch.object(LLM, "registryValue", side_effect=registry)
     mocker.patch("llm.plugin.LLMService")
