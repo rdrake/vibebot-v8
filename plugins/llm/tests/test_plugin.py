@@ -274,6 +274,7 @@ class TestPluginHelperMethods:
         msg.args = ("#testchannel", "test message")
         msg.time = time.time()
         msg.channel = "#testchannel"
+        msg.server_tags = {}  # default: no IRCv3 account-tag
         return msg
 
     def test_get_identity_returns_account_when_available(
@@ -427,6 +428,7 @@ class TestDoPrivmsg:
         mock_msg.args = ("#channel", "hello world")
         mock_msg.time = time.time() + 100  # Future time (not ZNC playback)
         mock_msg.channel = "#channel"
+        mock_msg.server_tags = {}  # default: no IRCv3 account-tag
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
@@ -435,6 +437,7 @@ class TestDoPrivmsg:
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
+        plugin._migrated_nicks = set()
         plugin._spontaneous_cooldowns = {}
         plugin._spontaneous_events = set()
 

@@ -118,6 +118,7 @@ class TestSpontaneousDoPrivmsg:
         mock_msg.channel = "#channel"
         mock_msg.nick = "user1"
         mock_msg.time = time.time() + 100  # Future time (not playback)
+        mock_msg.server_tags = {}  # default: no IRCv3 account-tag
 
         mocker.patch("supybot.ircmsgs.isCtcp", return_value=False)
         mocker.patch("supybot.ircutils.strEqual", return_value=False)

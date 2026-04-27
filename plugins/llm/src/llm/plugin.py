@@ -1231,20 +1231,19 @@ class LLM(callbacks.Plugin):
             return ToolResult(content=json.dumps({"error": str(e)}))
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
-        """Return account name if the user is logged in, else fall back to nick.
+        """Resolve a message sender to a stable identity (account or nick).
 
-        Extracts the nick from *msg.prefix* and delegates to
-        :meth:`_resolve_nick_to_identity`.
-
-        Args:
-            irc: IRC connection (provides account lookup via ``state``)
-            msg: IRC message
-
-        Returns:
-            NickServ account name, or the user's current nick as fallback.
+        Reads the IRCv3 account-tag (or layer-2 session cache) via
+        :meth:`_account_from_msg`. Triggers a one-time DB migration of
+        nick→account usage rows on first successful resolution per session.
+        Falls back to the bare nick when no account can be resolved.
         """
         nick = ircutils.nickFromHostmask(msg.prefix)
-        return self._resolve_nick_to_identity(irc, nick)
+        account = self._account_from_msg(irc, msg)
+        if account:
+            self._maybe_migrate_nick(nick, account)
+            return account
+        return nick
 
     def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Require account identification. Returns account name or None.

@@ -94,6 +94,7 @@ class TestDoPrivmsgIntegration:
         mock_msg.channel = "#channel"
         mock_msg.nick = "user1"
         mock_msg.time = time.time() + 100  # Future time (not playback)
+        mock_msg.server_tags = {}
 
         mocker.patch("supybot.ircmsgs.isCtcp", return_value=False)
         mocker.patch("supybot.ircutils.strEqual", return_value=False)
@@ -115,6 +116,7 @@ class TestDoPrivmsgIntegration:
         mock_msg.channel = "#channel"
         mock_msg.nick = "user1"
         mock_msg.time = time.time() + 100
+        mock_msg.server_tags = {}
 
         mocker.patch("supybot.ircmsgs.isCtcp", return_value=True)
         mocker.patch("supybot.ircmsgs.isAction", return_value=True)
