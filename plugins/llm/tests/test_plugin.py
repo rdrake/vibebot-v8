@@ -2235,6 +2235,7 @@ class TestRunPreflight:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
         mock_msg.args = ("#test", "hello")
+        mock_msg.server_tags = {}
 
         result = plugin._run_preflight(mock_irc, mock_msg, "hello", "ask", require_account=False)
         assert result.blocked is False
@@ -2674,3 +2675,17 @@ class TestResolveTierUsesResolver:
         mock_msg.server_tags = {}
 
         assert plugin._resolve_tier(mock_irc, mock_msg) == "unregistered"
+
+
+class TestPreflightOptionalAccountTag:
+    """When require_account=False, account-tag should still populate the account."""
+
+    def test_optional_path_picks_up_account_tag(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None  # cache empty
+        mock_msg.server_tags = {"account": "tag_acct"}
+
+        result = plugin._run_preflight(
+            mock_irc, mock_msg, text="hi", command="ask", require_account=False
+        )
+        assert result.account == "tag_acct"

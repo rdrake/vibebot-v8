@@ -1308,14 +1308,18 @@ class LLM(callbacks.Plugin):
                     status="auth_failure",
                 )
                 return PreflightResult(blocked=True, nick=nick, channel=channel, account=None)
-            nick = self._resolve_nick_to_identity(irc, ircutils.nickFromHostmask(msg.prefix))
-        else:
+            # _require_account returned the account; trigger nick→account migration.
             raw_nick = ircutils.nickFromHostmask(msg.prefix)
-            try:
-                account = irc.state.nickToAccount(raw_nick)
-            except (KeyError, AttributeError):
-                account = None
-            nick = self._get_identity(irc, msg)
+            self._maybe_migrate_nick(raw_nick, account)
+            nick = account
+        else:
+            account = self._account_from_msg(irc, msg)
+            if account:
+                raw_nick = ircutils.nickFromHostmask(msg.prefix)
+                self._maybe_migrate_nick(raw_nick, account)
+                nick = account
+            else:
+                nick = ircutils.nickFromHostmask(msg.prefix)
 
         # --- tier-based rate limit check ---
         tier = self._resolve_tier(irc, msg)
