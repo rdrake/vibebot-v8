@@ -4867,3 +4867,34 @@ class TestStashTimeoutCapturesAccount:
         )
         kwargs = save.call_args.kwargs
         assert kwargs["account"] is None
+
+
+class TestPendingTaskResultCarriesAccount:
+    def test_account_field_default_is_none(self):
+        from llm.service import PendingTaskResult
+
+        r = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+        )
+        assert r.account is None
+
+    def test_account_field_round_trips(self):
+        from llm.service import PendingTaskResult
+
+        r = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            account="alice_acct",
+        )
+        assert r.account == "alice_acct"

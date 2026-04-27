@@ -2712,3 +2712,77 @@ class TestMaybeMigrateNickCasemap:
         plugin.db.migrate_nick = mocker.MagicMock(return_value=1)
         plugin._maybe_migrate_nick("Foo", "BarAccount")
         plugin.db.migrate_nick.assert_called_once_with("Foo", "BarAccount")
+
+
+class TestDeliveryLogsAccountWhenPresent:
+    def test_log_usage_uses_captured_account(self, plugin_env, mocker: MockerFixture):
+        plugin, _, _ = plugin_env
+        plugin.db.log_usage = mocker.MagicMock()
+        from llm.service import PendingTaskResult
+
+        result = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            cost=0.01,
+            prompt_tokens=10,
+            completion_tokens=5,
+            account="alice_acct",
+        )
+        # Avoid real world.ircs iteration in tests.
+        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
+        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
+        plugin.db.log_usage.assert_called_once_with(
+            "alice_acct", "#chan", "ask", "gpt-4", 10, 5, 0.01
+        )
+
+    def test_log_usage_falls_back_to_resolver_when_account_null(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        plugin, _, _ = plugin_env
+        plugin.db.log_usage = mocker.MagicMock()
+        from llm.service import PendingTaskResult
+
+        result = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            cost=0.01,
+            prompt_tokens=10,
+            completion_tokens=5,
+            account=None,
+        )
+        mocker.patch.object(plugin, "_resolve_nick_to_identity", return_value="alice")
+        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
+        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
+        plugin.db.log_usage.assert_called_once_with("alice", "#chan", "ask", "gpt-4", 10, 5, 0.01)
+
+    def test_log_usage_skipped_when_zero_cost_and_tokens(self, plugin_env, mocker: MockerFixture):
+        plugin, _, _ = plugin_env
+        plugin.db.log_usage = mocker.MagicMock()
+        from llm.service import PendingTaskResult
+
+        result = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            cost=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            account="alice_acct",
+        )
+        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
+        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
+        plugin.db.log_usage.assert_not_called()

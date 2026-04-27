@@ -245,6 +245,7 @@ class PendingTaskResult(NamedTuple):
     cost: float = 0.0
     task_id: int | None = None  # DB row ID for delivery acknowledgment
     delivery_attempt_count: int = 0  # current persisted delivery retry count
+    account: str | None = None  # captured at submission via account-tag
 
 
 class ReminderParseResult(NamedTuple):
@@ -1429,6 +1430,7 @@ class LLMService:
                     prompt_preview=row.prompt_preview,
                     model=row.model,
                     reason="Request expired after retry timeout",
+                    account=row.account,
                 )
             )
 
@@ -1556,6 +1558,7 @@ class LLMService:
                     cost=payload.get("cost", 0.0),
                     task_id=task.id,
                     delivery_attempt_count=task.delivery_attempt_count,
+                    account=task.account,
                 )
             )
 

@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
     from .assistant import ToolResult
+    from .service import PendingTaskResult
 
 _ = PluginInternationalization("LLM")
 
@@ -615,19 +616,8 @@ class LLM(callbacks.Plugin):
                     self._schedule_queue_wakeup(at_time=retry_at)
 
         # Log usage for completed tasks
-        if r.status == "completed" and delivered and (r.cost > 0 or r.prompt_tokens > 0):
-            for irc_conn in world.ircs:
-                identity = self._resolve_nick_to_identity(irc_conn, nick)
-                self.db.log_usage(
-                    identity,
-                    target,
-                    r.task_type,
-                    r.model,
-                    r.prompt_tokens,
-                    r.completion_tokens,
-                    r.cost,
-                )
-                break
+        if r.status == "completed" and delivered:
+            self._log_pending_delivery_usage(r, nick, target)
 
     def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg:  # noqa: N802
         """Sanitize PRIVMSG text before Limnoria's tokenizer processes it.
@@ -1152,6 +1142,30 @@ class LLM(callbacks.Plugin):
         count = self.db.migrate_nick(old_nick, account)
         if count > 0:
             self.log.info("Migrated %d usage row(s) from %s to %s", count, old_nick, account)
+
+    def _log_pending_delivery_usage(
+        self, result: PendingTaskResult, nick: str, target: str
+    ) -> None:
+        """Log usage for a delivered pending task.
+
+        Prefers the account captured at submission time; falls back to live
+        resolution by nick when the captured account is NULL (e.g., user was
+        unidentified at request time).
+        """
+        if result.cost <= 0 and result.prompt_tokens <= 0:
+            return
+        for irc_conn in world.ircs:
+            identity = result.account or self._resolve_nick_to_identity(irc_conn, nick)
+            self.db.log_usage(
+                identity,
+                target,
+                result.task_type,
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+            )
+            break
 
     def _extract_action(self, irc: callbacks.Irc, response: str) -> str | None:
         """Return action text if *response* looks like an IRC action, else ``None``.
