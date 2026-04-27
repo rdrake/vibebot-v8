@@ -2917,6 +2917,7 @@ class TestCheckPendingTasks:
             "last_delivery_error": "",
             "delivery_attempt_count": 0,
             "origin_request_id": "",
+            "account": None,
         }
         defaults.update(overrides)
         return PendingTaskRow(**defaults)
@@ -3084,6 +3085,7 @@ class TestProviderDeliverySplit:
             "last_delivery_error": "",
             "delivery_attempt_count": 0,
             "origin_request_id": "",
+            "account": None,
         }
         defaults.update(overrides)
         return PendingTaskRow(**defaults)
@@ -4047,6 +4049,7 @@ class TestRetryImage:
             "last_delivery_error": "",
             "delivery_attempt_count": 0,
             "origin_request_id": "",
+            "account": None,
         }
         defaults.update(overrides)
         return PendingTaskRow(**defaults)
@@ -4123,6 +4126,7 @@ class TestCheckPendingTasksDispatch:
             "last_delivery_error": "",
             "delivery_attempt_count": 0,
             "origin_request_id": "",
+            "account": None,
         }
         defaults.update(overrides)
         return PendingTaskRow(**defaults)

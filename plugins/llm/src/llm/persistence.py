@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -84,6 +84,7 @@ class PendingTaskRow(NamedTuple):
     last_delivery_error: str
     delivery_attempt_count: int
     origin_request_id: str
+    account: str | None
 
 
 class MemoryRow(NamedTuple):
@@ -288,6 +289,13 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 8:
+                conn.executescript("""
+                    ALTER TABLE pending_tasks
+                        ADD COLUMN account TEXT;
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -488,7 +496,7 @@ class LLMDatabase:
         "id, task_type, nick, reply_target, is_channel, prompt_preview, model, "
         "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
         "claimed_until, last_error, delivery_state, result_payload, "
-        "last_delivery_error, delivery_attempt_count, origin_request_id"
+        "last_delivery_error, delivery_attempt_count, origin_request_id, account"
     )
 
     def save_pending_task(
@@ -504,6 +512,7 @@ class LLMDatabase:
         expires_at: float,
         next_attempt_at: float,
         origin_request_id: str = "",
+        account: str | None = None,
     ) -> int:
         """Save a pending task to the database.
 
@@ -519,6 +528,9 @@ class LLMDatabase:
             expires_at: Unix timestamp after which to stop retrying.
             next_attempt_at: Unix timestamp for first retry.
             origin_request_id: Stable trace/request ID captured at request acceptance.
+            account: Resolved account name at submission time, or None if the
+                requester was not identified. Delivery-time logging reads this
+                directly instead of doing a late nick→account lookup.
 
         Returns:
             The row ID of the inserted task.
@@ -529,8 +541,8 @@ class LLMDatabase:
                 "INSERT INTO pending_tasks "
                 "(task_type, nick, reply_target, is_channel, prompt_preview, model, "
                 "request_data, submitted_at, expires_at, attempt_count, next_attempt_at, "
-                "claimed_until, last_error, origin_request_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '', ?)",
+                "claimed_until, last_error, origin_request_id, account) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, '', ?, ?)",
                 (
                     task_type,
                     nick,
@@ -543,6 +555,7 @@ class LLMDatabase:
                     expires_at,
                     next_attempt_at,
                     origin_request_id,
+                    account,
                 ),
             )
             conn.commit()

@@ -1223,13 +1223,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_7(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 7."""
+    def test_schema_version_is_8(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 8."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 7
+            assert row[0] == 8
         finally:
             conn.close()
 
@@ -1791,3 +1791,42 @@ class TestZeroCostRank:
 
         rank_alice = test_db.get_nick_rank("alice")
         assert rank_alice == UsageRank(rank=1, total=2)
+
+
+class TestPendingTasksAccountColumn:
+    def test_save_with_account(self, test_db):
+        task_id = test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=1000.0,
+            expires_at=2000.0,
+            next_attempt_at=1000.0,
+            account="alice_acct",
+        )
+        assert task_id > 0
+        rows = test_db.load_pending_tasks()
+        assert len(rows) == 1
+        assert rows[0].account == "alice_acct"
+
+    def test_save_with_null_account(self, test_db):
+        task_id = test_db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=1000.0,
+            expires_at=2000.0,
+            next_attempt_at=1000.0,
+            account=None,
+        )
+        assert task_id > 0
+        rows = test_db.load_pending_tasks()
+        assert rows[0].account is None
