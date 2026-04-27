@@ -780,3 +780,18 @@ conf.registerGlobalValue(
         Prevents runaway tool loops."""),
     ),
 )
+
+conf.registerGlobalValue(
+    LLM,
+    "skipAutoWhoOnJoin",
+    registry.Boolean(
+        True,
+        _(
+            """If True (default), suppress Limnoria's automatic WHO query on channel join
+            when both 'account-tag' and 'extended-join' IRCv3 capabilities are ACK'd.
+            Set False to restore the legacy WHO query (emergency disable for servers
+            where account-tag/extended-join misbehave). The MODE +b ban-list query is
+            always suppressed regardless of this flag — nothing reads ban state."""
+        ),
+    ),
+)

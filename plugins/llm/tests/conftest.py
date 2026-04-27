@@ -292,6 +292,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "metaModel": "",
         "metaApiKey": "",
         "metaMaxSteps": 7,
+        # IRCv3 join optimization
+        "skipAutoWhoOnJoin": True,
     }
     if overrides:
         defaults.update(overrides)
