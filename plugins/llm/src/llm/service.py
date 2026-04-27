@@ -1142,6 +1142,7 @@ class LLMService:
         model: str,
         request_data: dict,
         submitted_at: float,
+        account: str | None = None,
     ) -> bool:
         """Stash a timed-out request for background retry.
 
@@ -1158,6 +1159,10 @@ class LLMService:
             model: Model identifier.
             request_data: Serializable request payload.
             submitted_at: Unix timestamp of original submission.
+            account: Resolved account name at submission, or None if the
+                requester was not identified. Persisted to
+                ``pending_tasks.account`` so delivery-time logging doesn't
+                need a late nick->account lookup.
 
         Returns:
             True if the task was stashed, False if stashing is disabled.
@@ -1187,6 +1192,7 @@ class LLMService:
             expires_at=expires_at,
             next_attempt_at=submitted_at,
             origin_request_id=request_id.get(),
+            account=account,
         )
         self.log.info(
             "Stashed timed-out %s request as pending_task id=%d (expires in %ds)",
@@ -1688,10 +1694,17 @@ class LLMService:
             nick = ""
             reply_target = ""
             is_channel = False
+            account: str | None = None
             if msg:
                 nick = msg.nick or ""
                 reply_target = msg.args[0] if msg.args else ""
                 is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+                # Best-effort account capture via IRCv3 account-tag.
+                # No irc handle here, so layer-2 (state cache) is skipped; NULL
+                # is OK because delivery-time logging falls back to nick.
+                from llm.plugin import LLM
+
+                account = LLM._account_from_server_tags(msg)
             stashed = self._stash_timeout(
                 task_type=command,
                 nick=nick,
@@ -1701,6 +1714,7 @@ class LLMService:
                 model=model,
                 request_data={"messages": messages},
                 submitted_at=time.time(),
+                account=account,
             )
             if stashed:
                 error_content = _(
@@ -2586,10 +2600,17 @@ Rules:
                 nick = ""
                 reply_target = ""
                 is_channel_flag = False
+                account: str | None = None
                 if msg:
                     nick = msg.nick or ""
                     reply_target = msg.args[0] if msg.args else ""
                     is_channel_flag = bool(reply_target) and ircutils.isChannel(reply_target)
+                    # Best-effort account capture via IRCv3 account-tag.
+                    # No irc handle here, so layer-2 (state cache) is skipped;
+                    # NULL is OK because delivery-time logging falls back to nick.
+                    from llm.plugin import LLM
+
+                    account = LLM._account_from_server_tags(msg)
                 stashed = self._stash_timeout(
                     task_type="draw",
                     nick=nick,
@@ -2599,6 +2620,7 @@ Rules:
                     model=model,
                     request_data={"prompt": original_prompt},
                     submitted_at=time.time(),
+                    account=account,
                 )
                 if stashed:
                     error_content = _(

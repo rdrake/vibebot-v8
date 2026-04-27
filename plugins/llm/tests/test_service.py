@@ -4825,3 +4825,45 @@ class TestAssistantRequestFacade:
         )
 
         assert self.service.assistant_completion.call_args.kwargs["channel"] == ""
+
+
+class TestStashTimeoutCapturesAccount:
+    def test_passes_account_to_save_pending_task(self, make_service, mocker: MockerFixture):
+        service, mock_plugin = make_service()
+        save = mocker.MagicMock(return_value=42)
+        mock_plugin.db = mocker.MagicMock(save_pending_task=save)
+        mock_plugin.registryValue = mocker.MagicMock(return_value=300)
+
+        service._stash_timeout(
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt="hi",
+            model="gpt-4",
+            request_data={"messages": []},
+            submitted_at=1000.0,
+            account="alice_acct",
+        )
+        save.assert_called_once()
+        kwargs = save.call_args.kwargs
+        assert kwargs["account"] == "alice_acct"
+
+    def test_account_defaults_to_none(self, make_service, mocker: MockerFixture):
+        service, mock_plugin = make_service()
+        save = mocker.MagicMock(return_value=42)
+        mock_plugin.db = mocker.MagicMock(save_pending_task=save)
+        mock_plugin.registryValue = mocker.MagicMock(return_value=300)
+
+        service._stash_timeout(
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt="hi",
+            model="gpt-4",
+            request_data={"messages": []},
+            submitted_at=1000.0,
+        )
+        kwargs = save.call_args.kwargs
+        assert kwargs["account"] is None
