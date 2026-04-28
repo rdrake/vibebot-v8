@@ -144,7 +144,7 @@ class TestHTTPCallbackIntegration:
     def test_http_callback_serves_multiple_content_types(
         self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
     ) -> None:
-        """GIVEN various file types WHEN served THEN correct content types."""
+        """GIVEN various file types WHEN served THEN correct headers and body."""
 
         callback, _ = http_callback_with_plugin
         mocker.patch.object(callback, "_get_web_dir", return_value=str(tmp_path))
@@ -159,7 +159,7 @@ class TestHTTPCallbackIntegration:
             "test.js": (b"function() {}", "text/javascript"),
         }
 
-        for filename, (content, _expected_type) in files.items():
+        for filename, (content, expected_type) in files.items():
             filepath = tmp_path / filename
             filepath.write_bytes(content)
 
@@ -169,6 +169,50 @@ class TestHTTPCallbackIntegration:
             callback.doGet(mock_handler, filename)
 
             mock_handler.send_response.assert_called_with(200)
+
+            # Headers must declare the resolved content type and a non-empty
+            # length. The exact mimetypes.guess_type() result for `.js` may
+            # be either text/javascript or application/javascript depending
+            # on platform — accept the substring match for the type token.
+            header_calls = [c.args for c in mock_handler.send_header.call_args_list]
+            ct = next((v for (k, v) in header_calls if k == "Content-Type"), None)
+            cl = next((v for (k, v) in header_calls if k == "Content-Length"), None)
+            type_token = expected_type.split("/", 1)[1]
+            assert ct is not None
+            assert type_token in ct
+            assert cl is not None and int(cl) == len(content)
+            mock_handler.wfile.write.assert_called_with(content)
+            mock_handler.end_headers.assert_called()
+
+    def test_http_callback_rejects_traversal(
+        self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a path-traversal request WHEN served THEN responds 403, no body."""
+        callback, _ = http_callback_with_plugin
+        mocker.patch.object(callback, "_get_web_dir", return_value=str(tmp_path))
+
+        mock_handler = mocker.MagicMock()
+        mock_handler.wfile = mocker.MagicMock()
+
+        callback.doGet(mock_handler, "../etc/passwd")
+
+        mock_handler.send_response.assert_called_with(403)
+        mock_handler.wfile.write.assert_not_called()
+
+    def test_http_callback_returns_404_for_missing_file(
+        self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a request for a file that does not exist WHEN served THEN 404."""
+        callback, _ = http_callback_with_plugin
+        mocker.patch.object(callback, "_get_web_dir", return_value=str(tmp_path))
+
+        mock_handler = mocker.MagicMock()
+        mock_handler.wfile = mocker.MagicMock()
+
+        callback.doGet(mock_handler, "does-not-exist.png")
+
+        mock_handler.send_response.assert_called_with(404)
+        mock_handler.wfile.write.assert_not_called()
 
     def test_http_callback_handles_concurrent_requests(
         self, http_callback_with_plugin: tuple, tmp_path, mocker: MockerFixture
@@ -952,6 +996,48 @@ class TestMemoryCleanup:
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 3
+        assert "skipped" in summary.lower()
+
+    def test_cleanup_aborts_on_count_preserving_mutation(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN row IDs change but count is preserved WHEN cleanup applies THEN abort.
+
+        Regression for the count-only race guard: a delete+insert during the
+        LLM call leaves len() unchanged but shifts indices, which would
+        otherwise let cleanup mis-target rows.
+        """
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+        snapshot_rows = plugin.db.get_memories("testuser")
+
+        # CleanupResult will tell the function to drop snapshot[1] = "fact a".
+        # If the abort guard fires correctly, this drop must NOT be applied.
+        target_index = 1
+        target_fact = snapshot_rows[target_index].fact
+
+        def cleanup_with_swap(*args, **kwargs):
+            # Delete the OTHER snapshot row and insert a new one — count
+            # preserved, IDs differ.
+            other_index = 0 if target_index == 1 else 1
+            plugin.db.delete_memory("testuser", snapshot_rows[other_index].id)
+            plugin.db.save_memory("testuser", "fact c", "#test")
+            return CleanupResult(drop=[target_index], merge=[])
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(side_effect=cleanup_with_swap)
+
+        summary = plugin._run_memory_cleanup("testuser", "#test")
+
+        rows = plugin.db.get_memories("testuser")
+        facts = {r.fact for r in rows}
+        # The abort must prevent the stale drop from running. Target fact
+        # should still be present; count stays at 2 (one mutation + abort).
+        assert target_fact in facts
+        assert len(rows) == 2
         assert "skipped" in summary.lower()
 
     def test_cleanup_returns_summary(

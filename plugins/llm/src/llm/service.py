@@ -1822,7 +1822,7 @@ class LLMService:
             )
         except Exception as e:
             self.log.exception("search_completion failed: %s", self._sanitize(str(e)))
-            return ToolResult(content=json.dumps({"error": str(e)}))
+            return ToolResult(content=json.dumps({"error": "Search failed."}))
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
         """Fetch and summarize a URL using Gemini URL Context grounding.
@@ -1880,7 +1880,7 @@ class LLMService:
             )
         except Exception as e:
             self.log.exception("url_completion failed: %s", self._sanitize(str(e)))
-            return ToolResult(content=json.dumps({"error": str(e)}))
+            return ToolResult(content=json.dumps({"error": "URL fetch failed."}))
 
     def assistant_request(
         self,
@@ -2409,6 +2409,9 @@ Rules:
                 irc=irc,
                 msg=msg,
             )
+            # Snapshot for timeout stashing — the loop below mutates `messages`
+            # by appending tool calls/results.
+            stash_messages = list(messages)
 
             # Safety settings but NO grounding tools — meta uses its own
             # tools= kwarg passed explicitly below.
@@ -2548,6 +2551,37 @@ Rules:
                 cost=total_cost,
                 model=model,
                 error="Assistant exceeded maximum tool-call steps.",
+            )
+
+        except litellm.Timeout as e:
+            self._log_server_headers(e)
+            self.log.warning("assistant_completion timed out: %s", self._sanitize(str(e)))
+            # Map route_profile -> stash task_type. Draw uses image_generation's
+            # own stash path; if it ever lands here, skip stashing.
+            task_type_map = {"chat": "ask", "code": "code"}
+            task_type = task_type_map.get(route_profile)
+            stashed = False
+            if task_type is not None:
+                stash_nick, reply_target, is_channel, stash_account = _msg_stash_context(msg)
+                stashed = self._stash_timeout(
+                    task_type=task_type,
+                    nick=stash_nick,
+                    reply_target=reply_target,
+                    is_channel=is_channel,
+                    prompt=prompt,
+                    model=model,
+                    request_data={"messages": stash_messages},
+                    submitted_at=time.time(),
+                    account=stash_account,
+                )
+            if stashed:
+                error_content = _(
+                    "Timed out, but I'll keep trying and deliver the answer when ready."
+                )
+                return AssistantResult(content=error_content)
+            return AssistantResult(
+                content="Sorry, something went wrong.",
+                error=self._sanitize(str(e)),
             )
 
         except Exception as e:
@@ -3015,13 +3049,27 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         """
         import urllib.request
 
+        # SSRF guard: provider-returned URLs are untrusted input. Apply the
+        # same scheme + private-host policy as user-supplied URLs.
+        if not validate_external_url(url):
+            self.log.warning("Refusing to fetch unsafe provider URL: %s", url[:200])
+            return None
+
         max_size = 20 * 1024 * 1024  # 20 MB
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
 
+        # Disable redirects: a 3xx Location could point at a private host that
+        # validate_external_url rejected on the original URL. Fail closed.
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect())
+
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
                 content_type = resp.headers.get("Content-Type", "")
                 data = resp.read(max_size + 1)
 

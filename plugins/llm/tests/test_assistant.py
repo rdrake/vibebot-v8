@@ -1036,6 +1036,121 @@ class TestMetaCompletion:
         assert result.completion_tokens == 110
         assert result.cost == pytest.approx(0.052)
 
+    @pytest.mark.parametrize(
+        ("route_profile", "expected_task_type"),
+        [("chat", "ask"), ("code", "code")],
+    )
+    def test_timeout_stashes_for_chat_and_code(
+        self,
+        service: LLMService,
+        mocker: MockerFixture,
+        route_profile: str,
+        expected_task_type: str,
+    ) -> None:
+        """Timeout in assistant_completion stashes via _stash_timeout for ask/code routes."""
+        import litellm as litellm_module
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="timed out", model="gpt-4", llm_provider="openai"
+            ),
+        )
+        stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)
+
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=route_profile,
+        )
+
+        stash_mock.assert_called_once()
+        call_kwargs = stash_mock.call_args.kwargs
+        assert call_kwargs["task_type"] == expected_task_type
+        assert call_kwargs["prompt"] == "hello"
+        assert "messages" in call_kwargs["request_data"]
+        assert result.error is None
+        assert "deliver the answer when ready" in result.content
+
+    def test_timeout_without_expiry_returns_error(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """When _stash_timeout returns False (expiry disabled), assistant returns an error."""
+        import litellm as litellm_module
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=litellm_module.Timeout(
+                message="timed out", model="gpt-4", llm_provider="openai"
+            ),
+        )
+        mocker.patch.object(service, "_stash_timeout", return_value=False)
+
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile="chat",
+        )
+
+        assert result.error is not None
+        assert "something went wrong" in result.content.lower()
+
+    def test_timeout_stash_messages_unaffected_by_tool_loop(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Stashed request_data captures the initial messages, not the tool-loop-mutated list."""
+        import litellm as litellm_module
+
+        # First call returns a tool_calls response (mutates `messages`),
+        # second call raises Timeout. The stash should still see the
+        # pre-loop messages list.
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "list_memories"
+        tool_call.function.arguments = "{}"
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_response.choices = [first_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                first_response,
+                litellm_module.Timeout(message="timed out", model="gpt-4", llm_provider="openai"),
+            ],
+        )
+        stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)
+
+        db = mocker.MagicMock()
+        db.get_memories.return_value = []
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=db,
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile="chat",
+        )
+
+        stashed_messages = stash_mock.call_args.kwargs["request_data"]["messages"]
+        # Pre-loop snapshot has system + user (no assistant tool_calls or tool result)
+        roles = [m["role"] for m in stashed_messages]
+        assert "tool" not in roles
+        assert not any(m.get("tool_calls") for m in stashed_messages)
+
 
 # =========================================================================
 # Plugin-level command tests
@@ -1333,7 +1448,7 @@ class TestCodeForAssistant:
         assert result.cost == 0.001
 
     def test_code_for_assistant_handles_error(self, plugin) -> None:
-        """_code_for_assistant returns error ToolResult on failure."""
+        """_code_for_assistant returns sanitized error ToolResult on failure."""
         plugin.llm_service.completion.side_effect = RuntimeError("API down")
 
         result = plugin._code_for_assistant("write something", "#test")
@@ -1342,7 +1457,9 @@ class TestCodeForAssistant:
 
         data = json.loads(result.content)
         assert "error" in data
-        assert "API down" in data["error"]
+        # Internal exception text must NOT leak into the tool payload
+        assert "API down" not in data["error"]
+        assert data["error"] == "Code generation failed."
 
     def test_code_for_assistant_handles_completion_error(self, plugin) -> None:
         """_code_for_assistant returns error ToolResult when completion has error."""

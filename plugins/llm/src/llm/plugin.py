@@ -332,11 +332,7 @@ class LLM(callbacks.Plugin):
         Args:
             irc: IRC connection instance
         """
-        import sys
-
-        print("[LLM __init__] starting super().__init__", file=sys.stderr, flush=True)
         super().__init__(irc)
-        print("[LLM __init__] creating LLMService", file=sys.stderr, flush=True)
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.log.addFilter(TraceFilter())
@@ -345,11 +341,9 @@ class LLM(callbacks.Plugin):
         self._apply_log_level()
 
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
-        print("[LLM __init__] getting build info", file=sys.stderr, flush=True)
         self.build_info = self._get_build_info()
 
         # Initialize database for persistence (before context, which loads from DB)
-        print("[LLM __init__] opening database", file=sys.stderr, flush=True)
         db_path = self.registryValue("databasePath")
         if not db_path:
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
@@ -358,7 +352,6 @@ class LLM(callbacks.Plugin):
         _patch_irc_dojoin(self)
 
         # Initialize conversation context (loads persisted conversations from DB)
-        print("[LLM __init__] init context", file=sys.stderr, flush=True)
         self._init_context()
 
         # Track nicks already migrated to account-based identity this session
@@ -378,7 +371,6 @@ class LLM(callbacks.Plugin):
         self._spontaneous_events: set[str] = set()
 
         # Reload persisted reminders from database
-        print("[LLM __init__] reloading reminders", file=sys.stderr, flush=True)
         self._reload_reminders(irc)
 
         # Startup notification tracking
@@ -388,7 +380,6 @@ class LLM(callbacks.Plugin):
         # Only register HTTP callback if using Limnoria's built-in web directory
         # (i.e., httpRoot is not configured). When httpRoot is set, an external
         # web server (e.g., nginx) is expected to serve files from that path.
-        print("[LLM __init__] setting up HTTP", file=sys.stderr, flush=True)
         if not self.registryValue("httpRoot"):
             self._http_callback = LLMHTTPCallback(self)
             httpserver.hook("llm", self._http_callback)
@@ -424,7 +415,6 @@ class LLM(callbacks.Plugin):
 
         # Register callback for live log level changes
         conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
-        print("[LLM __init__] done", file=sys.stderr, flush=True)
 
     def _apply_log_level(self) -> None:
         """Set plugin logger levels from the logLevel config value."""
@@ -442,6 +432,11 @@ class LLM(callbacks.Plugin):
         # Clean up expired reminders from database
         if hasattr(self, "db"):
             self.db.delete_expired_reminders()
+            # Close the main-thread DB connection. Worker-thread thread-local
+            # connections are released as those threads exit; we don't track
+            # them centrally, so sqlite ResourceWarnings can still appear
+            # under reload-heavy/test-heavy workloads (see pyproject.toml).
+            self.db.close()
 
         # Remove scheduled cleanup event
         with contextlib.suppress(KeyError):
@@ -1286,8 +1281,9 @@ class LLM(callbacks.Plugin):
                 completion_tokens=result.completion_tokens,
                 cost=result.cost,
             )
-        except Exception as e:
-            return ToolResult(content=json.dumps({"error": str(e)}))
+        except Exception:
+            self.log.exception("_code_for_assistant failed")
+            return ToolResult(content=json.dumps({"error": "Code generation failed."}))
 
     def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
         """Resolve a message sender to a stable identity (account or nick).
@@ -1679,7 +1675,7 @@ class LLM(callbacks.Plugin):
             if len(existing_rows) >= max_memories:
                 return
 
-            snapshot_count = len(existing_rows)
+            snapshot_ids = tuple(r.id for r in existing_rows)
 
             def _extract_memories_bg() -> None:
                 try:
@@ -1689,14 +1685,15 @@ class LLM(callbacks.Plugin):
                     if not extraction.add:
                         return
 
-                    # Race protection: abort if memories changed during LLM call
+                    # Race protection: abort if memory rows changed during LLM
+                    # call. Compare row IDs (not just count) so a delete+insert
+                    # that preserves the count still triggers an abort.
                     current = self.db.get_memories(nick)
-                    if len(current) != snapshot_count:
+                    current_ids = tuple(r.id for r in current)
+                    if current_ids != snapshot_ids:
                         log.info(
-                            "Memory extraction for %s aborted: count changed (%d -> %d)",
+                            "Memory extraction for %s aborted: rows changed",
                             nick,
-                            snapshot_count,
-                            len(current),
                         )
                         return
 
@@ -1744,9 +1741,13 @@ class LLM(callbacks.Plugin):
             short = result.error.split(":")[0] if ":" in result.error else result.error
             return f"Cleanup failed ({short}). Try again later."
 
-        # Abort if memory count changed during LLM call (race protection)
+        # Abort if memory rows changed during LLM call (race protection).
+        # Compare row IDs — a delete+insert preserving count would otherwise
+        # let cleanup mis-target indices.
         current = self.db.get_memories(nick)
-        if len(current) != len(snapshot):
+        snapshot_ids = tuple(r.id for r in snapshot)
+        current_ids = tuple(r.id for r in current)
+        if current_ids != snapshot_ids:
             return "Cleanup skipped — memories changed while processing."
 
         # Apply drops

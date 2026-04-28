@@ -666,14 +666,14 @@ class AssistantToolExecutor:
             self.accumulated_cost += result.cost
             return result
         except Exception as e:
-            _log.warning(
-                "tool=%s profile=%s nick=%s decision=error reason=%s",
+            _log.exception(
+                "tool=%s profile=%s nick=%s decision=error",
                 tool_name,
                 self.route_profile,
                 self.nick,
-                e,
             )
-            return ToolResult(content=self._err(str(e)))
+            del e
+            return ToolResult(content=self._err("Tool execution failed."))
 
     def _resolve_target_nick(self, args: dict[str, Any]) -> str | None:
         """Resolve target nick from tool args with owner access control.

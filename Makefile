@@ -43,7 +43,7 @@ preflight: format check
 ci:
 	uv sync --locked
 	uv run prek run --all-files
-	$(MAKE) syntax-check
+	$(MAKE) check
 	$(MAKE) test-all
 
 # Worktree workflow

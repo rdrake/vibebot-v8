@@ -1062,7 +1062,9 @@ class TestDownloadAndSaveImage:
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
-        self.mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         mock_save = self.mocker.patch.object(
             self.service,
             "_save_image_bytes",
@@ -1081,7 +1083,9 @@ class TestDownloadAndSaveImage:
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
-        self.mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
         self.service._download_and_save_image("https://provider.com/img")
 
@@ -1095,7 +1099,9 @@ class TestDownloadAndSaveImage:
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
-        self.mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
         self.service._download_and_save_image("https://provider.com/img.webp")
 
@@ -1109,7 +1115,9 @@ class TestDownloadAndSaveImage:
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
-        self.mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
         self.service._download_and_save_image("https://provider.com/generate?id=123")
 
@@ -1123,7 +1131,9 @@ class TestDownloadAndSaveImage:
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
-        self.mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         result = self.service._download_and_save_image("https://provider.com/huge.png")
 
         assert result is None
@@ -1132,12 +1142,70 @@ class TestDownloadAndSaveImage:
         """GIVEN network error WHEN downloading THEN returns None."""
         import urllib.error
 
-        self.mocker.patch(
-            "urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")
-        )
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.side_effect = urllib.error.URLError("connection refused")
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
         result = self.service._download_and_save_image("https://provider.com/img.png")
 
         assert result is None
+
+    def test_download_rejects_non_http_scheme(self) -> None:
+        """GIVEN file:// URL WHEN downloading THEN refuses without fetching."""
+        mock_build = self.mocker.patch("urllib.request.build_opener")
+        result = self.service._download_and_save_image("file:///etc/passwd")
+
+        assert result is None
+        mock_build.assert_not_called()
+
+    def test_download_rejects_loopback_literal(self) -> None:
+        """GIVEN 127.0.0.1 URL WHEN downloading THEN refuses without fetching."""
+        mock_build = self.mocker.patch("urllib.request.build_opener")
+        result = self.service._download_and_save_image("http://127.0.0.1/img.png")
+
+        assert result is None
+        mock_build.assert_not_called()
+
+    def test_download_rejects_private_literal(self) -> None:
+        """GIVEN 192.168.x.x URL WHEN downloading THEN refuses without fetching."""
+        mock_build = self.mocker.patch("urllib.request.build_opener")
+        result = self.service._download_and_save_image("http://192.168.1.1/img.png")
+
+        assert result is None
+        mock_build.assert_not_called()
+
+    def test_download_rejects_link_local_literal(self) -> None:
+        """GIVEN 169.254.x.x URL WHEN downloading THEN refuses without fetching."""
+        mock_build = self.mocker.patch("urllib.request.build_opener")
+        result = self.service._download_and_save_image("http://169.254.169.254/latest")
+
+        assert result is None
+        mock_build.assert_not_called()
+
+    def test_download_disables_redirects(self) -> None:
+        """GIVEN download path WHEN building opener THEN installs a no-redirect handler."""
+        import urllib.request
+
+        captured: dict[str, object] = {}
+        real_build = urllib.request.build_opener
+
+        def capture_build(*handlers: object) -> object:
+            captured["handlers"] = handlers
+            return real_build(*handlers)
+
+        self.mocker.patch("urllib.request.build_opener", side_effect=capture_build)
+        # Force network call to bail without actually fetching
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
+
+        # We don't care if the open call fails — only that build_opener was
+        # called with a HTTPRedirectHandler subclass that vetoes redirects.
+        self.service._download_and_save_image("https://nonexistent.invalid/img.png")
+
+        handlers = captured.get("handlers", ())
+        assert any(
+            isinstance(h, urllib.request.HTTPRedirectHandler)
+            and h.redirect_request(None, None, None, None, None) is None  # type: ignore[arg-type]
+            for h in handlers  # type: ignore[union-attr]
+        )
 
 
 class TestImageGenerationWithBase64:
@@ -4543,7 +4611,9 @@ class TestSearchCompletion:
         assert isinstance(result, ToolResult)
         parsed = json.loads(result.content)
         assert "error" in parsed
-        assert "API down" in parsed["error"]
+        # Internal exception text must NOT leak into tool payload
+        assert "API down" not in parsed["error"]
+        assert parsed["error"] == "Search failed."
 
 
 class TestUrlCompletion:
@@ -4614,7 +4684,9 @@ class TestUrlCompletion:
         assert isinstance(result, ToolResult)
         parsed = json.loads(result.content)
         assert "error" in parsed
-        assert "connection refused" in parsed["error"]
+        # Internal exception text must NOT leak into tool payload
+        assert "connection refused" not in parsed["error"]
+        assert parsed["error"] == "URL fetch failed."
 
 
 # =============================================================================

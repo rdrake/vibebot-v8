@@ -123,10 +123,10 @@ See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for supported models.
 ```
 supybot.plugins.LLM.contextEnabled: True
 supybot.plugins.LLM.contextMaxMessages: 20
-supybot.plugins.LLM.contextTimeoutMinutes: 30
+supybot.plugins.LLM.contextTimeoutMinutes: 5
 ```
 
-Volatile memory is per-user per-channel. Cleared by `%forget`, after 30 minutes of inactivity, or when max messages exceeded.
+Volatile memory is per-user per-channel. Cleared by `%forget`, after the configured idle timeout (default 5 minutes), or when max messages exceeded.
 
 ### Non-volatile Memory (Stored Facts)
 
@@ -179,9 +179,14 @@ supybot.plugins.LLM.codeRateLimitWindow: 60
 supybot.plugins.LLM.codeTrustedRateLimitCount: 0   # unlimited
 supybot.plugins.LLM.codeUnregRateLimitCount: 2
 # draw
-supybot.plugins.LLM.drawRateLimitCount: 3
-supybot.plugins.LLM.drawRateLimitWindow: 60
+supybot.plugins.LLM.drawRateLimitCount: 2
+supybot.plugins.LLM.drawRateLimitWindow: 300
+supybot.plugins.LLM.drawTrustedRateLimitCount: 5
+supybot.plugins.LLM.drawTrustedRateLimitWindow: 60
+supybot.plugins.LLM.drawUnregRateLimitCount: 0
 ```
+
+See `docs/guide/operator/rate-limiting-security.md` for the full per-tier matrix and authoritative defaults.
 
 ### IRC Staging Smoke Checklist
 
