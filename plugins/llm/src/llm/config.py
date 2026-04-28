@@ -775,7 +775,7 @@ conf.registerGlobalValue(
     LLM,
     "metaMaxSteps",
     registry.PositiveInteger(
-        7,
+        12,
         _("""Maximum tool-call round trips per assistant invocation.
         Prevents runaway tool loops."""),
     ),
