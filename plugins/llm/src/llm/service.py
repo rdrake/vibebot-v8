@@ -57,6 +57,49 @@ PENDING_MAX_BACKOFF_SECONDS = 300
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
 
+
+def account_from_server_tags(msg: IrcMsg) -> str | None:
+    """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
+
+    Returns the tag value when present and not the IRCv3 logout sentinel
+    (``"*"`` or empty string), otherwise None. Pure: no ``irc`` reference,
+    so it's callable from the service-layer stash path that has no irc
+    handle in scope. Lives at module level (rather than as an LLM
+    staticmethod) to avoid a service→plugin import cycle.
+    """
+    if not msg.server_tags:
+        return None
+    tag = msg.server_tags.get("account")
+    if tag and tag != "*":
+        return tag
+    return None
+
+
+def irc_has_caps(irc: Irc, *names: str) -> bool:
+    """Return True iff every named IRCv3 capability is in ``capabilities_ack``.
+
+    Tolerates a partially-initialized ``irc`` (missing state or capability
+    set) by treating absence as "not acked".
+    """
+    caps = getattr(getattr(irc, "state", None), "capabilities_ack", None) or ()
+    return all(name in caps for name in names)
+
+
+def _msg_stash_context(msg: IrcMsg | None) -> tuple[str, str, bool, str | None]:
+    """Extract (nick, reply_target, is_channel, account) from a stash-site msg.
+
+    Layer-2 (state cache) is intentionally skipped — there's no irc handle
+    here, and a NULL account is fine because delivery-time logging falls
+    back to a live nick→identity resolve.
+    """
+    if not msg:
+        return "", "", False, None
+    nick = msg.nick or ""
+    reply_target = msg.args[0] if msg.args else ""
+    is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+    return nick, reply_target, is_channel, account_from_server_tags(msg)
+
+
 # Pre-computed Gemini safety settings (all categories BLOCK_NONE)
 _GEMINI_SAFETY_SETTINGS: list[dict[str, str]] = [
     {"category": cat, "threshold": "BLOCK_NONE"}
@@ -245,7 +288,7 @@ class PendingTaskResult(NamedTuple):
     cost: float = 0.0
     task_id: int | None = None  # DB row ID for delivery acknowledgment
     delivery_attempt_count: int = 0  # current persisted delivery retry count
-    account: str | None = None  # captured at submission via account-tag
+    account: str | None = None
 
 
 class ReminderParseResult(NamedTuple):
@@ -720,12 +763,7 @@ class LLMService:
             target: Channel or nick to send typing indicator to
             state: Typing state - 'active', 'paused', or 'done'
         """
-        # Check if server supports message-tags capability
-        irc_state = getattr(irc, "state", None)
-        if not irc_state:
-            return
-        capabilities = getattr(irc_state, "capabilities_ack", set())
-        if "message-tags" not in capabilities:
+        if not irc_has_caps(irc, "message-tags"):
             return
 
         msg = ircmsgs.IrcMsg(
@@ -1694,20 +1732,7 @@ class LLMService:
         except litellm.Timeout as e:
             self._log_server_headers(e)
             self.log.warning("Completion timed out: %s", self._sanitize(str(e)))
-            nick = ""
-            reply_target = ""
-            is_channel = False
-            account: str | None = None
-            if msg:
-                nick = msg.nick or ""
-                reply_target = msg.args[0] if msg.args else ""
-                is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
-                # Best-effort account capture via IRCv3 account-tag.
-                # No irc handle here, so layer-2 (state cache) is skipped; NULL
-                # is OK because delivery-time logging falls back to nick.
-                from llm.plugin import LLM
-
-                account = LLM._account_from_server_tags(msg)
+            nick, reply_target, is_channel, account = _msg_stash_context(msg)
             stashed = self._stash_timeout(
                 task_type=command,
                 nick=nick,
@@ -2600,25 +2625,12 @@ Rules:
                 self._log_server_headers(e)
                 # Stash for background retry on first-attempt timeout only
                 self.log.warning("Image generation timed out: %s", self._sanitize(str(e)))
-                nick = ""
-                reply_target = ""
-                is_channel_flag = False
-                account: str | None = None
-                if msg:
-                    nick = msg.nick or ""
-                    reply_target = msg.args[0] if msg.args else ""
-                    is_channel_flag = bool(reply_target) and ircutils.isChannel(reply_target)
-                    # Best-effort account capture via IRCv3 account-tag.
-                    # No irc handle here, so layer-2 (state cache) is skipped;
-                    # NULL is OK because delivery-time logging falls back to nick.
-                    from llm.plugin import LLM
-
-                    account = LLM._account_from_server_tags(msg)
+                nick, reply_target, is_channel, account = _msg_stash_context(msg)
                 stashed = self._stash_timeout(
                     task_type="draw",
                     nick=nick,
                     reply_target=reply_target,
-                    is_channel=is_channel_flag,
+                    is_channel=is_channel,
                     prompt=original_prompt,
                     model=model,
                     request_data={"prompt": original_prompt},

@@ -38,6 +38,8 @@ from .service import (
     CompletionResult,
     ImageResult,
     LLMService,
+    account_from_server_tags,
+    irc_has_caps,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
@@ -282,13 +284,20 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
 def _patch_irc_dojoin(plugin: LLM) -> None:
     """Replace supybot.irclib.Irc.doJoin to skip slow auto-queries on JOIN.
 
-    Always: skip MODE +b (ban-list) — nothing reads ban state.
-    Conditional: skip auto-WHO when ``plugin._will_skip_auto_who(irc)``.
-    The plain MODE <channel> query (channel modes; ends with 329) is kept
+    Why: Limnoria's stock doJoin queues MODE +b (ban-list) and a WHO sync on
+    every channel join. Nothing in this codebase reads ban state, and on
+    servers with account-tag + extended-join the WHO is redundant — both
+    queries serialize behind connection registration and meaningfully delay
+    startup notification on rejoin.
+
+    The patch always drops MODE +b and conditionally drops the WHO (gated by
+    :meth:`LLM._will_skip_auto_who`). The plain MODE <channel> query is kept
     because Limnoria reads channel-mode state in many places.
 
-    Re-patches on every call (e.g., plugin reload) so the closure always
-    references the current LLM instance. Cheap; runs once per __init__.
+    Re-patches on every plugin __init__ so the closure tracks the current
+    LLM instance after a reload. Cheap; the patch is global to all Irc
+    instances, so a multi-instance LLM plugin would have the last-init
+    instance win — not a real concern for this single-plugin deployment.
     """
     from supybot import irclib, ircmsgs
 
@@ -346,7 +355,6 @@ class LLM(callbacks.Plugin):
             db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
         self.db = LLMDatabase(db_path)
 
-        # Patch supybot.irclib.Irc.doJoin to drop slow auto-queries on JOIN.
         _patch_irc_dojoin(self)
 
         # Initialize conversation context (loads persisted conversations from DB)
@@ -816,8 +824,7 @@ class LLM(callbacks.Plugin):
         JOIN itself — together they obviate the auto-WHO scan), AND the
         operator-controlled ``skipAutoWhoOnJoin`` config must be True.
         """
-        caps = getattr(getattr(irc, "state", None), "capabilities_ack", set()) or set()
-        if "account-tag" not in caps or "extended-join" not in caps:
+        if not irc_has_caps(irc, "account-tag", "extended-join"):
             return False
         return bool(self.registryValue("skipAutoWhoOnJoin"))
 
@@ -1104,27 +1111,11 @@ class LLM(callbacks.Plugin):
 
         self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
 
-    @staticmethod
-    def _account_from_server_tags(msg: IrcMsg) -> str | None:
-        """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
-
-        Returns the tag value when present and not the IRCv3 logout sentinel
-        (``"*"`` or empty string), otherwise None. No ``irc`` reference needed,
-        so this is callable from places (like the service-layer stash path)
-        that don't have one in scope.
-        """
-        if not msg.server_tags:
-            return None
-        tag = msg.server_tags.get("account")
-        if tag and tag != "*":
-            return tag
-        return None
-
     def _account_from_msg(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Resolve the requesting user's account name from an incoming message.
 
         Two layers, in order:
-        1. ``msg.server_tags['account']`` via :meth:`_account_from_server_tags`
+        1. ``msg.server_tags['account']`` via :func:`account_from_server_tags`
            — the IRCv3 ``account-tag`` capability. Rides on every
            PRIVMSG/NOTICE/TAGMSG from an identified user, so it's valid even
            for users idling in-channel since before bot start.
@@ -1139,7 +1130,7 @@ class LLM(callbacks.Plugin):
         tier; owner/admin/trusted gating uses ``ircdb.checkCapability(prefix, …)``
         separately and is unaffected.
         """
-        tag_account = self._account_from_server_tags(msg)
+        tag_account = account_from_server_tags(msg)
         if tag_account:
             return tag_account
         nick = ircutils.nickFromHostmask(msg.prefix)
