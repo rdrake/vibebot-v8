@@ -2438,6 +2438,7 @@ Rules:
 
             profile_tools = get_tools_for_profile(route_profile)
 
+            last_assistant_text = ""
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -2463,6 +2464,9 @@ Rules:
 
                 choice = response.choices[0]
                 message = choice.message
+
+                if message.content:
+                    last_assistant_text = message.content
 
                 # If the LLM returned text (no tool calls), we're done
                 if not message.tool_calls:
@@ -2544,12 +2548,16 @@ Rules:
             total_prompt_tokens += executor.accumulated_prompt_tokens
             total_completion_tokens += executor.accumulated_completion_tokens
             total_cost += executor.accumulated_cost
+            fallback = last_assistant_text.strip() or (
+                "I couldn't pull enough context to answer that — give me more detail."
+            )
             return AssistantResult(
-                content="Sorry, I hit the tool call limit. Try a simpler request.",
+                content=self.sanitize_output(fallback),
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
                 cost=total_cost,
                 model=model,
+                grounding_used=executor.grounding_used,
                 error="Assistant exceeded maximum tool-call steps.",
             )
 
