@@ -147,15 +147,17 @@ class TestReminderHelperMethods:
         assert " | " in result
 
     def test_format_reminders_marks_auto_reminders(self, plugin: MagicMock) -> None:
-        """GIVEN action reminder WHEN formatted THEN includes auto marker."""
-        reminders = [
-            (
-                "llm_remind_1_100",
-                ("nick", "#chan", "first", "Post status update in #ops.", "acct"),
-            ),
-        ]
-        result = plugin._format_reminders(reminders)
-        assert "[auto]" in result
+        """GIVEN mixed reminders WHEN formatted THEN only action ones get [auto] marker."""
+        plugin._reminders = {
+            "llm_remind_aaa1": ("alice", "#chan", "check CVE", "check CVE status", "alice"),
+            "llm_remind_bbb2": ("alice", "#chan", "echo this", "", None),
+        }
+        formatted = plugin._format_reminders(plugin._get_user_reminders("alice"))
+        assert "[auto]" in formatted
+        # Echo reminder must NOT be marked.
+        parts = formatted.split(" | ")
+        auto_count = sum(1 for p in parts if "[auto]" in p)
+        assert auto_count == 1
 
     def test_format_reminders_truncates_long_message(self, plugin: MagicMock) -> None:
         """GIVEN long message WHEN formatted THEN truncates."""

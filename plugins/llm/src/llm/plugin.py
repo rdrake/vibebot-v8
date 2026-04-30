@@ -2839,10 +2839,15 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<reminder text> | list | del(ete) <id> [<id>...] | clear]
 
-        Set and manage reminders using natural language.
+        Set and manage reminders using natural language. If your reminder
+        asks the bot to *do* something (look something up, check a status,
+        fetch a URL), it will run that as an LLM query at fire time;
+        otherwise it just echoes your text. Reminders marked [auto] in
+        `list` are LLM actions.
 
         Examples:
           %remind in 30 minutes check the build
+          %remind in 2 hours check status of CVE-2026-31431 in Debian
           %remind list
           %remind delete abc1
           %remind clear
