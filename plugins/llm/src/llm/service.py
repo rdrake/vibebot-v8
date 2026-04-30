@@ -752,6 +752,26 @@ class LLMService:
 
         return " ".join(parts)
 
+    def send_reaction(self, irc: Irc, target: str, msgid: str, emoji: str) -> bool:
+        """Send an IRCv3 +draft/react client tag anchored to a message.
+
+        Returns True if the TAGMSG was queued, False if the server lacks
+        the message-tags capability or no msgid is available (in which
+        case the caller should fall back to a text reply).
+        """
+        if not msgid or not irc_has_caps(irc, "message-tags"):
+            return False
+        msg = ircmsgs.IrcMsg(
+            command="TAGMSG",
+            args=(target,),
+            server_tags={
+                "+draft/react": emoji,
+                "+draft/reply": msgid,
+            },
+        )
+        irc.queueMsg(msg)
+        return True
+
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.
 
@@ -1902,6 +1922,7 @@ class LLMService:
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
+        cancel_all_reminders_fn: Callable[[], str] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
@@ -1961,6 +1982,7 @@ class LLMService:
             list_reminders_fn=list_reminders_fn,
             set_reminder_fn=set_reminder_fn,
             delete_reminder_fn=delete_reminder_fn,
+            cancel_all_reminders_fn=cancel_all_reminders_fn,
             draw_fn=draw_fn,
             search_fn=search_fn,
             fetch_fn=fetch_fn,
@@ -2029,6 +2051,7 @@ Rules:
 - "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
 - "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
 - Recurrence: if the user used recurring language ("every X", "daily", "hourly", "weekly", "each X", "repeat"), set "seconds" to the NEXT occurrence (one-shot — there is no native repeat), AND append a recurrence hint at the end of "action_prompt" in the form " (recurring: <original schedule phrase>)". Example: "every Monday at 9am check the build" → action_prompt: "check the build (recurring: every Monday at 9am)". The fire-time engine uses this hint to decide whether to reschedule itself.
+- Watch mode: if the user phrases the task as a *check until*-style watch ("let me know when X is available", "tell me if Y appears", "alert me when Z happens", "watch for W"), append " (watch — only respond on positive result)" to "action_prompt" AFTER any recurrence hint. The fire-time engine uses this to suppress noisy "still no news" replies and only speak on positive findings. Example: "every 5m let me know when Ubuntu 24.04 patches CVE-2026-31431" → action_prompt: "check Ubuntu 24.04 patch status for CVE-2026-31431 (recurring: every 5 minutes) (watch — only respond on positive result)".
 
 Examples (imperative → action_prompt):
 - "in 30m check if the build is green" → action_prompt: "check if the build is green"
@@ -2364,6 +2387,7 @@ Examples (echo → action_prompt: ""):
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
+        cancel_all_reminders_fn: Callable[[], str] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
@@ -2462,6 +2486,7 @@ Examples (echo → action_prompt: ""):
                 list_reminders_fn=list_reminders_fn,
                 set_reminder_fn=set_reminder_fn,
                 delete_reminder_fn=delete_reminder_fn,
+                cancel_all_reminders_fn=cancel_all_reminders_fn,
                 draw_fn=draw_fn,
                 search_fn=search_fn,
                 fetch_fn=fetch_fn,

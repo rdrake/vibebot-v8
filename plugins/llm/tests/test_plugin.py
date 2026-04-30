@@ -1247,6 +1247,7 @@ class TestPluginDatabaseWiring:
         from .conftest import make_registry_side_effect, plugin_init_patches
 
         future_time = time.time() + 3600  # 1 hour from now
+        created = time.time()
         reminder = ReminderRow(
             id=1,
             event_name="llm_remind_123_1",
@@ -1256,7 +1257,10 @@ class TestPluginDatabaseWiring:
             action_prompt="",
             account=None,
             fire_at=future_time,
-            created_at=time.time(),
+            created_at=created,
+            chain_id="llm_remind_123_1",
+            chain_position=1,
+            chain_started_at=created,
         )
 
         mock_db = mocker.MagicMock()
@@ -1280,6 +1284,9 @@ class TestPluginDatabaseWiring:
             "check build",
             "",
             None,
+            "llm_remind_123_1",
+            1,
+            created,
         )
 
     def test_plugin_reload_reminders_delivers_overdue(
@@ -1292,6 +1299,7 @@ class TestPluginDatabaseWiring:
         from .conftest import make_registry_side_effect, plugin_init_patches
 
         past_time = time.time() - 60  # 1 minute ago
+        created = time.time() - 120
         reminder = ReminderRow(
             id=1,
             event_name="llm_remind_123_1",
@@ -1301,7 +1309,10 @@ class TestPluginDatabaseWiring:
             action_prompt="",
             account=None,
             fire_at=past_time,
-            created_at=time.time() - 120,
+            created_at=created,
+            chain_id="llm_remind_123_1",
+            chain_position=1,
+            chain_started_at=created,
         )
 
         mock_db = mocker.MagicMock()

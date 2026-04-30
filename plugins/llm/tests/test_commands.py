@@ -1813,6 +1813,7 @@ class TestReloadRemindersEdgeCases:
 
         plugin, mock_irc, mock_msg = plugin_env
         future_time = time_module.time() + 3600
+        created = time_module.time()
         reminder = ReminderRow(
             id=1,
             event_name="llm_remind_broken_1",
@@ -1822,7 +1823,10 @@ class TestReloadRemindersEdgeCases:
             action_prompt="",
             account=None,
             fire_at=future_time,
-            created_at=time_module.time(),
+            created_at=created,
+            chain_id="llm_remind_broken_1",
+            chain_position=1,
+            chain_started_at=created,
         )
 
         plugin.db.load_pending_reminders.return_value = [reminder]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -241,6 +242,242 @@ class TestReminderHelperMethods:
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result is None
 
+    def test_remind_clear_for_assistant_cancels_user_reminders_only(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN reminders from multiple users WHEN clear THEN only caller's are cancelled."""
+        from llm.plugin import Identity
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin._reminders["llm_remind_a_111"] = ("alice", "#chan", "alice 1", "", "alice")
+        plugin._reminders["llm_remind_b_222"] = ("alice", "#chan", "alice 2", "", "alice")
+        plugin._reminders["llm_remind_c_333"] = ("bob", "#chan", "bob 1", "", "bob")
+
+        result = plugin._remind_clear_for_assistant(
+            Identity(raw_nick="alice", account="alice"),
+        )
+
+        assert "2 reminders" in result
+        # bob's reminder must remain.
+        assert list(plugin._reminders.keys()) == ["llm_remind_c_333"]
+        assert plugin.db.delete_reminder.call_count == 2
+
+    def test_remind_clear_for_assistant_no_reminders(self, plugin: MagicMock) -> None:
+        """GIVEN no reminders WHEN clear THEN returns 'no pending' message."""
+        from llm.plugin import Identity
+
+        result = plugin._remind_clear_for_assistant(
+            Identity(raw_nick="alice", account=None),
+        )
+        assert "no pending" in result.lower()
+        plugin.db.delete_reminder.assert_not_called()
+
+    def test_remind_clear_for_assistant_singular(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN one reminder WHEN cleared THEN message uses singular phrasing."""
+        from llm.plugin import Identity
+
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin._reminders["llm_remind_x_999"] = ("alice", "#chan", "only one", "", None)
+
+        result = plugin._remind_clear_for_assistant(
+            Identity(raw_nick="alice", account=None),
+        )
+        assert result == "Cancelled 1 reminder."
+        assert plugin._reminders == {}
+
+    # Tests for chain caps in _schedule_reminder
+
+    def _stub_parse_for_schedule(self, plugin: MagicMock, action_prompt: str = "") -> None:
+        """Make parse_reminder return a 60-second schedule result."""
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="ping",
+            confirmation="OK.",
+            action_prompt=action_prompt,
+        )
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+    def test_schedule_reminder_chain_cap_refuses_at_max_position(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN parent_chain at the cap WHEN scheduling THEN refuses."""
+        from llm.plugin import LLM, Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+        # Position 50 is the cap; reschedule would be 51 → refused.
+        parent = ("chain-x", LLM._REMINDER_MAX_CHAIN_POSITION, time.time())
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "every 1m ping",
+            parent_chain=parent,
+        )
+        assert result.ok is False
+        assert "cap" in result.message.lower()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_schedule_reminder_chain_cap_refuses_past_ttl(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN parent_chain older than TTL WHEN scheduling THEN refuses."""
+        from llm.plugin import LLM, Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+        old_start = time.time() - LLM._REMINDER_CHAIN_TTL_SECONDS - 60
+        parent = ("chain-y", 5, old_start)
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "every 1m ping",
+            parent_chain=parent,
+        )
+        assert result.ok is False
+        assert "ttl" in result.message.lower() or "30-day" in result.message.lower()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_schedule_reminder_per_user_pending_cap(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN per-user pending cap reached WHEN scheduling fresh THEN refuses."""
+        from llm.plugin import LLM, Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+
+        # Pre-populate with the cap number of pending reminders for alice.
+        for i in range(LLM._REMINDER_MAX_PENDING_PER_USER):
+            plugin._reminders[f"llm_remind_{i}_xxx"] = (
+                "alice",
+                "#chan",
+                f"r{i}",
+                "",
+                "alice",
+                f"chain-{i}",
+                1,
+                time.time(),
+            )
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "in 1m ping",
+        )
+        assert result.ok is False
+        assert "pending" in result.message.lower()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_schedule_reminder_fresh_chain_assigns_uuid_and_position_one(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN no parent_chain WHEN scheduling THEN gets new chain_id, position=1."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "in 1m ping",
+        )
+        assert result.ok is True
+        kwargs = plugin.db.save_reminder.call_args.kwargs
+        assert kwargs["chain_position"] == 1
+        assert isinstance(kwargs["chain_id"], str) and len(kwargs["chain_id"]) >= 8
+        # event_name should not equal chain_id for fresh chains (UUID assigned).
+        saved_event_name = next(iter(plugin._reminders.keys()))
+        assert kwargs["chain_id"] != saved_event_name
+
+    def test_schedule_reminder_carries_chain_id_through_reschedule(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN parent_chain WHEN rescheduling THEN child inherits chain_id, position+1."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+        started = time.time() - 60
+        parent = ("chain-shared", 3, started)
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "every 1m ping",
+            parent_chain=parent,
+        )
+        assert result.ok is True
+        kwargs = plugin.db.save_reminder.call_args.kwargs
+        assert kwargs["chain_id"] == "chain-shared"
+        assert kwargs["chain_position"] == 4
+        assert kwargs["chain_started_at"] == started
+        # User-visible reply mentions the running counter.
+        assert "4/" in result.message
+
+    # Tests for _react helper
+
+    def test_react_returns_false_when_no_msgid(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN msg without msgid WHEN reacting THEN returns False, no TAGMSG queued."""
+        irc = mocker.MagicMock()
+        msg = mocker.MagicMock()
+        msg.server_tags = {}
+        msg.args = ("#chan",)
+        plugin.llm_service.send_reaction = mocker.MagicMock()
+
+        assert plugin._react(irc, msg, "👍") is False
+        plugin.llm_service.send_reaction.assert_not_called()
+
+    def test_react_calls_send_reaction_with_msgid(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN msg with msgid WHEN reacting THEN delegates to send_reaction."""
+        irc = mocker.MagicMock()
+        msg = mocker.MagicMock()
+        msg.server_tags = {"msgid": "abc-123"}
+        msg.args = ("#chan",)
+        plugin.llm_service.send_reaction = mocker.MagicMock(return_value=True)
+
+        assert plugin._react(irc, msg, "⏰") is True
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#chan", "abc-123", "⏰")
+
     # Test database attribute
 
     def test_plugin_has_db_attribute(self, plugin: MagicMock) -> None:
@@ -284,18 +521,23 @@ class TestReminderHelperMethods:
 
         saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
         assert saved_event_name.startswith("llm_remind_")
-        assert reminder_data == (
+        # First five fields are the user-facing data; last three are chain
+        # bookkeeping (chain_id is a UUID, chain_position=1, chain_started_at
+        # is a recent timestamp).
+        assert reminder_data[:5] == (
             "testnick",
             "#ops",
             "post status update in #ops",
             "Post a status update in #ops.",
             "acct-testnick",
         )
+        assert reminder_data[6] == 1  # chain_position
         plugin.db.save_reminder.assert_called_once()
         assert plugin.db.save_reminder.call_args.kwargs["action_prompt"] == (
             "Post a status update in #ops."
         )
         assert plugin.db.save_reminder.call_args.kwargs["account"] == "acct-testnick"
+        assert plugin.db.save_reminder.call_args.kwargs["chain_position"] == 1
 
     # Test plugin cleanup
 
@@ -1018,6 +1260,99 @@ class TestReminderActionDelivery:
         sent = active_irc.queueMsg.call_args[0][0]
         assert sent.args[1] == "alice: Reminder: ping me"
 
+    def test_action_delivery_logs_usage_to_chain_owner(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN successful action fire WHEN delivered THEN log_usage is called under account."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="status: green",
+            model="gemini/gemini-2.0-flash-lite",
+            prompt_tokens=42,
+            completion_tokens=8,
+            cost=0.0001,
+        )
+
+        event_name = "llm_remind_action_usage"
+        plugin._reminders[event_name] = (
+            "alice",
+            "#ops",
+            "check build",
+            "check build",
+            "alice-acct",
+            event_name,
+            1,
+            time.time(),
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="check build",
+            account="alice-acct",
+        )
+        deliver()
+
+        plugin.db.log_usage.assert_called_once()
+        args = plugin.db.log_usage.call_args.args
+        kwargs = plugin.db.log_usage.call_args.kwargs
+        assert args[0] == "alice-acct"  # owner_key — account preferred over nick
+        assert args[2] == "remind_action"
+        assert args[3] == "gemini/gemini-2.0-flash-lite"
+        assert args[4] == 42
+        assert args[5] == 8
+        assert kwargs["status"] == "success"
+
+    def test_action_delivery_silent_sentinel_skips_send_but_logs_usage(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN [silent] response WHEN delivered THEN no IRC msg sent but usage still logged."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="[silent]",
+            model="gemini/gemini-2.0-flash-lite",
+            prompt_tokens=30,
+            completion_tokens=2,
+            cost=0.00005,
+        )
+
+        event_name = "llm_remind_action_silent"
+        plugin._reminders[event_name] = (
+            "alice",
+            "#ops",
+            "watch CVE",
+            "check CVE (watch — only respond on positive result)",
+            "alice-acct",
+            event_name,
+            1,
+            time.time(),
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "watch CVE",
+            event_name,
+            action_prompt="check CVE (watch — only respond on positive result)",
+            account="alice-acct",
+        )
+        deliver()
+
+        # No user-visible message — silent fires only react in the log.
+        active_irc.queueMsg.assert_not_called()
+        # Usage IS logged so cumulative cost stays visible.
+        plugin.db.log_usage.assert_called_once()
+        kwargs = plugin.db.log_usage.call_args.kwargs
+        assert kwargs["status"] == "silent"
+
     def test_action_delivery_caps_nested_reminder_scheduling(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -1126,6 +1461,7 @@ class TestReminderReload:
 
         from llm.persistence import ReminderRow
 
+        _created = _time.time()
         plugin.db.load_pending_reminders.return_value = [
             ReminderRow(
                 id=1,
@@ -1134,9 +1470,12 @@ class TestReminderReload:
                 channel="#chan",
                 message="check CVE",
                 fire_at=_time.time() + 3600,
-                created_at=_time.time(),
+                created_at=_created,
                 action_prompt="check CVE-2026-31431 status",
                 account="alice-acct",
+                chain_id="evt_persist",
+                chain_position=1,
+                chain_started_at=_created,
             )
         ]
         mocker.patch("llm.plugin.schedule.addEvent")
@@ -1150,12 +1489,16 @@ class TestReminderReload:
         assert kwargs["action_prompt"] == "check CVE-2026-31431 status"
         assert kwargs["account"] == "alice-acct"
 
-        # In-memory dict must hold the same 5-tuple for later @remind list /
-        # delete operations.
+        # In-memory dict must hold the user-facing data plus chain bookkeeping
+        # (chain_id, position, started_at) for later @remind list / delete /
+        # reschedule operations.
         assert plugin._reminders["evt_persist"] == (
             "alice",
             "#chan",
             "check CVE",
             "check CVE-2026-31431 status",
             "alice-acct",
+            "evt_persist",
+            1,
+            _created,
         )

@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -33,6 +33,9 @@ class ReminderRow(NamedTuple):
     account: str | None
     fire_at: float
     created_at: float
+    chain_id: str
+    chain_position: int
+    chain_started_at: float
 
 
 class UsageSummary(NamedTuple):
@@ -307,6 +310,25 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 10:
+                # Per-chain caps: each reminder belongs to a chain (started by
+                # a chat-level set, extended by action-fire reschedules). Old
+                # rows backfill chain_id = event_name (single-fire chain),
+                # chain_position = 1, chain_started_at = created_at.
+                conn.executescript("""
+                    ALTER TABLE reminders
+                        ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE reminders
+                        ADD COLUMN chain_position INTEGER NOT NULL DEFAULT 1;
+                    ALTER TABLE reminders
+                        ADD COLUMN chain_started_at REAL NOT NULL DEFAULT 0;
+                """)
+                conn.execute("UPDATE reminders SET chain_id = event_name WHERE chain_id = ''")
+                conn.execute(
+                    "UPDATE reminders SET chain_started_at = created_at WHERE chain_started_at = 0"
+                )
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -414,6 +436,9 @@ class LLMDatabase:
         *,
         action_prompt: str = "",
         account: str | None = None,
+        chain_id: str = "",
+        chain_position: int = 1,
+        chain_started_at: float = 0.0,
     ) -> int:
         """Save a reminder to the database.
 
@@ -425,6 +450,11 @@ class LLMDatabase:
             fire_at: Unix timestamp when the reminder should fire.
             action_prompt: Optional follow-up LLM prompt to run when reminder fires.
             account: Requester's resolved account name, or None if unknown.
+            chain_id: Stable id linking reminders in a recurring chain
+                (default: event_name → singleton chain).
+            chain_position: 1-based position within the chain.
+            chain_started_at: Unix timestamp of the chain's first scheduling
+                (default: now).
 
         Returns:
             The row ID of the inserted reminder.
@@ -432,12 +462,16 @@ class LLMDatabase:
         Raises:
             sqlite3.IntegrityError: If event_name already exists.
         """
+        now = time.time()
+        effective_chain_id = chain_id or event_name
+        effective_chain_started_at = chain_started_at or now
         conn = self._connect()
         try:
             cursor = conn.execute(
                 "INSERT INTO reminders "
-                "(event_name, nick, channel, message, action_prompt, account, fire_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(event_name, nick, channel, message, action_prompt, account, "
+                "fire_at, created_at, chain_id, chain_position, chain_started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_name,
                     nick,
@@ -446,7 +480,10 @@ class LLMDatabase:
                     action_prompt,
                     account,
                     fire_at,
-                    time.time(),
+                    now,
+                    effective_chain_id,
+                    chain_position,
+                    effective_chain_started_at,
                 ),
             )
             conn.commit()
@@ -488,7 +525,8 @@ class LLMDatabase:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, event_name, nick, channel, message, action_prompt, account, fire_at, created_at "
+                "SELECT id, event_name, nick, channel, message, action_prompt, account, "
+                "fire_at, created_at, chain_id, chain_position, chain_started_at "
                 "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
                 (cutoff,),
             ).fetchall()

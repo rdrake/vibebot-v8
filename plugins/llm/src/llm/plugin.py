@@ -400,8 +400,13 @@ class LLM(callbacks.Plugin):
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
 
-        # Reminder storage: event_name -> (nick, channel, message, action_prompt, account)
-        self._reminders: dict[str, tuple[str, str, str, str, str | None]] = {}
+        # Reminder storage:
+        # event_name -> (nick, channel, message, action_prompt, account,
+        #                chain_id, chain_position, chain_started_at)
+        self._reminders: dict[
+            str,
+            tuple[str, str, str, str, str | None, str, int, float],
+        ] = {}
         self._reminders_lock = threading.Lock()
 
         # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
@@ -1000,6 +1005,9 @@ class LLM(callbacks.Plugin):
         *,
         action_prompt: str = "",
         account: str | None = None,
+        chain_id: str = "",
+        chain_position: int = 1,
+        chain_started_at: float = 0.0,
     ):
         """Create a reminder delivery closure with error handling.
 
@@ -1011,11 +1019,20 @@ class LLM(callbacks.Plugin):
             channel: Channel to deliver to (or nick for PM delivery)
             message: Reminder message
             event_name: Scheduler event name for cleanup
+            chain_id: Stable id for the reminder's chain (carried to any
+                reschedule done by the action LLM via ``_set_reminder_capped``).
+            chain_position: 1-based position of this reminder within its chain.
+            chain_started_at: Unix timestamp of the chain's first scheduling.
 
         Returns:
             Callable for use with schedule.addEvent
         """
         lock = self._reminders_lock
+        parent_chain = (
+            chain_id or event_name,
+            chain_position or 1,
+            chain_started_at or time.time(),
+        )
         # If the command was sent via PM, channel is the bot's own nick.
         # Deliver to the user's nick instead.
         target = channel if ircutils.isChannel(channel) else nick
@@ -1102,12 +1119,15 @@ class LLM(callbacks.Plugin):
                             _irc=active_irc,
                             _msg=synthetic_msg,
                             _caller=caller,
+                            _parent=parent_chain,
                         ) -> str:
                             nonlocal nested_set_calls
                             if nested_set_calls >= 1:
                                 return "Reminder scheduling limit reached for this reminder action."
                             nested_set_calls += 1
-                            return self._remind_set_for_assistant(_irc, _msg, _caller, text)
+                            return self._remind_set_for_assistant(
+                                _irc, _msg, _caller, text, parent_chain=_parent
+                            )
 
                         result = self.llm_service.assistant_request(
                             prompt=action_prompt,
@@ -1137,14 +1157,45 @@ class LLM(callbacks.Plugin):
                             delete_reminder_fn=lambda r, _caller=caller: (
                                 self._remind_delete_for_assistant(_caller, r)
                             ),
+                            cancel_all_reminders_fn=lambda _caller=caller: (
+                                self._remind_clear_for_assistant(_caller)
+                            ),
                         )
                         response = result.content.strip() if result.content else ""
-                        if not response:
+                        # Watch-mode sentinel: action LLM signals "no news to
+                        # share, just stay scheduled." Usage is still logged
+                        # so silent watches show up in the user's stats.
+                        is_silent = response == "[silent]"
+                        if is_silent:
+                            pass  # No user-visible output this fire.
+                        elif not response:
                             _send(f"Reminder: {message} (action returned empty response)")
                         elif message:
                             _send(f"Reminder ({message}): {response}")
                         else:
                             _send(f"Reminder: {response}")
+                        # Attribute the action fire's LLM cost to the chain
+                        # owner (account when present, raw nick as fallback)
+                        # so runaway watches are visible in @usage and
+                        # weigh against the same identity as rate limits.
+                        try:
+                            owner_key = account or nick
+                            self.db.log_usage(
+                                owner_key,
+                                channel,
+                                "remind_action",
+                                result.model,
+                                result.prompt_tokens,
+                                result.completion_tokens,
+                                result.cost,
+                                prompt=action_prompt,
+                                status=("silent" if is_silent else "success"),
+                                error_detail=(result.error or "")[:200],
+                            )
+                        except Exception:
+                            self.log.exception(
+                                "reminder_action_usage_log_failed event=%s", event_name
+                            )
                     except Exception:
                         self.log.exception(
                             "reminder_action_delivery_failed nick=%s channel=%s event=%s",
@@ -1194,6 +1245,9 @@ class LLM(callbacks.Plugin):
                 event_name,
                 action_prompt=reminder.action_prompt,
                 account=reminder.account,
+                chain_id=reminder.chain_id or event_name,
+                chain_position=reminder.chain_position or 1,
+                chain_started_at=reminder.chain_started_at or reminder.created_at,
             )
 
             if reminder.fire_at <= now:
@@ -1210,6 +1264,9 @@ class LLM(callbacks.Plugin):
                             message,
                             reminder.action_prompt,
                             reminder.account,
+                            reminder.chain_id or event_name,
+                            reminder.chain_position or 1,
+                            reminder.chain_started_at or reminder.created_at,
                         )
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
@@ -2202,6 +2259,7 @@ class LLM(callbacks.Plugin):
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
                     delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2306,6 +2364,7 @@ class LLM(callbacks.Plugin):
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
                     delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
                 )
 
                 response = result.content
@@ -2397,6 +2456,7 @@ class LLM(callbacks.Plugin):
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
                     delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
                 )
 
                 response = result.content
@@ -2748,10 +2808,13 @@ class LLM(callbacks.Plugin):
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
     @staticmethod
-    def _stored_reminder_identity(data: tuple[str, str, str, str, str | None]) -> Identity:
+    def _stored_reminder_identity(
+        data: tuple[str, str, str, str, str | None, str, int, float],
+    ) -> Identity:
         """Reconstruct the owning :class:`Identity` from a stored reminder tuple.
 
-        Tuple layout: ``(raw_nick, channel, message, action_prompt, account)``.
+        Tuple layout: ``(raw_nick, channel, message, action_prompt, account,
+        chain_id, chain_position, chain_started_at)``.
         Legacy rows persisted before the raw_nick/account split stored the
         resolved identity in field 0; in that case field 0 equals field 4
         (the account) and ``Identity.matches`` still resolves correctly via
@@ -2761,7 +2824,7 @@ class LLM(callbacks.Plugin):
 
     def _get_user_reminders(
         self, caller: Identity
-    ) -> list[tuple[str, tuple[str, str, str, str, str | None]]]:
+    ) -> list[tuple[str, tuple[str, str, str, str, str | None, str, int, float]]]:
         """Get reminders belonging to a specific user.
 
         Match policy: account-to-account when both the caller and the
@@ -2784,7 +2847,8 @@ class LLM(callbacks.Plugin):
             ]
 
     def _format_reminders(
-        self, reminders: list[tuple[str, tuple[str, str, str, str, str | None]]]
+        self,
+        reminders: list[tuple[str, tuple[str, str, str, str, str | None, str, int, float]]],
     ) -> str:
         """Format reminders list for display.
 
@@ -2835,6 +2899,31 @@ class LLM(callbacks.Plugin):
 
     # Maximum reminder duration (7 days in seconds)
     _REMINDER_MAX_SECONDS = 604800
+    # Hard cap on how many fires a single recurring reminder chain can run
+    # before the user has to re-arm it. Each fire of a chain that asks the
+    # action LLM to reschedule increments the chain position; we refuse the
+    # next reschedule once it would exceed this cap.
+    _REMINDER_MAX_CHAIN_POSITION = 50
+    # Wallclock TTL for a chain measured from its first scheduling. Catches
+    # slow-but-eternal chains (e.g. once a day forever) regardless of count.
+    _REMINDER_CHAIN_TTL_SECONDS = 30 * 86400
+    # Per-user pending-reminder cap (across all chains). Prevents a user
+    # from accumulating an arbitrary number of one-shot reminders.
+    _REMINDER_MAX_PENDING_PER_USER = 25
+
+    def _react(self, irc: callbacks.Irc, msg: IrcMsg, emoji: str) -> bool:
+        """Send a +draft/react reaction to ``msg``. Returns True if queued.
+
+        No-ops cleanly when the server lacks message-tags or the incoming
+        message has no msgid — caller should fall back to a text reply.
+        """
+        msgid = (getattr(msg, "server_tags", None) or {}).get("msgid")
+        if not msgid:
+            return False
+        target = msg.args[0] if msg.args else ""
+        if not target:
+            return False
+        return self.llm_service.send_reaction(irc, target, msgid, emoji)
 
     def _cancel_reminder(self, event_name: str) -> None:
         """Remove a single reminder from scheduler, in-memory dict, and database."""
@@ -2845,7 +2934,13 @@ class LLM(callbacks.Plugin):
         self.db.delete_reminder(event_name)
 
     def _schedule_reminder(
-        self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        caller: Identity,
+        text: str,
+        *,
+        parent_chain: tuple[str, int, float] | None = None,
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder.
 
@@ -2853,6 +2948,11 @@ class LLM(callbacks.Plugin):
         for the synthetic message prefix at fire time and as the fallback
         match when the caller has no account).  ``caller.account`` is
         captured separately and is the preferred match key on lookup.
+
+        ``parent_chain`` is supplied when an action-fire LLM is rescheduling
+        the next occurrence of a recurring reminder. It carries
+        ``(chain_id, parent_position, chain_started_at)`` so the new row
+        keeps the chain's identity and we can enforce per-chain caps.
         """
         channel = self._get_channel(msg)
 
@@ -2877,6 +2977,41 @@ class LLM(callbacks.Plugin):
                 ok=False, message="Reminder can't be more than 7 days out."
             )
 
+        now = time.time()
+        if parent_chain is not None:
+            chain_id, parent_position, chain_started_at = parent_chain
+            chain_position = parent_position + 1
+            if chain_position > self._REMINDER_MAX_CHAIN_POSITION:
+                return ReminderScheduleResult(
+                    ok=False,
+                    message=(
+                        f"Recurring reminder reached its cap of "
+                        f"{self._REMINDER_MAX_CHAIN_POSITION} runs. "
+                        "Set it again to continue."
+                    ),
+                )
+            if now - chain_started_at > self._REMINDER_CHAIN_TTL_SECONDS:
+                return ReminderScheduleResult(
+                    ok=False,
+                    message=(
+                        "Recurring reminder reached its 30-day TTL. Set it again to continue."
+                    ),
+                )
+        else:
+            chain_id = uuid.uuid4().hex
+            chain_position = 1
+            chain_started_at = now
+            pending = len(self._get_user_reminders(caller))
+            if pending >= self._REMINDER_MAX_PENDING_PER_USER:
+                return ReminderScheduleResult(
+                    ok=False,
+                    message=(
+                        f"You already have {pending} pending reminders "
+                        f"(cap {self._REMINDER_MAX_PENDING_PER_USER}). "
+                        "Cancel some first."
+                    ),
+                )
+
         reminder_message = result.message or text
         action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
@@ -2887,10 +3022,13 @@ class LLM(callbacks.Plugin):
             event_name,
             action_prompt=action_prompt,
             account=caller.account,
+            chain_id=chain_id,
+            chain_position=chain_position,
+            chain_started_at=chain_started_at,
         )
 
         try:
-            schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
+            schedule.addEvent(deliver, now + result.seconds, name=event_name)
             with self._reminders_lock:
                 self._reminders[event_name] = (
                     caller.raw_nick,
@@ -2898,6 +3036,9 @@ class LLM(callbacks.Plugin):
                     reminder_message,
                     action_prompt,
                     caller.account,
+                    chain_id,
+                    chain_position,
+                    chain_started_at,
                 )
 
             self.db.save_reminder(
@@ -2905,14 +3046,19 @@ class LLM(callbacks.Plugin):
                 caller.raw_nick,
                 channel,
                 reminder_message,
-                time.time() + result.seconds,
+                now + result.seconds,
                 action_prompt=action_prompt,
                 account=caller.account,
+                chain_id=chain_id,
+                chain_position=chain_position,
+                chain_started_at=chain_started_at,
             )
 
             reply = self.llm_service.sanitize_output(result.confirmation)
             if result.note:
                 reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
+            if chain_position > 1:
+                reply = f"{reply} ({chain_position}/{self._REMINDER_MAX_CHAIN_POSITION})"
             return ReminderScheduleResult(ok=True, message=reply)
         except Exception as e:
             self.log.error("Failed to schedule reminder: %s", e)
@@ -2922,15 +3068,28 @@ class LLM(callbacks.Plugin):
         """Parse and schedule a natural language reminder via IRC."""
         result = self._schedule_reminder(irc, msg, caller, text)
         if result.ok:
-            irc.reply(result.message)
+            if not self._react(irc, msg, "⏰"):
+                irc.reply(result.message)
         else:
+            self._react(irc, msg, "❌")
             irc.error(_(result.message))
 
     def _remind_set_for_assistant(
-        self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        caller: Identity,
+        text: str,
+        *,
+        parent_chain: tuple[str, int, float] | None = None,
     ) -> str:
-        """Parse and schedule a reminder, returning a result string for meta."""
-        return self._schedule_reminder(irc, msg, caller, text).message
+        """Parse and schedule a reminder, returning a result string for meta.
+
+        ``parent_chain`` is provided when the call originates from an
+        action-fire LLM rescheduling a recurring chain — see
+        :meth:`_schedule_reminder` for cap enforcement.
+        """
+        return self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain).message
 
     def _remind_delete_for_assistant(self, caller: Identity, reminder_id: str) -> str:
         """Delete a reminder by ID, scoped to the caller's identity."""
@@ -2940,6 +3099,23 @@ class LLM(callbacks.Plugin):
 
         self._cancel_reminder(target)
         return f"Deleted reminder {reminder_id}."
+
+    def _remind_clear_for_assistant(self, caller: Identity) -> str:
+        """Cancel all pending reminders for the caller in one shot.
+
+        Snapshots the user's reminders then removes each — single atomic
+        operation from the LLM's perspective so a recurring reminder can't
+        slip in a fire between the model's tool calls.
+        """
+        user_reminders = self._get_user_reminders(caller)
+        for name, _data in user_reminders:
+            self._cancel_reminder(name)
+        count = len(user_reminders)
+        if count == 0:
+            return "No pending reminders to cancel."
+        if count == 1:
+            return "Cancelled 1 reminder."
+        return f"Cancelled {count} reminders."
 
     def remind(
         self,
@@ -2984,21 +3160,24 @@ class LLM(callbacks.Plugin):
                     self._cancel_reminder(target)
                     deleted += 1
             if deleted == 0:
+                self._react(irc, msg, "❌")
                 irc.error(_("No matching reminders found."))
-            elif deleted == 1:
-                irc.reply(_("Reminder cancelled."), prefixNick=False)
             else:
-                irc.reply(f"Cancelled {deleted} reminders.", prefixNick=False)
+                if not self._react(irc, msg, "👍"):
+                    label = "reminder" if deleted == 1 else "reminders"
+                    irc.reply(f"Cancelled {deleted} {label}.", prefixNick=False)
 
         elif subcommand == "clear":
             user_reminders = self._get_user_reminders(caller)
             if not user_reminders:
-                irc.reply(_("No reminders to clear."), prefixNick=False)
+                if not self._react(irc, msg, "👌"):
+                    irc.reply(_("No reminders to clear."), prefixNick=False)
                 return
             for name, _data in user_reminders:
                 self._cancel_reminder(name)
-            label = "reminder" if len(user_reminders) == 1 else "reminders"
-            irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
+            if not self._react(irc, msg, "👍"):
+                label = "reminder" if len(user_reminders) == 1 else "reminders"
+                irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
 
         else:
             self._remind_set(irc, msg, caller, text)

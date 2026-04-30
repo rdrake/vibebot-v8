@@ -32,7 +32,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 19
+        assert len(ASSISTANT_TOOLS) == 20
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -98,6 +98,12 @@ class TestAssistantToolExecutor:
         return fn
 
     @pytest.fixture
+    def mock_cancel_all_reminders_fn(self, mocker: MockerFixture) -> MagicMock:
+        fn = mocker.MagicMock()
+        fn.return_value = "Cancelled 2 reminders."
+        return fn
+
+    @pytest.fixture
     def executor(
         self,
         mock_db: MagicMock,
@@ -106,6 +112,7 @@ class TestAssistantToolExecutor:
         mock_list_reminders_fn: MagicMock,
         mock_set_reminder_fn: MagicMock,
         mock_delete_reminder_fn: MagicMock,
+        mock_cancel_all_reminders_fn: MagicMock,
     ) -> AssistantToolExecutor:
         return AssistantToolExecutor(
             db=mock_db,
@@ -116,6 +123,7 @@ class TestAssistantToolExecutor:
             list_reminders_fn=mock_list_reminders_fn,
             set_reminder_fn=mock_set_reminder_fn,
             delete_reminder_fn=mock_delete_reminder_fn,
+            cancel_all_reminders_fn=mock_cancel_all_reminders_fn,
         )
 
     def test_get_instruction(self, executor: AssistantToolExecutor) -> None:
@@ -408,6 +416,32 @@ class TestAssistantToolExecutor:
         mock_delete_reminder_fn.return_value = "Reminder xyz not found."
         result = executor.execute("delete_reminder", {"id": "xyz"})
         assert "not found" in result.content.lower()
+
+    def test_cancel_all_reminders(
+        self,
+        executor: AssistantToolExecutor,
+        mock_cancel_all_reminders_fn: MagicMock,
+    ) -> None:
+        """GIVEN cancel_all_reminders tool WHEN called THEN dispatches to callable."""
+        result = executor.execute("cancel_all_reminders", {})
+        mock_cancel_all_reminders_fn.assert_called_once_with()
+        assert "2" in result.content
+        assert "ok" in result.content.lower()
+
+    def test_cancel_all_reminders_unavailable(
+        self,
+        mock_db: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """GIVEN no callable WHEN cancel_all_reminders THEN returns error."""
+        executor = AssistantToolExecutor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+        )
+        result = executor.execute("cancel_all_reminders", {})
+        assert "not available" in result.content.lower()
 
     # -- Task 6: Structured returns and new callables ----------------------
 

@@ -44,7 +44,11 @@ CHAT_SYSTEM_PROMPT = (
     "remaining-count or recurrence in the reminder text — e.g. "
     "set_reminder text='in 1 minute draw a cat (2 left, recurring: "
     "every minute)'. The reminder fires later, the model that handles "
-    "the fire decides whether to reschedule the next occurrence."
+    "the fire decides whether to reschedule the next occurrence.\n"
+    "- When the user asks to cancel/clear/stop ALL reminders, call "
+    "cancel_all_reminders ONCE — do not list_reminders then "
+    "delete_reminder per ID. The bulk call is atomic and prevents a "
+    "recurring reminder from firing one more time during cancellation."
 )
 
 CODE_SYSTEM_PROMPT = (
@@ -98,7 +102,16 @@ REMIND_ACTION_SYSTEM_PROMPT = (
     "'next Monday at 9am <same action>'). Best-effort only — if the "
     "schedule is unclear, just complete the action and skip rescheduling.\n"
     "- Do not reschedule one-shot reminders. No recurrence hint = no "
-    "set_reminder call."
+    "set_reminder call.\n"
+    "- WATCH MODE: If the prompt contains '(watch — only respond on "
+    "positive result)' or otherwise asks you to *check whether* something "
+    "has happened and notify only when it has (e.g. 'let me know when X is "
+    "available', 'alert me if Y appears'), do the check, and if the answer "
+    "is negative or unchanged, respond with the literal token [silent] and "
+    "nothing else. Do NOT narrate 'still no news' every fire — that defeats "
+    "the watch. Only respond with substantive text when there is a real "
+    "positive result to share. You should still call set_reminder to "
+    "reschedule the next watch fire if the recurrence hint is present."
 )
 
 # Tool definitions in OpenAI function-calling format.
@@ -407,6 +420,24 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "cancel_all_reminders",
+            "description": (
+                "Cancel ALL of the user's pending reminders in one call. "
+                "Use this when the user asks to cancel/clear/stop all reminders, "
+                "especially recurring ones — calling delete_reminder repeatedly is "
+                "slower and lets a recurring reminder fire one more time before it "
+                "finishes. Returns the number cancelled."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
             "description": (
                 "Generate an image from a text description. Returns a URL to the generated image."
@@ -563,6 +594,9 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "delete_reminder": {
         "visible_in": frozenset({"chat", "code", "draw", "remind_action"}),
     },
+    "cancel_all_reminders": {
+        "visible_in": frozenset({"chat", "code", "draw", "remind_action"}),
+    },
 }
 
 
@@ -616,6 +650,7 @@ class AssistantToolExecutor:
         list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
         delete_reminder_fn: Callable[[str], str] | None = None,
+        cancel_all_reminders_fn: Callable[[], str] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
@@ -633,6 +668,7 @@ class AssistantToolExecutor:
         self._list_reminders_fn = list_reminders_fn
         self._set_reminder_fn = set_reminder_fn
         self._delete_reminder_fn = delete_reminder_fn
+        self._cancel_all_reminders_fn = cancel_all_reminders_fn
         self._draw_fn = draw_fn
         self._search_fn = search_fn
         self._fetch_fn = fetch_fn
@@ -899,6 +935,11 @@ class AssistantToolExecutor:
         if "not found" in result.lower():
             return self._err(result)
         return self._ok(result)
+
+    def _tool_cancel_all_reminders(self, _args: dict[str, Any]) -> str:
+        if self._cancel_all_reminders_fn is None:
+            return self._err("Reminders are not available.")
+        return self._ok(self._cancel_all_reminders_fn())
 
     def _tool_generate_image(self, args: dict[str, Any]) -> str:
         if self._draw_fn is None:

@@ -180,6 +180,7 @@ def plugin_env(mocker: MockerFixture):
         list_reminders_fn=None,
         set_reminder_fn=None,
         delete_reminder_fn=None,
+        cancel_all_reminders_fn=None,
     ):
         return plugin.llm_service.completion(
             prompt,
