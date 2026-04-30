@@ -222,6 +222,26 @@ class TestAskCommand:
 
         mock_irc.reply.assert_called_once_with("The capital is Paris.", prefixNick=False)
 
+    def test_ask_silent_sentinel_suppresses_reply(self, plugin_env, mocker: MockerFixture):
+        """GIVEN LLM responds with [silent] WHEN ask called THEN no irc.reply, but usage logged."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="[silent]",
+            grounding_used=False,
+            prompt_tokens=20,
+            completion_tokens=2,
+            cost=0.0002,
+            model="gpt-4",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["remind", "me", "in", "1m"])
+
+        mock_irc.reply.assert_not_called()
+        mock_irc.queueMsg.assert_not_called()
+        # Usage still logged (one ask call) so the silent path isn't free.
+        plugin.db.log_usage.assert_called_once()
+
     def test_ask_action_stores_context_with_star_prefix(self, plugin_env, mocker: MockerFixture):
         """GIVEN LLM responds with /me WHEN ask called THEN context stores * BotNick text."""
         plugin, mock_irc, mock_msg = plugin_env

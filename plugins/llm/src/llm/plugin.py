@@ -1160,6 +1160,9 @@ class LLM(callbacks.Plugin):
                             cancel_all_reminders_fn=lambda _caller=caller: (
                                 self._remind_clear_for_assistant(_caller)
                             ),
+                            # Note: action fires use a synthetic_msg with no
+                            # msgid, so passing irc/msg here would just fail
+                            # the cap check inside _react and waste a call.
                         )
                         response = result.content.strip() if result.content else ""
                         # Watch-mode sentinel: action LLM signals "no news to
@@ -2258,8 +2261,12 @@ class LLM(callbacks.Plugin):
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
+                        caller, r, irc=irc, msg=msg
+                    ),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
+                        caller, irc=irc, msg=msg
+                    ),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2268,23 +2275,29 @@ class LLM(callbacks.Plugin):
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
 
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    if result.grounding_used:
-                        action_text = f"{GROUNDING_ICON} {action_text}"
-                    self.log.info("sending action to %s/%s", channel, nick)
-                    target = channel if ircutils.isChannel(channel) else nick
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    # Store context as "* BotNick action_text" so follow-ups
-                    # understand the bot emoted rather than said something
-                    response = f"* {irc.nick} {action_text}"
+                # [silent] sentinel: model handled the request via a tool
+                # whose callback already reacted (e.g. set_reminder ⏰).
+                # Suppress the reply but still log usage and store context.
+                if response.strip() == "[silent]":
+                    self.log.info("silent response to %s/%s", channel, nick)
                 else:
-                    display_response = (
-                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                    )
-                    # Reply first, then store context (so user gets response even if context fails)
-                    self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(display_response, prefixNick=False)
+                    action_text = self._extract_action(irc, response)
+                    if action_text:
+                        if result.grounding_used:
+                            action_text = f"{GROUNDING_ICON} {action_text}"
+                        self.log.info("sending action to %s/%s", channel, nick)
+                        target = channel if ircutils.isChannel(channel) else nick
+                        irc.queueMsg(ircmsgs.action(target, action_text))
+                        # Store context as "* BotNick action_text" so follow-ups
+                        # understand the bot emoted rather than said something
+                        response = f"* {irc.nick} {action_text}"
+                    else:
+                        display_response = (
+                            f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                        )
+                        # Reply first, then store context (so user gets response even if context fails)
+                        self.log.info("replying to %s/%s", channel, nick)
+                        irc.reply(display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "ask", text, response, result, irc, msg
@@ -2363,8 +2376,12 @@ class LLM(callbacks.Plugin):
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
+                        caller, r, irc=irc, msg=msg
+                    ),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
+                        caller, irc=irc, msg=msg
+                    ),
                 )
 
                 response = result.content
@@ -2455,8 +2472,12 @@ class LLM(callbacks.Plugin):
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     list_reminders_fn=lambda: self._get_user_reminders(caller),
                     set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(caller),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
+                        caller, r, irc=irc, msg=msg
+                    ),
+                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
+                        caller, irc=irc, msg=msg
+                    ),
                 )
 
                 response = result.content
@@ -3088,19 +3109,47 @@ class LLM(callbacks.Plugin):
         ``parent_chain`` is provided when the call originates from an
         action-fire LLM rescheduling a recurring chain — see
         :meth:`_schedule_reminder` for cap enforcement.
-        """
-        return self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain).message
 
-    def _remind_delete_for_assistant(self, caller: Identity, reminder_id: str) -> str:
-        """Delete a reminder by ID, scoped to the caller's identity."""
+        Reacts ⏰ to ``msg`` on success and ❌ on cap/parse failure so the
+        user gets a visual acknowledgment regardless of whether the model
+        speaks (the chat prompt asks it to stay [silent] after this tool).
+        """
+        result = self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain)
+        self._react(irc, msg, "⏰" if result.ok else "❌")
+        return result.message
+
+    def _remind_delete_for_assistant(
+        self,
+        caller: Identity,
+        reminder_id: str,
+        *,
+        irc: callbacks.Irc | None = None,
+        msg: IrcMsg | None = None,
+    ) -> str:
+        """Delete a reminder by ID, scoped to the caller's identity.
+
+        When ``irc``/``msg`` are provided, reacts 👍 on success and ❌
+        when no matching reminder exists (so the chat path can stay
+        [silent] without leaving the user wondering).
+        """
         target = self._find_user_reminder(caller, reminder_id)
         if target is None:
+            if irc is not None and msg is not None:
+                self._react(irc, msg, "❌")
             return f"Reminder {reminder_id} not found."
 
         self._cancel_reminder(target)
+        if irc is not None and msg is not None:
+            self._react(irc, msg, "👍")
         return f"Deleted reminder {reminder_id}."
 
-    def _remind_clear_for_assistant(self, caller: Identity) -> str:
+    def _remind_clear_for_assistant(
+        self,
+        caller: Identity,
+        *,
+        irc: callbacks.Irc | None = None,
+        msg: IrcMsg | None = None,
+    ) -> str:
         """Cancel all pending reminders for the caller in one shot.
 
         Snapshots the user's reminders then removes each — single atomic
@@ -3111,6 +3160,8 @@ class LLM(callbacks.Plugin):
         for name, _data in user_reminders:
             self._cancel_reminder(name)
         count = len(user_reminders)
+        if irc is not None and msg is not None:
+            self._react(irc, msg, "👍" if count else "👌")
         if count == 0:
             return "No pending reminders to cancel."
         if count == 1:
