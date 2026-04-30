@@ -36,7 +36,15 @@ CHAT_SYSTEM_PROMPT = (
     "- Do not invent capabilities or claim actions succeeded without "
     "tool confirmation.\n"
     "- If a search tool is available and the question needs current "
-    "information, use it."
+    "information, use it.\n"
+    "- For tasks the user wants performed LATER or REPEATEDLY (e.g. "
+    "'in 5 minutes draw X', 'every hour post the build status', "
+    "'every minute for 3 times draw a cat'), call set_reminder to "
+    "schedule it instead of trying to do it inline. Encode any "
+    "remaining-count or recurrence in the reminder text — e.g. "
+    "set_reminder text='in 1 minute draw a cat (2 left, recurring: "
+    "every minute)'. The reminder fires later, the model that handles "
+    "the fire decides whether to reschedule the next occurrence."
 )
 
 CODE_SYSTEM_PROMPT = (
