@@ -1249,8 +1249,8 @@ class TestRemindListCommand:
         """GIVEN user has reminders WHEN remind list called THEN formatted list is shown."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "check build")
-            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "call Bob")
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "check build", "", None)
+            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "call Bob", "", None)
 
         plugin.remind(mock_irc, mock_msg, ["list"])
 
@@ -1281,8 +1281,8 @@ class TestRemindListCommand:
         """GIVEN reminders from different users WHEN remind list called THEN only shows own."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "my reminder")
-            plugin._reminders["llm_remind_100_2"] = ("otheruser", "#test", "not mine")
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "my reminder", "", None)
+            plugin._reminders["llm_remind_100_2"] = ("otheruser", "#test", "not mine", "", None)
 
         plugin.remind(mock_irc, mock_msg, ["list"])
 
@@ -1304,7 +1304,7 @@ class TestRemindDeleteCommand:
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
         with plugin._reminders_lock:
-            plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
+            plugin._reminders[event_name] = ("testnick", "#test", "my reminder", "", None)
 
         mock_remove = mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["delete 42"])
@@ -1333,7 +1333,13 @@ class TestRemindDeleteCommand:
         """GIVEN reminder owned by another user WHEN remind delete called THEN error."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_5"] = ("otheruser", "#test", "their reminder")
+            plugin._reminders["llm_remind_100_5"] = (
+                "otheruser",
+                "#test",
+                "their reminder",
+                "",
+                None,
+            )
 
         plugin.remind(mock_irc, mock_msg, ["delete 5"])
 
@@ -1346,7 +1352,7 @@ class TestRemindDeleteCommand:
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_7"
         with plugin._reminders_lock:
-            plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
+            plugin._reminders[event_name] = ("testnick", "#test", "my reminder", "", None)
 
         mocker.patch("llm.plugin.schedule.removeEvent", side_effect=KeyError("gone"))
         plugin.remind(mock_irc, mock_msg, ["delete 7"])
@@ -1360,7 +1366,7 @@ class TestRemindDeleteCommand:
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
         with plugin._reminders_lock:
-            plugin._reminders[event_name] = ("testnick", "#test", "my reminder")
+            plugin._reminders[event_name] = ("testnick", "#test", "my reminder", "", None)
 
         mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["del 42"])
@@ -1373,8 +1379,8 @@ class TestRemindDeleteCommand:
         """GIVEN user owns multiple reminders WHEN remind delete with multiple IDs THEN all cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first")
-            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second")
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first", "", None)
+            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second", "", None)
 
         mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["delete 1 2"])
@@ -1395,9 +1401,9 @@ class TestRemindClearCommand:
         """GIVEN user has reminders WHEN remind clear called THEN all are removed."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first")
-            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second")
-            plugin._reminders["llm_remind_100_3"] = ("otheruser", "#test", "not mine")
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "first", "", None)
+            plugin._reminders["llm_remind_100_2"] = ("testnick", "#test", "second", "", None)
+            plugin._reminders["llm_remind_100_3"] = ("otheruser", "#test", "not mine", "", None)
 
         mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["clear"])
@@ -1420,7 +1426,7 @@ class TestRemindClearCommand:
         """GIVEN user has one reminder WHEN remind clear called THEN uses singular label."""
         plugin, mock_irc, mock_msg = plugin_env
         with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "only one")
+            plugin._reminders["llm_remind_100_1"] = ("testnick", "#test", "only one", "", None)
 
         mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["clear"])
@@ -1813,6 +1819,8 @@ class TestReloadRemindersEdgeCases:
             nick="testuser",
             channel="#test",
             message="test",
+            action_prompt="",
+            account=None,
             fire_at=future_time,
             created_at=time_module.time(),
         )

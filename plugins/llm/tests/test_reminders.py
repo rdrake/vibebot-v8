@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 import pytest
@@ -118,8 +119,8 @@ class TestReminderHelperMethods:
 
     def test_get_user_reminders_filters_by_nick(self, plugin: MagicMock) -> None:
         """GIVEN reminders from multiple users WHEN queried THEN filters."""
-        plugin._reminders["llm_remind_1_100"] = ("testnick", "#channel", "my msg")
-        plugin._reminders["llm_remind_2_200"] = ("othernick", "#channel", "their msg")
+        plugin._reminders["llm_remind_1_100"] = ("testnick", "#channel", "my msg", "", None)
+        plugin._reminders["llm_remind_2_200"] = ("othernick", "#channel", "their msg", "", None)
 
         result = plugin._get_user_reminders("testnick")
         assert len(result) == 1
@@ -129,7 +130,7 @@ class TestReminderHelperMethods:
 
     def test_format_reminders_single(self, plugin: MagicMock) -> None:
         """GIVEN single reminder WHEN formatted THEN shows ID and message."""
-        reminders = [("llm_remind_123_456", ("nick", "#chan", "test message"))]
+        reminders = [("llm_remind_123_456", ("nick", "#chan", "test message", "", None))]
         result = plugin._format_reminders(reminders)
         assert "#456" in result
         assert "test message" in result
@@ -137,18 +138,29 @@ class TestReminderHelperMethods:
     def test_format_reminders_multiple(self, plugin: MagicMock) -> None:
         """GIVEN multiple reminders WHEN formatted THEN pipe-separated."""
         reminders = [
-            ("llm_remind_1_100", ("nick", "#chan", "first")),
-            ("llm_remind_2_200", ("nick", "#chan", "second")),
+            ("llm_remind_1_100", ("nick", "#chan", "first", "", None)),
+            ("llm_remind_2_200", ("nick", "#chan", "second", "", None)),
         ]
         result = plugin._format_reminders(reminders)
         assert "#100" in result
         assert "#200" in result
         assert " | " in result
 
+    def test_format_reminders_marks_auto_reminders(self, plugin: MagicMock) -> None:
+        """GIVEN action reminder WHEN formatted THEN includes auto marker."""
+        reminders = [
+            (
+                "llm_remind_1_100",
+                ("nick", "#chan", "first", "@ask Post status update in #ops.", "acct"),
+            ),
+        ]
+        result = plugin._format_reminders(reminders)
+        assert "[auto]" in result
+
     def test_format_reminders_truncates_long_message(self, plugin: MagicMock) -> None:
         """GIVEN long message WHEN formatted THEN truncates."""
         long_msg = "x" * 100
-        reminders = [("llm_remind_1_100", ("nick", "#chan", long_msg))]
+        reminders = [("llm_remind_1_100", ("nick", "#chan", long_msg, "", None))]
         result = plugin._format_reminders(reminders)
         assert "..." in result
         assert len(result) < len(long_msg)
@@ -157,7 +169,7 @@ class TestReminderHelperMethods:
 
     def test_find_user_reminder_found(self, plugin: MagicMock) -> None:
         """GIVEN matching reminder WHEN searched THEN returns event name."""
-        plugin._reminders["llm_remind_123_456"] = ("testnick", "#channel", "msg")
+        plugin._reminders["llm_remind_123_456"] = ("testnick", "#channel", "msg", "", None)
         result = plugin._find_user_reminder("testnick", "456")
         assert result == "llm_remind_123_456"
 
@@ -168,7 +180,7 @@ class TestReminderHelperMethods:
 
     def test_find_user_reminder_wrong_owner(self, plugin: MagicMock) -> None:
         """GIVEN reminder owned by other WHEN searched THEN returns None."""
-        plugin._reminders["llm_remind_123_456"] = ("othernick", "#channel", "msg")
+        plugin._reminders["llm_remind_123_456"] = ("othernick", "#channel", "msg", "", None)
         result = plugin._find_user_reminder("testnick", "456")
         assert result is None
 
@@ -177,6 +189,52 @@ class TestReminderHelperMethods:
     def test_plugin_has_db_attribute(self, plugin: MagicMock) -> None:
         """GIVEN plugin WHEN initialized THEN db attribute exists."""
         assert hasattr(plugin, "db")
+
+    def test_schedule_reminder_persists_action_prompt(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN action reminder WHEN scheduled THEN persists action_prompt."""
+        msg = mocker.MagicMock()
+        msg.args = ("#ops", "remind test")
+        msg.prefix = "testnick!user@host"
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        plugin._account_from_msg = mocker.MagicMock(return_value="acct-testnick")
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=120,
+            message="post status update in #ops",
+            confirmation="Reminder set for 2 minutes from now.",
+            action_prompt="@ask Post a status update in #ops.",
+        )
+
+        mocker.patch("llm.plugin.schedule.addEvent")
+        closure_spy = mocker.patch.object(
+            plugin, "_make_reminder_delivery_closure", return_value=lambda: None
+        )
+
+        result = plugin._schedule_reminder(
+            mock_irc, msg, "testnick", "in 2 minutes tell the bot to post status in #ops"
+        )
+
+        assert result.ok is True
+        assert closure_spy.call_args.kwargs["action_prompt"] == "@ask Post a status update in #ops."
+        assert closure_spy.call_args.kwargs["account"] == "acct-testnick"
+
+        saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
+        assert saved_event_name.startswith("llm_remind_")
+        assert reminder_data == (
+            "testnick",
+            "#ops",
+            "post status update in #ops",
+            "@ask Post a status update in #ops.",
+            "acct-testnick",
+        )
+        plugin.db.save_reminder.assert_called_once()
+        assert plugin.db.save_reminder.call_args.kwargs["action_prompt"] == (
+            "@ask Post a status update in #ops."
+        )
+        assert plugin.db.save_reminder.call_args.kwargs["account"] == "acct-testnick"
 
     # Test plugin cleanup
 
@@ -191,8 +249,8 @@ class TestReminderHelperMethods:
         mock_remove_event = mocker.patch("llm.plugin.schedule.removeEvent")
 
         # Add some reminders
-        plugin._reminders["llm_remind_1_100"] = ("user1", "#channel", "msg1")
-        plugin._reminders["llm_remind_2_200"] = ("user2", "#channel", "msg2")
+        plugin._reminders["llm_remind_1_100"] = ("user1", "#channel", "msg1", "", None)
+        plugin._reminders["llm_remind_2_200"] = ("user2", "#channel", "msg2", "", None)
 
         mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
         mocker.patch("llm.plugin.httpserver.unhook")
@@ -580,7 +638,7 @@ class TestReminderDeliveryClosure:
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test123"
-        plugin._reminders[event_name] = ("nick", "#chan", "test msg")
+        plugin._reminders[event_name] = ("nick", "#chan", "test msg", "", None)
 
         deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
         deliver()
@@ -600,7 +658,7 @@ class TestReminderDeliveryClosure:
 
         event_name = "llm_remind_pm_test"
         # channel="vibebot" simulates PM: _get_channel returns the bot's own nick
-        plugin._reminders[event_name] = ("rdrake", "vibebot", "eat a sandwich")
+        plugin._reminders[event_name] = ("rdrake", "vibebot", "eat a sandwich", "", None)
 
         deliver = plugin._make_reminder_delivery_closure(
             "rdrake", "vibebot", "eat a sandwich", event_name
@@ -622,7 +680,7 @@ class TestReminderDeliveryClosure:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         event_name = "llm_remind_chan_test"
-        plugin._reminders[event_name] = ("rdrake", "#test", "check build")
+        plugin._reminders[event_name] = ("rdrake", "#test", "check build", "", None)
 
         deliver = plugin._make_reminder_delivery_closure(
             "rdrake", "#test", "check build", event_name
@@ -642,7 +700,7 @@ class TestReminderDeliveryClosure:
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test456"
-        plugin._reminders[event_name] = ("nick", "#chan", "test msg")
+        plugin._reminders[event_name] = ("nick", "#chan", "test msg", "", None)
 
         deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
 

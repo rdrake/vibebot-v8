@@ -360,8 +360,8 @@ class LLM(callbacks.Plugin):
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
 
-        # Reminder storage: event_name -> (nick, channel, message)
-        self._reminders: dict[str, tuple[str, str, str]] = {}
+        # Reminder storage: event_name -> (nick, channel, message, action_prompt, account)
+        self._reminders: dict[str, tuple[str, str, str, str, str | None]] = {}
         self._reminders_lock = threading.Lock()
 
         # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
@@ -952,7 +952,14 @@ class LLM(callbacks.Plugin):
         )
 
     def _make_reminder_delivery_closure(
-        self, nick: str, channel: str, message: str, event_name: str
+        self,
+        nick: str,
+        channel: str,
+        message: str,
+        event_name: str,
+        *,
+        action_prompt: str = "",
+        account: str | None = None,
     ):
         """Create a reminder delivery closure with error handling.
 
@@ -1003,7 +1010,14 @@ class LLM(callbacks.Plugin):
             message = reminder.message
             event_name = reminder.event_name
 
-            deliver = self._make_reminder_delivery_closure(nick, channel, message, event_name)
+            deliver = self._make_reminder_delivery_closure(
+                nick,
+                channel,
+                message,
+                event_name,
+                action_prompt=reminder.action_prompt,
+                account=reminder.account,
+            )
 
             if reminder.fire_at <= now:
                 # Overdue — deliver immediately
@@ -1013,7 +1027,13 @@ class LLM(callbacks.Plugin):
                 try:
                     schedule.addEvent(deliver, reminder.fire_at, name=event_name)
                     with self._reminders_lock:
-                        self._reminders[event_name] = (nick, channel, message)
+                        self._reminders[event_name] = (
+                            nick,
+                            channel,
+                            message,
+                            reminder.action_prompt,
+                            reminder.account,
+                        )
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
                     self.db.delete_reminder(event_name)
@@ -2474,14 +2494,16 @@ class LLM(callbacks.Plugin):
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
-    def _get_user_reminders(self, nick: str) -> list[tuple[str, tuple[str, str, str]]]:
+    def _get_user_reminders(
+        self, nick: str
+    ) -> list[tuple[str, tuple[str, str, str, str, str | None]]]:
         """Get reminders belonging to a specific user.
 
         Args:
             nick: User's nick
 
         Returns:
-            List of (event_name, (nick, channel, message)) tuples
+            List of (event_name, (nick, channel, message, action_prompt, account)) tuples
         """
         with self._reminders_lock:
             return [
@@ -2490,22 +2512,25 @@ class LLM(callbacks.Plugin):
                 if data[0].lower() == nick.lower()
             ]
 
-    def _format_reminders(self, reminders: list[tuple[str, tuple[str, str, str]]]) -> str:
+    def _format_reminders(
+        self, reminders: list[tuple[str, tuple[str, str, str, str, str | None]]]
+    ) -> str:
         """Format reminders list for display.
 
         Args:
-            reminders: List of (event_name, (nick, channel, message)) tuples
+            reminders: List of (event_name, (nick, channel, message, action_prompt, account)) tuples
 
         Returns:
             Formatted string for IRC display
         """
         parts = []
-        for name, (_, _, message) in reminders:
+        for name, (_, _, message, action_prompt, _) in reminders:
             # Truncate long messages
             preview = message[:40] + "..." if len(message) > 40 else message
             # Extract ID from event name
             reminder_id = name.split("_")[-1]
-            parts.append(f"#{reminder_id}: {preview}")
+            marker = " [auto]" if action_prompt else ""
+            parts.append(f"#{reminder_id}: {preview}{marker}")
         return " | ".join(parts)
 
     def _find_user_reminder(self, nick: str, reminder_id: str) -> str | None:
@@ -2519,7 +2544,8 @@ class LLM(callbacks.Plugin):
             Event name if found and owned by user, None otherwise
         """
         with self._reminders_lock:
-            for name, (owner, _, _) in self._reminders.items():
+            for name, data in self._reminders.items():
+                owner = data[0]
                 if name.endswith(f"_{reminder_id}") and owner.lower() == nick.lower():
                     return name
             return None
@@ -2548,6 +2574,7 @@ class LLM(callbacks.Plugin):
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder."""
         channel = self._get_channel(msg)
+        account = self._account_from_msg(irc, msg)
 
         with self._trace_request("remind", nick, channel), self._allow_concurrent():
             result = self.llm_service.parse_reminder(text, channel)
@@ -2571,13 +2598,27 @@ class LLM(callbacks.Plugin):
             )
 
         reminder_message = result.message or text
+        action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
-        deliver = self._make_reminder_delivery_closure(nick, channel, reminder_message, event_name)
+        deliver = self._make_reminder_delivery_closure(
+            nick,
+            channel,
+            reminder_message,
+            event_name,
+            action_prompt=action_prompt,
+            account=account,
+        )
 
         try:
             schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
             with self._reminders_lock:
-                self._reminders[event_name] = (nick, channel, reminder_message)
+                self._reminders[event_name] = (
+                    nick,
+                    channel,
+                    reminder_message,
+                    action_prompt,
+                    account,
+                )
 
             self.db.save_reminder(
                 event_name,
@@ -2585,6 +2626,8 @@ class LLM(callbacks.Plugin):
                 channel,
                 reminder_message,
                 time.time() + result.seconds,
+                action_prompt=action_prompt,
+                account=account,
             )
 
             reply = self.llm_service.sanitize_output(result.confirmation)

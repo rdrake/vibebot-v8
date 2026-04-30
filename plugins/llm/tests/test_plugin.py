@@ -1128,7 +1128,7 @@ class TestReminderDelivery:
         reminder_message = "check the build"
 
         # Simulate the deliver closure as defined in remind()
-        plugin._reminders[event_name] = (nick, channel, reminder_message)
+        plugin._reminders[event_name] = (nick, channel, reminder_message, "", None)
 
         def deliver() -> None:
             mock_irc.queueMsg(
@@ -1251,6 +1251,8 @@ class TestPluginDatabaseWiring:
             nick="testuser",
             channel="#test",
             message="check build",
+            action_prompt="",
+            account=None,
             fire_at=future_time,
             created_at=time.time(),
         )
@@ -1270,7 +1272,13 @@ class TestPluginDatabaseWiring:
         assert call_kwargs[1]["name"] == "llm_remind_123_1"
         # Reminder should be stored in plugin._reminders
         assert "llm_remind_123_1" in plugin._reminders
-        assert plugin._reminders["llm_remind_123_1"] == ("testuser", "#test", "check build")
+        assert plugin._reminders["llm_remind_123_1"] == (
+            "testuser",
+            "#test",
+            "check build",
+            "",
+            None,
+        )
 
     def test_plugin_reload_reminders_delivers_overdue(
         self, mock_irc: MagicMock, mocker: MockerFixture
@@ -1288,6 +1296,8 @@ class TestPluginDatabaseWiring:
             nick="testuser",
             channel="#test",
             message="check build",
+            action_prompt="",
+            account=None,
             fire_at=past_time,
             created_at=time.time() - 120,
         )
