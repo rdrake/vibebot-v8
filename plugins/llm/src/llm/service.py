@@ -759,7 +759,14 @@ class LLMService:
         the message-tags capability or no msgid is available (in which
         case the caller should fall back to a text reply).
         """
-        if not msgid or not irc_has_caps(irc, "message-tags"):
+        if not msgid:
+            return False
+        if not irc_has_caps(irc, "message-tags"):
+            caps = sorted(getattr(getattr(irc, "state", None), "capabilities_ack", []) or [])
+            self.log.warning(
+                "send_reaction_skipped reason=no_message_tags_cap acked_caps=%s",
+                caps,
+            )
             return False
         msg = ircmsgs.IrcMsg(
             command="TAGMSG",
