@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -29,6 +29,8 @@ class ReminderRow(NamedTuple):
     nick: str
     channel: str
     message: str
+    action_prompt: str
+    account: str | None
     fire_at: float
     created_at: float
 
@@ -296,6 +298,15 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 9:
+                conn.executescript("""
+                    ALTER TABLE reminders
+                        ADD COLUMN action_prompt TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE reminders
+                        ADD COLUMN account TEXT;
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -400,6 +411,9 @@ class LLMDatabase:
         channel: str,
         message: str,
         fire_at: float,
+        *,
+        action_prompt: str = "",
+        account: str | None = None,
     ) -> int:
         """Save a reminder to the database.
 
@@ -409,6 +423,8 @@ class LLMDatabase:
             channel: IRC channel the reminder was created in.
             message: Reminder message text.
             fire_at: Unix timestamp when the reminder should fire.
+            action_prompt: Optional follow-up LLM prompt to run when reminder fires.
+            account: Requester's resolved account name, or None if unknown.
 
         Returns:
             The row ID of the inserted reminder.
@@ -419,9 +435,19 @@ class LLMDatabase:
         conn = self._connect()
         try:
             cursor = conn.execute(
-                "INSERT INTO reminders (event_name, nick, channel, message, fire_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (event_name, nick, channel, message, fire_at, time.time()),
+                "INSERT INTO reminders "
+                "(event_name, nick, channel, message, action_prompt, account, fire_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_name,
+                    nick,
+                    channel,
+                    message,
+                    action_prompt,
+                    account,
+                    fire_at,
+                    time.time(),
+                ),
             )
             conn.commit()
             return cursor.lastrowid or 0
@@ -462,7 +488,7 @@ class LLMDatabase:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, event_name, nick, channel, message, fire_at, created_at "
+                "SELECT id, event_name, nick, channel, message, action_prompt, account, fire_at, created_at "
                 "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
                 (cutoff,),
             ).fetchall()

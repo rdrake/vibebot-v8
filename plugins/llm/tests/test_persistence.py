@@ -17,6 +17,56 @@ from llm.persistence import (
 )
 
 
+def test_reminders_table_has_action_prompt_column(test_db: LLMDatabase) -> None:
+    """GIVEN a new database WHEN initialized THEN reminders table has action_prompt column."""
+    conn = test_db._connect()
+    try:
+        columns = conn.execute("PRAGMA table_info(reminders)").fetchall()
+        column_names = [col[1] for col in columns]
+        assert "action_prompt" in column_names
+    finally:
+        conn.close()
+
+
+def test_existing_reminder_gets_empty_action_prompt(tmp_path: Path) -> None:
+    """GIVEN a v8 reminder WHEN opened with v9 code THEN action_prompt defaults to empty string."""
+    db_path = str(tmp_path / "test.db")
+    fire_at = time.time() + 300
+    created_at = time.time()
+
+    # Create a v8-style schema reminder row (no action_prompt/account columns).
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_name TEXT UNIQUE NOT NULL,
+            nick TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            message TEXT NOT NULL,
+            fire_at REAL NOT NULL,
+            created_at REAL NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO reminders (event_name, nick, channel, message, fire_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("evt-v8", "alice", "#general", "check build", fire_at, created_at),
+    )
+    conn.commit()
+    conn.execute("PRAGMA user_version = 8")
+    conn.commit()
+    conn.close()
+
+    db = LLMDatabase(db_path)
+    reminders = db.load_pending_reminders()
+    assert len(reminders) == 1
+    assert reminders[0].event_name == "evt-v8"
+    assert reminders[0].action_prompt == ""
+    assert reminders[0].account is None
+    db.close()
+
+
 class TestDatabaseInit:
     """Test database initialization and schema creation."""
 
@@ -1223,13 +1273,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_8(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 8."""
+    def test_schema_version_is_9(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 9."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 8
+            assert row[0] == 9
         finally:
             conn.close()
 
