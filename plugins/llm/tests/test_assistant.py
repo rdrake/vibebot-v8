@@ -1954,21 +1954,31 @@ class TestToolSpecVisibility:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "draw" not in specs["search_web"].visible_in
 
-    def test_fetch_url_visible_in_chat_and_code(self) -> None:
+    def test_fetch_url_visible_in_chat_code_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["fetch_url"].visible_in == frozenset({"chat", "code"})
+        assert specs["fetch_url"].visible_in == frozenset({"chat", "code", "remind_action"})
 
     def test_generate_code_capability_is_llm_code(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_code"].capability == "llm.code"
 
-    def test_generate_code_visible_in_chat_and_code(self) -> None:
+    def test_generate_code_visible_in_chat_and_code_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_code"].visible_in == frozenset({"chat", "code"})
+        assert specs["generate_code"].visible_in == frozenset({"chat", "code", "remind_action"})
 
-    def test_generate_image_only_visible_in_draw(self) -> None:
+    def test_generate_image_visible_in_draw_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_image"].visible_in == frozenset({"draw"})
+        assert specs["generate_image"].visible_in == frozenset({"draw", "remind_action"})
+
+    def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
+        """Action reminders need the union of @ask + @draw tool surfaces."""
+        tools = get_tools_for_profile("remind_action")
+        names = {t["function"]["name"] for t in tools}
+        for required in ("search_web", "fetch_url", "generate_code", "generate_image"):
+            assert required in names, f"{required} missing from remind_action profile"
+        # Sanity: also includes ordinary chat tools (defaults to chat+remind_action)
+        assert "list_reminders" in names
+        assert "set_reminder" in names
 
     def test_profile_tools_chat_includes_search(self) -> None:
         tools = get_tools_for_profile("chat")

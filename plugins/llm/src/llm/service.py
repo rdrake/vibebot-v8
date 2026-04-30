@@ -2013,6 +2013,7 @@ Rules:
 - For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
 - For absolute times ("at 3pm") without a timezone, assume UTC and set note suggesting they specify next time
 - If request is too vague (missing time or message), use "clarify"
+- "confirmation" is shown to the user immediately at scheduling time. It MUST only state that the reminder was set and when. Do NOT speculate about what the bot can or cannot do at fire time, do NOT mention tool limits, do NOT add disclaimers like "though I can only ..." — capability decisions happen at fire time, not now.
 - Keep confirmation concise (under 100 chars)
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly

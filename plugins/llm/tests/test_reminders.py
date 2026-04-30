@@ -768,14 +768,15 @@ class TestReminderActionDelivery:
         assert kwargs["prompt"] == "check build"
         ctx = kwargs["request_context"]
         assert ctx.entry_route == "remind_action"
-        assert ctx.profile == "chat"
+        assert ctx.profile == "remind_action"
         assert ctx.nick == "alice"
         assert ctx.raw_nick == "alice"
         assert ctx.account == "acct"
         assert ctx.channel == "#ops"
         assert ctx.is_private is False
         assert ctx.is_owner is False
-        assert ctx.capabilities == frozenset()
+        # llm.ask/draw/code only — no admin/owner capabilities at fire time.
+        assert ctx.capabilities == frozenset({"llm.ask", "llm.draw", "llm.code"})
 
         synthetic_msg = kwargs["msg"]
         assert synthetic_msg.prefix == "alice!~remind@scheduled"

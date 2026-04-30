@@ -475,7 +475,7 @@ class ToolSpec:
     require_account: bool = False
     rate_bucket: str = "ask"
     destructive: bool = False
-    visible_in: frozenset[str] = frozenset({"chat"})
+    visible_in: frozenset[str] = frozenset({"chat", "remind_action"})
 
     def as_tool(self) -> dict[str, Any]:
         """Return the OpenAI/LiteLLM tool schema for model calls."""
@@ -502,17 +502,17 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "generate_image": {
         "capability": "llm.draw",
         "require_account": True,
-        "visible_in": frozenset({"draw"}),
+        "visible_in": frozenset({"draw", "remind_action"}),
     },
     "search_web": {
-        "visible_in": frozenset({"chat", "code"}),
+        "visible_in": frozenset({"chat", "code", "remind_action"}),
     },
     "fetch_url": {
-        "visible_in": frozenset({"chat", "code"}),
+        "visible_in": frozenset({"chat", "code", "remind_action"}),
     },
     "generate_code": {
         "capability": "llm.code",
-        "visible_in": frozenset({"chat", "code"}),
+        "visible_in": frozenset({"chat", "code", "remind_action"}),
     },
 }
 

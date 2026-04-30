@@ -1030,14 +1030,19 @@ class LLM(callbacks.Plugin):
 
                         request_context = AssistantRequestContext(
                             entry_route="remind_action",
-                            profile="chat",
+                            profile="remind_action",
                             nick=nick,
                             raw_nick=nick,
                             account=account,
                             channel=channel,
                             is_private=not ircutils.isChannel(channel),
                             is_owner=False,
-                            capabilities=frozenset(),
+                            # Grant the same per-feature caps the user has via
+                            # @ask/@draw/@code, so a "draw X" or "run code Y"
+                            # reminder can actually invoke those tools at fire
+                            # time. Owner/admin caps stay excluded — see the
+                            # action-reminders plan's Architecture section.
+                            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
                         )
 
                         history, channel_history = self._gather_history(nick, channel)
