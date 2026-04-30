@@ -1033,3 +1033,67 @@ class TestReminderActionDelivery:
         assert len(plugin._rate_buckets["ask:alice"]) == 2
         plugin.db.log_usage.assert_not_called()
         assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
+
+
+class TestReminderReload:
+    """Tests for _reload_reminders persistence-restore behavior."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+        """Create a plugin instance."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        return LLM(mock_irc)
+
+    def test_reload_propagates_action_prompt_and_account(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN persisted action reminder WHEN reloaded THEN closure receives both fields.
+
+        Regression: a persisted action reminder must round-trip through
+        bot restart with both ``action_prompt`` and ``account`` intact.
+        Without ``action_prompt`` the closure falls back to echo (silently
+        dropping the LLM action); without ``account`` the rate-limit tier
+        and request_context.account drop to nick-fallback semantics.
+        """
+        import time as _time
+
+        from llm.persistence import ReminderRow
+
+        plugin.db.load_pending_reminders.return_value = [
+            ReminderRow(
+                id=1,
+                event_name="evt_persist",
+                nick="alice",
+                channel="#chan",
+                message="check CVE",
+                fire_at=_time.time() + 3600,
+                created_at=_time.time(),
+                action_prompt="check CVE-2026-31431 status",
+                account="alice-acct",
+            )
+        ]
+        mocker.patch("llm.plugin.schedule.addEvent")
+        closure_spy = mocker.spy(plugin, "_make_reminder_delivery_closure")
+
+        irc = mocker.MagicMock()
+        plugin._reload_reminders(irc)
+
+        closure_spy.assert_called_once()
+        kwargs = closure_spy.call_args.kwargs
+        assert kwargs["action_prompt"] == "check CVE-2026-31431 status"
+        assert kwargs["account"] == "alice-acct"
+
+        # In-memory dict must hold the same 5-tuple for later @remind list /
+        # delete operations.
+        assert plugin._reminders["evt_persist"] == (
+            "alice",
+            "#chan",
+            "check CVE",
+            "check CVE-2026-31431 status",
+            "alice-acct",
+        )
