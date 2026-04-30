@@ -34,6 +34,19 @@ class TestReminderCommands:
 class TestReminderParseResult:
     """Tests for ReminderParseResult NamedTuple."""
 
+    def test_schedule_result_with_action_prompt(self) -> None:
+        """GIVEN schedule action WHEN creating result THEN stores action_prompt."""
+        result = ReminderParseResult(
+            action="schedule",
+            seconds=1800,
+            message="check the build",
+            confirmation="Reminder set for 30 minutes from now.",
+            note="Assuming UTC timezone.",
+            action_prompt="@ask Please post a build status update in #ops.",
+        )
+        assert result.action == "schedule"
+        assert result.action_prompt == "@ask Please post a build status update in #ops."
+
     def test_schedule_result(self) -> None:
         """GIVEN schedule action WHEN creating result THEN stores all fields."""
         result = ReminderParseResult(
@@ -67,6 +80,11 @@ class TestReminderParseResult:
         assert result.message is None
         assert result.confirmation == ""
         assert result.note is None
+
+    def test_default_action_prompt_is_empty(self) -> None:
+        """GIVEN minimal args WHEN creating result THEN action_prompt defaults empty."""
+        result = ReminderParseResult(action="clarify")
+        assert result.action_prompt == ""
 
 
 class TestReminderHelperMethods:
@@ -339,6 +357,42 @@ class TestParseReminderService:
 
         assert result.action == "schedule"
         assert result.note == "Assuming EST"
+
+    def test_parse_reminder_returns_action_prompt_for_imperative(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN imperative reminder WHEN parsing THEN returns action_prompt."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"action": "schedule", "seconds": 3600, "message": "post status", '
+            '"confirmation": "Reminder set for 1h.", "action_prompt": "@ask Post a status update in #ops."}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 1 hour tell the bot to post status in #ops")
+
+        assert result.action == "schedule"
+        assert result.action_prompt == "@ask Post a status update in #ops."
+
+    def test_parse_reminder_omits_action_prompt_for_echo(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN passive reminder WHEN parsing THEN action_prompt is empty."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"action": "schedule", "seconds": 1200, "message": "check backups", '
+            '"confirmation": "Reminder set for 20m.", "action_prompt": ""}'
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 20 minutes remind me to check backups")
+
+        assert result.action == "schedule"
+        assert result.action_prompt == ""
 
     def test_parse_reminder_negative_seconds_rejected(
         self, service: MagicMock, mocker: MockerFixture

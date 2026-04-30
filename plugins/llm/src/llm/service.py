@@ -299,6 +299,7 @@ class ReminderParseResult(NamedTuple):
     message: str | None = None  # reminder message
     confirmation: str = ""  # message to show user
     note: str | None = None  # optional note (e.g., timezone assumption)
+    action_prompt: str = ""  # optional @ask instruction for bot-perform-task intents
 
 
 if TYPE_CHECKING:
@@ -1972,7 +1973,7 @@ class LLMService:
             channel: Optional channel for config lookup
 
         Returns:
-            ReminderParseResult with action, seconds, message, confirmation, note
+            ReminderParseResult with action, seconds, message, confirmation, note, action_prompt
         """
         # Validate input before making API call
         if not text or not text.strip():
@@ -2003,7 +2004,7 @@ class LLMService:
 Current time: {current_time}
 
 Response format (choose one):
-{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>"}}
+{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>"}}
 or
 {{"action": "clarify", "confirmation": "<question to ask user>"}}
 
@@ -2015,7 +2016,11 @@ Rules:
 - Keep confirmation concise (under 100 chars)
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly
-- For absolute times ("at 3pm"), calculate seconds until that time"""
+- For absolute times ("at 3pm"), calculate seconds until that time
+- Set "action_prompt" non-empty only when user intent is for the bot to perform a task later
+- Set "action_prompt" empty for passive "remind me to ..." phrasing
+- If unsure, prefer empty "action_prompt"
+- "action_prompt" must be a self-contained "@ask ..." instruction"""
 
         try:
             optional_kwargs = self._get_provider_kwargs(model)
@@ -2058,6 +2063,7 @@ Rules:
                     message=data.get("message", text),
                     confirmation=data.get("confirmation", f"Reminder set for {seconds}s from now."),
                     note=data.get("note"),
+                    action_prompt=(data.get("action_prompt") or "").strip(),
                 )
             else:
                 return ReminderParseResult(
