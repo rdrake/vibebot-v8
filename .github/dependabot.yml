@@ -6,6 +6,9 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: "uv"
     directory: "/"
@@ -13,3 +16,11 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
+    groups:
+      dev-tools:
+        patterns:
+          - "ruff"
+          - "ty"
+          - "prek"
+          - "pytest*"
+          - "mkdocs*"
