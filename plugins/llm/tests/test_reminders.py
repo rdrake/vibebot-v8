@@ -114,17 +114,62 @@ class TestReminderHelperMethods:
 
     def test_get_user_reminders_empty(self, plugin: MagicMock) -> None:
         """GIVEN no reminders WHEN queried THEN returns empty list."""
-        result = plugin._get_user_reminders("testnick")
+        from llm.plugin import Identity
+
+        result = plugin._get_user_reminders(Identity(raw_nick="testnick", account=None))
         assert result == []
 
     def test_get_user_reminders_filters_by_nick(self, plugin: MagicMock) -> None:
         """GIVEN reminders from multiple users WHEN queried THEN filters."""
+        from llm.plugin import Identity
+
         plugin._reminders["llm_remind_1_100"] = ("testnick", "#channel", "my msg", "", None)
         plugin._reminders["llm_remind_2_200"] = ("othernick", "#channel", "their msg", "", None)
 
-        result = plugin._get_user_reminders("testnick")
+        result = plugin._get_user_reminders(Identity(raw_nick="testnick", account=None))
         assert len(result) == 1
         assert result[0][1][2] == "my msg"
+
+    def test_get_user_reminders_matches_by_account(self, plugin: MagicMock) -> None:
+        """GIVEN identified caller WHEN nick differs but account matches THEN matches."""
+        from llm.plugin import Identity
+
+        # User scheduled while presenting as "testnick"; later changes to "newnick"
+        # but still identified as "MyAccount". Account match wins.
+        plugin._reminders["llm_remind_1_100"] = (
+            "testnick",
+            "#channel",
+            "my msg",
+            "",
+            "MyAccount",
+        )
+        result = plugin._get_user_reminders(Identity(raw_nick="newnick", account="MyAccount"))
+        assert len(result) == 1
+        assert result[0][1][2] == "my msg"
+
+    def test_get_user_reminders_account_isolates_users(self, plugin: MagicMock) -> None:
+        """GIVEN matching nicks but different accounts WHEN queried THEN isolated."""
+        from llm.plugin import Identity
+
+        # Two accounts have happened to share a raw_nick; they must not
+        # see each other's reminders.
+        plugin._reminders["llm_remind_1_100"] = (
+            "shared",
+            "#channel",
+            "alpha msg",
+            "",
+            "AccountAlpha",
+        )
+        plugin._reminders["llm_remind_2_200"] = (
+            "shared",
+            "#channel",
+            "beta msg",
+            "",
+            "AccountBeta",
+        )
+        result = plugin._get_user_reminders(Identity(raw_nick="shared", account="AccountAlpha"))
+        assert len(result) == 1
+        assert result[0][1][2] == "alpha msg"
 
     # Tests for _format_reminders
 
@@ -148,11 +193,15 @@ class TestReminderHelperMethods:
 
     def test_format_reminders_marks_auto_reminders(self, plugin: MagicMock) -> None:
         """GIVEN mixed reminders WHEN formatted THEN only action ones get [auto] marker."""
+        from llm.plugin import Identity
+
         plugin._reminders = {
             "llm_remind_aaa1": ("alice", "#chan", "check CVE", "check CVE status", "alice"),
             "llm_remind_bbb2": ("alice", "#chan", "echo this", "", None),
         }
-        formatted = plugin._format_reminders(plugin._get_user_reminders("alice"))
+        formatted = plugin._format_reminders(
+            plugin._get_user_reminders(Identity(raw_nick="alice", account="alice"))
+        )
         assert "[auto]" in formatted
         # Echo reminder must NOT be marked.
         parts = formatted.split(" | ")
@@ -171,19 +220,25 @@ class TestReminderHelperMethods:
 
     def test_find_user_reminder_found(self, plugin: MagicMock) -> None:
         """GIVEN matching reminder WHEN searched THEN returns event name."""
+        from llm.plugin import Identity
+
         plugin._reminders["llm_remind_123_456"] = ("testnick", "#channel", "msg", "", None)
-        result = plugin._find_user_reminder("testnick", "456")
+        result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result == "llm_remind_123_456"
 
     def test_find_user_reminder_not_found(self, plugin: MagicMock) -> None:
         """GIVEN no matching reminder WHEN searched THEN returns None."""
-        result = plugin._find_user_reminder("testnick", "999")
+        from llm.plugin import Identity
+
+        result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "999")
         assert result is None
 
     def test_find_user_reminder_wrong_owner(self, plugin: MagicMock) -> None:
         """GIVEN reminder owned by other WHEN searched THEN returns None."""
+        from llm.plugin import Identity
+
         plugin._reminders["llm_remind_123_456"] = ("othernick", "#channel", "msg", "", None)
-        result = plugin._find_user_reminder("testnick", "456")
+        result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result is None
 
     # Test database attribute
@@ -196,12 +251,13 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN action reminder WHEN scheduled THEN persists action_prompt."""
+        from llm.plugin import Identity
+
         msg = mocker.MagicMock()
         msg.args = ("#ops", "remind test")
         msg.prefix = "testnick!user@host"
 
         plugin._MetaSynchronized_rlock = threading.RLock()
-        plugin._account_from_msg = mocker.MagicMock(return_value="acct-testnick")
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
             seconds=120,
@@ -216,7 +272,10 @@ class TestReminderHelperMethods:
         )
 
         result = plugin._schedule_reminder(
-            mock_irc, msg, "testnick", "in 2 minutes tell the bot to post status in #ops"
+            mock_irc,
+            msg,
+            Identity(raw_nick="testnick", account="acct-testnick"),
+            "in 2 minutes tell the bot to post status in #ops",
         )
 
         assert result.ok is True

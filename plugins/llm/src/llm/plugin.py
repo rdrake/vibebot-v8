@@ -66,6 +66,46 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class Identity:
+    """A user's stable storage handle paired with their live IRC nick.
+
+    Three uses, one type:
+
+    * ``raw_nick`` — what the user is presenting as on IRC right now.
+      Use this for replies, displays, and IRC-protocol operations.
+    * ``account`` — the NickServ account, or ``None`` if unidentified.
+      Use this for "must be identified" gates and ownership checks
+      that need to survive a nick change.
+    * ``key`` — ``account or raw_nick``.  Use this for storage keys,
+      rate-limit buckets, conversation context, and memory lookup.
+
+    Two ``Identity`` values refer to the same user when their accounts
+    match (case-insensitive) — or, lacking accounts on one or both
+    sides, when their raw nicks match (case-insensitive).
+    """
+
+    raw_nick: str
+    account: str | None
+
+    @property
+    def key(self) -> str:
+        """Stable storage key — account when identified, raw nick otherwise."""
+        return self.account or self.raw_nick
+
+    def matches(self, other: Identity) -> bool:
+        """True when both identities refer to the same user.
+
+        Account-to-account match wins when both sides have one; falls
+        back to raw-nick comparison when either side is unidentified.
+        Both comparisons are case-insensitive (IRC nicks and NickServ
+        account names are case-insensitive on AfterNet).
+        """
+        if self.account and other.account:
+            return ircutils.toLower(self.account) == ircutils.toLower(other.account)
+        return ircutils.toLower(self.raw_nick) == ircutils.toLower(other.raw_nick)
+
+
 class ReminderScheduleResult(NamedTuple):
     """Result of scheduling a reminder."""
 
@@ -1053,16 +1093,21 @@ class LLM(callbacks.Plugin):
                             f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
                         )
 
+                        caller = Identity(raw_nick=nick, account=account)
                         nested_set_calls = 0
 
                         def _set_reminder_capped(
-                            text: str, *, _irc=active_irc, _msg=synthetic_msg
+                            text: str,
+                            *,
+                            _irc=active_irc,
+                            _msg=synthetic_msg,
+                            _caller=caller,
                         ) -> str:
                             nonlocal nested_set_calls
                             if nested_set_calls >= 1:
                                 return "Reminder scheduling limit reached for this reminder action."
                             nested_set_calls += 1
-                            return self._remind_set_for_assistant(_irc, _msg, nick, text)
+                            return self._remind_set_for_assistant(_irc, _msg, _caller, text)
 
                         result = self.llm_service.assistant_request(
                             prompt=action_prompt,
@@ -1085,9 +1130,13 @@ class LLM(callbacks.Plugin):
                                 self._draw_for_assistant(_irc, _msg, p)
                             ),
                             cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                            list_reminders_fn=lambda: self._get_user_reminders(nick),
+                            list_reminders_fn=lambda _caller=caller: self._get_user_reminders(
+                                _caller
+                            ),
                             set_reminder_fn=_set_reminder_capped,
-                            delete_reminder_fn=lambda r: self._remind_delete_for_assistant(nick, r),
+                            delete_reminder_fn=lambda r, _caller=caller: (
+                                self._remind_delete_for_assistant(_caller, r)
+                            ),
                         )
                         response = result.content.strip() if result.content else ""
                         if not response:
@@ -1311,11 +1360,16 @@ class LLM(callbacks.Plugin):
         return nick
 
     def _maybe_migrate_nick(self, old_nick: str, account: str) -> None:
-        """Migrate old nick-based usage rows to the account, once per session.
+        """Migrate old nick-based rows to the account, once per session.
 
-        Skips the DB call entirely when the nick and account are the same
-        (case-insensitive) or when we've already attempted migration for
-        this nick.
+        Covers both ``usage`` and ``conversations`` tables so historical
+        cost data and persisted conversation history follow the user
+        once they identify.  In-memory ``ConversationContext`` is also
+        rekeyed so the next turn resumes the same thread.
+
+        Skips entirely when the nick and account are the same
+        (case-insensitive) or when we've already attempted migration
+        for this nick this session.
 
         Args:
             old_nick: The user's current IRC nick.
@@ -1327,9 +1381,20 @@ class LLM(callbacks.Plugin):
         if key in self._migrated_nicks:
             return
         self._migrated_nicks.add(key)
-        count = self.db.migrate_nick(old_nick, account)
-        if count > 0:
-            self.log.info("Migrated %d usage row(s) from %s to %s", count, old_nick, account)
+        usage_count = self.db.migrate_nick(old_nick, account)
+        if usage_count > 0:
+            self.log.info("Migrated %d usage row(s) from %s to %s", usage_count, old_nick, account)
+        convo_count = self.db.migrate_conversations(old_nick, account)
+        if convo_count > 0:
+            self.log.info(
+                "Migrated %d conversation row(s) from %s to %s",
+                convo_count,
+                old_nick,
+                account,
+            )
+        # Also rekey in-memory conversation context so the live thread
+        # carries over without waiting for DB reload.
+        self.context.migrate_user(old_nick, account)
 
     def _log_pending_delivery_usage(
         self, result: PendingTaskResult, nick: str, target: str
@@ -1433,20 +1498,28 @@ class LLM(callbacks.Plugin):
             self.log.exception("_code_for_assistant failed")
             return ToolResult(content=json.dumps({"error": "Code generation failed."}))
 
-    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
-        """Resolve a message sender to a stable identity (account or nick).
+    def _resolve_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> Identity:
+        """Resolve a message sender to a structured :class:`Identity`.
 
         Reads the IRCv3 account-tag (or layer-2 session cache) via
         :meth:`_account_from_msg`. Triggers a one-time DB migration of
-        nick→account usage rows on first successful resolution per session.
-        Falls back to the bare nick when no account can be resolved.
+        nick→account rows on first successful resolution per session,
+        covering both ``usage`` and ``conversations`` tables.
         """
-        nick = ircutils.nickFromHostmask(msg.prefix)
+        raw_nick = ircutils.nickFromHostmask(msg.prefix)
         account = self._account_from_msg(irc, msg)
         if account:
-            self._maybe_migrate_nick(nick, account)
-            return account
-        return nick
+            self._maybe_migrate_nick(raw_nick, account)
+        return Identity(raw_nick=raw_nick, account=account)
+
+    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
+        """Return the resolved identity ``key`` (account or raw nick).
+
+        Thin wrapper over :meth:`_resolve_identity` for callers that only
+        need a single string for storage lookup.  New code should prefer
+        :meth:`_resolve_identity` to keep raw_nick and account separate.
+        """
+        return self._resolve_identity(irc, msg).key
 
     def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Require account identification. Returns account name or None.
@@ -2086,6 +2159,8 @@ class LLM(callbacks.Plugin):
             profile="chat",
         )
 
+        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
         with self._trace_request("ask", nick, channel):
             # Detect images for vision
             images = self.llm_service.detect_images(text)
@@ -2124,9 +2199,9 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
+                    list_reminders_fn=lambda: self._get_user_reminders(caller),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2197,6 +2272,8 @@ class LLM(callbacks.Plugin):
             profile="code",
         )
 
+        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
         with self._trace_request("code", nick, channel):
             history, channel_history = self._gather_history(nick, channel)
 
@@ -2226,9 +2303,9 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
+                    list_reminders_fn=lambda: self._get_user_reminders(caller),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
                 )
 
                 response = result.content
@@ -2295,6 +2372,8 @@ class LLM(callbacks.Plugin):
             profile="draw",
         )
 
+        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
         with self._trace_request("draw", nick, channel):
             history, channel_history = self._gather_history(
                 nick,
@@ -2315,9 +2394,9 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=[],
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
+                    list_reminders_fn=lambda: self._get_user_reminders(caller),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(caller, r),
                 )
 
                 response = result.content
@@ -2668,22 +2747,40 @@ class LLM(callbacks.Plugin):
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
+    @staticmethod
+    def _stored_reminder_identity(data: tuple[str, str, str, str, str | None]) -> Identity:
+        """Reconstruct the owning :class:`Identity` from a stored reminder tuple.
+
+        Tuple layout: ``(raw_nick, channel, message, action_prompt, account)``.
+        Legacy rows persisted before the raw_nick/account split stored the
+        resolved identity in field 0; in that case field 0 equals field 4
+        (the account) and ``Identity.matches`` still resolves correctly via
+        the account-to-account branch.
+        """
+        return Identity(raw_nick=data[0], account=data[4])
+
     def _get_user_reminders(
-        self, nick: str
+        self, caller: Identity
     ) -> list[tuple[str, tuple[str, str, str, str, str | None]]]:
         """Get reminders belonging to a specific user.
 
+        Match policy: account-to-account when both the caller and the
+        stored row have an account; raw-nick comparison otherwise (see
+        :meth:`Identity.matches`).  This lets a user who scheduled a
+        reminder while identified still see it after a nick change, and
+        keeps unidentified users' reminders scoped to their nick.
+
         Args:
-            nick: User's nick
+            caller: The requesting user's :class:`Identity`.
 
         Returns:
-            List of (event_name, (nick, channel, message, action_prompt, account)) tuples
+            List of ``(event_name, (raw_nick, channel, message, action_prompt, account))``.
         """
         with self._reminders_lock:
             return [
                 (name, data)
                 for name, data in self._reminders.items()
-                if data[0].lower() == nick.lower()
+                if self._stored_reminder_identity(data).matches(caller)
             ]
 
     def _format_reminders(
@@ -2710,26 +2807,27 @@ class LLM(callbacks.Plugin):
             parts.append(f"#{reminder_id}: {preview}{marker}")
         return " | ".join(parts)
 
-    def _find_user_reminder(self, nick: str, reminder_id: str) -> str | None:
-        """Find a reminder event name by ID for a specific user.
+    def _find_user_reminder(self, caller: Identity, reminder_id: str) -> str | None:
+        """Find a reminder event name by ID, scoped to the caller's identity.
 
         Args:
-            nick: User's nick
-            reminder_id: Reminder ID (last part of event name)
+            caller: The requesting user's :class:`Identity`.
+            reminder_id: Reminder ID (last part of event name).
 
         Returns:
-            Event name if found and owned by user, None otherwise
+            Event name if found and owned by the caller, ``None`` otherwise.
         """
         with self._reminders_lock:
             for name, data in self._reminders.items():
-                owner = data[0]
-                if name.endswith(f"_{reminder_id}") and owner.lower() == nick.lower():
+                if not name.endswith(f"_{reminder_id}"):
+                    continue
+                if self._stored_reminder_identity(data).matches(caller):
                     return name
             return None
 
-    def _remind_list(self, irc: callbacks.Irc, nick: str) -> None:
-        """List pending reminders for a user."""
-        user_reminders = self._get_user_reminders(nick)
+    def _remind_list(self, irc: callbacks.Irc, caller: Identity) -> None:
+        """List pending reminders for the calling user."""
+        user_reminders = self._get_user_reminders(caller)
         if not user_reminders:
             irc.reply(_("You have no pending reminders."))
             return
@@ -2747,13 +2845,18 @@ class LLM(callbacks.Plugin):
         self.db.delete_reminder(event_name)
 
     def _schedule_reminder(
-        self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str
+        self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str
     ) -> ReminderScheduleResult:
-        """Parse, validate, and schedule a reminder."""
-        channel = self._get_channel(msg)
-        account = self._account_from_msg(irc, msg)
+        """Parse, validate, and schedule a reminder.
 
-        with self._trace_request("remind", nick, channel), self._allow_concurrent():
+        ``caller.raw_nick`` is stored as the reminder's owning nick (used
+        for the synthetic message prefix at fire time and as the fallback
+        match when the caller has no account).  ``caller.account`` is
+        captured separately and is the preferred match key on lookup.
+        """
+        channel = self._get_channel(msg)
+
+        with self._trace_request("remind", caller.key, channel), self._allow_concurrent():
             result = self.llm_service.parse_reminder(text, channel)
 
         if result.action == "clarify":
@@ -2778,33 +2881,33 @@ class LLM(callbacks.Plugin):
         action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
         deliver = self._make_reminder_delivery_closure(
-            nick,
+            caller.raw_nick,
             channel,
             reminder_message,
             event_name,
             action_prompt=action_prompt,
-            account=account,
+            account=caller.account,
         )
 
         try:
             schedule.addEvent(deliver, time.time() + result.seconds, name=event_name)
             with self._reminders_lock:
                 self._reminders[event_name] = (
-                    nick,
+                    caller.raw_nick,
                     channel,
                     reminder_message,
                     action_prompt,
-                    account,
+                    caller.account,
                 )
 
             self.db.save_reminder(
                 event_name,
-                nick,
+                caller.raw_nick,
                 channel,
                 reminder_message,
                 time.time() + result.seconds,
                 action_prompt=action_prompt,
-                account=account,
+                account=caller.account,
             )
 
             reply = self.llm_service.sanitize_output(result.confirmation)
@@ -2815,23 +2918,23 @@ class LLM(callbacks.Plugin):
             self.log.error("Failed to schedule reminder: %s", e)
             return ReminderScheduleResult(ok=False, message="Failed to set reminder.")
 
-    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str) -> None:
+    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str) -> None:
         """Parse and schedule a natural language reminder via IRC."""
-        result = self._schedule_reminder(irc, msg, nick, text)
+        result = self._schedule_reminder(irc, msg, caller, text)
         if result.ok:
             irc.reply(result.message)
         else:
             irc.error(_(result.message))
 
     def _remind_set_for_assistant(
-        self, irc: callbacks.Irc, msg: IrcMsg, nick: str, text: str
+        self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str
     ) -> str:
         """Parse and schedule a reminder, returning a result string for meta."""
-        return self._schedule_reminder(irc, msg, nick, text).message
+        return self._schedule_reminder(irc, msg, caller, text).message
 
-    def _remind_delete_for_assistant(self, nick: str, reminder_id: str) -> str:
-        """Delete a reminder by ID, returning a result string for meta."""
-        target = self._find_user_reminder(nick, reminder_id)
+    def _remind_delete_for_assistant(self, caller: Identity, reminder_id: str) -> str:
+        """Delete a reminder by ID, scoped to the caller's identity."""
+        target = self._find_user_reminder(caller, reminder_id)
         if target is None:
             return f"Reminder {reminder_id} not found."
 
@@ -2860,23 +2963,23 @@ class LLM(callbacks.Plugin):
           %remind delete abc1
           %remind clear
         """
-        nick = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
 
         if not text:
-            self._remind_list(irc, nick)
+            self._remind_list(irc, caller)
             return
 
         parts = text.split(None, 1)
         subcommand = parts[0].lower()
 
         if subcommand == "list":
-            self._remind_list(irc, nick)
+            self._remind_list(irc, caller)
 
         elif subcommand in ("delete", "del") and len(parts) >= 2:
             raw_ids = text.split()[1:]
             deleted = 0
             for rid in raw_ids:
-                target = self._find_user_reminder(nick, rid)
+                target = self._find_user_reminder(caller, rid)
                 if target:
                     self._cancel_reminder(target)
                     deleted += 1
@@ -2888,7 +2991,7 @@ class LLM(callbacks.Plugin):
                 irc.reply(f"Cancelled {deleted} reminders.", prefixNick=False)
 
         elif subcommand == "clear":
-            user_reminders = self._get_user_reminders(nick)
+            user_reminders = self._get_user_reminders(caller)
             if not user_reminders:
                 irc.reply(_("No reminders to clear."), prefixNick=False)
                 return
@@ -2898,7 +3001,7 @@ class LLM(callbacks.Plugin):
             irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
 
         else:
-            self._remind_set(irc, msg, nick, text)
+            self._remind_set(irc, msg, caller, text)
 
     remind = wrap(remind, [optional("text")])
 

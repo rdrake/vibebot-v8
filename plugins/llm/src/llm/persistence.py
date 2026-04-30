@@ -908,6 +908,48 @@ class LLMDatabase:
         finally:
             pass
 
+    def migrate_conversations(self, old_nick: str, new_nick: str) -> int:
+        """Re-attribute conversation rows from an old nick to a new identity.
+
+        Companion to :meth:`migrate_nick`. When a user identifies for the
+        first time in a session, persisted conversation history logged
+        under the raw nick is moved to the account so follow-up turns
+        resume the same context.
+
+        ``conversations`` is keyed on ``(nick, channel)``. If a row already
+        exists at the destination key for some channel, the source row is
+        deleted (the destination is the canonical, identified-user copy).
+        Conflict-free rows are simply renamed. Stored values are
+        lowercased; the match is case-insensitive.
+
+        Args:
+            old_nick: Previous nick value.
+            new_nick: New identity value (typically a NickServ account).
+
+        Returns:
+            Number of rows updated (renamed only; conflicts dropped don't count).
+        """
+        old = old_nick.lower()
+        new = new_nick.lower()
+        if old == new:
+            return 0
+        conn = self._connect()
+        try:
+            conn.execute(
+                "DELETE FROM conversations WHERE nick = ? AND channel IN ("
+                "  SELECT channel FROM conversations WHERE nick = ?"
+                ")",
+                (old, new),
+            )
+            cursor = conn.execute(
+                "UPDATE conversations SET nick = ? WHERE nick = ?",
+                (new, old),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            pass
+
     # ------------------------------------------------------------------
     # Usage operations
     # ------------------------------------------------------------------

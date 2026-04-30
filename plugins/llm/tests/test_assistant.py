@@ -16,7 +16,7 @@ from llm.assistant import (
     ToolResult,
     get_tools_for_profile,
 )
-from llm.plugin import LLM
+from llm.plugin import LLM, Identity
 from llm.service import LLMService
 
 from .conftest import make_registry_side_effect, plugin_init_patches
@@ -1194,7 +1194,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, "testuser", "check the build in 1 hour"
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "check the build in 1 hour"
         )
 
         assert "remind" in result.lower() or "hour" in result.lower()
@@ -1218,7 +1218,9 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "deploy in 1 hour")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "deploy in 1 hour"
+        )
 
         assert "Eastern" in result
 
@@ -1236,7 +1238,9 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "maybe sometime")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "maybe sometime"
+        )
 
         assert "could not" in result.lower()
 
@@ -1256,7 +1260,9 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me now")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me now"
+        )
 
         assert "10 second" in result.lower() or "at least" in result.lower()
 
@@ -1276,7 +1282,9 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me in 2 weeks")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me in 2 weeks"
+        )
 
         assert "7 day" in result.lower()
 
@@ -1294,17 +1302,21 @@ class TestReminderMetaHelpers:
         msg = mocker.MagicMock()
         msg.args = ["#test"]
 
-        result = plugin._remind_set_for_assistant(mock_irc, msg, "testuser", "remind me")
+        result = plugin._remind_set_for_assistant(
+            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me"
+        )
 
         assert "when" in result.lower()
 
     def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
         event_name = "llm_remind_abc123def456"
-        plugin._reminders = {event_name: ("testuser", "#test", "check build")}
+        plugin._reminders = {event_name: ("testuser", "#test", "check build", "", None)}
         mocker.patch("llm.plugin.schedule.removeEvent")
 
-        result = plugin._remind_delete_for_assistant("testuser", "abc123def456")
+        result = plugin._remind_delete_for_assistant(
+            Identity(raw_nick="testuser", account=None), "abc123def456"
+        )
 
         assert "delete" in result.lower() or "cancel" in result.lower()
         assert event_name not in plugin._reminders
@@ -1313,7 +1325,9 @@ class TestReminderMetaHelpers:
         """GIVEN unknown reminder ID WHEN _remind_delete_for_assistant THEN error."""
         plugin._reminders = {}
 
-        result = plugin._remind_delete_for_assistant("testuser", "nonexistent")
+        result = plugin._remind_delete_for_assistant(
+            Identity(raw_nick="testuser", account=None), "nonexistent"
+        )
 
         assert "not found" in result.lower()
 
