@@ -2017,17 +2017,25 @@ Rules:
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly
 - For absolute times ("at 3pm"), calculate seconds until that time
-- Set "action_prompt" non-empty ONLY when the user is asking the bot to PERFORM A TASK at fire time (look something up, check a status, fetch a URL, run a query, etc.)
-- Set "action_prompt" to "" (empty) for passive "remind me to X" phrasings where the user themselves will act
-- When in doubt, prefer "" — false positives surprise users
-- "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task
-- "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status")
+- Set "action_prompt" to a non-empty bare instruction whenever the message contains an imperative verb the BOT can execute. The bot can: search the web, fetch URLs, draw images, write/run code, summarize text, look up status, check builds/CVEs/feeds, generate content, query its own memory, send messages. If any of those verbs (draw, search, fetch, look up, check, summarize, generate, write, post, query, find, list, compute, ...) appears as the main verb of the user's request, that is an action — not an echo.
+- Set "action_prompt" to "" (empty) only when the user is clearly asking THEMSELVES to do something later (passive "remind me to X" where X is a human action like "call Bob", "go to the store", "take a break") OR the message is a pure label/note with no verb at all.
+- "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
+- "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
 
-Examples:
+Examples (imperative → action_prompt):
 - "in 30m check if the build is green" → action_prompt: "check if the build is green"
-- "in 5m remind me to check the build" → action_prompt: ""
 - "in 2h post a status update in #ops" → action_prompt: "post a status update in #ops"
-- "tomorrow at 3pm call Bob" → action_prompt: \"\""""
+- "in 1m draw copy fail" → action_prompt: "draw copy fail"
+- "in 5m search for recent rust async news" → action_prompt: "search for recent rust async news"
+- "in 10m summarize the top 3 hn headlines about postgres" → action_prompt: "summarize the top 3 hn headlines about postgres"
+- "in 2h check status of CVE-2026-31431 in Debian" → action_prompt: "check status of CVE-2026-31431 in Debian"
+- "tomorrow at 9am fetch https://example.com/build and tell me if it's green" → action_prompt: "fetch https://example.com/build and tell me if it's green"
+
+Examples (echo → action_prompt: ""):
+- "in 5m remind me to check the build" → action_prompt: "" (passive — user said "remind me to")
+- "tomorrow at 3pm call Bob" → action_prompt: "" (the bot can't make phone calls)
+- "in 1h take a break" → action_prompt: "" (action is for the user)
+- "in 30m standup meeting" → action_prompt: "" (label, no verb directed at the bot)"""
 
         try:
             optional_kwargs = self._get_provider_kwargs(model)
