@@ -57,7 +57,12 @@ CODE_SYSTEM_PROMPT = (
     "- Plain text only. No markdown, no **bold**, no [text](url) links — "
     "write the bare URL returned by generate_code. IRC does not render markdown.\n"
     "- Always use generate_code for code requests.\n"
-    "- Summarize the result briefly with the code link."
+    "- Summarize the result briefly with the code link.\n"
+    "- For tasks the user wants performed LATER or REPEATEDLY (e.g. "
+    "'in 5 minutes generate X', 'every hour write a fresh Y'), call "
+    "set_reminder to schedule it. Encode any remaining-count or "
+    "recurrence in the reminder text — e.g. set_reminder text='in 1 "
+    "hour generate the daily Y (recurring: every hour)'."
 )
 
 DRAW_SYSTEM_PROMPT = (
@@ -68,7 +73,13 @@ DRAW_SYSTEM_PROMPT = (
     "- Plain text only. No markdown, no **bold**, no [text](url) links — "
     "write the bare URL. IRC does not render markdown.\n"
     "- Always use generate_image for image requests.\n"
-    "- Summarize the result briefly with the image link."
+    "- Summarize the result briefly with the image link.\n"
+    "- For images the user wants generated LATER or REPEATEDLY (e.g. "
+    "'in 5 minutes draw X', 'every minute draw a cat 3 times'), call "
+    "set_reminder to schedule the next occurrence and draw the current "
+    "one inline. Encode any remaining-count in the reminder text — "
+    "e.g. set_reminder text='in 1 minute draw a cat (2 left, "
+    "recurring: every minute)'."
 )
 
 REMIND_ACTION_SYSTEM_PROMPT = (
@@ -540,6 +551,17 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "generate_code": {
         "capability": "llm.code",
         "visible_in": frozenset({"chat", "code", "remind_action"}),
+    },
+    # Scheduling is universal — every user-facing profile (chat/code/draw)
+    # should be able to defer or repeat work via reminders, not just chat.
+    "set_reminder": {
+        "visible_in": frozenset({"chat", "code", "draw", "remind_action"}),
+    },
+    "list_reminders": {
+        "visible_in": frozenset({"chat", "code", "draw", "remind_action"}),
+    },
+    "delete_reminder": {
+        "visible_in": frozenset({"chat", "code", "draw", "remind_action"}),
     },
 }
 

@@ -2013,3 +2013,10 @@ class TestToolSpecVisibility:
         assert "search_web" in names
         assert "fetch_url" in names
         assert "generate_code" in names
+
+    def test_set_reminder_visible_in_all_user_profiles(self) -> None:
+        """Scheduling is universal; set_reminder must be available in chat/code/draw."""
+        for profile in ("chat", "code", "draw", "remind_action"):
+            tools = get_tools_for_profile(profile)
+            names = {t["function"]["name"] for t in tools}
+            assert "set_reminder" in names, f"set_reminder missing from {profile} profile"

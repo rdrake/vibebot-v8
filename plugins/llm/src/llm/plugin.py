@@ -2315,6 +2315,9 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=[],
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                    list_reminders_fn=lambda: self._get_user_reminders(pf.nick),
+                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, pf.nick, t),
+                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(pf.nick, r),
                 )
 
                 response = result.content
