@@ -983,10 +983,119 @@ class LLM(callbacks.Plugin):
         def _deliver() -> None:
             try:
                 for active_irc in world.ircs:
-                    safe_message = self.llm_service.sanitize_output(message)
-                    active_irc.queueMsg(
-                        ircmsgs.privmsg(target, f"{nick}: Reminder: {safe_message}")
+
+                    def _send(text: str, *, _irc=active_irc) -> None:
+                        safe_text = self.llm_service.sanitize_output(text)
+                        _irc.queueMsg(ircmsgs.privmsg(target, f"{nick}: {safe_text}"))
+
+                    # Legacy reminder path: plain echo delivery.
+                    if not action_prompt:
+                        _send(f"Reminder: {message}")
+                        break
+
+                    bot_nick = getattr(active_irc, "nick", None)
+                    if not bot_nick:
+                        self.log.warning(
+                            "reminder_action_missing_bot_nick nick=%s channel=%s event=%s",
+                            nick,
+                            channel,
+                            event_name,
+                        )
+                        _send(f"Reminder: {message}")
+                        break
+
+                    now = time.time()
+                    rl_account = account if account else nick
+                    rl_tier = "registered" if account else "unregistered"
+                    if self._check_rate_limit_silent("ask", rl_account, now, tier=rl_tier):
+                        _send(f"Reminder: {message} (action skipped — daily ask limit reached)")
+                        break
+
+                    msg_target = channel if ircutils.isChannel(channel) else nick
+                    msg_kwargs: dict[str, object] = {
+                        "prefix": f"{nick}!~remind@scheduled",
+                        "command": "PRIVMSG",
+                        "args": (msg_target, ""),
+                    }
+                    if account:
+                        msg_kwargs["server_tags"] = {"account": account}
+                    synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
+
+                    request_context = AssistantRequestContext(
+                        entry_route="remind_action",
+                        profile="chat",
+                        nick=nick,
+                        raw_nick=nick,
+                        account=account,
+                        channel=channel,
+                        is_private=not ircutils.isChannel(channel),
+                        is_owner=False,
+                        capabilities=frozenset(),
                     )
+
+                    history, channel_history = self._gather_history(nick, channel)
+                    memories = self._get_user_memories(nick)
+                    user_instruction = self.db.get_instruction(nick)
+                    ask_prompt = self.registryValue("askSystemPrompt", channel)
+                    effective_prompt = (
+                        f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+                    )
+
+                    nested_set_calls = 0
+
+                    def _set_reminder_capped(
+                        text: str, *, _irc=active_irc, _msg=synthetic_msg
+                    ) -> str:
+                        nonlocal nested_set_calls
+                        if nested_set_calls >= 1:
+                            return "Reminder scheduling limit reached for this reminder action."
+                        nested_set_calls += 1
+                        return self._remind_set_for_assistant(_irc, _msg, nick, text)
+
+                    try:
+                        result = self.llm_service.assistant_request(
+                            prompt=action_prompt,
+                            request_context=request_context,
+                            db=self.db,
+                            context=self.context,
+                            bot_nick=bot_nick,
+                            history=history,
+                            channel_history=channel_history,
+                            irc=active_irc,
+                            msg=synthetic_msg,
+                            memories=memories,
+                            system_prompt=effective_prompt,
+                            search_fn=lambda q: self.llm_service.search_completion(
+                                q, channel=channel
+                            ),
+                            fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                            code_fn=lambda p: self._code_for_assistant(p, channel),
+                            draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: (
+                                self._draw_for_assistant(_irc, _msg, p)
+                            ),
+                            cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                            list_reminders_fn=lambda: self._get_user_reminders(nick),
+                            set_reminder_fn=_set_reminder_capped,
+                            delete_reminder_fn=lambda r: self._remind_delete_for_assistant(nick, r),
+                        )
+                        response = result.content.strip() if result.content else ""
+                        if not response:
+                            _send(f"Reminder: {message} (action returned empty response)")
+                        elif message:
+                            _send(f"Reminder ({message}): {response}")
+                        else:
+                            _send(f"Reminder: {response}")
+                    except Exception:
+                        self.log.exception(
+                            "reminder_action_delivery_failed nick=%s channel=%s event=%s",
+                            nick,
+                            channel,
+                            event_name,
+                        )
+                        _send(
+                            f"Reminder action '{message}' failed. "
+                            "(Set this reminder again to retry.)"
+                        )
                     break
             finally:
                 with lock:
@@ -1519,6 +1628,49 @@ class LLM(callbacks.Plugin):
                     0.0,
                     prompt=text,
                     status="rate_limited",
+                )
+                return True
+            self.log.info(
+                "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+                command,
+                account,
+                tier,
+                count,
+                max_count,
+                window,
+            )
+        return False
+
+    def _check_rate_limit_silent(
+        self, command: str, account: str, now: float, *, tier: str
+    ) -> bool:
+        """Check rate limit without sending IRC errors.
+
+        Mirrors ``_check_rate_limit`` bookkeeping and logging, but does not
+        emit user-facing errors or usage rows.
+
+        Returns:
+            True only when over-limit and enforceRateLimits is enabled.
+        """
+        over_limit = self._is_rate_limited(command, account, now, tier=tier)
+
+        # Always record the hit (so the window tracks correctly)
+        self._record_rate_limit_hit(command, account, now)
+
+        if over_limit:
+            enforce = self.registryValue("enforceRateLimits")
+            max_count, window = self._get_tier_limits(command, tier)
+            key = f"{command}:{account}"
+            count = len(self._rate_buckets.get(key, ()))
+            if enforce:
+                self.log.info(
+                    "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+                    command,
+                    account,
+                    tier,
+                    count,
+                    max_count,
+                    window,
                 )
                 return True
             self.log.info(
@@ -2524,7 +2676,10 @@ class LLM(callbacks.Plugin):
             Formatted string for IRC display
         """
         parts = []
-        for name, (_, _, message, action_prompt, _) in reminders:
+        for name, data in reminders:
+            # Legacy tuples may not have action/account fields.
+            message = data[2]
+            action_prompt = data[3] if len(data) > 3 else ""
             # Truncate long messages
             preview = message[:40] + "..." if len(message) > 40 else message
             # Extract ID from event name

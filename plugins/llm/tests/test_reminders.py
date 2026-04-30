@@ -6,7 +6,7 @@ import threading
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.service import ReminderParseResult
+from llm.service import AssistantResult, ReminderParseResult
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -710,3 +710,285 @@ class TestReminderDeliveryClosure:
         # Cleanup should still happen despite the error
         assert event_name not in plugin._reminders
         plugin.db.delete_reminder.assert_called_with(event_name)
+
+
+class TestReminderActionDelivery:
+    """Tests for reminder action delivery through assistant_request."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+        """Create a plugin instance."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        return plugin
+
+    def test_action_delivery_invokes_assistant_with_full_callbacks(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN action reminder WHEN delivered THEN assistant_request receives full callback set."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(
+            plugin,
+            "_gather_history",
+            return_value=([{"role": "user", "content": "hi"}], [{"role": "user", "content": "c"}]),
+        )
+        mocker.patch.object(plugin, "_get_user_memories", return_value=["prefers concise"])
+        plugin.db.get_instruction.return_value = "Be direct."
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="Build is green."
+        )
+
+        event_name = "llm_remind_action_1"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="@ask check build",
+            account="acct",
+        )
+        deliver()
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["prompt"] == "@ask check build"
+        ctx = kwargs["request_context"]
+        assert ctx.entry_route == "remind_action"
+        assert ctx.profile == "chat"
+        assert ctx.nick == "alice"
+        assert ctx.raw_nick == "alice"
+        assert ctx.account == "acct"
+        assert ctx.channel == "#ops"
+        assert ctx.is_private is False
+        assert ctx.is_owner is False
+        assert ctx.capabilities == frozenset()
+
+        synthetic_msg = kwargs["msg"]
+        assert synthetic_msg.prefix == "alice!~remind@scheduled"
+        assert synthetic_msg.command == "PRIVMSG"
+        assert synthetic_msg.args == ("#ops", "")
+        assert synthetic_msg.server_tags == {"account": "acct"}
+
+        assert kwargs["history"] == [{"role": "user", "content": "hi"}]
+        assert kwargs["channel_history"] == [{"role": "user", "content": "c"}]
+        assert kwargs["memories"] == ["prefers concise"]
+        assert kwargs["system_prompt"] == "Be direct.\n\nYou are helpful."
+        assert callable(kwargs["search_fn"])
+        assert callable(kwargs["fetch_fn"])
+        assert callable(kwargs["code_fn"])
+        assert callable(kwargs["draw_fn"])
+        assert callable(kwargs["cleanup_fn"])
+        assert callable(kwargs["list_reminders_fn"])
+        assert callable(kwargs["set_reminder_fn"])
+        assert callable(kwargs["delete_reminder_fn"])
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert sent.args[0] == "#ops"
+        assert sent.args[1] == "alice: Reminder (check build): Build is green."
+
+    def test_action_delivery_uses_ask_rate_limit_bucket(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN action reminder WHEN fired THEN uses ask bucket with unregistered fallback tier."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        rl_spy = mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
+
+        event_name = "llm_remind_action_2"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", None)
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="@ask check build",
+            account=None,
+        )
+        deliver()
+
+        rl_spy.assert_called_once()
+        args = rl_spy.call_args.args
+        assert args[0] == "ask"
+        assert args[1] == "alice"
+        assert isinstance(args[2], float)
+        assert rl_spy.call_args.kwargs["tier"] == "unregistered"
+
+    def test_action_delivery_falls_back_on_rate_limit(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN over-limit action reminder WHEN delivered THEN falls back to echo text."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=True)
+
+        event_name = "llm_remind_action_3"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="@ask check build",
+            account="acct",
+        )
+        deliver()
+
+        plugin.llm_service.assistant_request.assert_not_called()
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert (
+            sent.args[1]
+            == "alice: Reminder: check build (action skipped — daily ask limit reached)"
+        )
+
+    def test_action_delivery_falls_back_on_exception(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN assistant error WHEN action reminder fires THEN sends generic retry fallback."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        plugin.llm_service.assistant_request.side_effect = RuntimeError("boom secret text")
+
+        event_name = "llm_remind_action_4"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="@ask check build",
+            account="acct",
+        )
+        deliver()
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert (
+            sent.args[1]
+            == "alice: Reminder action 'check build' failed. (Set this reminder again to retry.)"
+        )
+        assert "secret text" not in sent.args[1]
+        plugin.log.exception.assert_called_once()
+
+    def test_echo_delivery_unchanged(self, plugin: MagicMock, mocker: MockerFixture) -> None:
+        """GIVEN non-action reminder WHEN delivered THEN legacy echo path is unchanged."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        rl_spy = mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        event_name = "llm_remind_echo_1"
+        plugin._reminders[event_name] = ("alice", "#ops", "ping me", "", None)
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "ping me",
+            event_name,
+            action_prompt="",
+            account=None,
+        )
+        deliver()
+
+        plugin.llm_service.assistant_request.assert_not_called()
+        rl_spy.assert_not_called()
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert sent.args[1] == "alice: Reminder: ping me"
+
+    def test_action_delivery_caps_nested_reminder_scheduling(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN action tool loop WHEN set_reminder called repeatedly THEN only first schedule executes."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+
+        set_spy = mocker.patch.object(plugin, "_remind_set_for_assistant", return_value="scheduled")
+        nested_results: list[str] = []
+
+        def _assistant_side_effect(*args, **kwargs):
+            nested_results.append(kwargs["set_reminder_fn"]("in 1 minute first"))
+            nested_results.append(kwargs["set_reminder_fn"]("in 1 minute second"))
+            return AssistantResult(content="ok")
+
+        plugin.llm_service.assistant_request.side_effect = _assistant_side_effect
+
+        event_name = "llm_remind_action_5"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="@ask check build",
+            account="acct",
+        )
+        deliver()
+
+        assert set_spy.call_count == 1
+        assert nested_results[0] == "scheduled"
+        assert "limit" in nested_results[1].lower()
+
+    def test_check_rate_limit_silent_enforced_blocks(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN over-limit and enforce=true WHEN _check_rate_limit_silent THEN returns True."""
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "askRateLimitCount": 1,
+                "askRateLimitWindow": 60,
+                "enforceRateLimits": True,
+            }.get(key, "")
+        )
+        now = 1000.0
+        plugin._record_rate_limit_hit("ask", "alice", now - 1)
+
+        blocked = plugin._check_rate_limit_silent("ask", "alice", now, tier="registered")
+
+        assert blocked is True
+        assert len(plugin._rate_buckets["ask:alice"]) == 2
+        plugin.db.log_usage.assert_not_called()
+        assert "rate_limited" in plugin.log.info.call_args.args[0]
+
+    def test_check_rate_limit_silent_shadow_mode(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN over-limit and enforce=false WHEN _check_rate_limit_silent THEN logs shadow and allows."""
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: {
+                "askRateLimitCount": 1,
+                "askRateLimitWindow": 60,
+                "enforceRateLimits": False,
+            }.get(key, "")
+        )
+        now = 1000.0
+        plugin._record_rate_limit_hit("ask", "alice", now - 1)
+
+        blocked = plugin._check_rate_limit_silent("ask", "alice", now, tier="registered")
+
+        assert blocked is False
+        assert len(plugin._rate_buckets["ask:alice"]) == 2
+        plugin.db.log_usage.assert_not_called()
+        assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
