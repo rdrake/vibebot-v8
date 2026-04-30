@@ -106,16 +106,17 @@ See [Memory -- Custom instructions](../user/memory.md#custom-instructions) for f
 
 ### remind
 
-Set and manage reminders using natural language.
+Set and manage reminders using natural language. Reminders that ask the bot to *do* something (look up, check, fetch, summarize) run as an LLM query at fire time and are marked `[auto]` in `list`.
 
 ```
 @remind in 30 minutes check the build
+@remind in 2 hours check status of CVE-2026-31431 in Debian
 @remind list
 @remind delete abc1
 @remind clear
 ```
 
-See [Reminders & Usage -- remind](../user/reminders-usage.md#remind) for full details.
+See [Reminders & Usage -- remind](../user/reminders-usage.md#remind) for full details, including caveats (single-fire only, counts against `@ask` limit, no elevated capabilities at fire time).
 
 ### usage
 
