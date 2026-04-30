@@ -762,11 +762,7 @@ class LLMService:
         if not msgid:
             return False
         if not irc_has_caps(irc, "message-tags"):
-            caps = sorted(getattr(getattr(irc, "state", None), "capabilities_ack", []) or [])
-            self.log.warning(
-                "send_reaction_skipped reason=no_message_tags_cap acked_caps=%s",
-                caps,
-            )
+            self.log.info("send_reaction_skipped reason=no_message_tags_cap")
             return False
         msg = ircmsgs.IrcMsg(
             command="TAGMSG",

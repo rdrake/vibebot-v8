@@ -2942,7 +2942,7 @@ class LLM(callbacks.Plugin):
         msgid = server_tags.get("msgid")
         target = msg.args[0] if msg.args else ""
         if not msgid or not target:
-            self.log.warning(
+            self.log.info(
                 "react_skipped emoji=%s reason=%s server_tag_keys=%s target=%r",
                 emoji,
                 "no_msgid" if not msgid else "no_target",
@@ -2950,15 +2950,7 @@ class LLM(callbacks.Plugin):
                 target,
             )
             return False
-        sent = self.llm_service.send_reaction(irc, target, msgid, emoji)
-        self.log.warning(
-            "react emoji=%s target=%s msgid=%s sent=%s",
-            emoji,
-            target,
-            msgid,
-            sent,
-        )
-        return sent
+        return self.llm_service.send_reaction(irc, target, msgid, emoji)
 
     def _cancel_reminder(self, event_name: str) -> None:
         """Remove a single reminder from scheduler, in-memory dict, and database."""
