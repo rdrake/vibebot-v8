@@ -1004,55 +1004,61 @@ class LLM(callbacks.Plugin):
                         _send(f"Reminder: {message}")
                         break
 
-                    now = time.time()
-                    rl_account = account if account else nick
-                    rl_tier = "registered" if account else "unregistered"
-                    if self._check_rate_limit_silent("ask", rl_account, now, tier=rl_tier):
-                        _send(f"Reminder: {message} (action skipped — daily ask limit reached)")
-                        break
-
-                    msg_target = channel if ircutils.isChannel(channel) else nick
-                    msg_kwargs: dict[str, object] = {
-                        "prefix": f"{nick}!~remind@scheduled",
-                        "command": "PRIVMSG",
-                        "args": (msg_target, ""),
-                    }
-                    if account:
-                        msg_kwargs["server_tags"] = {"account": account}
-                    synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
-
-                    request_context = AssistantRequestContext(
-                        entry_route="remind_action",
-                        profile="chat",
-                        nick=nick,
-                        raw_nick=nick,
-                        account=account,
-                        channel=channel,
-                        is_private=not ircutils.isChannel(channel),
-                        is_owner=False,
-                        capabilities=frozenset(),
-                    )
-
-                    history, channel_history = self._gather_history(nick, channel)
-                    memories = self._get_user_memories(nick)
-                    user_instruction = self.db.get_instruction(nick)
-                    ask_prompt = self.registryValue("askSystemPrompt", channel)
-                    effective_prompt = (
-                        f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
-                    )
-
-                    nested_set_calls = 0
-
-                    def _set_reminder_capped(
-                        text: str, *, _irc=active_irc, _msg=synthetic_msg
-                    ) -> str:
-                        nonlocal nested_set_calls
-                        if nested_set_calls >= 1:
-                            return "Reminder scheduling limit reached for this reminder action."
-                        nested_set_calls += 1
-                        return self._remind_set_for_assistant(_irc, _msg, nick, text)
-
+                    # Wrap the entire action delivery body so any exception
+                    # (history gathering, msg construction, registry lookup,
+                    # rate-limit check, assistant request, etc.) yields a
+                    # generic user-visible fallback rather than silently
+                    # losing the reminder. Never include exception text in
+                    # user-visible output — full traceback to logs only.
                     try:
+                        now = time.time()
+                        rl_account = account if account else nick
+                        rl_tier = "registered" if account else "unregistered"
+                        if self._check_rate_limit_silent("ask", rl_account, now, tier=rl_tier):
+                            _send(f"Reminder: {message} (action skipped — daily ask limit reached)")
+                            break
+
+                        msg_target = channel if ircutils.isChannel(channel) else nick
+                        msg_kwargs: dict[str, object] = {
+                            "prefix": f"{nick}!~remind@scheduled",
+                            "command": "PRIVMSG",
+                            "args": (msg_target, ""),
+                        }
+                        if account:
+                            msg_kwargs["server_tags"] = {"account": account}
+                        synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
+
+                        request_context = AssistantRequestContext(
+                            entry_route="remind_action",
+                            profile="chat",
+                            nick=nick,
+                            raw_nick=nick,
+                            account=account,
+                            channel=channel,
+                            is_private=not ircutils.isChannel(channel),
+                            is_owner=False,
+                            capabilities=frozenset(),
+                        )
+
+                        history, channel_history = self._gather_history(nick, channel)
+                        memories = self._get_user_memories(nick)
+                        user_instruction = self.db.get_instruction(nick)
+                        ask_prompt = self.registryValue("askSystemPrompt", channel)
+                        effective_prompt = (
+                            f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+                        )
+
+                        nested_set_calls = 0
+
+                        def _set_reminder_capped(
+                            text: str, *, _irc=active_irc, _msg=synthetic_msg
+                        ) -> str:
+                            nonlocal nested_set_calls
+                            if nested_set_calls >= 1:
+                                return "Reminder scheduling limit reached for this reminder action."
+                            nested_set_calls += 1
+                            return self._remind_set_for_assistant(_irc, _msg, nick, text)
+
                         result = self.llm_service.assistant_request(
                             prompt=action_prompt,
                             request_context=request_context,
@@ -1092,10 +1098,18 @@ class LLM(callbacks.Plugin):
                             channel,
                             event_name,
                         )
-                        _send(
-                            f"Reminder action '{message}' failed. "
-                            "(Set this reminder again to retry.)"
-                        )
+                        try:
+                            _send(
+                                f"Reminder action '{message}' failed. "
+                                "(Set this reminder again to retry.)"
+                            )
+                        except Exception:
+                            self.log.exception(
+                                "reminder_action_fallback_failed nick=%s channel=%s event=%s",
+                                nick,
+                                channel,
+                                event_name,
+                            )
                     break
             finally:
                 with lock:

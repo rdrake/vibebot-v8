@@ -43,10 +43,10 @@ class TestReminderParseResult:
             message="check the build",
             confirmation="Reminder set for 30 minutes from now.",
             note="Assuming UTC timezone.",
-            action_prompt="@ask Please post a build status update in #ops.",
+            action_prompt="Please post a build status update in #ops.",
         )
         assert result.action == "schedule"
-        assert result.action_prompt == "@ask Please post a build status update in #ops."
+        assert result.action_prompt == "Please post a build status update in #ops."
 
     def test_schedule_result(self) -> None:
         """GIVEN schedule action WHEN creating result THEN stores all fields."""
@@ -151,7 +151,7 @@ class TestReminderHelperMethods:
         reminders = [
             (
                 "llm_remind_1_100",
-                ("nick", "#chan", "first", "@ask Post status update in #ops.", "acct"),
+                ("nick", "#chan", "first", "Post status update in #ops.", "acct"),
             ),
         ]
         result = plugin._format_reminders(reminders)
@@ -205,7 +205,7 @@ class TestReminderHelperMethods:
             seconds=120,
             message="post status update in #ops",
             confirmation="Reminder set for 2 minutes from now.",
-            action_prompt="@ask Post a status update in #ops.",
+            action_prompt="Post a status update in #ops.",
         )
 
         mocker.patch("llm.plugin.schedule.addEvent")
@@ -218,7 +218,7 @@ class TestReminderHelperMethods:
         )
 
         assert result.ok is True
-        assert closure_spy.call_args.kwargs["action_prompt"] == "@ask Post a status update in #ops."
+        assert closure_spy.call_args.kwargs["action_prompt"] == "Post a status update in #ops."
         assert closure_spy.call_args.kwargs["account"] == "acct-testnick"
 
         saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
@@ -227,12 +227,12 @@ class TestReminderHelperMethods:
             "testnick",
             "#ops",
             "post status update in #ops",
-            "@ask Post a status update in #ops.",
+            "Post a status update in #ops.",
             "acct-testnick",
         )
         plugin.db.save_reminder.assert_called_once()
         assert plugin.db.save_reminder.call_args.kwargs["action_prompt"] == (
-            "@ask Post a status update in #ops."
+            "Post a status update in #ops."
         )
         assert plugin.db.save_reminder.call_args.kwargs["account"] == "acct-testnick"
 
@@ -425,14 +425,14 @@ class TestParseReminderService:
         mock_response.choices = [mocker.MagicMock()]
         mock_response.choices[0].message.content = (
             '{"action": "schedule", "seconds": 3600, "message": "post status", '
-            '"confirmation": "Reminder set for 1h.", "action_prompt": "@ask Post a status update in #ops."}'
+            '"confirmation": "Reminder set for 1h.", "action_prompt": "Post a status update in #ops."}'
         )
         mock_completion.return_value = mock_response
 
         result = service.parse_reminder("in 1 hour tell the bot to post status in #ops")
 
         assert result.action == "schedule"
-        assert result.action_prompt == "@ask Post a status update in #ops."
+        assert result.action_prompt == "Post a status update in #ops."
 
     def test_parse_reminder_omits_action_prompt_for_echo(
         self, service: MagicMock, mocker: MockerFixture
@@ -750,20 +750,20 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_1"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
             "check build",
             event_name,
-            action_prompt="@ask check build",
+            action_prompt="check build",
             account="acct",
         )
         deliver()
 
         plugin.llm_service.assistant_request.assert_called_once()
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        assert kwargs["prompt"] == "@ask check build"
+        assert kwargs["prompt"] == "check build"
         ctx = kwargs["request_context"]
         assert ctx.entry_route == "remind_action"
         assert ctx.profile == "chat"
@@ -811,13 +811,13 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
 
         event_name = "llm_remind_action_2"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", None)
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", None)
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
             "check build",
             event_name,
-            action_prompt="@ask check build",
+            action_prompt="check build",
             account=None,
         )
         deliver()
@@ -840,13 +840,13 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=True)
 
         event_name = "llm_remind_action_3"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
             "check build",
             event_name,
-            action_prompt="@ask check build",
+            action_prompt="check build",
             account="acct",
         )
         deliver()
@@ -871,13 +871,13 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.side_effect = RuntimeError("boom secret text")
 
         event_name = "llm_remind_action_4"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
             "check build",
             event_name,
-            action_prompt="@ask check build",
+            action_prompt="check build",
             account="acct",
         )
         deliver()
@@ -888,6 +888,47 @@ class TestReminderActionDelivery:
             == "alice: Reminder action 'check build' failed. (Set this reminder again to retry.)"
         )
         assert "secret text" not in sent.args[1]
+        plugin.log.exception.assert_called_once()
+
+    def test_action_delivery_falls_back_on_pre_request_exception(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN exception BEFORE assistant_request WHEN action reminder fires THEN fallback sent.
+
+        Regression: a narrow try/except around only assistant_request would
+        let history/registry/IrcMsg/rate-limit failures silently lose the
+        reminder. The handler must wrap the whole per-irc action body.
+        """
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        # _gather_history runs BEFORE assistant_request — make it raise.
+        plugin._gather_history = mocker.MagicMock(
+            side_effect=RuntimeError("internal token leak XYZ")
+        )
+
+        event_name = "llm_remind_action_pre"
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="check build",
+            account="acct",
+        )
+        deliver()
+
+        plugin.llm_service.assistant_request.assert_not_called()
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert (
+            sent.args[1]
+            == "alice: Reminder action 'check build' failed. (Set this reminder again to retry.)"
+        )
+        assert "XYZ" not in sent.args[1]
         plugin.log.exception.assert_called_once()
 
     def test_echo_delivery_unchanged(self, plugin: MagicMock, mocker: MockerFixture) -> None:
@@ -936,13 +977,13 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.side_effect = _assistant_side_effect
 
         event_name = "llm_remind_action_5"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "@ask check build", "acct")
+        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
             "check build",
             event_name,
-            action_prompt="@ask check build",
+            action_prompt="check build",
             account="acct",
         )
         deliver()

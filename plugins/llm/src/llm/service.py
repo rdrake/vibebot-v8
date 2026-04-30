@@ -2017,10 +2017,17 @@ Rules:
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly
 - For absolute times ("at 3pm"), calculate seconds until that time
-- Set "action_prompt" non-empty only when user intent is for the bot to perform a task later
-- Set "action_prompt" empty for passive "remind me to ..." phrasing
-- If unsure, prefer empty "action_prompt"
-- "action_prompt" must be a self-contained "@ask ..." instruction"""
+- Set "action_prompt" non-empty ONLY when the user is asking the bot to PERFORM A TASK at fire time (look something up, check a status, fetch a URL, run a query, etc.)
+- Set "action_prompt" to "" (empty) for passive "remind me to X" phrasings where the user themselves will act
+- When in doubt, prefer "" — false positives surprise users
+- "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task
+- "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status")
+
+Examples:
+- "in 30m check if the build is green" → action_prompt: "check if the build is green"
+- "in 5m remind me to check the build" → action_prompt: ""
+- "in 2h post a status update in #ops" → action_prompt: "post a status update in #ops"
+- "tomorrow at 3pm call Bob" → action_prompt: \"\""""
 
         try:
             optional_kwargs = self._get_provider_kwargs(model)
