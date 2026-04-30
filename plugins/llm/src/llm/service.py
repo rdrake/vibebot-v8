@@ -1913,12 +1913,18 @@ class LLMService:
         delegates to the planner loop so that all assistant routes share
         a single entry point with full tool access.
         """
-        from .assistant import CHAT_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, DRAW_SYSTEM_PROMPT
+        from .assistant import (
+            CHAT_SYSTEM_PROMPT,
+            CODE_SYSTEM_PROMPT,
+            DRAW_SYSTEM_PROMPT,
+            REMIND_ACTION_SYSTEM_PROMPT,
+        )
 
         profile_prompts = {
             "chat": CHAT_SYSTEM_PROMPT,
             "code": CODE_SYSTEM_PROMPT,
             "draw": DRAW_SYSTEM_PROMPT,
+            "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
         }
 
         self.log.info(
@@ -2022,6 +2028,7 @@ Rules:
 - Set "action_prompt" to "" (empty) only when the user is clearly asking THEMSELVES to do something later (passive "remind me to X" where X is a human action like "call Bob", "go to the store", "take a break") OR the message is a pure label/note with no verb at all.
 - "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
 - "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
+- Recurrence: if the user used recurring language ("every X", "daily", "hourly", "weekly", "each X", "repeat"), set "seconds" to the NEXT occurrence (one-shot — there is no native repeat), AND append a recurrence hint at the end of "action_prompt" in the form " (recurring: <original schedule phrase>)". Example: "every Monday at 9am check the build" → action_prompt: "check the build (recurring: every Monday at 9am)". The fire-time engine uses this hint to decide whether to reschedule itself.
 
 Examples (imperative → action_prompt):
 - "in 30m check if the build is green" → action_prompt: "check if the build is green"
@@ -2031,6 +2038,9 @@ Examples (imperative → action_prompt):
 - "in 10m summarize the top 3 hn headlines about postgres" → action_prompt: "summarize the top 3 hn headlines about postgres"
 - "in 2h check status of CVE-2026-31431 in Debian" → action_prompt: "check status of CVE-2026-31431 in Debian"
 - "tomorrow at 9am fetch https://example.com/build and tell me if it's green" → action_prompt: "fetch https://example.com/build and tell me if it's green"
+- "every hour check the build" → action_prompt: "check the build (recurring: every hour)"
+- "every Monday at 9am post the weekly summary" → action_prompt: "post the weekly summary (recurring: every Monday at 9am)"
+- "daily at 8am search for new rust async news" → action_prompt: "search for new rust async news (recurring: daily at 8am)"
 
 Examples (echo → action_prompt: ""):
 - "in 5m remind me to check the build" → action_prompt: "" (passive — user said "remind me to")

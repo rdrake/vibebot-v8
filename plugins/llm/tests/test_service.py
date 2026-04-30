@@ -94,6 +94,36 @@ class TestLLMService:
         call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert call_kwargs["system_prompt"] == CHAT_SYSTEM_PROMPT
 
+    def test_assistant_request_remind_action_uses_dedicated_prompt(self) -> None:
+        """GIVEN remind_action profile WHEN assistant_request runs THEN it uses REMIND_ACTION_SYSTEM_PROMPT."""
+        from llm.assistant import REMIND_ACTION_SYSTEM_PROMPT
+
+        request_context = AssistantRequestContext(
+            entry_route="remind_action",
+            profile="remind_action",
+            nick="testuser",
+            raw_nick="testuser",
+            account=None,
+            channel="#test",
+            is_private=False,
+            is_owner=False,
+            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
+        )
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
+        )
+
+        self.service.assistant_request(
+            "check the build (recurring: every hour)",
+            request_context=request_context,
+            db=self.mocker.Mock(),
+            context=self.mocker.Mock(),
+            bot_nick="Bot",
+        )
+
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
+        assert call_kwargs["system_prompt"] == REMIND_ACTION_SYSTEM_PROMPT
+
     def test_validate_prompt_rejects_empty(self) -> None:
         """GIVEN empty prompt WHEN validated THEN rejected."""
         is_valid, error = self.service.validate_prompt("")

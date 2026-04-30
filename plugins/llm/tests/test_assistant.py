@@ -11,6 +11,7 @@ from llm.assistant import (
     CHAT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
+    REMIND_ACTION_SYSTEM_PROMPT,
     AssistantToolExecutor,
     ToolResult,
     get_tools_for_profile,
@@ -1937,6 +1938,15 @@ class TestProfileSystemPrompts:
     def test_draw_system_prompt_mentions_generate_image(self) -> None:
         """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
         assert "generate_image" in DRAW_SYSTEM_PROMPT
+
+    def test_remind_action_prompt_allows_self_rescheduling(self) -> None:
+        """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN mentions set_reminder."""
+        assert "set_reminder" in REMIND_ACTION_SYSTEM_PROMPT
+        assert "recurring" in REMIND_ACTION_SYSTEM_PROMPT.lower()
+
+    def test_remind_action_prompt_has_bot_nick_placeholder(self) -> None:
+        """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick}."""
+        assert "{bot_nick}" in REMIND_ACTION_SYSTEM_PROMPT
 
 
 class TestToolSpecVisibility:
