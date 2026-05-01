@@ -31,7 +31,7 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from .context import ContextConfig, ConversationContext, Role
-from .persistence import LLMDatabase
+from .persistence import LLMDatabase, ReminderRow
 from .service import (
     AssistantRequestContext,
     AssistantResult,
@@ -400,13 +400,7 @@ class LLM(callbacks.Plugin):
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
 
-        # Reminder storage:
-        # event_name -> (nick, channel, message, action_prompt, account,
-        #                chain_id, chain_position, chain_started_at)
-        self._reminders: dict[
-            str,
-            tuple[str, str, str, str, str | None, str, int, float],
-        ] = {}
+        self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
 
         # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
@@ -1261,15 +1255,19 @@ class LLM(callbacks.Plugin):
                 try:
                     schedule.addEvent(deliver, reminder.fire_at, name=event_name)
                     with self._reminders_lock:
-                        self._reminders[event_name] = (
-                            nick,
-                            channel,
-                            message,
-                            reminder.action_prompt,
-                            reminder.account,
-                            reminder.chain_id or event_name,
-                            reminder.chain_position or 1,
-                            reminder.chain_started_at or reminder.created_at,
+                        self._reminders[event_name] = ReminderRow(
+                            id=reminder.id,
+                            event_name=event_name,
+                            nick=nick,
+                            channel=channel,
+                            message=message,
+                            action_prompt=reminder.action_prompt,
+                            account=reminder.account,
+                            fire_at=reminder.fire_at,
+                            created_at=reminder.created_at,
+                            chain_id=reminder.chain_id or event_name,
+                            chain_position=reminder.chain_position or 1,
+                            chain_started_at=reminder.chain_started_at or reminder.created_at,
                         )
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
@@ -2828,24 +2826,7 @@ class LLM(callbacks.Plugin):
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
-    @staticmethod
-    def _stored_reminder_identity(
-        data: tuple[str, str, str, str, str | None, str, int, float],
-    ) -> Identity:
-        """Reconstruct the owning :class:`Identity` from a stored reminder tuple.
-
-        Tuple layout: ``(raw_nick, channel, message, action_prompt, account,
-        chain_id, chain_position, chain_started_at)``.
-        Legacy rows persisted before the raw_nick/account split stored the
-        resolved identity in field 0; in that case field 0 equals field 4
-        (the account) and ``Identity.matches`` still resolves correctly via
-        the account-to-account branch.
-        """
-        return Identity(raw_nick=data[0], account=data[4])
-
-    def _get_user_reminders(
-        self, caller: Identity
-    ) -> list[tuple[str, tuple[str, str, str, str, str | None, str, int, float]]]:
+    def _get_user_reminders(self, caller: Identity) -> list[tuple[str, ReminderRow]]:
         """Get reminders belonging to a specific user.
 
         Match policy: account-to-account when both the caller and the
@@ -2858,32 +2839,31 @@ class LLM(callbacks.Plugin):
             caller: The requesting user's :class:`Identity`.
 
         Returns:
-            List of ``(event_name, (raw_nick, channel, message, action_prompt, account))``.
+            List of ``(event_name, ReminderRow)`` pairs owned by ``caller``.
         """
         with self._reminders_lock:
             return [
                 (name, data)
                 for name, data in self._reminders.items()
-                if self._stored_reminder_identity(data).matches(caller)
+                if Identity(raw_nick=data.nick, account=data.account).matches(caller)
             ]
 
     def _format_reminders(
         self,
-        reminders: list[tuple[str, tuple[str, str, str, str, str | None, str, int, float]]],
+        reminders: list[tuple[str, ReminderRow]],
     ) -> str:
         """Format reminders list for display.
 
         Args:
-            reminders: List of (event_name, (nick, channel, message, action_prompt, account)) tuples
+            reminders: List of ``(event_name, ReminderRow)`` pairs.
 
         Returns:
             Formatted string for IRC display
         """
         parts = []
         for name, data in reminders:
-            # Legacy tuples may not have action/account fields.
-            message = data[2]
-            action_prompt = data[3] if len(data) > 3 else ""
+            message = data.message
+            action_prompt = data.action_prompt
             # Truncate long messages
             preview = message[:40] + "..." if len(message) > 40 else message
             # Extract ID from event name
@@ -2906,7 +2886,7 @@ class LLM(callbacks.Plugin):
             for name, data in self._reminders.items():
                 if not name.endswith(f"_{reminder_id}"):
                     continue
-                if self._stored_reminder_identity(data).matches(caller):
+                if Identity(raw_nick=data.nick, account=data.account).matches(caller):
                     return name
             return None
 
@@ -3057,15 +3037,19 @@ class LLM(callbacks.Plugin):
         try:
             schedule.addEvent(deliver, now + result.seconds, name=event_name)
             with self._reminders_lock:
-                self._reminders[event_name] = (
-                    caller.raw_nick,
-                    channel,
-                    reminder_message,
-                    action_prompt,
-                    caller.account,
-                    chain_id,
-                    chain_position,
-                    chain_started_at,
+                self._reminders[event_name] = ReminderRow(
+                    id=0,
+                    event_name=event_name,
+                    nick=caller.raw_nick,
+                    channel=channel,
+                    message=reminder_message,
+                    action_prompt=action_prompt,
+                    account=caller.account,
+                    fire_at=now + result.seconds,
+                    created_at=now,
+                    chain_id=chain_id,
+                    chain_position=chain_position,
+                    chain_started_at=chain_started_at,
                 )
 
             self.db.save_reminder(
