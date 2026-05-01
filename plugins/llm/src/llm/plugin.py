@@ -1095,11 +1095,7 @@ class LLM(callbacks.Plugin):
                             channel=channel,
                             is_private=not ircutils.isChannel(channel),
                             is_owner=False,
-                            # Grant the same per-feature caps the user has via
-                            # @ask/@draw/@code, so a "draw X" or "run code Y"
-                            # reminder can actually invoke those tools at fire
-                            # time. Owner/admin caps stay excluded — see the
-                            # action-reminders plan's Architecture section.
+                            # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
                             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
                         )
 
@@ -1158,9 +1154,6 @@ class LLM(callbacks.Plugin):
                                 set_reminder_fn=_set_reminder_capped,
                                 pass_irc_msg_to_callbacks=False,
                             ),
-                            # Note: action fires use a synthetic_msg with no
-                            # msgid, so passing irc/msg here would just fail
-                            # the cap check inside _react and waste a call.
                         )
                         response = result.content.strip() if result.content else ""
                         # Watch-mode sentinel: action LLM signals "no news to
@@ -2899,19 +2892,10 @@ class LLM(callbacks.Plugin):
             return
         irc.reply(self._format_reminders(user_reminders))
 
-    # Maximum reminder duration (7 days in seconds)
-    _REMINDER_MAX_SECONDS = 604800
-    # Hard cap on how many fires a single recurring reminder chain can run
-    # before the user has to re-arm it. Each fire of a chain that asks the
-    # action LLM to reschedule increments the chain position; we refuse the
-    # next reschedule once it would exceed this cap.
-    _REMINDER_MAX_CHAIN_POSITION = 50
-    # Wallclock TTL for a chain measured from its first scheduling. Catches
-    # slow-but-eternal chains (e.g. once a day forever) regardless of count.
-    _REMINDER_CHAIN_TTL_SECONDS = 30 * 86400
-    # Per-user pending-reminder cap (across all chains). Prevents a user
-    # from accumulating an arbitrary number of one-shot reminders.
-    _REMINDER_MAX_PENDING_PER_USER = 25
+    _REMINDER_MAX_SECONDS = 604800  # 7 days
+    _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
+    _REMINDER_CHAIN_TTL_SECONDS = 30 * 86400  # catches slow-but-eternal chains
+    _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
 
     def _react(self, irc: callbacks.Irc, msg: IrcMsg, emoji: str) -> bool:
         """Send a +draft/react reaction to ``msg``. Returns True if queued.
