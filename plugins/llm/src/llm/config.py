@@ -235,7 +235,7 @@ conf.registerChannelValue(
     LLM,
     "grokModel",
     ValidatedModelName(
-        "xai/grok-4-latest",
+        "xai/grok-4.3-latest",
         _("""Model for grok (g) command - direct passthrough to xAI."""),
     ),
 )
