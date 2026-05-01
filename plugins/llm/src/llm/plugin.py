@@ -63,11 +63,6 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # brackets crash Limnoria's nested-command tokenizer.
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-# Legacy parenthetical pattern. Pre-v12 reminders embedded recurrence as
-# "(recurring: <phrase>)" inside action_prompt. After v12 it's structured
-# columns; this regex still matches in-flight legacy rows during the
-# B0.5 graceful-degradation window.
-_LEGACY_RECURRENCE_RE = re.compile(r"\(recurring:[^)]+\)", re.IGNORECASE)
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {"llm.ask", "llm.code", "llm.draw", "owner", "admin", "trusted"}
 )
@@ -1042,11 +1037,6 @@ class LLM(callbacks.Plugin):
             recurrence_seconds=recurrence_seconds,
             recurrence_rrule=recurrence_rrule,
         )
-        is_legacy = self._is_legacy_recurring(
-            recurrence_seconds=recurrence_seconds,
-            recurrence_rrule=recurrence_rrule,
-            action_prompt=action_prompt,
-        )
         # If the command was sent via PM, channel is the bot's own nick.
         # Deliver to the user's nick instead.
         target = channel if ircutils.isChannel(channel) else nick
@@ -1129,38 +1119,8 @@ class LLM(callbacks.Plugin):
                         effective_prompt = (
                             f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
                         )
-                        # Legacy rows still rely on the action LLM to call
-                        # set_reminder for the next fire — when there's no
-                        # user_instruction prefix overriding the default, pin
-                        # the legacy variant explicitly so the model still
-                        # sees the "MAY call set_reminder ONCE" rule.
-                        if effective_prompt is None and is_legacy:
-                            from .assistant import REMIND_ACTION_LEGACY_SYSTEM_PROMPT
-
-                            effective_prompt = REMIND_ACTION_LEGACY_SYSTEM_PROMPT
 
                         caller = Identity(raw_nick=nick, account=account)
-                        nested_set_calls = 0
-
-                        # TODO(remove after one release): legacy reschedule path.
-                        # Structured rows (recurrence_seconds/rrule columns set)
-                        # reschedule mechanically; this capped tool path only
-                        # exists for pre-v12 parenthetical-encoded rows.
-                        def _set_reminder_capped(
-                            text: str,
-                            *,
-                            _irc=active_irc,
-                            _msg=synthetic_msg,
-                            _caller=caller,
-                            _parent=parent_chain,
-                        ) -> str:
-                            nonlocal nested_set_calls
-                            if nested_set_calls >= 1:
-                                return "Reminder scheduling limit reached for this reminder action."
-                            nested_set_calls += 1
-                            return self._remind_set_for_assistant(
-                                _irc, _msg, _caller, text, parent_chain=_parent
-                            )
 
                         # Structured rows reschedule via _mechanical_reschedule
                         # below. Drop set_reminder from the fire-time tool
@@ -1195,7 +1155,6 @@ class LLM(callbacks.Plugin):
                                 caller=caller,
                                 irc=active_irc,
                                 msg=synthetic_msg,
-                                set_reminder_fn=_set_reminder_capped,
                                 pass_irc_msg_to_callbacks=False,
                             ),
                         )
@@ -1234,12 +1193,9 @@ class LLM(callbacks.Plugin):
                             self.log.exception(
                                 "reminder_action_usage_log_failed event=%s", event_name
                             )
-                        # Routing gate: structured rows reschedule mechanically
-                        # (set_reminder was filtered out of the tool surface so
-                        # the LLM cannot have done it). Legacy rows depend on
-                        # the action LLM having already called set_reminder via
-                        # _set_reminder_capped — we deliberately skip the
-                        # mechanical path for them. One-shot rows do nothing.
+                        # Structured rows reschedule mechanically (set_reminder
+                        # was filtered out of the tool surface so the LLM
+                        # cannot have done it). One-shot rows do nothing.
                         # Watch-mode + structured: still reschedule even if
                         # response was [silent]; the watch must keep watching.
                         if is_structured:
@@ -2853,14 +2809,9 @@ class LLM(callbacks.Plugin):
         caller: Identity,
         irc: callbacks.Irc,
         msg: IrcMsg,
-        set_reminder_fn: Callable[[str], str] | None = None,
         pass_irc_msg_to_callbacks: bool = True,
     ) -> dict[str, Callable[..., object]]:
         """Build the four-lambda reminder-tool dict for assistant calls.
-
-        ``set_reminder_fn`` overrides the default ``_remind_set_for_assistant`` —
-        the action-fire path passes a capped wrapper (``_set_reminder_capped``)
-        that enforces the one-nested-set rule.
 
         ``pass_irc_msg_to_callbacks`` is False on the action-fire path: its
         ``synthetic_msg`` has no msgid, so passing ``irc``/``msg`` through would
@@ -2890,12 +2841,12 @@ class LLM(callbacks.Plugin):
             def clear_fn() -> str:
                 return self._remind_clear_for_assistant(caller)
 
-        def default_set_fn(t: str) -> str:
+        def set_fn(t: str) -> str:
             return self._remind_set_for_assistant(irc, msg, caller, t)
 
         return {
             "list_reminders_fn": lambda: self._get_user_reminders(caller),
-            "set_reminder_fn": set_reminder_fn or default_set_fn,
+            "set_reminder_fn": set_fn,
             "delete_reminder_fn": delete_fn,
             "cancel_all_reminders_fn": clear_fn,
         }
@@ -2982,26 +2933,6 @@ class LLM(callbacks.Plugin):
     ) -> bool:
         """True when the row carries a structured recurrence column (B1+)."""
         return recurrence_seconds is not None or recurrence_rrule is not None
-
-    @staticmethod
-    def _is_legacy_recurring(
-        *,
-        recurrence_seconds: int | None,
-        recurrence_rrule: str | None,
-        action_prompt: str,
-    ) -> bool:
-        """True when the row encodes recurrence the pre-v12 way.
-
-        Pre-v12 rows have no structured columns; the parser leaked
-        ``(recurring: ...)`` parentheticals into ``action_prompt`` and
-        relied on the action LLM to self-reschedule via set_reminder.
-        """
-        if LLM._is_structured_recurring(
-            recurrence_seconds=recurrence_seconds,
-            recurrence_rrule=recurrence_rrule,
-        ):
-            return False
-        return bool(_LEGACY_RECURRENCE_RE.search(action_prompt or ""))
 
     @staticmethod
     def _next_rrule_fire(rule_str: str, now: float) -> float | None:

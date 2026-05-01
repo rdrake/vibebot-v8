@@ -1699,49 +1699,6 @@ class TestReminderActionDelivery:
         kwargs = plugin.db.log_usage.call_args.kwargs
         assert kwargs["status"] == "silent"
 
-    def test_action_delivery_caps_nested_reminder_scheduling(
-        self, plugin: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN action tool loop WHEN set_reminder called repeatedly THEN only first schedule executes."""
-        mock_world = mocker.patch("llm.plugin.world")
-        active_irc = mocker.MagicMock()
-        active_irc.nick = "testbot"
-        mock_world.ircs = [active_irc]
-        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-
-        set_spy = mocker.patch.object(plugin, "_remind_set_for_assistant", return_value="scheduled")
-        nested_results: list[str] = []
-
-        def _assistant_side_effect(*args, **kwargs):
-            nested_results.append(kwargs["set_reminder_fn"]("in 1 minute first"))
-            nested_results.append(kwargs["set_reminder_fn"]("in 1 minute second"))
-            return AssistantResult(content="ok")
-
-        plugin.llm_service.assistant_request.side_effect = _assistant_side_effect
-
-        event_name = "llm_remind_action_5"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
-        )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "check build",
-            event_name,
-            action_prompt="check build",
-            account="acct",
-        )
-        deliver()
-
-        assert set_spy.call_count == 1
-        assert nested_results[0] == "scheduled"
-        assert "limit" in nested_results[1].lower()
-
     def test_check_rate_limit_silent_enforced_blocks(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -1885,41 +1842,6 @@ class TestRoutingGateAndMechanicalReschedule:
         save_kwargs = plugin.db.save_reminder.call_args.kwargs
         assert save_kwargs["chain_position"] == 2
         assert save_kwargs["recurrence_seconds"] == 300
-
-    def test_legacy_row_skips_mechanical_and_keeps_set_reminder_tool(
-        self, plugin: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN legacy parenthetical row WHEN fired THEN no mechanical reschedule, no exclude_tools."""
-        self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
-        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
-
-        event_name = "llm_remind_legacy_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build (recurring: every 5 minutes)",
-            account="acct",
-            chain_position=1,
-        )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "check build",
-            event_name,
-            action_prompt="check build (recurring: every 5 minutes)",
-            account="acct",
-            chain_position=1,
-        )
-        deliver()
-
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        # Legacy rows still let the action LLM see set_reminder.
-        assert kwargs["exclude_tools"] == frozenset()
-        # Mechanical path must not run for legacy rows.
-        mech_spy.assert_not_called()
 
     def test_one_shot_row_runs_neither_path(self, plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN one-shot row WHEN fired THEN neither mechanical nor LLM-tool reschedule runs."""
@@ -2109,34 +2031,12 @@ class TestRoutingGateAndMechanicalReschedule:
         assert LLM._next_rrule_fire("FREQ=NONSENSE;BLAH", 1_700_000_000.0) is None
 
     def test_is_structured_recurring_helper(self) -> None:
-        """GIVEN any combination of recurrence fields WHEN classified THEN matches structured/legacy/one-shot."""
+        """GIVEN any combination of recurrence fields WHEN classified THEN matches structured/one-shot."""
         from llm.plugin import LLM
 
         assert LLM._is_structured_recurring(recurrence_seconds=60, recurrence_rrule=None)
         assert LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
         assert not LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule=None)
-
-    def test_is_legacy_recurring_helper(self) -> None:
-        """GIVEN action_prompt parenthetical WHEN structured columns null THEN classified legacy."""
-        from llm.plugin import LLM
-
-        assert LLM._is_legacy_recurring(
-            recurrence_seconds=None,
-            recurrence_rrule=None,
-            action_prompt="check build (recurring: every 5 minutes)",
-        )
-        # Structured row with parenthetical leak is NOT legacy.
-        assert not LLM._is_legacy_recurring(
-            recurrence_seconds=300,
-            recurrence_rrule=None,
-            action_prompt="check build (recurring: every 5 minutes)",
-        )
-        # No parenthetical → not legacy.
-        assert not LLM._is_legacy_recurring(
-            recurrence_seconds=None,
-            recurrence_rrule=None,
-            action_prompt="ping me",
-        )
 
 
 class TestReminderReload:
