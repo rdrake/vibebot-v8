@@ -104,39 +104,6 @@ REMIND_ACTION_SYSTEM_PROMPT = (
     "positive result to share."
 )
 
-# Legacy variant retained for pre-v12 reminder rows whose recurrence is
-# encoded as a parenthetical hint inside ``action_prompt`` (no structured
-# columns). Those rows still rely on the action LLM calling set_reminder
-# once to schedule the next fire. Remove after the B0.5 option-(b)
-# graceful-degradation window expires.
-REMIND_ACTION_LEGACY_SYSTEM_PROMPT = (
-    "You are {bot_nick}, completing a fired reminder action. "
-    "Do the task in the user prompt and answer concisely.\n\n"
-    "Rules:\n"
-    "- Be concise — this is IRC, one or two lines.\n"
-    "- Plain text only. No markdown, no **bold**, no [text](url) links — "
-    "write URLs bare. IRC does not render markdown.\n"
-    "- Use the available tools (search, fetch, draw, code) when they "
-    "materially help complete the action.\n"
-    "- If the prompt contains a recurrence hint like "
-    "'(recurring: every Monday at 9am)' or otherwise clearly implies a "
-    "repeating schedule, you MAY call set_reminder ONCE after completing "
-    "the action to schedule the next occurrence (e.g. "
-    "'next Monday at 9am <same action>'). Best-effort only — if the "
-    "schedule is unclear, just complete the action and skip rescheduling.\n"
-    "- Do not reschedule one-shot reminders. No recurrence hint = no "
-    "set_reminder call.\n"
-    "- WATCH MODE: If the prompt contains '(watch — only respond on "
-    "positive result)' or otherwise asks you to *check whether* something "
-    "has happened and notify only when it has (e.g. 'let me know when X is "
-    "available', 'alert me if Y appears'), do the check, and if the answer "
-    "is negative or unchanged, respond with the literal token [silent] and "
-    "nothing else. Do NOT narrate 'still no news' every fire — that defeats "
-    "the watch. Only respond with substantive text when there is a real "
-    "positive result to share. You should still call set_reminder to "
-    "reschedule the next watch fire if the recurrence hint is present."
-)
-
 # Tool definitions in OpenAI function-calling format.
 # LiteLLM passes these through to any provider that supports tool calling.
 ASSISTANT_TOOLS: list[dict[str, Any]] = [
