@@ -202,6 +202,9 @@ def plugin_env(mocker: MockerFixture):
 
     # During the unified-assistant transition, ask-style command tests still
     # exercise the existing completion bridge through assistant_request().
+    # The bridge wraps CompletionResult into AssistantResult so the chat
+    # impl's structured-signal suppression check (last_successful_tool /
+    # final_text_after_tools) sees defaults rather than AttributeError.
     def _assistant_request_bridge(
         prompt: str,
         *,
@@ -226,7 +229,9 @@ def plugin_env(mocker: MockerFixture):
         delete_reminder_fn=None,
         cancel_all_reminders_fn=None,
     ):
-        return plugin.llm_service.completion(
+        from llm.service import AssistantResult as _AssistantResult
+
+        completion_result = plugin.llm_service.completion(
             prompt,
             command="ask",
             images=images,
@@ -236,6 +241,15 @@ def plugin_env(mocker: MockerFixture):
             msg=msg,
             system_prompt=system_prompt,
             memories=memories,
+        )
+        return _AssistantResult(
+            content=completion_result.content,
+            prompt_tokens=completion_result.prompt_tokens,
+            completion_tokens=completion_result.completion_tokens,
+            cost=completion_result.cost,
+            model=completion_result.model,
+            grounding_used=completion_result.grounding_used,
+            error=completion_result.error,
         )
 
     plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge

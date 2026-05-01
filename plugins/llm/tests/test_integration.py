@@ -391,8 +391,22 @@ class TestMemoryIntegration:
 
         # Bridge assistant_request to completion so integration tests that
         # mock completion continue to work through the unified facade.
+        # Wrap the CompletionResult into AssistantResult so the chat impl's
+        # structured-signal suppression check sees the new fields' defaults
+        # rather than AttributeError.
         def _assistant_request_bridge(prompt, *, request_context, **kwargs):
-            return plugin.llm_service.completion(prompt, command="ask", **kwargs)
+            from llm.service import AssistantResult as _AssistantResult
+
+            completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
+            return _AssistantResult(
+                content=completion_result.content,
+                prompt_tokens=completion_result.prompt_tokens,
+                completion_tokens=completion_result.completion_tokens,
+                cost=completion_result.cost,
+                model=completion_result.model,
+                grounding_used=completion_result.grounding_used,
+                error=completion_result.error,
+            )
 
         plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
 
@@ -503,7 +517,18 @@ class TestMemoryIntegration:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         def _assistant_request_bridge(prompt, *, request_context, **kwargs):
-            return plugin.llm_service.completion(prompt, command="ask", **kwargs)
+            from llm.service import AssistantResult as _AssistantResult
+
+            completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
+            return _AssistantResult(
+                content=completion_result.content,
+                prompt_tokens=completion_result.prompt_tokens,
+                completion_tokens=completion_result.completion_tokens,
+                cost=completion_result.cost,
+                model=completion_result.model,
+                grounding_used=completion_result.grounding_used,
+                error=completion_result.error,
+            )
 
         plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
 

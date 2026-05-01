@@ -72,6 +72,13 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {"llm.ask", "llm.code", "llm.draw", "owner", "admin", "trusted"}
 )
 
+# Reminder-mutation tools whose successful execution already produced a
+# user-visible emoji reaction. When the assistant loop ends with one of
+# these as the last successful tool AND no follow-up text, the chat
+# reply is suppressed to avoid a duplicate ack. See Task B5 of the
+# 2026-04-30 reminder simplification plan.
+_REMINDER_MUTATION_TOOLS = frozenset({"set_reminder", "delete_reminder", "cancel_all_reminders"})
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -2285,15 +2292,25 @@ class LLM(callbacks.Plugin):
 
                 # Format response with grounding icon if search was used
                 response = result.content
-                if not response or not response.strip():
+
+                # Structured suppression: when the assistant just performed
+                # a successful reminder mutation and produced no follow-up
+                # text, the user already saw the emoji reaction (clock /
+                # thumbs-up). Skip the reply to avoid a duplicate ack.
+                # Usage + context still get recorded below.
+                if (
+                    result.last_successful_tool in _REMINDER_MUTATION_TOOLS
+                    and not result.final_text_after_tools.strip()
+                ):
+                    self.log.info(
+                        "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
+                        result.last_successful_tool,
+                        channel,
+                        nick,
+                    )
+                elif not response or not response.strip():
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
-
-                # [silent] sentinel: model handled the request via a tool
-                # whose callback already reacted (e.g. set_reminder ⏰).
-                # Suppress the reply but still log usage and store context.
-                if response.strip() == "[silent]":
-                    self.log.info("silent response to %s/%s", channel, nick)
                 else:
                     action_text = self._extract_action(irc, response)
                     if action_text:
@@ -3332,7 +3349,8 @@ class LLM(callbacks.Plugin):
 
         Reacts ⏰ to ``msg`` on success and ❌ on cap/parse failure so the
         user gets a visual acknowledgment regardless of whether the model
-        speaks (the chat prompt asks it to stay [silent] after this tool).
+        speaks. The chat reply path suppresses an empty post-tool reply
+        via the structured ``last_successful_tool`` signal.
         """
         result = self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain)
         self._react(irc, msg, "⏰" if result.ok else "❌")
@@ -3349,8 +3367,8 @@ class LLM(callbacks.Plugin):
         """Delete a reminder by ID, scoped to the caller's identity.
 
         When ``irc``/``msg`` are provided, reacts 👍 on success and ❌
-        when no matching reminder exists (so the chat path can stay
-        [silent] without leaving the user wondering).
+        when no matching reminder exists (so the chat path can suppress
+        the empty post-tool reply without leaving the user wondering).
         """
         target = self._find_user_reminder(caller, reminder_id)
         if target is None:

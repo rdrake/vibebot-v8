@@ -254,6 +254,8 @@ class AssistantResult(NamedTuple):
     model: str = ""
     grounding_used: bool = False
     error: str | None = None
+    last_successful_tool: str | None = None
+    final_text_after_tools: str = ""
 
 
 @dataclass(frozen=True)
@@ -2565,6 +2567,12 @@ Examples (echo → action_prompt: ""):
             profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
 
             last_assistant_text = ""
+            # Tracks the most recent tool call that completed without an
+            # error sentinel — used downstream by the chat reply path to
+            # suppress empty post-mutation acknowledgments. Tool handlers
+            # encode errors as JSON {"error": ...}; success uses
+            # {"status": "ok", ...}.
+            last_successful_tool: str | None = None
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -2610,6 +2618,8 @@ Examples (echo → action_prompt: ""):
                         cost=total_cost,
                         model=model,
                         grounding_used=executor.grounding_used,
+                        last_successful_tool=last_successful_tool,
+                        final_text_after_tools=content,
                     )
 
                 # Append assistant message with tool_calls to history
@@ -2662,6 +2672,18 @@ Examples (echo → action_prompt: ""):
 
                     tool_result = executor.execute(tc.function.name, args)
 
+                    # ToolResult.content is a JSON string. Success uses
+                    # {"status": "ok", ...}; errors use {"error": ...}.
+                    # Parse defensively — non-JSON or unexpected shapes
+                    # are treated as success only when no "error" key is
+                    # present.
+                    try:
+                        parsed = json.loads(tool_result.content)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = None
+                    if isinstance(parsed, dict) and "error" not in parsed:
+                        last_successful_tool = tc.function.name
+
                     messages.append(
                         {
                             "role": "tool",
@@ -2685,6 +2707,8 @@ Examples (echo → action_prompt: ""):
                 model=model,
                 grounding_used=executor.grounding_used,
                 error="Assistant exceeded maximum tool-call steps.",
+                last_successful_tool=last_successful_tool,
+                final_text_after_tools=last_assistant_text,
             )
 
         except litellm.Timeout as e:

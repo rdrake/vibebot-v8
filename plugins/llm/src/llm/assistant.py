@@ -49,14 +49,14 @@ CHAT_SYSTEM_PROMPT = (
     "cancel_all_reminders ONCE — do not list_reminders then "
     "delete_reminder per ID. The bulk call is atomic and prevents a "
     "recurring reminder from firing one more time during cancellation.\n"
-    "- After a SUCCESSFUL set_reminder, delete_reminder, or "
-    "cancel_all_reminders tool call, the user has already been "
-    "acknowledged with an emoji reaction (clock for set, thumbs-up for "
-    "cancel/delete). Respond with the literal token [silent] and "
-    "nothing else — your text reply would just duplicate the reaction. "
-    "If the tool returned an error or refusal (cap reached, not found, "
-    "TTL exceeded, parse failed), DO speak: surface the reason in one "
-    "short sentence so the user knows what went wrong."
+    "- After a successful set_reminder, delete_reminder, or "
+    "cancel_all_reminders, the user has already been acknowledged "
+    "with an emoji reaction (clock for set, thumbs-up for "
+    "cancel/delete). You can stay quiet — your reply would just "
+    "duplicate the reaction. If the tool returned an error or "
+    "refusal (cap reached, not found, parse failed), DO speak: "
+    "surface the reason in one short sentence so the user knows "
+    "what went wrong."
 )
 
 CODE_SYSTEM_PROMPT = (

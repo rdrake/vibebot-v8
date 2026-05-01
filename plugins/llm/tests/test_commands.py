@@ -222,25 +222,103 @@ class TestAskCommand:
 
         mock_irc.reply.assert_called_once_with("The capital is Paris.", prefixNick=False)
 
-    def test_ask_silent_sentinel_suppresses_reply(self, plugin_env, mocker: MockerFixture):
-        """GIVEN LLM responds with [silent] WHEN ask called THEN no irc.reply, but usage logged."""
+    def test_ask_reminder_mutation_with_empty_text_suppresses_reply(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN successful set_reminder + empty post-tool text WHEN ask called THEN no irc.reply, but usage logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="[silent]",
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
             grounding_used=False,
             prompt_tokens=20,
             completion_tokens=2,
             cost=0.0002,
             model="gpt-4",
+            last_successful_tool="set_reminder",
+            final_text_after_tools="",
         )
 
         plugin.ask(mock_irc, mock_msg, ["remind", "me", "in", "1m"])
 
+        # Reaction is the user-visible ack; no duplicate reply.
         mock_irc.reply.assert_not_called()
         mock_irc.queueMsg.assert_not_called()
-        # Usage still logged (one ask call) so the silent path isn't free.
+        # Suppression isn't an error path.
+        mock_irc.error.assert_not_called()
+        # Usage still logged so the suppressed path isn't free.
         plugin.db.log_usage.assert_called_once()
+
+    def test_ask_reminder_mutation_with_text_does_not_suppress(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN successful set_reminder + follow-up text WHEN ask called THEN reply IS sent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        follow_up = "Got it. Want me to also remind you about the receipt?"
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content=follow_up,
+            grounding_used=False,
+            prompt_tokens=20,
+            completion_tokens=12,
+            cost=0.0003,
+            model="gpt-4",
+            last_successful_tool="set_reminder",
+            final_text_after_tools=follow_up,
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["remind", "me", "in", "1m"])
+
+        mock_irc.reply.assert_called_once_with(follow_up, prefixNick=False)
+        mock_irc.error.assert_not_called()
+
+    def test_ask_non_reminder_tool_with_empty_text_does_not_suppress(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN non-mutation tool + empty text WHEN ask called THEN falls through to empty-response error."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
+            grounding_used=False,
+            prompt_tokens=15,
+            completion_tokens=0,
+            cost=0.0001,
+            model="gpt-4",
+            last_successful_tool="search_web",
+            final_text_after_tools="",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["what", "is", "happening"])
+
+        mock_irc.reply.assert_not_called()
+        mock_irc.error.assert_called_once()
+
+    def test_ask_no_tool_called_with_empty_text_falls_through_to_error(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN no tool call + empty text WHEN ask called THEN empty-response error fires."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=0,
+            cost=0.0001,
+            model="gpt-4",
+            last_successful_tool=None,
+            final_text_after_tools="",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        mock_irc.reply.assert_not_called()
+        mock_irc.error.assert_called_once()
 
     def test_ask_action_stores_context_with_star_prefix(self, plugin_env, mocker: MockerFixture):
         """GIVEN LLM responds with /me WHEN ask called THEN context stores * BotNick text."""
@@ -336,7 +414,7 @@ class TestCodeCommand:
             "model": "gpt-4",
         }
         defaults.update(overrides)
-        return AssistantResult(**defaults)
+        return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
     def test_code_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
         """GIVEN code WHEN executed THEN it uses assistant_request with code profile."""
@@ -464,7 +542,7 @@ class TestDrawCommand:
             "model": "dall-e-3",
         }
         defaults.update(overrides)
-        return AssistantResult(**defaults)
+        return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
     def test_draw_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
         """@draw calls assistant_request with draw profile."""
