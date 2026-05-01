@@ -122,38 +122,38 @@ LLM = conf.registerPlugin("LLM")
 # API Keys (private - never logged)
 # ============================================================================
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "askApiKey",
-    registry.String("", _("""API key for ask command"""), private=True),
+    registry.String("", _("""API key for ask command (channel-overridable)."""), private=True),
 )
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "codeApiKey",
-    registry.String("", _("""API key for code command"""), private=True),
+    registry.String("", _("""API key for code command (channel-overridable)."""), private=True),
 )
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "drawApiKey",
-    registry.String("", _("""API key for draw command"""), private=True),
+    registry.String("", _("""API key for draw command (channel-overridable)."""), private=True),
 )
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "searchApiKey",
     registry.String(
         "",
-        _("""API key for search/fetch tools. Falls back to askApiKey if empty."""),
+        _("""API key for search/fetch tools (channel-overridable). Falls back to askApiKey."""),
         private=True,
     ),
 )
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "grokApiKey",
-    registry.String("", _("""API key for grok (g) command"""), private=True),
+    registry.String("", _("""API key for grok (g) command (channel-overridable)."""), private=True),
 )
 
 # ============================================================================
@@ -299,12 +299,13 @@ conf.registerGlobalValue(
     "memoryMaxPerUser",
     registry.PositiveInteger(50, _("""Maximum number of memories stored per user.""")),
 )
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "memoryApiKey",
     registry.String(
         "",
-        _("""API key for memory extraction model. Falls back to askApiKey if empty."""),
+        _("""API key for memory extraction model (channel-overridable).
+        Falls back to askApiKey if empty."""),
         private=True,
     ),
 )
@@ -360,11 +361,14 @@ conf.registerChannelValue(
         _("""Model for spontaneous participation (cheap flash-tier recommended)."""),
     ),
 )
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "spontaneousApiKey",
     registry.String(
-        "", _("""API key for spontaneous model. Falls back to askApiKey if empty."""), private=True
+        "",
+        _("""API key for spontaneous model (channel-overridable).
+        Falls back to askApiKey if empty."""),
+        private=True,
     ),
 )
 conf.registerChannelValue(
@@ -786,12 +790,13 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerGlobalValue(
+conf.registerChannelValue(
     LLM,
     "metaApiKey",
     registry.String(
         "",
-        _("""API key for the shared assistant backend. Falls back to askApiKey if empty."""),
+        _("""API key for the shared assistant backend (channel-overridable).
+        Falls back to askApiKey if empty."""),
         private=True,
     ),
 )

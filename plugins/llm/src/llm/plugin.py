@@ -821,9 +821,9 @@ class LLM(callbacks.Plugin):
                 if not channel_msgs:
                     return
 
-                api_key = self.registryValue("spontaneousApiKey")
+                api_key = self.registryValue("spontaneousApiKey", channel)
                 if not api_key:
-                    api_key = self.registryValue("askApiKey")
+                    api_key = self.registryValue("askApiKey", channel)
                 if not api_key:
                     return
 
@@ -2507,7 +2507,7 @@ class LLM(callbacks.Plugin):
             prefix_parts = [p for p in (user_instruction, grok_personality) if p]
             effective_prompt = "\n\n".join(prefix_parts) if prefix_parts else None
 
-            grok_api_key = self.registryValue("grokApiKey")
+            grok_api_key = self.registryValue("grokApiKey", channel)
             grok_model = self.registryValue("grokModel", channel)
 
             with self._allow_concurrent():

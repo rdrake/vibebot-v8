@@ -1356,7 +1356,8 @@ class LLMService:
                 reason="Malformed request data: missing messages",
             )
 
-        api_key = self.plugin.registryValue(f"{task.task_type}ApiKey")
+        target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
+        api_key = self.plugin.registryValue(f"{task.task_type}ApiKey", target)
         if not api_key:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -1420,7 +1421,8 @@ class LLMService:
                 reason="Malformed request data: missing prompt",
             )
 
-        if not self.plugin.registryValue("drawApiKey"):
+        target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
+        if not self.plugin.registryValue("drawApiKey", target):
             return PendingTaskResult(
                 status="failed_terminal",
                 task_type=task.task_type,
@@ -1433,7 +1435,7 @@ class LLMService:
             )
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
-        result = self._attempt_image_generation(prompt, task.model, timeout)
+        result = self._attempt_image_generation(prompt, task.model, timeout, channel=target)
         if result is None:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -1697,7 +1699,7 @@ class LLMService:
             # Get configuration (channel-specific for model/prompt, global for api key)
             channel = msg.args[0] if msg and msg.args else None
             # Use override if provided, otherwise fall back to config
-            effective_api_key = api_key or self.plugin.registryValue(f"{command}ApiKey")
+            effective_api_key = api_key or self.plugin.registryValue(f"{command}ApiKey", channel)
             if not effective_api_key:
                 error_content = _("Error: API key not configured for %s command") % command
                 return CompletionResult(
@@ -1823,9 +1825,9 @@ class LLMService:
             model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
                 "askModel", target
             )
-            api_key = self.plugin.registryValue("searchApiKey") or self.plugin.registryValue(
-                "askApiKey"
-            )
+            api_key = self.plugin.registryValue(
+                "searchApiKey", target
+            ) or self.plugin.registryValue("askApiKey", target)
             timeout = self.plugin.registryValue("timeout")
 
             messages: list[dict[str, object]] = [{"role": "user", "content": query}]
@@ -1879,9 +1881,9 @@ class LLMService:
             model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
                 "askModel", target
             )
-            api_key = self.plugin.registryValue("searchApiKey") or self.plugin.registryValue(
-                "askApiKey"
-            )
+            api_key = self.plugin.registryValue(
+                "searchApiKey", target
+            ) or self.plugin.registryValue("askApiKey", target)
             timeout = self.plugin.registryValue("timeout")
 
             messages: list[dict[str, object]] = [
@@ -2034,12 +2036,13 @@ class LLMService:
             )
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
-        if not self.plugin.registryValue("askApiKey"):
+        target = channel if channel and channel.startswith(("#", "&")) else None
+        if not self.plugin.registryValue("askApiKey", target):
             return ReminderParseResult(
                 action="clarify",
                 confirmation=_("Error: API key not configured."),
             )
-        model = self.plugin.registryValue("askModel", channel)
+        model = self.plugin.registryValue("askModel", target)
         timeout = self.plugin.registryValue("timeout")
 
         # Current UTC time for context
@@ -2104,7 +2107,7 @@ Examples (echo → action_prompt: ""):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                api_key=self.plugin.registryValue("askApiKey"),
+                api_key=self.plugin.registryValue("askApiKey", target),
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
             )
@@ -2226,9 +2229,10 @@ Examples (echo → action_prompt: ""):
         """
         try:
             # Don't store API key in local var to avoid logging in traces
-            if not self.plugin.registryValue("askApiKey"):
+            target = channel if channel and channel.startswith(("#", "&")) else None
+            if not self.plugin.registryValue("askApiKey", target):
                 return None
-            model = self.plugin.registryValue("askModel", channel)
+            model = self.plugin.registryValue("askModel", target)
 
             system_prompt = (
                 "You are a summarization assistant. Generate a ~50 word summary "
@@ -2249,7 +2253,7 @@ Examples (echo → action_prompt: ""):
             response = litellm.completion(
                 model=model,
                 messages=messages,
-                api_key=self.plugin.registryValue("askApiKey"),
+                api_key=self.plugin.registryValue("askApiKey", target),
                 timeout=timeout,
                 **optional_kwargs,
             )
@@ -2316,10 +2320,11 @@ Examples (echo → action_prompt: ""):
             rewritten_prompt is None on any failure.
         """
         try:
-            if not self.plugin.registryValue("askApiKey"):
+            target = channel if channel and channel.startswith(("#", "&")) else None
+            if not self.plugin.registryValue("askApiKey", target):
                 return None, 0, 0, 0.0
 
-            model = self.plugin.registryValue("askModel", channel)
+            model = self.plugin.registryValue("askModel", target)
             timeout = self.plugin.registryValue("timeout")
 
             system_prompt = (
@@ -2351,7 +2356,7 @@ Examples (echo → action_prompt: ""):
             response = litellm.completion(
                 model=model,
                 messages=messages,
-                api_key=self.plugin.registryValue("askApiKey"),
+                api_key=self.plugin.registryValue("askApiKey", target),
                 timeout=timeout,
                 metadata=self._get_litellm_metadata(),
             )
@@ -2372,6 +2377,8 @@ Examples (echo → action_prompt: ""):
         prompt: str,
         model: str,
         timeout: int,
+        *,
+        channel: str | None = None,
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -2379,6 +2386,7 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
+            channel: Channel for per-channel drawApiKey lookup
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
@@ -2393,7 +2401,7 @@ Examples (echo → action_prompt: ""):
         response = litellm.image_generation(
             prompt=prompt,
             model=model,
-            api_key=self.plugin.registryValue("drawApiKey"),
+            api_key=self.plugin.registryValue("drawApiKey", channel),
             n=1,
             timeout=timeout,
             metadata=self._get_litellm_metadata(),
@@ -2514,8 +2522,8 @@ Examples (echo → action_prompt: ""):
             )
             effective_api_key = (
                 api_key
-                or self.plugin.registryValue("metaApiKey")
-                or self.plugin.registryValue("askApiKey")
+                or self.plugin.registryValue("metaApiKey", target)
+                or self.plugin.registryValue("askApiKey", target)
             )
             if not effective_api_key:
                 return AssistantResult(
@@ -2789,7 +2797,7 @@ Examples (echo → action_prompt: ""):
             # Get configuration (channel-specific for model, global for api key)
             # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
-            if not self.plugin.registryValue("drawApiKey"):
+            if not self.plugin.registryValue("drawApiKey", channel):
                 error_content = _("Error: API key not configured for draw command")
                 return ImageResult(content=error_content, error=error_content)
             model = self.plugin.registryValue("drawModel", channel)
@@ -2811,7 +2819,7 @@ Examples (echo → action_prompt: ""):
             block_reason = ""
 
             try:
-                result = self._attempt_image_generation(prompt, model, timeout)
+                result = self._attempt_image_generation(prompt, model, timeout, channel=channel)
                 if result is not None:
                     return result
                 # Empty data = content blocked (Google Imagen)
@@ -2887,7 +2895,9 @@ Examples (echo → action_prompt: ""):
 
                 # Retry image generation with rewritten prompt
                 try:
-                    result = self._attempt_image_generation(current_prompt, model, timeout)
+                    result = self._attempt_image_generation(
+                        current_prompt, model, timeout, channel=channel
+                    )
                     if result is not None:
                         # Success! Aggregate costs and set rewritten_prompt
                         return ImageResult(
@@ -3473,10 +3483,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         ]
 
         try:
-            model = self.plugin.registryValue("memoryExtractionModel", channel)
-            api_key = self.plugin.registryValue("memoryApiKey")
+            target = channel if channel and channel.startswith(("#", "&")) else None
+            model = self.plugin.registryValue("memoryExtractionModel", target)
+            api_key = self.plugin.registryValue("memoryApiKey", target)
             if not api_key:
-                api_key = self.plugin.registryValue("askApiKey")
+                api_key = self.plugin.registryValue("askApiKey", target)
             response = litellm.completion(
                 model=model,
                 messages=messages,
@@ -3529,10 +3540,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         ]
 
         try:
-            model = self.plugin.registryValue("memoryCleanupModel", channel)
-            api_key = self.plugin.registryValue("memoryApiKey")
+            target = channel if channel and channel.startswith(("#", "&")) else None
+            model = self.plugin.registryValue("memoryCleanupModel", target)
+            api_key = self.plugin.registryValue("memoryApiKey", target)
             if not api_key:
-                api_key = self.plugin.registryValue("askApiKey")
+                api_key = self.plugin.registryValue("askApiKey", target)
             response = litellm.completion(
                 model=model,
                 messages=messages,
