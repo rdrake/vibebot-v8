@@ -2932,6 +2932,24 @@ class LLM(callbacks.Plugin):
             return False
         return self.llm_service.send_reaction(irc, target, msgid, emoji)
 
+    def _ack(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        emoji: str,
+        fallback_text: str,
+        *,
+        prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
+    ) -> None:
+        """React with `emoji`; fall back to text if the server can't carry it.
+
+        `prefixNick` mirrors the kwarg on `irc.reply` — pass True when the call
+        site previously called `irc.reply(text)` with the default prefix, False
+        when it explicitly disabled prefixing.
+        """
+        if not self._react(irc, msg, emoji):
+            irc.reply(fallback_text, prefixNick=prefixNick)
+
     def _cancel_reminder(self, event_name: str) -> None:
         """Remove a single reminder from scheduler, in-memory dict, and database."""
         with contextlib.suppress(KeyError):
@@ -3079,8 +3097,7 @@ class LLM(callbacks.Plugin):
         """Parse and schedule a natural language reminder via IRC."""
         result = self._schedule_reminder(irc, msg, caller, text)
         if result.ok:
-            if not self._react(irc, msg, "⏰"):
-                irc.reply(result.message)
+            self._ack(irc, msg, "⏰", result.message, prefixNick=True)
         else:
             self._react(irc, msg, "❌")
             irc.error(_(result.message))
@@ -3204,21 +3221,18 @@ class LLM(callbacks.Plugin):
                 self._react(irc, msg, "❌")
                 irc.error(_("No matching reminders found."))
             else:
-                if not self._react(irc, msg, "👍"):
-                    label = "reminder" if deleted == 1 else "reminders"
-                    irc.reply(f"Cancelled {deleted} {label}.", prefixNick=False)
+                label = "reminder" if deleted == 1 else "reminders"
+                self._ack(irc, msg, "👍", f"Cancelled {deleted} {label}.")
 
         elif subcommand == "clear":
             user_reminders = self._get_user_reminders(caller)
             if not user_reminders:
-                if not self._react(irc, msg, "👌"):
-                    irc.reply(_("No reminders to clear."), prefixNick=False)
+                self._ack(irc, msg, "👌", _("No reminders to clear."))
                 return
             for name, _data in user_reminders:
                 self._cancel_reminder(name)
-            if not self._react(irc, msg, "👍"):
-                label = "reminder" if len(user_reminders) == 1 else "reminders"
-                irc.reply(f"Cleared {len(user_reminders)} {label}.", prefixNick=False)
+            label = "reminder" if len(user_reminders) == 1 else "reminders"
+            self._ack(irc, msg, "👍", f"Cleared {len(user_reminders)} {label}.")
 
         else:
             self._remind_set(irc, msg, caller, text)
