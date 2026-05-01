@@ -753,7 +753,7 @@ class LLM(callbacks.Plugin):
             return
 
         display_nick = msg.nick
-        identity = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
         message_text = msg.args[1] if len(msg.args) > 1 else ""
 
         # Store in conversation context for richer follow-up questions
@@ -761,7 +761,7 @@ class LLM(callbacks.Plugin):
         # addresses people by their visible IRC name, not their account name.
         ctx_cfg = self._get_context_config(channel)
         self.context.add_message(
-            identity, channel, Role.USER, message_text, config=ctx_cfg, persist=False
+            caller.key, channel, Role.USER, message_text, config=ctx_cfg, persist=False
         )
         self.context.add_channel_message(
             channel, display_nick, Role.USER, message_text, config=ctx_cfg
@@ -775,7 +775,7 @@ class LLM(callbacks.Plugin):
                 chance = self.registryValue("spontaneousChance", channel)
                 if random.randint(1, 100) <= chance:
                     self._spontaneous_cooldowns[channel] = time.time()
-                    self._schedule_spontaneous(irc, channel, identity, message_text)
+                    self._schedule_spontaneous(irc, channel, caller.key, message_text)
 
     def _schedule_spontaneous(
         self, irc: callbacks.Irc, channel: str, trigger_nick: str, trigger_text: str
@@ -1571,15 +1571,6 @@ class LLM(callbacks.Plugin):
         if account:
             self._maybe_migrate_nick(raw_nick, account)
         return Identity(raw_nick=raw_nick, account=account)
-
-    def _get_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> str:
-        """Return the resolved identity ``key`` (account or raw nick).
-
-        Thin wrapper over :meth:`_resolve_identity` for callers that only
-        need a single string for storage lookup.  New code should prefer
-        :meth:`_resolve_identity` to keep raw_nick and account separate.
-        """
-        return self._resolve_identity(irc, msg).key
 
     def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Require account identification. Returns account name or None.
@@ -2472,11 +2463,11 @@ class LLM(callbacks.Plugin):
         channel. Use this to start fresh. Volatile memory expires automatically after a
         timeout.
         """
-        nick = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
         # Default to current channel if not specified
         if channel is None:
             channel = self._get_channel(msg)
-        self.context.clear(nick, channel)
+        self.context.clear(caller.key, channel)
         irc.reply(_("Context cleared."), prefixNick=False)
 
     forget = wrap(forget, [optional("channel")])
@@ -2496,18 +2487,18 @@ class LLM(callbacks.Plugin):
         'cleanup' to trigger a cleanup pass. Bot owners can use 'memories <nick>'
         or 'memories cleanup <nick>' for other users.
         """
-        nick = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
 
         if not text:
             # List own memories (newest first)
-            self._memories_list(irc, nick, nick)
+            self._memories_list(irc, caller.key, caller.key)
             return
 
         parts = text.split(None, 2)
         subcommand = parts[0].lower()
 
         if subcommand == "clear":
-            count = self.db.delete_all_memories(nick)
+            count = self.db.delete_all_memories(caller.key)
             label = "memory" if count == 1 else "memories"
             irc.reply(f"Cleared {count} {label}.", prefixNick=False)
 
@@ -2518,7 +2509,7 @@ class LLM(callbacks.Plugin):
             except ValueError:
                 irc.reply("Usage: memories delete <id> [<id> ...]", prefixNick=False)
                 return
-            deleted = sum(1 for mid in memory_ids if self.db.delete_memory(nick, mid))
+            deleted = sum(1 for mid in memory_ids if self.db.delete_memory(caller.key, mid))
             if deleted == 0:
                 irc.error("No matching memories found.")
             elif deleted == 1:
@@ -2536,7 +2527,7 @@ class LLM(callbacks.Plugin):
             if not new_text:
                 irc.reply("Usage: memories edit <id> <new text>", prefixNick=False)
                 return
-            if self.db.update_memory(nick, memory_id, new_text):
+            if self.db.update_memory(caller.key, memory_id, new_text):
                 irc.reply("Memory updated.", prefixNick=False)
             else:
                 irc.error("Memory not found or doesn't belong to you.")
@@ -2549,7 +2540,7 @@ class LLM(callbacks.Plugin):
                     return
                 target = parts[1]
             else:
-                target = nick
+                target = caller.key
             channel = msg.channel or msg.args[0] if msg.args else "#unknown"
             summary = self._run_memory_cleanup(target, channel)
             irc.reply(summary, prefixNick=False)
@@ -2600,10 +2591,10 @@ class LLM(callbacks.Plugin):
           %instruct clear
           %instruct          (show current instruction)
         """
-        nick = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
 
         if not text:
-            current = self.db.get_instruction(nick)
+            current = self.db.get_instruction(caller.key)
             if current:
                 irc.reply(f"Current instruction: {current}", prefixNick=False)
             else:
@@ -2611,13 +2602,13 @@ class LLM(callbacks.Plugin):
             return
 
         if text.strip().lower() == "clear":
-            if self.db.delete_instruction(nick):
+            if self.db.delete_instruction(caller.key):
                 irc.reply("Instruction cleared.", prefixNick=False)
             else:
                 irc.reply("No instruction to clear.", prefixNick=False)
             return
 
-        self.db.save_instruction(nick, text)
+        self.db.save_instruction(caller.key, text)
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
@@ -2697,15 +2688,17 @@ class LLM(callbacks.Plugin):
     def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show channel and personal usage stats in-channel."""
         channel = msg.channel
-        nick = self._get_identity(irc, msg)
+        caller = self._resolve_identity(irc, msg)
 
         # This month: first of month midnight UTC
         month_start = self._month_start_ts()
 
         chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
-        nick_summary = self.db.get_usage_summary_for_nick(nick, since=month_start, channel=channel)
+        nick_summary = self.db.get_usage_summary_for_nick(
+            caller.key, since=month_start, channel=channel
+        )
         chan_rank = self.db.get_channel_rank(channel, since=month_start)
-        nick_rank = self.db.get_nick_rank(nick, since=month_start, channel=channel)
+        nick_rank = self.db.get_nick_rank(caller.key, since=month_start, channel=channel)
 
         # Format channel part
         chan_part = f"{channel} this month: ${chan_summary.total_cost:.4f}"
@@ -2723,7 +2716,7 @@ class LLM(callbacks.Plugin):
 
         # Format context part
         ctx_cfg = self._get_context_config(channel)
-        ctx_stats = self.context.get_user_stats(nick, channel, config=ctx_cfg)
+        ctx_stats = self.context.get_user_stats(caller.key, channel, config=ctx_cfg)
         if not ctx_stats["enabled"]:
             ctx_part = "Context: disabled"
         elif ctx_stats["message_count"] == 0:

@@ -279,10 +279,10 @@ class TestPluginHelperMethods:
         msg.server_tags = {}  # default: no IRCv3 account-tag
         return msg
 
-    def test_get_identity_returns_account_when_available(
+    def test_resolve_identity_returns_account_when_available(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN user logged into NickServ WHEN _get_identity called THEN returns account."""
+        """GIVEN user logged into account WHEN _resolve_identity called THEN key is account."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -296,14 +296,16 @@ class TestPluginHelperMethods:
         plugin.db.migrate_conversations.return_value = 0
         plugin.context = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
-        result = plugin._get_identity(mock_irc, mock_msg)
+        result = plugin._resolve_identity(mock_irc, mock_msg)
 
-        assert result == "MyAccount"
+        assert result.key == "MyAccount"
+        assert result.account == "MyAccount"
+        assert result.raw_nick == "testnick"
 
-    def test_get_identity_falls_back_to_nick_when_no_account(
+    def test_resolve_identity_falls_back_to_nick_when_no_account(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN user not logged in WHEN _get_identity called THEN returns nick."""
+        """GIVEN user not logged in WHEN _resolve_identity called THEN key is nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -311,14 +313,16 @@ class TestPluginHelperMethods:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._get_identity(mock_irc, mock_msg)
+        result = plugin._resolve_identity(mock_irc, mock_msg)
 
-        assert result == "testnick"
+        assert result.key == "testnick"
+        assert result.account is None
+        assert result.raw_nick == "testnick"
 
-    def test_get_identity_falls_back_to_nick_on_keyerror(
+    def test_resolve_identity_falls_back_to_nick_on_keyerror(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN nickToAccount raises KeyError WHEN _get_identity called THEN returns nick."""
+        """GIVEN nickToAccount raises KeyError WHEN _resolve_identity called THEN key is nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -326,9 +330,10 @@ class TestPluginHelperMethods:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._get_identity(mock_irc, mock_msg)
+        result = plugin._resolve_identity(mock_irc, mock_msg)
 
-        assert result == "testnick"
+        assert result.key == "testnick"
+        assert result.account is None
 
     def test_get_channel_extracts_channel_from_args(
         self, mock_msg: MagicMock, mocker: MockerFixture
