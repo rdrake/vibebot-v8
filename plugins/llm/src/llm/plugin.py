@@ -1516,6 +1516,54 @@ class LLM(callbacks.Plugin):
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
 
+    def _send_long_reply(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        *,
+        prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
+    ) -> None:
+        """Reply with ``text``, using draft/multiline batches when supported.
+
+        When the connection has negotiated ``draft/multiline`` (and
+        experimentalExtensions is enabled), a long or multi-line reply is
+        delivered as a single multiline batch — clients render it as one
+        logical message instead of forcing the user through ``@more``.
+        Falls back to ``irc.reply`` (Limnoria's pagination) otherwise, or
+        when the reply is short enough to fit one IRC line.
+        """
+        target = msg.channel if msg.channel else msg.nick
+        allowed = (
+            conf.get(conf.supybot.reply.mores.length, channel=target, network=irc.network) or 400
+        )
+
+        # Build chunks: respect explicit \n boundaries, then byte-wrap each
+        # line so individual messages fit IRC's per-line limit.
+        raw_lines = text.split("\n") if "\n" in text else [text]
+        chunks: list[str] = []
+        for line in raw_lines:
+            if not line:
+                chunks.append("")
+                continue
+            wrapped = ircutils.wrap(line, allowed)
+            chunks.extend(wrapped if wrapped else [line])
+
+        if len(chunks) <= 1:
+            irc.reply(text, prefixNick=prefixNick)
+            return
+
+        multiline_supported = (
+            conf.supybot.protocols.irc.experimentalExtensions()
+            and "draft/multiline" in irc.state.capabilities_ack
+        )
+        if not multiline_supported:
+            irc.reply(text, prefixNick=prefixNick)
+            return
+
+        msgs = [ircmsgs.privmsg(target, ircutils.safeArgument(chunk)) for chunk in chunks]
+        irc.queueMultilineBatches(msgs, target, msg.nick, concat=False)
+
     def _build_request_context(
         self,
         irc: callbacks.Irc,
@@ -2284,7 +2332,7 @@ class LLM(callbacks.Plugin):
                         )
                         # Reply first, then store context (so user gets response even if context fails)
                         self.log.info("replying to %s/%s", channel, nick)
-                        irc.reply(display_response, prefixNick=False)
+                        self._send_long_reply(irc, msg, display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "ask", text, response, result, irc, msg
@@ -2337,10 +2385,14 @@ class LLM(callbacks.Plugin):
 
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
+            # Layer user instruction onto CODE_SYSTEM_PROMPT (the facade
+            # prompt that tells the planner to call generate_code) — not
+            # the registry codeSystemPrompt, which is the inner-call
+            # prompt used by _code_for_assistant.
+            from .assistant import CODE_SYSTEM_PROMPT
+
             effective_prompt = (
-                f"{user_instruction}\n\n{self.registryValue('codeSystemPrompt', channel)}"
-                if user_instruction
-                else None
+                f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
             )
 
             with self._allow_concurrent():
@@ -2382,7 +2434,7 @@ class LLM(callbacks.Plugin):
                         f"{GROUNDING_ICON} {response}" if result.grounding_used else response
                     )
                     self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(display_response, prefixNick=False)
+                    self._send_long_reply(irc, msg, display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "code", text, response, result, irc, msg
@@ -2471,7 +2523,7 @@ class LLM(callbacks.Plugin):
                         f"{GROUNDING_ICON} {response}" if result.grounding_used else response
                     )
                     self.log.info("replying to %s/%s", channel, nick)
-                    irc.reply(display_response, prefixNick=False)
+                    self._send_long_reply(irc, msg, display_response, prefixNick=False)
 
             self._store_context_and_log_usage(
                 nick, channel, "draw", text, response, result, irc, msg

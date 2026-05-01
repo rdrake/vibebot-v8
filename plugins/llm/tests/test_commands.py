@@ -522,6 +522,98 @@ class TestCodeCommand:
         plugin.llm_service.assistant_request.assert_not_called()
         mock_irc.reply.assert_not_called()
 
+    def test_code_user_instruction_layers_on_facade_prompt(self, plugin_env):
+        """GIVEN user has instruction WHEN code called THEN planner sees CODE_SYSTEM_PROMPT.
+
+        Regression: a user instruction must not replace the assistant facade
+        prompt with the (inner-call) registry codeSystemPrompt — otherwise
+        the planner stops calling generate_code and the pastebin breaks.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = "You are Captain Picard."
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result()
+
+        plugin.code(mock_irc, mock_msg, ["fibonacci"])
+
+        system_prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert "Picard" in system_prompt
+        assert "generate_code" in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# _send_long_reply (multiline batch helper)
+# ---------------------------------------------------------------------------
+
+
+class TestSendLongReply:
+    """Tests for _send_long_reply — multiline-or-paginated reply helper."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_experimental_extensions(self):
+        """Save/restore experimentalExtensions across each test."""
+        import supybot.conf as supy_conf
+
+        knob = supy_conf.supybot.protocols.irc.experimentalExtensions
+        original = knob()
+        try:
+            yield
+        finally:
+            knob.setValue(original)
+
+    def test_short_text_uses_irc_reply(self, plugin_env):
+        """GIVEN one-line short text WHEN sent THEN goes via irc.reply (no batch)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+
+        plugin._send_long_reply(mock_irc, mock_msg, "hello world")
+
+        mock_irc.reply.assert_called_once_with("hello world", prefixNick=False)
+        mock_irc.queueMultilineBatches.assert_not_called()
+
+    def test_multiline_text_uses_multiline_batch_when_supported(self, plugin_env, mocker):
+        """GIVEN \\n in text AND multiline negotiated WHEN sent THEN batch path used."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two\nline three")
+
+        mock_irc.queueMultilineBatches.assert_called_once()
+        call = mock_irc.queueMultilineBatches.call_args
+        assert call.kwargs.get("concat") is False
+        msgs = call.args[0]
+        assert len(msgs) == 3
+        mock_irc.reply.assert_not_called()
+
+    def test_multiline_falls_back_when_cap_not_negotiated(self, plugin_env, mocker):
+        """GIVEN \\n in text AND multiline NOT negotiated THEN falls back to irc.reply."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = set()  # no draft/multiline
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
+
+        mock_irc.reply.assert_called_once_with("line one\nline two", prefixNick=False)
+        mock_irc.queueMultilineBatches.assert_not_called()
+
+    def test_multiline_falls_back_when_experimental_disabled(self, plugin_env, mocker):
+        """GIVEN multiline cap acked but experimentalExtensions off THEN falls back."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(False)
+
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
+
+        mock_irc.reply.assert_called_once_with("line one\nline two", prefixNick=False)
+        mock_irc.queueMultilineBatches.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # draw
