@@ -185,9 +185,9 @@ conf.registerChannelValue(
     LLM,
     "grokSystemPrompt",
     registry.String(
-        "You are Grok, replying on IRC. Keep responses concise and suitable for IRC chat. "
-        "Avoid markdown formatting. Be direct.",
-        _("""System prompt for grok (g) command - escape-hatch passthrough to xAI."""),
+        "",
+        _("""Optional personality/instruction prefix for grok (g) command.
+        Prepended to the chat-profile system prompt. Empty by default."""),
     ),
 )
 

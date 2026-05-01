@@ -178,10 +178,14 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         name="g",
         args="<question>",
         description=(
-            "Ask Grok directly. Bypasses the chat router and its tools — useful "
-            "when the default model refuses to engage. Shares the ask rate-limit bucket."
+            "Ask Grok with full chat-profile tool access (search, fetch, code, "
+            "draw, reminders, memory). Tool gating respects IRC capabilities. "
+            "Shares the ask rate-limit bucket."
         ),
-        examples=("%g what's the deal with airline food",),
+        examples=(
+            "%g what's the deal with airline food",
+            "%g search the web for today's CVEs and summarize",
+        ),
         category="generation",
     ),
     CommandInfo(
@@ -2461,11 +2465,13 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """<question>
 
-        Ask Grok directly. Bypasses the chat router and its tools — useful when
-        the default model refuses to engage. Shares the ask rate-limit bucket.
+        Ask Grok directly with full chat-profile tool access (search, fetch,
+        code, draw, reminders, memory). Tool gating still respects your IRC
+        capabilities. Shares the ask rate-limit bucket.
 
         Examples:
           %g what's the deal with airline food
+          %g search the web for the latest CVE on openssl
         """
         if self._is_old_message(msg):
             return
@@ -2482,42 +2488,87 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
+        request_context = self._build_request_context(
+            irc,
+            msg,
+            pf,
+            entry_route="g",
+            profile="chat",
+        )
+        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
         with self._trace_request("g", nick, channel):
+            images = self.llm_service.detect_images(text)
             history, channel_history = self._gather_history(nick, channel)
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
 
-            base_prompt = self.registryValue("grokSystemPrompt", channel)
-            effective_prompt = (
-                f"{user_instruction}\n\n{base_prompt}" if user_instruction else base_prompt
-            )
+            grok_personality = self.registryValue("grokSystemPrompt", channel)
+            prefix_parts = [p for p in (user_instruction, grok_personality) if p]
+            effective_prompt = "\n\n".join(prefix_parts) if prefix_parts else None
+
+            grok_api_key = self.registryValue("grokApiKey")
+            grok_model = self.registryValue("grokModel", channel)
 
             with self._allow_concurrent():
-                result = self.llm_service.completion(
-                    text,
-                    command="grok",
+                request_text = text
+                if images:
+                    for img in images:
+                        request_text = request_text.replace(img, "").strip()
+
+                result = self.llm_service.assistant_request(
+                    request_text,
+                    request_context=request_context,
+                    db=self.db,
+                    context=self.context,
+                    bot_nick=irc.nick,
+                    images=images,
                     history=history,
                     channel_history=channel_history,
                     irc=irc,
                     msg=msg,
-                    system_prompt=effective_prompt,
                     memories=memories,
+                    system_prompt=effective_prompt,
+                    api_key=grok_api_key or None,
+                    model_override=grok_model or None,
+                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                    code_fn=lambda p: self._code_for_assistant(p, channel),
+                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
                 )
 
                 response = result.content
-                if not response or not response.strip():
+
+                if (
+                    result.last_successful_tool in _REMINDER_MUTATION_TOOLS
+                    and not result.final_text_after_tools.strip()
+                ):
+                    self.log.info(
+                        "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
+                        result.last_successful_tool,
+                        channel,
+                        nick,
+                    )
+                elif not response or not response.strip():
                     irc.error(_("The model returned an empty response. Please try again."))
                     return
-
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    self.log.info("sending action to %s/%s", channel, nick)
-                    target = channel if ircutils.isChannel(channel) else nick
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    response = f"* {irc.nick} {action_text}"
                 else:
-                    self.log.info("replying to %s/%s", channel, nick)
-                    self._send_long_reply(irc, msg, response, prefixNick=False)
+                    action_text = self._extract_action(irc, response)
+                    if action_text:
+                        if result.grounding_used:
+                            action_text = f"{GROUNDING_ICON} {action_text}"
+                        self.log.info("sending action to %s/%s", channel, nick)
+                        target = channel if ircutils.isChannel(channel) else nick
+                        irc.queueMsg(ircmsgs.action(target, action_text))
+                        response = f"* {irc.nick} {action_text}"
+                    else:
+                        display_response = (
+                            f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+                        )
+                        self.log.info("replying to %s/%s", channel, nick)
+                        self._send_long_reply(irc, msg, display_response, prefixNick=False)
 
             self._store_context_and_log_usage(nick, channel, "g", text, response, result, irc, msg)
 
