@@ -16,6 +16,10 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
+    ignore:
+      - dependency-name: "llm"
+      - dependency-name: "nickinmiddle"
+      - dependency-name: "rpg"
     groups:
       dev-tools:
         patterns:
