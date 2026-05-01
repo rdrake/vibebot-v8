@@ -3024,12 +3024,9 @@ class LLM(callbacks.Plugin):
         reminder_message = result.message or text
         action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
-        # B1 placeholders: parser populates these in B2 / B4. The structured
-        # columns sit on the row from day one so the schema doesn't churn
-        # again when the parser starts emitting them.
-        recurrence_seconds: int | None = None
-        recurrence_rrule: str | None = None
-        watch_mode: bool = False
+        recurrence_seconds = result.recurrence_seconds
+        recurrence_rrule = result.recurrence_rrule
+        watch_mode = result.watch_mode
         deliver = self._make_reminder_delivery_closure(
             caller.raw_nick,
             channel,
