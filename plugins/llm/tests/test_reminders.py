@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import TYPE_CHECKING
 
@@ -947,6 +948,227 @@ class TestParseReminderService:
 
         assert result.action == "schedule"
         assert result.seconds == 120
+
+    def test_parse_reminder_numeric_recurrence(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN numeric recurrence WHEN parsing THEN populates recurrence_seconds only."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 300,
+                "message": "check the build",
+                "confirmation": "Reminder set for 5m.",
+                "action_prompt": "check the build",
+                "recurrence_seconds": 300,
+                "recurrence_rrule": None,
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("every 5 minutes check the build")
+
+        assert result.action == "schedule"
+        assert result.recurrence_seconds == 300
+        assert result.recurrence_rrule is None
+        assert result.watch_mode is False
+        assert "(recurring" not in result.action_prompt
+        assert "(watch" not in result.action_prompt
+        assert result.action_prompt == "check the build"
+
+    def test_parse_reminder_calendar_recurrence(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN calendar recurrence WHEN parsing THEN populates recurrence_rrule only."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 3600,
+                "message": "stand-up",
+                "confirmation": "Set!",
+                "action_prompt": "post stand-up reminder",
+                "recurrence_seconds": None,
+                "recurrence_rrule": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0",
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("every Monday at 9am stand-up reminder")
+
+        assert result.action == "schedule"
+        assert result.recurrence_seconds is None
+        assert result.recurrence_rrule is not None
+        assert "FREQ=WEEKLY" in result.recurrence_rrule
+        assert "BYDAY=MO" in result.recurrence_rrule
+        assert "(recurring" not in result.action_prompt
+
+    def test_parse_reminder_watch_mode(self, service: MagicMock, mocker: MockerFixture) -> None:
+        """GIVEN watch-style phrasing WHEN parsing THEN watch_mode is True."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 300,
+                "message": "build status",
+                "confirmation": "Set!",
+                "action_prompt": "check whether the build passes",
+                "recurrence_seconds": None,
+                "recurrence_rrule": None,
+                "watch_mode": True,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 5m let me know if the build passes")
+
+        assert result.action == "schedule"
+        assert result.watch_mode is True
+        assert "(watch" not in result.action_prompt
+
+    def test_parse_reminder_strips_leaked_recurring_parenthetical(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN model leaks (recurring: ...) into action_prompt WHEN parsing THEN stripped."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 300,
+                "message": "check the build",
+                "confirmation": "ok",
+                "action_prompt": "check the build (recurring: every 5 minutes)",
+                "recurrence_seconds": 300,
+                "recurrence_rrule": None,
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("every 5m check the build")
+
+        assert "(recurring" not in result.action_prompt
+        assert result.action_prompt == "check the build"
+        assert result.recurrence_seconds == 300
+
+    def test_parse_reminder_strips_leaked_watch_parenthetical(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN model leaks (watch ...) into action_prompt WHEN parsing THEN stripped."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 300,
+                "message": "check CVE",
+                "confirmation": "ok",
+                "action_prompt": "check CVE status (watch — only respond on positive result)",
+                "recurrence_seconds": None,
+                "recurrence_rrule": None,
+                "watch_mode": True,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 5m let me know when CVE is patched")
+
+        assert "(watch" not in result.action_prompt
+        assert result.action_prompt == "check CVE status"
+        assert result.watch_mode is True
+
+    def test_parse_reminder_invalid_rrule_falls_back_to_one_shot(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN malformed rrule WHEN parsing THEN clears it and falls back to one-shot."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 60,
+                "message": "x",
+                "confirmation": "ok",
+                "action_prompt": "x",
+                "recurrence_seconds": None,
+                "recurrence_rrule": "FREQ=NONSENSE;BLAH",
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("every monday do x")
+
+        assert result.action == "schedule"
+        assert result.recurrence_rrule is None  # invalid rule cleared
+        assert result.recurrence_seconds is None  # one-shot fallback
+
+    def test_parse_reminder_both_recurrence_kinds_prefers_rrule(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN model returns both recurrence kinds WHEN parsing THEN keeps rrule and clears seconds."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 86400,
+                "message": "x",
+                "confirmation": "ok",
+                "action_prompt": "x",
+                "recurrence_seconds": 86400,
+                "recurrence_rrule": "FREQ=DAILY;BYHOUR=8",
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("daily at 8am do x")
+
+        assert result.recurrence_rrule == "FREQ=DAILY;BYHOUR=8"
+        assert result.recurrence_seconds is None
+
+    def test_parse_reminder_one_shot_has_no_recurrence(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN one-shot reminder WHEN parsing THEN both recurrence fields are None."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "action": "schedule",
+                "seconds": 1800,
+                "message": "check build",
+                "confirmation": "Set!",
+                "action_prompt": "check the build",
+                "recurrence_seconds": None,
+                "recurrence_rrule": None,
+                "watch_mode": False,
+            }
+        )
+        mock_completion.return_value = mock_response
+
+        result = service.parse_reminder("in 30 minutes check the build")
+
+        assert result.action == "schedule"
+        assert result.recurrence_seconds is None
+        assert result.recurrence_rrule is None
+        assert result.watch_mode is False
 
 
 class TestReminderEventNaming:

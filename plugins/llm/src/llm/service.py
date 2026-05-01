@@ -300,6 +300,13 @@ class ReminderParseResult(NamedTuple):
     confirmation: str = ""  # message to show user
     note: str | None = None  # optional note (e.g., timezone assumption)
     action_prompt: str = ""  # optional @ask instruction for bot-perform-task intents
+    recurrence_seconds: int | None = (
+        None  # numeric cadence in seconds, mutually exclusive with rrule
+    )
+    recurrence_rrule: str | None = (
+        None  # RFC 5545 RRULE body (no DTSTART), mutually exclusive with seconds
+    )
+    watch_mode: bool = False  # if true, fire-time engine suppresses negative-result replies
 
 
 if TYPE_CHECKING:
@@ -2035,7 +2042,7 @@ class LLMService:
 Current time: {current_time}
 
 Response format (choose one):
-{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>"}}
+{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>", "recurrence_seconds": <int or null>, "recurrence_rrule": "<RRULE string or null>", "watch_mode": <bool>}}
 or
 {{"action": "clarify", "confirmation": "<question to ask user>"}}
 
@@ -2053,20 +2060,26 @@ Rules:
 - Set "action_prompt" to "" (empty) only when the user is clearly asking THEMSELVES to do something later (passive "remind me to X" where X is a human action like "call Bob", "go to the store", "take a break") OR the message is a pure label/note with no verb at all.
 - "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
 - "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
-- Recurrence: if the user used recurring language ("every X", "daily", "hourly", "weekly", "each X", "repeat"), set "seconds" to the NEXT occurrence (one-shot — there is no native repeat), AND append a recurrence hint at the end of "action_prompt" in the form " (recurring: <original schedule phrase>)". Example: "every Monday at 9am check the build" → action_prompt: "check the build (recurring: every Monday at 9am)". The fire-time engine uses this hint to decide whether to reschedule itself.
-- Watch mode: if the user phrases the task as a *check until*-style watch ("let me know when X is available", "tell me if Y appears", "alert me when Z happens", "watch for W"), append " (watch — only respond on positive result)" to "action_prompt" AFTER any recurrence hint. The fire-time engine uses this to suppress noisy "still no news" replies and only speak on positive findings. Example: "every 5m let me know when Ubuntu 24.04 patches CVE-2026-31431" → action_prompt: "check Ubuntu 24.04 patch status for CVE-2026-31431 (recurring: every 5 minutes) (watch — only respond on positive result)".
+- Recurrence is now structured. For recurring requests, set "seconds" to the NEXT occurrence (the first fire time), then choose ONE of the following to populate:
+  - For numeric cadences ("every 5 minutes", "every hour", "daily" interpreted as 86400 seconds), populate "recurrence_seconds" with the integer cadence in seconds; leave "recurrence_rrule" as null.
+  - For calendar cadences ("every Monday at 9am", "first of the month", "every weekday at 5pm", "daily at 8am"), populate "recurrence_rrule" with a valid RFC 5545 RRULE string; leave "recurrence_seconds" as null. Do NOT include DTSTART in the rrule string — only the RRULE body (e.g. "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0").
+  - For one-shot reminders, BOTH must be null.
+  - The two recurrence fields are MUTUALLY EXCLUSIVE — exactly zero or one is non-null.
+- Watch mode: if the user phrases the task as a *check-until*-style watch ("let me know when X is available", "tell me if Y appears", "alert me when Z happens", "watch for W"), set "watch_mode" to true. Otherwise set to false. Default false. The fire-time engine uses watch_mode to suppress noisy "still no news" replies; only positive results reach the user.
+- DO NOT embed recurrence or watch hints into "action_prompt". "action_prompt" is now ONLY the bare action — no "(recurring: ...)" parenthetical, no "(watch — ...)" parenthetical.
 
 Examples (imperative → action_prompt):
-- "in 30m check if the build is green" → action_prompt: "check if the build is green"
-- "in 2h post a status update in #ops" → action_prompt: "post a status update in #ops"
-- "in 1m draw copy fail" → action_prompt: "draw copy fail"
-- "in 5m search for recent rust async news" → action_prompt: "search for recent rust async news"
-- "in 10m summarize the top 3 hn headlines about postgres" → action_prompt: "summarize the top 3 hn headlines about postgres"
-- "in 2h check status of CVE-2026-31431 in Debian" → action_prompt: "check status of CVE-2026-31431 in Debian"
-- "tomorrow at 9am fetch https://example.com/build and tell me if it's green" → action_prompt: "fetch https://example.com/build and tell me if it's green"
-- "every hour check the build" → action_prompt: "check the build (recurring: every hour)"
-- "every Monday at 9am post the weekly summary" → action_prompt: "post the weekly summary (recurring: every Monday at 9am)"
-- "daily at 8am search for new rust async news" → action_prompt: "search for new rust async news (recurring: daily at 8am)"
+- "in 30m check if the build is green" → action_prompt: "check if the build is green", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "in 2h post a status update in #ops" → action_prompt: "post a status update in #ops", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "in 1m draw copy fail" → action_prompt: "draw copy fail", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "in 5m search for recent rust async news" → action_prompt: "search for recent rust async news", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "in 10m summarize the top 3 hn headlines about postgres" → action_prompt: "summarize the top 3 hn headlines about postgres", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "in 2h check status of CVE-2026-31431 in Debian" → action_prompt: "check status of CVE-2026-31431 in Debian", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "tomorrow at 9am fetch https://example.com/build and tell me if it's green" → action_prompt: "fetch https://example.com/build and tell me if it's green", recurrence_seconds: null, recurrence_rrule: null, watch_mode: false
+- "every hour check the build" → action_prompt: "check the build", recurrence_seconds: 3600, recurrence_rrule: null, watch_mode: false
+- "every Monday at 9am post the weekly summary" → action_prompt: "post the weekly summary", recurrence_seconds: null, recurrence_rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0", watch_mode: false
+- "daily at 8am search for new rust async news" → action_prompt: "search for new rust async news", recurrence_seconds: null, recurrence_rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=0", watch_mode: false
+- "every 5m let me know when Ubuntu 24.04 patches CVE-2026-31431" → action_prompt: "check Ubuntu 24.04 patch status for CVE-2026-31431", recurrence_seconds: 300, recurrence_rrule: null, watch_mode: true
 
 Examples (echo → action_prompt: ""):
 - "in 5m remind me to check the build" → action_prompt: "" (passive — user said "remind me to")
@@ -2109,13 +2122,63 @@ Examples (echo → action_prompt: ""):
                             "I couldn't determine when to remind you. Please try again."
                         ),
                     )
+
+                recurrence_seconds = data.get("recurrence_seconds")
+                if recurrence_seconds is not None and (
+                    not isinstance(recurrence_seconds, int) or recurrence_seconds <= 0
+                ):
+                    # tolerate model returning a string or non-positive int
+                    recurrence_seconds = None
+                recurrence_rrule = data.get("recurrence_rrule")
+                if recurrence_rrule is not None and not isinstance(recurrence_rrule, str):
+                    recurrence_rrule = None
+                if isinstance(recurrence_rrule, str) and not recurrence_rrule.strip():
+                    recurrence_rrule = None
+                watch_mode = bool(data.get("watch_mode", False))
+
+                # Mutual exclusion guard — if model returned both, prefer the rrule
+                # (more specific) and clear seconds. Don't crash on a malformed
+                # model response.
+                if recurrence_seconds is not None and recurrence_rrule is not None:
+                    self.log.warning("parser returned both recurrence kinds; preferring rrule")
+                    recurrence_seconds = None
+
+                # Validate rrule at parse time (defense-in-depth — invalid rules
+                # should fail loudly here, not silently at fire time).
+                if recurrence_rrule is not None:
+                    try:
+                        from dateutil.rrule import rrulestr
+
+                        rrulestr(recurrence_rrule)
+                    except (ValueError, TypeError) as exc:
+                        self.log.warning(
+                            "parser returned invalid rrule %r: %s",
+                            recurrence_rrule,
+                            exc,
+                        )
+                        # fall back to one-shot rather than rejecting whole reminder
+                        recurrence_rrule = None
+
+                # Defense-in-depth: strip parentheticals from action_prompt that
+                # may have leaked through despite the prompt rules.
+                action_prompt = (data.get("action_prompt") or "").strip()
+                action_prompt = re.sub(
+                    r"\s*\(recurring:[^)]*\)", "", action_prompt, flags=re.IGNORECASE
+                ).strip()
+                action_prompt = re.sub(
+                    r"\s*\(watch[^)]*\)", "", action_prompt, flags=re.IGNORECASE
+                ).strip()
+
                 return ReminderParseResult(
                     action="schedule",
                     seconds=seconds,
                     message=data.get("message", text),
                     confirmation=data.get("confirmation", f"Reminder set for {seconds}s from now."),
                     note=data.get("note"),
-                    action_prompt=(data.get("action_prompt") or "").strip(),
+                    action_prompt=action_prompt,
+                    recurrence_seconds=recurrence_seconds,
+                    recurrence_rrule=recurrence_rrule,
+                    watch_mode=watch_mode,
                 )
             else:
                 return ReminderParseResult(
