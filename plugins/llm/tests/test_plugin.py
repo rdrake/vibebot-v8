@@ -2358,6 +2358,7 @@ class TestCommandRegistry:
         expected = {
             "ask",
             "code",
+            "g",
             "draw",
             "forget",
             "memories",

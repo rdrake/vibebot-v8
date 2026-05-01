@@ -150,6 +150,12 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "grokApiKey",
+    registry.String("", _("""API key for grok (g) command"""), private=True),
+)
+
 # ============================================================================
 # System Prompts (channel-specific with global defaults)
 # ============================================================================
@@ -172,6 +178,16 @@ conf.registerChannelValue(
         "Use markdown formatting for code blocks. "
         "For math equations, use $...$ for inline math and $$...$$ for display math.",
         _("""System prompt for code command"""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "grokSystemPrompt",
+    registry.String(
+        "You are Grok, replying on IRC. Keep responses concise and suitable for IRC chat. "
+        "Avoid markdown formatting. Be direct.",
+        _("""System prompt for grok (g) command - escape-hatch passthrough to xAI."""),
     ),
 )
 
@@ -212,6 +228,15 @@ conf.registerChannelValue(
     ValidatedModelName(
         "",
         _("""Model for search/fetch tools. Falls back to askModel if empty."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "grokModel",
+    ValidatedModelName(
+        "xai/grok-4-latest",
+        _("""Model for grok (g) command - direct passthrough to xAI."""),
     ),
 )
 

@@ -175,6 +175,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         category="generation",
     ),
     CommandInfo(
+        name="g",
+        args="<question>",
+        description=(
+            "Ask Grok directly. Bypasses the chat router and its tools — useful "
+            "when the default model refuses to engage. Shares the ask rate-limit bucket."
+        ),
+        examples=("%g what's the deal with airline food",),
+        category="generation",
+    ),
+    CommandInfo(
         name="draw",
         args="<prompt>",
         description="Generate an image from a text description.",
@@ -2441,6 +2451,77 @@ class LLM(callbacks.Plugin):
             )
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
+
+    def g(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<question>
+
+        Ask Grok directly. Bypasses the chat router and its tools — useful when
+        the default model refuses to engage. Shares the ask rate-limit bucket.
+
+        Examples:
+          %g what's the deal with airline food
+        """
+        if self._is_old_message(msg):
+            return
+
+        # Share ask's rate-limit bucket and capability.
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "ask",
+            require_account=False,
+        )
+        if pf.blocked:
+            return
+        nick, channel = pf.nick, pf.channel
+
+        with self._trace_request("g", nick, channel):
+            history, channel_history = self._gather_history(nick, channel)
+            memories = self._get_user_memories(nick)
+            user_instruction = self.db.get_instruction(nick)
+
+            base_prompt = self.registryValue("grokSystemPrompt", channel)
+            effective_prompt = (
+                f"{user_instruction}\n\n{base_prompt}" if user_instruction else base_prompt
+            )
+
+            with self._allow_concurrent():
+                result = self.llm_service.completion(
+                    text,
+                    command="grok",
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                    system_prompt=effective_prompt,
+                    memories=memories,
+                )
+
+                response = result.content
+                if not response or not response.strip():
+                    irc.error(_("The model returned an empty response. Please try again."))
+                    return
+
+                action_text = self._extract_action(irc, response)
+                if action_text:
+                    self.log.info("sending action to %s/%s", channel, nick)
+                    target = channel if ircutils.isChannel(channel) else nick
+                    irc.queueMsg(ircmsgs.action(target, action_text))
+                    response = f"* {irc.nick} {action_text}"
+                else:
+                    self.log.info("replying to %s/%s", channel, nick)
+                    self._send_long_reply(irc, msg, response, prefixNick=False)
+
+            self._store_context_and_log_usage(nick, channel, "g", text, response, result, irc, msg)
+
+    g = wrap(g, [("checkCapability", "llm.ask"), "text"])
 
     def draw(
         self,
