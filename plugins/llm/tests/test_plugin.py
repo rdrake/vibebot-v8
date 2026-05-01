@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from .conftest import make_reminder_row
+
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
 
@@ -1130,7 +1132,12 @@ class TestReminderDelivery:
         reminder_message = "check the build"
 
         # Simulate the deliver closure as defined in remind()
-        plugin._reminders[event_name] = (nick, channel, reminder_message, "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick=nick,
+            channel=channel,
+            message=reminder_message,
+        )
 
         def deliver() -> None:
             mock_irc.queueMsg(
@@ -1278,15 +1285,17 @@ class TestPluginDatabaseWiring:
         assert call_kwargs[1]["name"] == "llm_remind_123_1"
         # Reminder should be stored in plugin._reminders
         assert "llm_remind_123_1" in plugin._reminders
-        assert plugin._reminders["llm_remind_123_1"] == (
-            "testuser",
-            "#test",
-            "check build",
-            "",
-            None,
-            "llm_remind_123_1",
-            1,
-            created,
+        assert plugin._reminders["llm_remind_123_1"] == make_reminder_row(
+            id=1,
+            event_name="llm_remind_123_1",
+            nick="testuser",
+            channel="#test",
+            message="check build",
+            fire_at=future_time,
+            created_at=created,
+            chain_id="llm_remind_123_1",
+            chain_position=1,
+            chain_started_at=created,
         )
 
     def test_plugin_reload_reminders_delivers_overdue(

@@ -19,7 +19,7 @@ from llm.assistant import (
 from llm.plugin import LLM, Identity
 from llm.service import LLMService
 
-from .conftest import make_registry_side_effect, plugin_init_patches
+from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -1345,7 +1345,14 @@ class TestReminderMetaHelpers:
     def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
         event_name = "llm_remind_abc123def456"
-        plugin._reminders = {event_name: ("testuser", "#test", "check build", "", None)}
+        plugin._reminders = {
+            event_name: make_reminder_row(
+                event_name=event_name,
+                nick="testuser",
+                channel="#test",
+                message="check build",
+            )
+        }
         mocker.patch("llm.plugin.schedule.removeEvent")
 
         result = plugin._remind_delete_for_assistant(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from llm.persistence import LLMDatabase
+from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
 from llm.service import LLMService
 
@@ -83,6 +83,48 @@ def test_db(tmp_path: Path) -> Generator[LLMDatabase, None, None]:
     db = LLMDatabase(str(tmp_path / "test.db"))
     yield db
     db.close()
+
+
+# =============================================================================
+# Reminder fixture helpers
+# =============================================================================
+
+
+def make_reminder_row(
+    *,
+    event_name: str = "evt",
+    nick: str = "testnick",
+    channel: str = "#test",
+    message: str = "",
+    action_prompt: str = "",
+    account: str | None = None,
+    fire_at: float = 0.0,
+    chain_id: str = "chain",
+    chain_position: int = 1,
+    chain_started_at: float = 0.0,
+    id: int = 0,  # noqa: A002 — keyword-only builder, builtin shadow is fine.
+    created_at: float = 0.0,
+) -> ReminderRow:
+    """Build a ReminderRow with sensible defaults for tests.
+
+    Localizes test exposure to the ReminderRow shape so future column churn
+    only touches this helper. Keyword-only on purpose: positional args invite
+    silent breakage when the row layout changes.
+    """
+    return ReminderRow(
+        id=id,
+        event_name=event_name,
+        nick=nick,
+        channel=channel,
+        message=message,
+        action_prompt=action_prompt,
+        account=account,
+        fire_at=fire_at,
+        created_at=created_at,
+        chain_id=chain_id,
+        chain_position=chain_position,
+        chain_started_at=chain_started_at,
+    )
 
 
 # =============================================================================

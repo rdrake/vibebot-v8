@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.service import AssistantResult, ReminderParseResult
 
+from .conftest import make_reminder_row
+
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
 
@@ -124,12 +126,22 @@ class TestReminderHelperMethods:
         """GIVEN reminders from multiple users WHEN queried THEN filters."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_1_100"] = ("testnick", "#channel", "my msg", "", None)
-        plugin._reminders["llm_remind_2_200"] = ("othernick", "#channel", "their msg", "", None)
+        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
+            event_name="llm_remind_1_100",
+            nick="testnick",
+            channel="#channel",
+            message="my msg",
+        )
+        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
+            event_name="llm_remind_2_200",
+            nick="othernick",
+            channel="#channel",
+            message="their msg",
+        )
 
         result = plugin._get_user_reminders(Identity(raw_nick="testnick", account=None))
         assert len(result) == 1
-        assert result[0][1][2] == "my msg"
+        assert result[0][1].message == "my msg"
 
     def test_get_user_reminders_matches_by_account(self, plugin: MagicMock) -> None:
         """GIVEN identified caller WHEN nick differs but account matches THEN matches."""
@@ -137,16 +149,16 @@ class TestReminderHelperMethods:
 
         # User scheduled while presenting as "testnick"; later changes to "newnick"
         # but still identified as "MyAccount". Account match wins.
-        plugin._reminders["llm_remind_1_100"] = (
-            "testnick",
-            "#channel",
-            "my msg",
-            "",
-            "MyAccount",
+        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
+            event_name="llm_remind_1_100",
+            nick="testnick",
+            channel="#channel",
+            message="my msg",
+            account="MyAccount",
         )
         result = plugin._get_user_reminders(Identity(raw_nick="newnick", account="MyAccount"))
         assert len(result) == 1
-        assert result[0][1][2] == "my msg"
+        assert result[0][1].message == "my msg"
 
     def test_get_user_reminders_account_isolates_users(self, plugin: MagicMock) -> None:
         """GIVEN matching nicks but different accounts WHEN queried THEN isolated."""
@@ -154,29 +166,39 @@ class TestReminderHelperMethods:
 
         # Two accounts have happened to share a raw_nick; they must not
         # see each other's reminders.
-        plugin._reminders["llm_remind_1_100"] = (
-            "shared",
-            "#channel",
-            "alpha msg",
-            "",
-            "AccountAlpha",
+        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
+            event_name="llm_remind_1_100",
+            nick="shared",
+            channel="#channel",
+            message="alpha msg",
+            account="AccountAlpha",
         )
-        plugin._reminders["llm_remind_2_200"] = (
-            "shared",
-            "#channel",
-            "beta msg",
-            "",
-            "AccountBeta",
+        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
+            event_name="llm_remind_2_200",
+            nick="shared",
+            channel="#channel",
+            message="beta msg",
+            account="AccountBeta",
         )
         result = plugin._get_user_reminders(Identity(raw_nick="shared", account="AccountAlpha"))
         assert len(result) == 1
-        assert result[0][1][2] == "alpha msg"
+        assert result[0][1].message == "alpha msg"
 
     # Tests for _format_reminders
 
     def test_format_reminders_single(self, plugin: MagicMock) -> None:
         """GIVEN single reminder WHEN formatted THEN shows ID and message."""
-        reminders = [("llm_remind_123_456", ("nick", "#chan", "test message", "", None))]
+        reminders = [
+            (
+                "llm_remind_123_456",
+                make_reminder_row(
+                    event_name="llm_remind_123_456",
+                    nick="nick",
+                    channel="#chan",
+                    message="test message",
+                ),
+            )
+        ]
         result = plugin._format_reminders(reminders)
         assert "#456" in result
         assert "test message" in result
@@ -184,8 +206,24 @@ class TestReminderHelperMethods:
     def test_format_reminders_multiple(self, plugin: MagicMock) -> None:
         """GIVEN multiple reminders WHEN formatted THEN pipe-separated."""
         reminders = [
-            ("llm_remind_1_100", ("nick", "#chan", "first", "", None)),
-            ("llm_remind_2_200", ("nick", "#chan", "second", "", None)),
+            (
+                "llm_remind_1_100",
+                make_reminder_row(
+                    event_name="llm_remind_1_100",
+                    nick="nick",
+                    channel="#chan",
+                    message="first",
+                ),
+            ),
+            (
+                "llm_remind_2_200",
+                make_reminder_row(
+                    event_name="llm_remind_2_200",
+                    nick="nick",
+                    channel="#chan",
+                    message="second",
+                ),
+            ),
         ]
         result = plugin._format_reminders(reminders)
         assert "#100" in result
@@ -197,8 +235,20 @@ class TestReminderHelperMethods:
         from llm.plugin import Identity
 
         plugin._reminders = {
-            "llm_remind_aaa1": ("alice", "#chan", "check CVE", "check CVE status", "alice"),
-            "llm_remind_bbb2": ("alice", "#chan", "echo this", "", None),
+            "llm_remind_aaa1": make_reminder_row(
+                event_name="llm_remind_aaa1",
+                nick="alice",
+                channel="#chan",
+                message="check CVE",
+                action_prompt="check CVE status",
+                account="alice",
+            ),
+            "llm_remind_bbb2": make_reminder_row(
+                event_name="llm_remind_bbb2",
+                nick="alice",
+                channel="#chan",
+                message="echo this",
+            ),
         }
         formatted = plugin._format_reminders(
             plugin._get_user_reminders(Identity(raw_nick="alice", account="alice"))
@@ -212,7 +262,17 @@ class TestReminderHelperMethods:
     def test_format_reminders_truncates_long_message(self, plugin: MagicMock) -> None:
         """GIVEN long message WHEN formatted THEN truncates."""
         long_msg = "x" * 100
-        reminders = [("llm_remind_1_100", ("nick", "#chan", long_msg, "", None))]
+        reminders = [
+            (
+                "llm_remind_1_100",
+                make_reminder_row(
+                    event_name="llm_remind_1_100",
+                    nick="nick",
+                    channel="#chan",
+                    message=long_msg,
+                ),
+            )
+        ]
         result = plugin._format_reminders(reminders)
         assert "..." in result
         assert len(result) < len(long_msg)
@@ -223,7 +283,12 @@ class TestReminderHelperMethods:
         """GIVEN matching reminder WHEN searched THEN returns event name."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_123_456"] = ("testnick", "#channel", "msg", "", None)
+        plugin._reminders["llm_remind_123_456"] = make_reminder_row(
+            event_name="llm_remind_123_456",
+            nick="testnick",
+            channel="#channel",
+            message="msg",
+        )
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result == "llm_remind_123_456"
 
@@ -238,7 +303,12 @@ class TestReminderHelperMethods:
         """GIVEN reminder owned by other WHEN searched THEN returns None."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_123_456"] = ("othernick", "#channel", "msg", "", None)
+        plugin._reminders["llm_remind_123_456"] = make_reminder_row(
+            event_name="llm_remind_123_456",
+            nick="othernick",
+            channel="#channel",
+            message="msg",
+        )
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result is None
 
@@ -249,9 +319,27 @@ class TestReminderHelperMethods:
         from llm.plugin import Identity
 
         mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin._reminders["llm_remind_a_111"] = ("alice", "#chan", "alice 1", "", "alice")
-        plugin._reminders["llm_remind_b_222"] = ("alice", "#chan", "alice 2", "", "alice")
-        plugin._reminders["llm_remind_c_333"] = ("bob", "#chan", "bob 1", "", "bob")
+        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
+            event_name="llm_remind_a_111",
+            nick="alice",
+            channel="#chan",
+            message="alice 1",
+            account="alice",
+        )
+        plugin._reminders["llm_remind_b_222"] = make_reminder_row(
+            event_name="llm_remind_b_222",
+            nick="alice",
+            channel="#chan",
+            message="alice 2",
+            account="alice",
+        )
+        plugin._reminders["llm_remind_c_333"] = make_reminder_row(
+            event_name="llm_remind_c_333",
+            nick="bob",
+            channel="#chan",
+            message="bob 1",
+            account="bob",
+        )
 
         result = plugin._remind_clear_for_assistant(
             Identity(raw_nick="alice", account="alice"),
@@ -279,7 +367,12 @@ class TestReminderHelperMethods:
         from llm.plugin import Identity
 
         mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin._reminders["llm_remind_x_999"] = ("alice", "#chan", "only one", "", None)
+        plugin._reminders["llm_remind_x_999"] = make_reminder_row(
+            event_name="llm_remind_x_999",
+            nick="alice",
+            channel="#chan",
+            message="only one",
+        )
 
         result = plugin._remind_clear_for_assistant(
             Identity(raw_nick="alice", account=None),
@@ -370,15 +463,15 @@ class TestReminderHelperMethods:
 
         # Pre-populate with the cap number of pending reminders for alice.
         for i in range(LLM._REMINDER_MAX_PENDING_PER_USER):
-            plugin._reminders[f"llm_remind_{i}_xxx"] = (
-                "alice",
-                "#chan",
-                f"r{i}",
-                "",
-                "alice",
-                f"chain-{i}",
-                1,
-                time.time(),
+            plugin._reminders[f"llm_remind_{i}_xxx"] = make_reminder_row(
+                event_name=f"llm_remind_{i}_xxx",
+                nick="alice",
+                channel="#chan",
+                message=f"r{i}",
+                account="alice",
+                chain_id=f"chain-{i}",
+                chain_position=1,
+                chain_started_at=time.time(),
             )
 
         result = plugin._schedule_reminder(
@@ -521,17 +614,14 @@ class TestReminderHelperMethods:
 
         saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
         assert saved_event_name.startswith("llm_remind_")
-        # First five fields are the user-facing data; last three are chain
-        # bookkeeping (chain_id is a UUID, chain_position=1, chain_started_at
-        # is a recent timestamp).
-        assert reminder_data[:5] == (
-            "testnick",
-            "#ops",
-            "post status update in #ops",
-            "Post a status update in #ops.",
-            "acct-testnick",
-        )
-        assert reminder_data[6] == 1  # chain_position
+        # User-facing fields plus chain bookkeeping (chain_id is a UUID,
+        # chain_position=1, chain_started_at is a recent timestamp).
+        assert reminder_data.nick == "testnick"
+        assert reminder_data.channel == "#ops"
+        assert reminder_data.message == "post status update in #ops"
+        assert reminder_data.action_prompt == "Post a status update in #ops."
+        assert reminder_data.account == "acct-testnick"
+        assert reminder_data.chain_position == 1
         plugin.db.save_reminder.assert_called_once()
         assert plugin.db.save_reminder.call_args.kwargs["action_prompt"] == (
             "Post a status update in #ops."
@@ -552,8 +642,18 @@ class TestReminderHelperMethods:
         mock_remove_event = mocker.patch("llm.plugin.schedule.removeEvent")
 
         # Add some reminders
-        plugin._reminders["llm_remind_1_100"] = ("user1", "#channel", "msg1", "", None)
-        plugin._reminders["llm_remind_2_200"] = ("user2", "#channel", "msg2", "", None)
+        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
+            event_name="llm_remind_1_100",
+            nick="user1",
+            channel="#channel",
+            message="msg1",
+        )
+        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
+            event_name="llm_remind_2_200",
+            nick="user2",
+            channel="#channel",
+            message="msg2",
+        )
 
         mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
         mocker.patch("llm.plugin.httpserver.unhook")
@@ -941,7 +1041,12 @@ class TestReminderDeliveryClosure:
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test123"
-        plugin._reminders[event_name] = ("nick", "#chan", "test msg", "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="nick",
+            channel="#chan",
+            message="test msg",
+        )
 
         deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
         deliver()
@@ -961,7 +1066,12 @@ class TestReminderDeliveryClosure:
 
         event_name = "llm_remind_pm_test"
         # channel="vibebot" simulates PM: _get_channel returns the bot's own nick
-        plugin._reminders[event_name] = ("rdrake", "vibebot", "eat a sandwich", "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="rdrake",
+            channel="vibebot",
+            message="eat a sandwich",
+        )
 
         deliver = plugin._make_reminder_delivery_closure(
             "rdrake", "vibebot", "eat a sandwich", event_name
@@ -983,7 +1093,12 @@ class TestReminderDeliveryClosure:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         event_name = "llm_remind_chan_test"
-        plugin._reminders[event_name] = ("rdrake", "#test", "check build", "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="rdrake",
+            channel="#test",
+            message="check build",
+        )
 
         deliver = plugin._make_reminder_delivery_closure(
             "rdrake", "#test", "check build", event_name
@@ -1003,7 +1118,12 @@ class TestReminderDeliveryClosure:
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test456"
-        plugin._reminders[event_name] = ("nick", "#chan", "test msg", "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="nick",
+            channel="#chan",
+            message="test msg",
+        )
 
         deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
 
@@ -1053,7 +1173,14 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_1"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1115,7 +1242,13 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
 
         event_name = "llm_remind_action_2"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1144,7 +1277,14 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=True)
 
         event_name = "llm_remind_action_3"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1175,7 +1315,14 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.side_effect = RuntimeError("boom secret text")
 
         event_name = "llm_remind_action_4"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1215,7 +1362,14 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_pre"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1244,7 +1398,12 @@ class TestReminderActionDelivery:
 
         rl_spy = mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
         event_name = "llm_remind_echo_1"
-        plugin._reminders[event_name] = ("alice", "#ops", "ping me", "", None)
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="ping me",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1278,15 +1437,16 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_usage"
-        plugin._reminders[event_name] = (
-            "alice",
-            "#ops",
-            "check build",
-            "check build",
-            "alice-acct",
-            event_name,
-            1,
-            time.time(),
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="alice-acct",
+            chain_id=event_name,
+            chain_position=1,
+            chain_started_at=time.time(),
         )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
@@ -1326,15 +1486,16 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_silent"
-        plugin._reminders[event_name] = (
-            "alice",
-            "#ops",
-            "watch CVE",
-            "check CVE (watch — only respond on positive result)",
-            "alice-acct",
-            event_name,
-            1,
-            time.time(),
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="watch CVE",
+            action_prompt="check CVE (watch — only respond on positive result)",
+            account="alice-acct",
+            chain_id=event_name,
+            chain_position=1,
+            chain_started_at=time.time(),
         )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
@@ -1374,7 +1535,14 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.side_effect = _assistant_side_effect
 
         event_name = "llm_remind_action_5"
-        plugin._reminders[event_name] = ("alice", "#ops", "check build", "check build", "acct")
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+        )
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
             "#ops",
@@ -1492,13 +1660,12 @@ class TestReminderReload:
         # In-memory dict must hold the user-facing data plus chain bookkeeping
         # (chain_id, position, started_at) for later @remind list / delete /
         # reschedule operations.
-        assert plugin._reminders["evt_persist"] == (
-            "alice",
-            "#chan",
-            "check CVE",
-            "check CVE-2026-31431 status",
-            "alice-acct",
-            "evt_persist",
-            1,
-            _created,
-        )
+        stored = plugin._reminders["evt_persist"]
+        assert stored.nick == "alice"
+        assert stored.channel == "#chan"
+        assert stored.message == "check CVE"
+        assert stored.action_prompt == "check CVE-2026-31431 status"
+        assert stored.account == "alice-acct"
+        assert stored.chain_id == "evt_persist"
+        assert stored.chain_position == 1
+        assert stored.chain_started_at == _created
