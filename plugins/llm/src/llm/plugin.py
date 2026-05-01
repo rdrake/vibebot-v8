@@ -1000,7 +1000,6 @@ class LLM(callbacks.Plugin):
         *,
         action_prompt: str = "",
         account: str | None = None,
-        chain_id: str = "",
         chain_position: int = 1,
         chain_started_at: float = 0.0,
     ):
@@ -1014,8 +1013,6 @@ class LLM(callbacks.Plugin):
             channel: Channel to deliver to (or nick for PM delivery)
             message: Reminder message
             event_name: Scheduler event name for cleanup
-            chain_id: Stable id for the reminder's chain (carried to any
-                reschedule done by the action LLM via ``_set_reminder_capped``).
             chain_position: 1-based position of this reminder within its chain.
             chain_started_at: Unix timestamp of the chain's first scheduling.
 
@@ -1024,7 +1021,6 @@ class LLM(callbacks.Plugin):
         """
         lock = self._reminders_lock
         parent_chain = (
-            chain_id or event_name,
             chain_position or 1,
             chain_started_at or time.time(),
         )
@@ -1250,7 +1246,6 @@ class LLM(callbacks.Plugin):
                 event_name,
                 action_prompt=reminder.action_prompt,
                 account=reminder.account,
-                chain_id=reminder.chain_id or event_name,
                 chain_position=reminder.chain_position or 1,
                 chain_started_at=reminder.chain_started_at or reminder.created_at,
             )
@@ -1273,7 +1268,6 @@ class LLM(callbacks.Plugin):
                             account=reminder.account,
                             fire_at=reminder.fire_at,
                             created_at=reminder.created_at,
-                            chain_id=reminder.chain_id or event_name,
                             chain_position=reminder.chain_position or 1,
                             chain_started_at=reminder.chain_started_at or reminder.created_at,
                         )
@@ -2979,7 +2973,7 @@ class LLM(callbacks.Plugin):
         caller: Identity,
         text: str,
         *,
-        parent_chain: tuple[str, int, float] | None = None,
+        parent_chain: tuple[int, float] | None = None,
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder.
 
@@ -2990,8 +2984,8 @@ class LLM(callbacks.Plugin):
 
         ``parent_chain`` is supplied when an action-fire LLM is rescheduling
         the next occurrence of a recurring reminder. It carries
-        ``(chain_id, parent_position, chain_started_at)`` so the new row
-        keeps the chain's identity and we can enforce per-chain caps.
+        ``(parent_position, chain_started_at)`` so we can enforce per-chain
+        caps and TTL.
         """
         channel = self._get_channel(msg)
 
@@ -3018,7 +3012,7 @@ class LLM(callbacks.Plugin):
 
         now = time.time()
         if parent_chain is not None:
-            chain_id, parent_position, chain_started_at = parent_chain
+            parent_position, chain_started_at = parent_chain
             chain_position = parent_position + 1
             if chain_position > self._REMINDER_MAX_CHAIN_POSITION:
                 return ReminderScheduleResult(
@@ -3037,7 +3031,6 @@ class LLM(callbacks.Plugin):
                     ),
                 )
         else:
-            chain_id = uuid.uuid4().hex
             chain_position = 1
             chain_started_at = now
             pending = len(self._get_user_reminders(caller))
@@ -3061,7 +3054,6 @@ class LLM(callbacks.Plugin):
             event_name,
             action_prompt=action_prompt,
             account=caller.account,
-            chain_id=chain_id,
             chain_position=chain_position,
             chain_started_at=chain_started_at,
         )
@@ -3079,7 +3071,6 @@ class LLM(callbacks.Plugin):
                     account=caller.account,
                     fire_at=now + result.seconds,
                     created_at=now,
-                    chain_id=chain_id,
                     chain_position=chain_position,
                     chain_started_at=chain_started_at,
                 )
@@ -3092,7 +3083,6 @@ class LLM(callbacks.Plugin):
                 now + result.seconds,
                 action_prompt=action_prompt,
                 account=caller.account,
-                chain_id=chain_id,
                 chain_position=chain_position,
                 chain_started_at=chain_started_at,
             )
@@ -3123,7 +3113,7 @@ class LLM(callbacks.Plugin):
         caller: Identity,
         text: str,
         *,
-        parent_chain: tuple[str, int, float] | None = None,
+        parent_chain: tuple[int, float] | None = None,
     ) -> str:
         """Parse and schedule a reminder, returning a result string for meta.
 

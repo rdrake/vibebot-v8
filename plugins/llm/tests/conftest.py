@@ -99,7 +99,6 @@ def make_reminder_row(
     action_prompt: str = "",
     account: str | None = None,
     fire_at: float = 0.0,
-    chain_id: str = "chain",
     chain_position: int = 1,
     chain_started_at: float = 0.0,
     id: int = 0,  # noqa: A002 — keyword-only builder, builtin shadow is fine.
@@ -121,7 +120,6 @@ def make_reminder_row(
         account=account,
         fire_at=fire_at,
         created_at=created_at,
-        chain_id=chain_id,
         chain_position=chain_position,
         chain_started_at=chain_started_at,
     )

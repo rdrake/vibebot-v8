@@ -1265,7 +1265,6 @@ class TestPluginDatabaseWiring:
             account=None,
             fire_at=future_time,
             created_at=created,
-            chain_id="llm_remind_123_1",
             chain_position=1,
             chain_started_at=created,
         )
@@ -1293,7 +1292,6 @@ class TestPluginDatabaseWiring:
             message="check build",
             fire_at=future_time,
             created_at=created,
-            chain_id="llm_remind_123_1",
             chain_position=1,
             chain_started_at=created,
         )
@@ -1319,7 +1317,6 @@ class TestPluginDatabaseWiring:
             account=None,
             fire_at=past_time,
             created_at=created,
-            chain_id="llm_remind_123_1",
             chain_position=1,
             chain_started_at=created,
         )

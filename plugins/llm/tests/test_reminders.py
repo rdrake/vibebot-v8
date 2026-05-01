@@ -407,7 +407,7 @@ class TestReminderHelperMethods:
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
         # Position 50 is the cap; reschedule would be 51 → refused.
-        parent = ("chain-x", LLM._REMINDER_MAX_CHAIN_POSITION, time.time())
+        parent = (LLM._REMINDER_MAX_CHAIN_POSITION, time.time())
 
         result = plugin._schedule_reminder(
             mock_irc,
@@ -434,7 +434,7 @@ class TestReminderHelperMethods:
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
         old_start = time.time() - LLM._REMINDER_CHAIN_TTL_SECONDS - 60
-        parent = ("chain-y", 5, old_start)
+        parent = (5, old_start)
 
         result = plugin._schedule_reminder(
             mock_irc,
@@ -469,7 +469,6 @@ class TestReminderHelperMethods:
                 channel="#chan",
                 message=f"r{i}",
                 account="alice",
-                chain_id=f"chain-{i}",
                 chain_position=1,
                 chain_started_at=time.time(),
             )
@@ -484,10 +483,10 @@ class TestReminderHelperMethods:
         assert "pending" in result.message.lower()
         plugin.db.save_reminder.assert_not_called()
 
-    def test_schedule_reminder_fresh_chain_assigns_uuid_and_position_one(
+    def test_schedule_reminder_fresh_chain_starts_at_position_one(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN no parent_chain WHEN scheduling THEN gets new chain_id, position=1."""
+        """GIVEN no parent_chain WHEN scheduling THEN chain_position=1 and started_at≈now."""
         from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
@@ -498,24 +497,24 @@ class TestReminderHelperMethods:
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
 
+        before = time.time()
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
             Identity(raw_nick="alice", account="alice"),
             "in 1m ping",
         )
+        after = time.time()
         assert result.ok is True
         kwargs = plugin.db.save_reminder.call_args.kwargs
         assert kwargs["chain_position"] == 1
-        assert isinstance(kwargs["chain_id"], str) and len(kwargs["chain_id"]) >= 8
-        # event_name should not equal chain_id for fresh chains (UUID assigned).
-        saved_event_name = next(iter(plugin._reminders.keys()))
-        assert kwargs["chain_id"] != saved_event_name
+        # Fresh chain stamps chain_started_at with now.
+        assert before <= kwargs["chain_started_at"] <= after
 
-    def test_schedule_reminder_carries_chain_id_through_reschedule(
+    def test_schedule_reminder_carries_chain_position_through_reschedule(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN parent_chain WHEN rescheduling THEN child inherits chain_id, position+1."""
+        """GIVEN parent_chain WHEN rescheduling THEN child increments position, preserves started_at."""
         from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
@@ -526,7 +525,7 @@ class TestReminderHelperMethods:
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
         started = time.time() - 60
-        parent = ("chain-shared", 3, started)
+        parent = (3, started)
 
         result = plugin._schedule_reminder(
             mock_irc,
@@ -537,7 +536,6 @@ class TestReminderHelperMethods:
         )
         assert result.ok is True
         kwargs = plugin.db.save_reminder.call_args.kwargs
-        assert kwargs["chain_id"] == "chain-shared"
         assert kwargs["chain_position"] == 4
         assert kwargs["chain_started_at"] == started
         # User-visible reply mentions the running counter.
@@ -614,8 +612,8 @@ class TestReminderHelperMethods:
 
         saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
         assert saved_event_name.startswith("llm_remind_")
-        # User-facing fields plus chain bookkeeping (chain_id is a UUID,
-        # chain_position=1, chain_started_at is a recent timestamp).
+        # User-facing fields plus chain bookkeeping (chain_position=1,
+        # chain_started_at is a recent timestamp).
         assert reminder_data.nick == "testnick"
         assert reminder_data.channel == "#ops"
         assert reminder_data.message == "post status update in #ops"
@@ -1447,7 +1445,6 @@ class TestReminderActionDelivery:
             message="check build",
             action_prompt="check build",
             account="alice-acct",
-            chain_id=event_name,
             chain_position=1,
             chain_started_at=time.time(),
         )
@@ -1496,7 +1493,6 @@ class TestReminderActionDelivery:
             message="watch CVE",
             action_prompt="check CVE (watch — only respond on positive result)",
             account="alice-acct",
-            chain_id=event_name,
             chain_position=1,
             chain_started_at=time.time(),
         )
@@ -1664,7 +1660,6 @@ class TestReminderReload:
                 created_at=_created,
                 action_prompt="check CVE-2026-31431 status",
                 account="alice-acct",
-                chain_id="evt_persist",
                 chain_position=1,
                 chain_started_at=_created,
             )
@@ -1681,7 +1676,7 @@ class TestReminderReload:
         assert kwargs["account"] == "alice-acct"
 
         # In-memory dict must hold the user-facing data plus chain bookkeeping
-        # (chain_id, position, started_at) for later @remind list / delete /
+        # (position, started_at) for later @remind list / delete /
         # reschedule operations.
         stored = plugin._reminders["evt_persist"]
         assert stored.nick == "alice"
@@ -1689,6 +1684,5 @@ class TestReminderReload:
         assert stored.message == "check CVE"
         assert stored.action_prompt == "check CVE-2026-31431 status"
         assert stored.account == "alice-acct"
-        assert stored.chain_id == "evt_persist"
         assert stored.chain_position == 1
         assert stored.chain_started_at == _created

@@ -1908,7 +1908,6 @@ class TestReloadRemindersEdgeCases:
             account=None,
             fire_at=future_time,
             created_at=created,
-            chain_id="llm_remind_broken_1",
             chain_position=1,
             chain_started_at=created,
         )

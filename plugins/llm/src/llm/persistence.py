@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -33,7 +33,6 @@ class ReminderRow(NamedTuple):
     account: str | None
     fire_at: float
     created_at: float
-    chain_id: str
     chain_position: int
     chain_started_at: float
 
@@ -329,6 +328,15 @@ class LLMDatabase:
                 )
                 conn.commit()
 
+            if current_version < 11:
+                # chain_id was stored on every row but never used as a lookup
+                # key — chain_position and chain_started_at carry the cap and
+                # TTL semantics. Drop the unused column.
+                conn.executescript("""
+                    ALTER TABLE reminders DROP COLUMN chain_id;
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -436,7 +444,6 @@ class LLMDatabase:
         *,
         action_prompt: str = "",
         account: str | None = None,
-        chain_id: str = "",
         chain_position: int = 1,
         chain_started_at: float = 0.0,
     ) -> int:
@@ -450,8 +457,6 @@ class LLMDatabase:
             fire_at: Unix timestamp when the reminder should fire.
             action_prompt: Optional follow-up LLM prompt to run when reminder fires.
             account: Requester's resolved account name, or None if unknown.
-            chain_id: Stable id linking reminders in a recurring chain
-                (default: event_name → singleton chain).
             chain_position: 1-based position within the chain.
             chain_started_at: Unix timestamp of the chain's first scheduling
                 (default: now).
@@ -463,15 +468,14 @@ class LLMDatabase:
             sqlite3.IntegrityError: If event_name already exists.
         """
         now = time.time()
-        effective_chain_id = chain_id or event_name
         effective_chain_started_at = chain_started_at or now
         conn = self._connect()
         try:
             cursor = conn.execute(
                 "INSERT INTO reminders "
                 "(event_name, nick, channel, message, action_prompt, account, "
-                "fire_at, created_at, chain_id, chain_position, chain_started_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "fire_at, created_at, chain_position, chain_started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_name,
                     nick,
@@ -481,7 +485,6 @@ class LLMDatabase:
                     account,
                     fire_at,
                     now,
-                    effective_chain_id,
                     chain_position,
                     effective_chain_started_at,
                 ),
@@ -526,7 +529,7 @@ class LLMDatabase:
         try:
             rows = conn.execute(
                 "SELECT id, event_name, nick, channel, message, action_prompt, account, "
-                "fire_at, created_at, chain_id, chain_position, chain_started_at "
+                "fire_at, created_at, chain_position, chain_started_at "
                 "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
                 (cutoff,),
             ).fetchall()
