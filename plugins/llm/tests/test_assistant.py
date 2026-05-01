@@ -11,6 +11,7 @@ from llm.assistant import (
     CHAT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
+    REMIND_ACTION_LEGACY_SYSTEM_PROMPT,
     REMIND_ACTION_SYSTEM_PROMPT,
     AssistantToolExecutor,
     ToolResult,
@@ -1994,14 +1995,30 @@ class TestProfileSystemPrompts:
         """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
         assert "generate_image" in DRAW_SYSTEM_PROMPT
 
-    def test_remind_action_prompt_allows_self_rescheduling(self) -> None:
-        """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN mentions set_reminder."""
-        assert "set_reminder" in REMIND_ACTION_SYSTEM_PROMPT
-        assert "recurring" in REMIND_ACTION_SYSTEM_PROMPT.lower()
+    def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
+        """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
+
+        Structured rows reschedule mechanically; the action LLM must NOT see
+        a 'you MAY call set_reminder' rule. The set_reminder tool is also
+        filtered from the tool surface for those fires (see plugin.py).
+        """
+        assert "set_reminder" not in REMIND_ACTION_SYSTEM_PROMPT
+        assert "Recurrence is handled mechanically" in REMIND_ACTION_SYSTEM_PROMPT
+
+    def test_remind_action_legacy_prompt_allows_self_rescheduling(self) -> None:
+        """GIVEN legacy-row prompt WHEN checked THEN retains set_reminder rule.
+
+        Pre-v12 reminder rows encode recurrence as a parenthetical hint in
+        action_prompt and rely on the action LLM to call set_reminder. The
+        legacy prompt keeps that rule for in-flight rows.
+        """
+        assert "set_reminder" in REMIND_ACTION_LEGACY_SYSTEM_PROMPT
+        assert "recurring" in REMIND_ACTION_LEGACY_SYSTEM_PROMPT.lower()
 
     def test_remind_action_prompt_has_bot_nick_placeholder(self) -> None:
         """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick}."""
         assert "{bot_nick}" in REMIND_ACTION_SYSTEM_PROMPT
+        assert "{bot_nick}" in REMIND_ACTION_LEGACY_SYSTEM_PROMPT
 
 
 class TestToolSpecVisibility:

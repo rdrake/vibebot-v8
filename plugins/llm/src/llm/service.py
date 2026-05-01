@@ -1937,6 +1937,7 @@ class LLMService:
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        exclude_tools: frozenset[str] = frozenset(),
     ) -> AssistantResult:
         """Unified assistant facade that dispatches to assistant_completion.
 
@@ -1997,6 +1998,7 @@ class LLMService:
             search_fn=search_fn,
             fetch_fn=fetch_fn,
             code_fn=code_fn,
+            exclude_tools=exclude_tools,
         )
 
     def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
@@ -2458,6 +2460,7 @@ Examples (echo → action_prompt: ""):
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        exclude_tools: frozenset[str] = frozenset(),
     ) -> AssistantResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
@@ -2559,7 +2562,7 @@ Examples (echo → action_prompt: ""):
                 code_fn=code_fn,
             )
 
-            profile_tools = get_tools_for_profile(route_profile)
+            profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
 
             last_assistant_text = ""
             for _step in range(max_steps):

@@ -62,6 +62,12 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
 # brackets crash Limnoria's nested-command tokenizer.
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Legacy parenthetical pattern. Pre-v12 reminders embedded recurrence as
+# "(recurring: <phrase>)" inside action_prompt. After v12 it's structured
+# columns; this regex still matches in-flight legacy rows during the
+# B0.5 graceful-degradation window.
+_LEGACY_RECURRENCE_RE = re.compile(r"\(recurring:[^)]+\)", re.IGNORECASE)
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {"llm.ask", "llm.code", "llm.draw", "owner", "admin", "trusted"}
 )
@@ -1023,13 +1029,17 @@ class LLM(callbacks.Plugin):
         Returns:
             Callable for use with schedule.addEvent
         """
-        # Recurrence/watch fields are accepted now to keep the call surface
-        # aligned with the structured persistence schema (B1) — B4 will use
-        # them for mechanical reschedule. For now they thread through as
-        # placeholders.
-        del recurrence_seconds, recurrence_rrule, watch_mode
         lock = self._reminders_lock
         parent_chain: int = chain_position or 1
+        is_structured = self._is_structured_recurring(
+            recurrence_seconds=recurrence_seconds,
+            recurrence_rrule=recurrence_rrule,
+        )
+        is_legacy = self._is_legacy_recurring(
+            recurrence_seconds=recurrence_seconds,
+            recurrence_rrule=recurrence_rrule,
+            action_prompt=action_prompt,
+        )
         # If the command was sent via PM, channel is the bot's own nick.
         # Deliver to the user's nick instead.
         target = channel if ircutils.isChannel(channel) else nick
@@ -1112,10 +1122,23 @@ class LLM(callbacks.Plugin):
                         effective_prompt = (
                             f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
                         )
+                        # Legacy rows still rely on the action LLM to call
+                        # set_reminder for the next fire — when there's no
+                        # user_instruction prefix overriding the default, pin
+                        # the legacy variant explicitly so the model still
+                        # sees the "MAY call set_reminder ONCE" rule.
+                        if effective_prompt is None and is_legacy:
+                            from .assistant import REMIND_ACTION_LEGACY_SYSTEM_PROMPT
+
+                            effective_prompt = REMIND_ACTION_LEGACY_SYSTEM_PROMPT
 
                         caller = Identity(raw_nick=nick, account=account)
                         nested_set_calls = 0
 
+                        # TODO(remove after one release): legacy reschedule path.
+                        # Structured rows (recurrence_seconds/rrule columns set)
+                        # reschedule mechanically; this capped tool path only
+                        # exists for pre-v12 parenthetical-encoded rows.
                         def _set_reminder_capped(
                             text: str,
                             *,
@@ -1131,6 +1154,13 @@ class LLM(callbacks.Plugin):
                             return self._remind_set_for_assistant(
                                 _irc, _msg, _caller, text, parent_chain=_parent
                             )
+
+                        # Structured rows reschedule via _mechanical_reschedule
+                        # below. Drop set_reminder from the fire-time tool
+                        # surface so the action LLM can't double-schedule.
+                        exclude_tools = (
+                            frozenset({"set_reminder"}) if is_structured else frozenset()
+                        )
 
                         result = self.llm_service.assistant_request(
                             prompt=action_prompt,
@@ -1153,6 +1183,7 @@ class LLM(callbacks.Plugin):
                                 self._draw_for_assistant(_irc, _msg, p)
                             ),
                             cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                            exclude_tools=exclude_tools,
                             **self._reminder_fns(
                                 caller=caller,
                                 irc=active_irc,
@@ -1195,6 +1226,28 @@ class LLM(callbacks.Plugin):
                         except Exception:
                             self.log.exception(
                                 "reminder_action_usage_log_failed event=%s", event_name
+                            )
+                        # Routing gate: structured rows reschedule mechanically
+                        # (set_reminder was filtered out of the tool surface so
+                        # the LLM cannot have done it). Legacy rows depend on
+                        # the action LLM having already called set_reminder via
+                        # _set_reminder_capped — we deliberately skip the
+                        # mechanical path for them. One-shot rows do nothing.
+                        # Watch-mode + structured: still reschedule even if
+                        # response was [silent]; the watch must keep watching.
+                        if is_structured:
+                            self._mechanical_reschedule(
+                                nick=nick,
+                                channel=channel,
+                                message=message,
+                                event_name=event_name,
+                                action_prompt=action_prompt,
+                                account=account,
+                                chain_position=parent_chain,
+                                recurrence_seconds=recurrence_seconds,
+                                recurrence_rrule=recurrence_rrule,
+                                watch_mode=watch_mode,
+                                now=now,
                             )
                     except Exception:
                         self.log.exception(
@@ -2905,6 +2958,176 @@ class LLM(callbacks.Plugin):
     _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
+
+    @staticmethod
+    def _is_structured_recurring(
+        *, recurrence_seconds: int | None, recurrence_rrule: str | None
+    ) -> bool:
+        """True when the row carries a structured recurrence column (B1+)."""
+        return recurrence_seconds is not None or recurrence_rrule is not None
+
+    @staticmethod
+    def _is_legacy_recurring(
+        *,
+        recurrence_seconds: int | None,
+        recurrence_rrule: str | None,
+        action_prompt: str,
+    ) -> bool:
+        """True when the row encodes recurrence the pre-v12 way.
+
+        Pre-v12 rows have no structured columns; the parser leaked
+        ``(recurring: ...)`` parentheticals into ``action_prompt`` and
+        relied on the action LLM to self-reschedule via set_reminder.
+        """
+        if LLM._is_structured_recurring(
+            recurrence_seconds=recurrence_seconds,
+            recurrence_rrule=recurrence_rrule,
+        ):
+            return False
+        return bool(_LEGACY_RECURRENCE_RE.search(action_prompt or ""))
+
+    @staticmethod
+    def _next_rrule_fire(rule_str: str, now: float) -> float | None:
+        """Compute the next fire time after ``now`` for an RRULE string.
+
+        Uses dateutil with timezone-aware UTC so DST transitions don't
+        produce duplicate or skipped fires. Returns None when the rule
+        is malformed or has no future occurrence.
+        """
+        from dateutil.rrule import rrulestr
+
+        try:
+            now_utc = datetime.fromtimestamp(now, tz=UTC)
+            rule = rrulestr(rule_str, dtstart=now_utc)
+            next_dt = rule.after(now_utc)
+        except (ValueError, TypeError):
+            return None
+        if next_dt is None:
+            return None
+        return next_dt.timestamp()
+
+    def _mechanical_reschedule(
+        self,
+        *,
+        nick: str,
+        channel: str,
+        message: str,
+        event_name: str,
+        action_prompt: str,
+        account: str | None,
+        chain_position: int,
+        recurrence_seconds: int | None,
+        recurrence_rrule: str | None,
+        watch_mode: bool,
+        now: float,
+    ) -> None:
+        """Schedule the next fire of a structured recurring reminder.
+
+        Computes ``next_fire`` from ``recurrence_seconds`` (numeric path)
+        or ``recurrence_rrule`` (RFC 5545 parsed timezone-aware UTC),
+        enforces the chain_position cap, and registers a fresh schedule
+        event + ReminderRow + DB row.
+
+        No-ops when (a) chain_position has hit the cap, (b) the rrule is
+        malformed or exhausted, or (c) the original event has been
+        cancelled mid-fire (clear-wins-over-mid-fire).
+        """
+        next_position = chain_position + 1
+        if next_position > self._REMINDER_MAX_CHAIN_POSITION:
+            self.log.info(
+                "reminder_reschedule_skipped reason=cap event=%s position=%d/%d",
+                event_name,
+                next_position,
+                self._REMINDER_MAX_CHAIN_POSITION,
+            )
+            return
+
+        next_fire: float | None = None
+        if recurrence_seconds is not None:
+            next_fire = now + recurrence_seconds
+        elif recurrence_rrule is not None:
+            next_fire = self._next_rrule_fire(recurrence_rrule, now)
+            if next_fire is None:
+                self.log.warning(
+                    "reminder_reschedule_skipped reason=rrule_invalid_or_exhausted "
+                    "event=%s rule=%r",
+                    event_name,
+                    recurrence_rrule,
+                )
+                return
+
+        if next_fire is None:
+            return  # Neither recurrence kind populated — caller's mistake.
+
+        # Clear-wins-over-mid-fire: if cancel_all_reminders or a single
+        # delete fired during the action, the original event_name is gone
+        # from _reminders. Don't reschedule a cancelled chain.
+        with self._reminders_lock:
+            if event_name not in self._reminders:
+                self.log.info(
+                    "reminder_reschedule_skipped reason=cancelled_mid_fire event=%s",
+                    event_name,
+                )
+                return
+
+        new_event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
+        new_deliver = self._make_reminder_delivery_closure(
+            nick,
+            channel,
+            message,
+            new_event_name,
+            action_prompt=action_prompt,
+            account=account,
+            chain_position=next_position,
+            recurrence_seconds=recurrence_seconds,
+            recurrence_rrule=recurrence_rrule,
+            watch_mode=watch_mode,
+        )
+        try:
+            schedule.addEvent(new_deliver, next_fire, name=new_event_name)
+            with self._reminders_lock:
+                self._reminders[new_event_name] = ReminderRow(
+                    id=0,
+                    event_name=new_event_name,
+                    nick=nick,
+                    channel=channel,
+                    message=message,
+                    action_prompt=action_prompt,
+                    account=account,
+                    fire_at=next_fire,
+                    created_at=now,
+                    chain_position=next_position,
+                    recurrence_seconds=recurrence_seconds,
+                    recurrence_rrule=recurrence_rrule,
+                    watch_mode=watch_mode,
+                )
+            self.db.save_reminder(
+                new_event_name,
+                nick,
+                channel,
+                message,
+                next_fire,
+                action_prompt=action_prompt,
+                account=account,
+                chain_position=next_position,
+                recurrence_seconds=recurrence_seconds,
+                recurrence_rrule=recurrence_rrule,
+                watch_mode=watch_mode,
+            )
+            self.log.info(
+                "reminder_reschedule path=mechanical kind=%s event=%s "
+                "position=%d/%d next_fire_at=%.3f",
+                "seconds" if recurrence_seconds is not None else "rrule",
+                new_event_name,
+                next_position,
+                self._REMINDER_MAX_CHAIN_POSITION,
+                next_fire,
+            )
+        except Exception:
+            self.log.exception(
+                "reminder_reschedule_failed event=%s reason=schedule_or_persist",
+                new_event_name,
+            )
 
     def _react(self, irc: callbacks.Irc, msg: IrcMsg, emoji: str) -> bool:
         """Send a +draft/react reaction to ``msg``. Returns True if queued.

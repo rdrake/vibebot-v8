@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1802,6 +1803,340 @@ class TestReminderActionDelivery:
         assert len(plugin._rate_buckets["ask:alice"]) == 2
         plugin.db.log_usage.assert_not_called()
         assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
+
+
+class TestRoutingGateAndMechanicalReschedule:
+    """Tests for B3.5 strict transition gate + B4 mechanical reschedule."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+        """Create a plugin instance with action delivery wiring."""
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        return plugin
+
+    def _wire_active_irc(self, plugin: MagicMock, mocker: MockerFixture) -> MagicMock:
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        mocker.patch.object(plugin, "_gather_history", return_value=([], []))
+        mocker.patch.object(plugin, "_get_user_memories", return_value=[])
+        plugin.db.get_instruction.return_value = None
+        return active_irc
+
+    def test_structured_row_excludes_set_reminder_and_reschedules_mechanically(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN structured row WHEN fired THEN exclude_tools={set_reminder} and mechanical reschedule runs."""
+        self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
+
+        event_name = "llm_remind_struct_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=300,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="check build",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=300,
+        )
+        deliver()
+
+        # exclude_tools must include set_reminder for structured fires.
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
+
+        # Mechanical reschedule must run with chain_position passed through.
+        mech_spy.assert_called_once()
+        mech_kwargs = mech_spy.call_args.kwargs
+        assert mech_kwargs["chain_position"] == 1
+        assert mech_kwargs["recurrence_seconds"] == 300
+
+        # A new schedule.addEvent call registered the next fire.
+        add_event.assert_called_once()
+        new_fire_at = add_event.call_args.args[1]
+        # numeric path: now + 300
+        assert new_fire_at - mech_kwargs["now"] == pytest.approx(300, abs=0.01)
+
+        # Persistence call for the new chain row at position 2.
+        plugin.db.save_reminder.assert_called_once()
+        save_kwargs = plugin.db.save_reminder.call_args.kwargs
+        assert save_kwargs["chain_position"] == 2
+        assert save_kwargs["recurrence_seconds"] == 300
+
+    def test_legacy_row_skips_mechanical_and_keeps_set_reminder_tool(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN legacy parenthetical row WHEN fired THEN no mechanical reschedule, no exclude_tools."""
+        self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
+
+        event_name = "llm_remind_legacy_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build (recurring: every 5 minutes)",
+            account="acct",
+            chain_position=1,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            event_name,
+            action_prompt="check build (recurring: every 5 minutes)",
+            account="acct",
+            chain_position=1,
+        )
+        deliver()
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        # Legacy rows still let the action LLM see set_reminder.
+        assert kwargs["exclude_tools"] == frozenset()
+        # Mechanical path must not run for legacy rows.
+        mech_spy.assert_not_called()
+
+    def test_one_shot_row_runs_neither_path(self, plugin: MagicMock, mocker: MockerFixture) -> None:
+        """GIVEN one-shot row WHEN fired THEN neither mechanical nor LLM-tool reschedule runs."""
+        self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
+
+        event_name = "llm_remind_oneshot_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="ping",
+            action_prompt="ping me",
+            account="acct",
+            chain_position=1,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "ping",
+            event_name,
+            action_prompt="ping me",
+            account="acct",
+            chain_position=1,
+        )
+        deliver()
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["exclude_tools"] == frozenset()
+        mech_spy.assert_not_called()
+        # No new persistence row.
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_clear_wins_over_mid_fire_skips_mechanical_reschedule(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN structured row cleared mid-fire WHEN action completes THEN no mechanical reschedule."""
+        self._wire_active_irc(plugin, mocker)
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        event_name = "llm_remind_clearwin_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="watch",
+            action_prompt="watch X",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=600,
+        )
+
+        # Simulate cancel_all_reminders running mid-fire: pop the event
+        # from _reminders before the assistant_request returns.
+        def _pop_then_respond(*_a, **_kw) -> AssistantResult:
+            with plugin._reminders_lock:
+                plugin._reminders.pop(event_name, None)
+            return AssistantResult(content="ok")
+
+        plugin.llm_service.assistant_request.side_effect = _pop_then_respond
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "watch",
+            event_name,
+            action_prompt="watch X",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=600,
+        )
+        deliver()
+
+        # No new event scheduled and no DB persistence for the next fire.
+        add_event.assert_not_called()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_chain_position_cap_blocks_mechanical_reschedule(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN structured row at cap WHEN fired THEN mechanical reschedule no-ops."""
+        self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        event_name = "llm_remind_cap_1"
+        cap = plugin._REMINDER_MAX_CHAIN_POSITION
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="capped",
+            action_prompt="capped",
+            chain_position=cap,
+            recurrence_seconds=120,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "capped",
+            event_name,
+            action_prompt="capped",
+            chain_position=cap,
+            recurrence_seconds=120,
+        )
+        deliver()
+
+        add_event.assert_not_called()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_structured_watch_mode_silent_response_still_reschedules(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN structured watch row WHEN response is [silent] THEN watch keeps watching."""
+        active_irc = self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="[silent]")
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        event_name = "llm_remind_watch_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="watch CVE",
+            action_prompt="check CVE status",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=900,
+            watch_mode=True,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "watch CVE",
+            event_name,
+            action_prompt="check CVE status",
+            account="acct",
+            chain_position=1,
+            recurrence_seconds=900,
+            watch_mode=True,
+        )
+        deliver()
+
+        # No user-visible message — silent fire.
+        active_irc.queueMsg.assert_not_called()
+        # But the watch still keeps watching: a new event is scheduled.
+        add_event.assert_called_once()
+        save_kwargs = plugin.db.save_reminder.call_args.kwargs
+        assert save_kwargs["watch_mode"] is True
+
+    def test_rrule_reschedule_across_spring_forward(self) -> None:
+        """RRULE reschedule survives DST spring-forward without producing duplicates or skips."""
+        from llm.plugin import LLM
+
+        rule = "FREQ=DAILY;BYHOUR=6;BYMINUTE=30"
+        # 2027-03-13 06:00 UTC, just before North American spring-forward.
+        now_dt = datetime(2027, 3, 13, 6, 0, tzinfo=UTC)
+        now = now_dt.timestamp()
+        next_fire = LLM._next_rrule_fire(rule, now)
+        assert next_fire is not None and next_fire > now
+        # Following invocation moves strictly forward.
+        next_next = LLM._next_rrule_fire(rule, next_fire)
+        assert next_next is not None and next_next > next_fire
+        # And the gap is roughly a day (DAILY rule), well past 23h.
+        assert next_next - next_fire > 23 * 3600
+
+    def test_rrule_reschedule_across_fall_back(self) -> None:
+        """RRULE reschedule across DST fall-back has no duplicate fire."""
+        from llm.plugin import LLM
+
+        rule = "FREQ=DAILY;BYHOUR=5;BYMINUTE=30"
+        # 2027-11-06 05:00 UTC, the morning of fall-back.
+        now_dt = datetime(2027, 11, 6, 5, 0, tzinfo=UTC)
+        now = now_dt.timestamp()
+        fire_a = LLM._next_rrule_fire(rule, now)
+        assert fire_a is not None
+        fire_b = LLM._next_rrule_fire(rule, fire_a)
+        assert fire_b is not None
+        # ~24h apart, never same-day duplicate.
+        assert fire_b - fire_a > 23 * 3600
+
+    def test_rrule_invalid_returns_none(self) -> None:
+        """GIVEN malformed RRULE WHEN parsed THEN _next_rrule_fire returns None."""
+        from llm.plugin import LLM
+
+        assert LLM._next_rrule_fire("FREQ=NONSENSE;BLAH", 1_700_000_000.0) is None
+
+    def test_is_structured_recurring_helper(self) -> None:
+        """GIVEN any combination of recurrence fields WHEN classified THEN matches structured/legacy/one-shot."""
+        from llm.plugin import LLM
+
+        assert LLM._is_structured_recurring(recurrence_seconds=60, recurrence_rrule=None)
+        assert LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
+        assert not LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule=None)
+
+    def test_is_legacy_recurring_helper(self) -> None:
+        """GIVEN action_prompt parenthetical WHEN structured columns null THEN classified legacy."""
+        from llm.plugin import LLM
+
+        assert LLM._is_legacy_recurring(
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            action_prompt="check build (recurring: every 5 minutes)",
+        )
+        # Structured row with parenthetical leak is NOT legacy.
+        assert not LLM._is_legacy_recurring(
+            recurrence_seconds=300,
+            recurrence_rrule=None,
+            action_prompt="check build (recurring: every 5 minutes)",
+        )
+        # No parenthetical → not legacy.
+        assert not LLM._is_legacy_recurring(
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            action_prompt="ping me",
+        )
 
 
 class TestReminderReload:
