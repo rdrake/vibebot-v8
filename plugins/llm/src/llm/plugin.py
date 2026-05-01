@@ -1066,7 +1066,17 @@ class LLM(callbacks.Plugin):
                         now = time.time()
                         rl_account = account if account else nick
                         rl_tier = "registered" if account else "unregistered"
-                        if self._check_rate_limit_silent("ask", rl_account, now, tier=rl_tier):
+                        if self._check_rate_limit(
+                            None,
+                            "ask",
+                            rl_account,
+                            "",
+                            "",
+                            "",
+                            tier=rl_tier,
+                            silent=True,
+                            now=now,
+                        ):
                             _send(f"Reminder: {message} (action skipped — daily ask limit reached)")
                             break
 
@@ -1717,7 +1727,7 @@ class LLM(callbacks.Plugin):
 
     def _check_rate_limit(
         self,
-        irc: callbacks.Irc,
+        irc: callbacks.Irc | None,
         command: str,
         account: str,
         nick: str,
@@ -1725,46 +1735,62 @@ class LLM(callbacks.Plugin):
         text: str,
         *,
         tier: str,
+        silent: bool = False,
+        now: float | None = None,
     ) -> bool:
-        """Check rate limit and send error if exceeded.
+        """Check rate limit; optionally suppress user-facing error and usage row.
 
-        Always records the request timestamp. When enforceRateLimits is True
-        and the user is over the limit, sends an error reply and logs
-        ``status="rate_limited"``.
+        When ``silent=True``:
+          - ``irc.error(...)`` is NOT called on overage.
+          - ``db.log_usage(..., status="rate_limited")`` is NOT written.
+          - ``irc`` may be None (action-fire path has no caller IRC connection).
+          - ``nick``/``channel``/``text`` are still accepted but unused in the
+            silent branch — kept in the signature for caller-site uniformity.
+
+        ``now`` defaults to ``time.time()`` when not supplied — keeps the
+        original non-silent signature working without forcing every caller
+        to thread a timestamp.
 
         Args:
-            irc: IRC connection.
+            irc: IRC connection (may be None when ``silent=True``).
             command: Command name.
             account: NickServ account name or nick-based identity.
             nick: Resolved identity for logging.
             channel: Channel name.
             text: Prompt text for logging.
             tier: User tier (trusted, registered, unregistered).
+            silent: When True, suppress ``irc.error`` and ``db.log_usage``.
+            now: Optional pre-computed timestamp; defaults to ``time.time()``.
 
         Returns:
             True if the request should be blocked.
         """
-        now = time.time()
+        if now is None:
+            now = time.time()
         over_limit = self._is_rate_limited(command, account, now, tier=tier)
 
         # Always record the hit (so the window tracks correctly)
         self._record_rate_limit_hit(command, account, now)
 
-        if over_limit:
-            enforce = self.registryValue("enforceRateLimits")
-            max_count, window = self._get_tier_limits(command, tier)
-            key = f"{command}:{account}"
-            count = len(self._rate_buckets.get(key, ()))
-            if enforce:
-                self.log.info(
-                    "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
-                    command,
-                    account,
-                    tier,
-                    count,
-                    max_count,
-                    window,
-                )
+        if not over_limit:
+            return False
+
+        enforce = self.registryValue("enforceRateLimits")
+        max_count, window = self._get_tier_limits(command, tier)
+        key = f"{command}:{account}"
+        count = len(self._rate_buckets.get(key, ()))
+
+        if enforce:
+            self.log.info(
+                "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+                command,
+                account,
+                tier,
+                count,
+                max_count,
+                window,
+            )
+            if not silent and irc is not None:
                 irc.error(_("Rate limit exceeded for %s. Try again in %ds.") % (command, window))
                 self.db.log_usage(
                     nick,
@@ -1777,59 +1803,17 @@ class LLM(callbacks.Plugin):
                     prompt=text,
                     status="rate_limited",
                 )
-                return True
-            self.log.info(
-                "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
-                command,
-                account,
-                tier,
-                count,
-                max_count,
-                window,
-            )
-        return False
+            return True
 
-    def _check_rate_limit_silent(
-        self, command: str, account: str, now: float, *, tier: str
-    ) -> bool:
-        """Check rate limit without sending IRC errors.
-
-        Mirrors ``_check_rate_limit`` bookkeeping and logging, but does not
-        emit user-facing errors or usage rows.
-
-        Returns:
-            True only when over-limit and enforceRateLimits is enabled.
-        """
-        over_limit = self._is_rate_limited(command, account, now, tier=tier)
-
-        # Always record the hit (so the window tracks correctly)
-        self._record_rate_limit_hit(command, account, now)
-
-        if over_limit:
-            enforce = self.registryValue("enforceRateLimits")
-            max_count, window = self._get_tier_limits(command, tier)
-            key = f"{command}:{account}"
-            count = len(self._rate_buckets.get(key, ()))
-            if enforce:
-                self.log.info(
-                    "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
-                    command,
-                    account,
-                    tier,
-                    count,
-                    max_count,
-                    window,
-                )
-                return True
-            self.log.info(
-                "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
-                command,
-                account,
-                tier,
-                count,
-                max_count,
-                window,
-            )
+        self.log.info(
+            "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+            command,
+            account,
+            tier,
+            count,
+            max_count,
+            window,
+        )
         return False
 
     @staticmethod

@@ -1160,7 +1160,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
 
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         mocker.patch.object(
             plugin,
             "_gather_history",
@@ -1238,7 +1238,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
 
-        rl_spy = mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        rl_spy = mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
 
         event_name = "llm_remind_action_2"
@@ -1261,10 +1261,13 @@ class TestReminderActionDelivery:
 
         rl_spy.assert_called_once()
         args = rl_spy.call_args.args
-        assert args[0] == "ask"
-        assert args[1] == "alice"
-        assert isinstance(args[2], float)
-        assert rl_spy.call_args.kwargs["tier"] == "unregistered"
+        kwargs = rl_spy.call_args.kwargs
+        assert args[0] is None
+        assert args[1] == "ask"
+        assert args[2] == "alice"
+        assert kwargs["tier"] == "unregistered"
+        assert kwargs["silent"] is True
+        assert isinstance(kwargs["now"], float)
 
     def test_action_delivery_falls_back_on_rate_limit(
         self, plugin: MagicMock, mocker: MockerFixture
@@ -1274,7 +1277,7 @@ class TestReminderActionDelivery:
         active_irc = mocker.MagicMock()
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=True)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=True)
 
         event_name = "llm_remind_action_3"
         plugin._reminders[event_name] = make_reminder_row(
@@ -1311,7 +1314,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
 
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_request.side_effect = RuntimeError("boom secret text")
 
         event_name = "llm_remind_action_4"
@@ -1355,7 +1358,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
 
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         # _gather_history runs BEFORE assistant_request — make it raise.
         plugin._gather_history = mocker.MagicMock(
             side_effect=RuntimeError("internal token leak XYZ")
@@ -1396,7 +1399,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
 
-        rl_spy = mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        rl_spy = mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         event_name = "llm_remind_echo_1"
         plugin._reminders[event_name] = make_reminder_row(
             event_name=event_name,
@@ -1427,7 +1430,7 @@ class TestReminderActionDelivery:
         active_irc = mocker.MagicMock()
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="status: green",
             model="gemini/gemini-2.0-flash-lite",
@@ -1476,7 +1479,7 @@ class TestReminderActionDelivery:
         active_irc = mocker.MagicMock()
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="[silent]",
             model="gemini/gemini-2.0-flash-lite",
@@ -1522,7 +1525,7 @@ class TestReminderActionDelivery:
         active_irc = mocker.MagicMock()
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
-        mocker.patch.object(plugin, "_check_rate_limit_silent", return_value=False)
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
 
         set_spy = mocker.patch.object(plugin, "_remind_set_for_assistant", return_value="scheduled")
         nested_results: list[str] = []
@@ -1560,7 +1563,7 @@ class TestReminderActionDelivery:
     def test_check_rate_limit_silent_enforced_blocks(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN over-limit and enforce=true WHEN _check_rate_limit_silent THEN returns True."""
+        """GIVEN over-limit and enforce=true WHEN _check_rate_limit silent THEN returns True."""
         plugin.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 1,
@@ -1571,7 +1574,17 @@ class TestReminderActionDelivery:
         now = 1000.0
         plugin._record_rate_limit_hit("ask", "alice", now - 1)
 
-        blocked = plugin._check_rate_limit_silent("ask", "alice", now, tier="registered")
+        blocked = plugin._check_rate_limit(
+            None,
+            "ask",
+            "alice",
+            "",
+            "",
+            "",
+            tier="registered",
+            silent=True,
+            now=now,
+        )
 
         assert blocked is True
         assert len(plugin._rate_buckets["ask:alice"]) == 2
@@ -1581,7 +1594,7 @@ class TestReminderActionDelivery:
     def test_check_rate_limit_silent_shadow_mode(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN over-limit and enforce=false WHEN _check_rate_limit_silent THEN logs shadow and allows."""
+        """GIVEN over-limit and enforce=false WHEN _check_rate_limit silent THEN logs shadow and allows."""
         plugin.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 1,
@@ -1592,7 +1605,17 @@ class TestReminderActionDelivery:
         now = 1000.0
         plugin._record_rate_limit_hit("ask", "alice", now - 1)
 
-        blocked = plugin._check_rate_limit_silent("ask", "alice", now, tier="registered")
+        blocked = plugin._check_rate_limit(
+            None,
+            "ask",
+            "alice",
+            "",
+            "",
+            "",
+            tier="registered",
+            silent=True,
+            now=now,
+        )
 
         assert blocked is False
         assert len(plugin._rate_buckets["ask:alice"]) == 2
