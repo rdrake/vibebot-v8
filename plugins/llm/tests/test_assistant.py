@@ -2069,9 +2069,25 @@ class TestToolSpecVisibility:
         assert "fetch_url" in names
         assert "generate_code" in names
 
-    def test_set_reminder_visible_in_all_user_profiles(self) -> None:
-        """Scheduling is universal; set_reminder must be available in chat/code/draw."""
-        for profile in ("chat", "code", "draw", "remind_action"):
+    def test_set_reminder_visible_in_chat_and_remind_action(self) -> None:
+        """set_reminder routes through chat (deferred entry point) and remind_action
+        (self-rescheduling). Immediate-execution profiles (@draw, @code) defer via
+        chat using @remind, so they should NOT expose the reminder tools."""
+        for profile in ("chat", "remind_action"):
             tools = get_tools_for_profile(profile)
             names = {t["function"]["name"] for t in tools}
             assert "set_reminder" in names, f"set_reminder missing from {profile} profile"
+
+    def test_reminder_tools_not_visible_in_draw_profile(self) -> None:
+        """@draw is immediate-execution; deferred draws go via @remind (chat profile)."""
+        tools = get_tools_for_profile("draw")
+        names = {t["function"]["name"] for t in tools}
+        for tool in ("set_reminder", "list_reminders", "delete_reminder", "cancel_all_reminders"):
+            assert tool not in names, f"{tool} should not be visible in draw profile"
+
+    def test_reminder_tools_not_visible_in_code_profile(self) -> None:
+        """@code is immediate-execution; deferred code generation goes via @remind."""
+        tools = get_tools_for_profile("code")
+        names = {t["function"]["name"] for t in tools}
+        for tool in ("set_reminder", "list_reminders", "delete_reminder", "cancel_all_reminders"):
+            assert tool not in names, f"{tool} should not be visible in code profile"
