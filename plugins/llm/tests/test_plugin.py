@@ -1271,7 +1271,9 @@ class TestPluginDatabaseWiring:
             fire_at=future_time,
             created_at=created,
             chain_position=1,
-            chain_started_at=created,
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
         )
 
         mock_db = mocker.MagicMock()
@@ -1298,7 +1300,6 @@ class TestPluginDatabaseWiring:
             fire_at=future_time,
             created_at=created,
             chain_position=1,
-            chain_started_at=created,
         )
 
     def test_plugin_reload_reminders_delivers_overdue(
@@ -1323,7 +1324,9 @@ class TestPluginDatabaseWiring:
             fire_at=past_time,
             created_at=created,
             chain_position=1,
-            chain_started_at=created,
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
         )
 
         mock_db = mocker.MagicMock()

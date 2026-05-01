@@ -1909,7 +1909,9 @@ class TestReloadRemindersEdgeCases:
             fire_at=future_time,
             created_at=created,
             chain_position=1,
-            chain_started_at=created,
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
         )
 
         plugin.db.load_pending_reminders.return_value = [reminder]

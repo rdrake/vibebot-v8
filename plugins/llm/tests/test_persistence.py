@@ -1273,15 +1273,53 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_11(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 11."""
+    def test_schema_version_is_12(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 12."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 11
+            assert row[0] == 12
         finally:
             conn.close()
+
+    def test_reminder_persists_structured_recurrence_fields(self, test_db: LLMDatabase) -> None:
+        """GIVEN a save with structured recurrence WHEN reloaded THEN fields round-trip."""
+        test_db.save_reminder(
+            event_name="evt-structured",
+            nick="alice",
+            channel="#test",
+            message="msg",
+            fire_at=time.time() + 60,
+            action_prompt="check the build",
+            account="alice",
+            chain_position=1,
+            recurrence_seconds=300,
+            recurrence_rrule=None,
+            watch_mode=True,
+        )
+        rows = test_db.load_pending_reminders()
+        assert len(rows) == 1
+        assert rows[0].recurrence_seconds == 300
+        assert rows[0].recurrence_rrule is None
+        assert rows[0].watch_mode is True
+
+    def test_reminder_rejects_both_recurrence_kinds(self, test_db: LLMDatabase) -> None:
+        """GIVEN both recurrence fields set WHEN saving THEN ValueError."""
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            test_db.save_reminder(
+                event_name="evt-bad",
+                nick="alice",
+                channel="#test",
+                message="msg",
+                fire_at=time.time() + 60,
+                action_prompt="x",
+                account="alice",
+                chain_position=1,
+                recurrence_seconds=300,
+                recurrence_rrule="FREQ=WEEKLY",
+                watch_mode=False,
+            )
 
 
 class TestGetNextDueTime:

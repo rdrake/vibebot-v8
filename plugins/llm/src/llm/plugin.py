@@ -1001,7 +1001,9 @@ class LLM(callbacks.Plugin):
         action_prompt: str = "",
         account: str | None = None,
         chain_position: int = 1,
-        chain_started_at: float = 0.0,
+        recurrence_seconds: int | None = None,
+        recurrence_rrule: str | None = None,
+        watch_mode: bool = False,
     ):
         """Create a reminder delivery closure with error handling.
 
@@ -1014,16 +1016,20 @@ class LLM(callbacks.Plugin):
             message: Reminder message
             event_name: Scheduler event name for cleanup
             chain_position: 1-based position of this reminder within its chain.
-            chain_started_at: Unix timestamp of the chain's first scheduling.
+            recurrence_seconds: Numeric cadence (seconds) for the chain, or None.
+            recurrence_rrule: RFC 5545 RRULE string for the chain, or None.
+            watch_mode: True if the chain may emit ``[silent]`` per fire.
 
         Returns:
             Callable for use with schedule.addEvent
         """
+        # Recurrence/watch fields are accepted now to keep the call surface
+        # aligned with the structured persistence schema (B1) — B4 will use
+        # them for mechanical reschedule. For now they thread through as
+        # placeholders.
+        del recurrence_seconds, recurrence_rrule, watch_mode
         lock = self._reminders_lock
-        parent_chain = (
-            chain_position or 1,
-            chain_started_at or time.time(),
-        )
+        parent_chain: int = chain_position or 1
         # If the command was sent via PM, channel is the bot's own nick.
         # Deliver to the user's nick instead.
         target = channel if ircutils.isChannel(channel) else nick
@@ -1240,7 +1246,9 @@ class LLM(callbacks.Plugin):
                 action_prompt=reminder.action_prompt,
                 account=reminder.account,
                 chain_position=reminder.chain_position or 1,
-                chain_started_at=reminder.chain_started_at or reminder.created_at,
+                recurrence_seconds=reminder.recurrence_seconds,
+                recurrence_rrule=reminder.recurrence_rrule,
+                watch_mode=reminder.watch_mode,
             )
 
             if reminder.fire_at <= now:
@@ -1262,7 +1270,9 @@ class LLM(callbacks.Plugin):
                             fire_at=reminder.fire_at,
                             created_at=reminder.created_at,
                             chain_position=reminder.chain_position or 1,
-                            chain_started_at=reminder.chain_started_at or reminder.created_at,
+                            recurrence_seconds=reminder.recurrence_seconds,
+                            recurrence_rrule=reminder.recurrence_rrule,
+                            watch_mode=reminder.watch_mode,
                         )
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
@@ -2894,7 +2904,6 @@ class LLM(callbacks.Plugin):
 
     _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
-    _REMINDER_CHAIN_TTL_SECONDS = 30 * 86400  # catches slow-but-eternal chains
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
 
     def _react(self, irc: callbacks.Irc, msg: IrcMsg, emoji: str) -> bool:
@@ -2950,7 +2959,7 @@ class LLM(callbacks.Plugin):
         caller: Identity,
         text: str,
         *,
-        parent_chain: tuple[int, float] | None = None,
+        parent_chain: int | None = None,
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder.
 
@@ -2960,9 +2969,8 @@ class LLM(callbacks.Plugin):
         captured separately and is the preferred match key on lookup.
 
         ``parent_chain`` is supplied when an action-fire LLM is rescheduling
-        the next occurrence of a recurring reminder. It carries
-        ``(parent_position, chain_started_at)`` so we can enforce per-chain
-        caps and TTL.
+        the next occurrence of a recurring reminder. It carries the parent's
+        ``chain_position`` so we can enforce the per-chain cap.
         """
         channel = self._get_channel(msg)
 
@@ -2989,7 +2997,7 @@ class LLM(callbacks.Plugin):
 
         now = time.time()
         if parent_chain is not None:
-            parent_position, chain_started_at = parent_chain
+            parent_position = parent_chain
             chain_position = parent_position + 1
             if chain_position > self._REMINDER_MAX_CHAIN_POSITION:
                 return ReminderScheduleResult(
@@ -3000,16 +3008,8 @@ class LLM(callbacks.Plugin):
                         "Set it again to continue."
                     ),
                 )
-            if now - chain_started_at > self._REMINDER_CHAIN_TTL_SECONDS:
-                return ReminderScheduleResult(
-                    ok=False,
-                    message=(
-                        "Recurring reminder reached its 30-day TTL. Set it again to continue."
-                    ),
-                )
         else:
             chain_position = 1
-            chain_started_at = now
             pending = len(self._get_user_reminders(caller))
             if pending >= self._REMINDER_MAX_PENDING_PER_USER:
                 return ReminderScheduleResult(
@@ -3024,6 +3024,12 @@ class LLM(callbacks.Plugin):
         reminder_message = result.message or text
         action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
+        # B1 placeholders: parser populates these in B2 / B4. The structured
+        # columns sit on the row from day one so the schema doesn't churn
+        # again when the parser starts emitting them.
+        recurrence_seconds: int | None = None
+        recurrence_rrule: str | None = None
+        watch_mode: bool = False
         deliver = self._make_reminder_delivery_closure(
             caller.raw_nick,
             channel,
@@ -3032,7 +3038,9 @@ class LLM(callbacks.Plugin):
             action_prompt=action_prompt,
             account=caller.account,
             chain_position=chain_position,
-            chain_started_at=chain_started_at,
+            recurrence_seconds=recurrence_seconds,
+            recurrence_rrule=recurrence_rrule,
+            watch_mode=watch_mode,
         )
 
         try:
@@ -3049,7 +3057,9 @@ class LLM(callbacks.Plugin):
                     fire_at=now + result.seconds,
                     created_at=now,
                     chain_position=chain_position,
-                    chain_started_at=chain_started_at,
+                    recurrence_seconds=recurrence_seconds,
+                    recurrence_rrule=recurrence_rrule,
+                    watch_mode=watch_mode,
                 )
 
             self.db.save_reminder(
@@ -3061,7 +3071,9 @@ class LLM(callbacks.Plugin):
                 action_prompt=action_prompt,
                 account=caller.account,
                 chain_position=chain_position,
-                chain_started_at=chain_started_at,
+                recurrence_seconds=recurrence_seconds,
+                recurrence_rrule=recurrence_rrule,
+                watch_mode=watch_mode,
             )
 
             reply = self.llm_service.sanitize_output(result.confirmation)
@@ -3090,7 +3102,7 @@ class LLM(callbacks.Plugin):
         caller: Identity,
         text: str,
         *,
-        parent_chain: tuple[int, float] | None = None,
+        parent_chain: int | None = None,
     ) -> str:
         """Parse and schedule a reminder, returning a result string for meta.
 

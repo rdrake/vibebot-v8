@@ -100,7 +100,9 @@ def make_reminder_row(
     account: str | None = None,
     fire_at: float = 0.0,
     chain_position: int = 1,
-    chain_started_at: float = 0.0,
+    recurrence_seconds: int | None = None,
+    recurrence_rrule: str | None = None,
+    watch_mode: bool = False,
     id: int = 0,  # noqa: A002 — keyword-only builder, builtin shadow is fine.
     created_at: float = 0.0,
 ) -> ReminderRow:
@@ -121,7 +123,9 @@ def make_reminder_row(
         fire_at=fire_at,
         created_at=created_at,
         chain_position=chain_position,
-        chain_started_at=chain_started_at,
+        recurrence_seconds=recurrence_seconds,
+        recurrence_rrule=recurrence_rrule,
+        watch_mode=watch_mode,
     )
 
 

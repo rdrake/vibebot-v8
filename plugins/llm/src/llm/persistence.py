@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -34,7 +34,9 @@ class ReminderRow(NamedTuple):
     fire_at: float
     created_at: float
     chain_position: int
-    chain_started_at: float
+    recurrence_seconds: int | None
+    recurrence_rrule: str | None
+    watch_mode: bool
 
 
 class UsageSummary(NamedTuple):
@@ -337,6 +339,23 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 12:
+                # B0.5 strategy: graceful degradation. Existing rows have NULL
+                # recurrence_seconds/recurrence_rrule and watch_mode=0; the
+                # legacy LLM-tool reschedule path keeps them firing via
+                # parenthetical parsing in action_prompt until they exhaust
+                # naturally. New rows populate the structured columns directly
+                # (B2 parser, B4 mechanical reschedule). The 30-day chain TTL
+                # is also retired here — the 50-fire chain_position cap remains
+                # the sole runaway guard.
+                conn.executescript("""
+                    ALTER TABLE reminders DROP COLUMN chain_started_at;
+                    ALTER TABLE reminders ADD COLUMN recurrence_seconds INTEGER;
+                    ALTER TABLE reminders ADD COLUMN recurrence_rrule TEXT;
+                    ALTER TABLE reminders ADD COLUMN watch_mode INTEGER NOT NULL DEFAULT 0;
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -445,7 +464,9 @@ class LLMDatabase:
         action_prompt: str = "",
         account: str | None = None,
         chain_position: int = 1,
-        chain_started_at: float = 0.0,
+        recurrence_seconds: int | None = None,
+        recurrence_rrule: str | None = None,
+        watch_mode: bool = False,
     ) -> int:
         """Save a reminder to the database.
 
@@ -458,24 +479,32 @@ class LLMDatabase:
             action_prompt: Optional follow-up LLM prompt to run when reminder fires.
             account: Requester's resolved account name, or None if unknown.
             chain_position: 1-based position within the chain.
-            chain_started_at: Unix timestamp of the chain's first scheduling
-                (default: now).
+            recurrence_seconds: Numeric cadence (seconds) for recurring fires,
+                or None for one-shot / RRULE-driven rows.
+            recurrence_rrule: RFC 5545 RRULE string for calendar-driven cadences,
+                or None for one-shot / numeric rows.
+            watch_mode: True when the action LLM may emit ``[silent]`` to skip
+                user-visible delivery for a fire (long-running watch).
 
         Returns:
             The row ID of the inserted reminder.
 
         Raises:
+            ValueError: If both ``recurrence_seconds`` and ``recurrence_rrule``
+                are non-null (they are mutually exclusive).
             sqlite3.IntegrityError: If event_name already exists.
         """
+        if recurrence_seconds is not None and recurrence_rrule is not None:
+            raise ValueError("recurrence_seconds and recurrence_rrule are mutually exclusive")
         now = time.time()
-        effective_chain_started_at = chain_started_at or now
         conn = self._connect()
         try:
             cursor = conn.execute(
                 "INSERT INTO reminders "
                 "(event_name, nick, channel, message, action_prompt, account, "
-                "fire_at, created_at, chain_position, chain_started_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "fire_at, created_at, chain_position, "
+                "recurrence_seconds, recurrence_rrule, watch_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_name,
                     nick,
@@ -486,7 +515,9 @@ class LLMDatabase:
                     fire_at,
                     now,
                     chain_position,
-                    effective_chain_started_at,
+                    recurrence_seconds,
+                    recurrence_rrule,
+                    int(watch_mode),
                 ),
             )
             conn.commit()
@@ -529,11 +560,30 @@ class LLMDatabase:
         try:
             rows = conn.execute(
                 "SELECT id, event_name, nick, channel, message, action_prompt, account, "
-                "fire_at, created_at, chain_position, chain_started_at "
+                "fire_at, created_at, chain_position, "
+                "recurrence_seconds, recurrence_rrule, watch_mode "
                 "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
                 (cutoff,),
             ).fetchall()
-            return [ReminderRow(*row) for row in rows]
+            # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
+            return [
+                ReminderRow(
+                    id=row[0],
+                    event_name=row[1],
+                    nick=row[2],
+                    channel=row[3],
+                    message=row[4],
+                    action_prompt=row[5],
+                    account=row[6],
+                    fire_at=row[7],
+                    created_at=row[8],
+                    chain_position=row[9],
+                    recurrence_seconds=row[10],
+                    recurrence_rrule=row[11],
+                    watch_mode=bool(row[12]),
+                )
+                for row in rows
+            ]
         finally:
             pass
 
