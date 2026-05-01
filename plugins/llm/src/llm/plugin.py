@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1144,15 +1145,12 @@ class LLM(callbacks.Plugin):
                                 self._draw_for_assistant(_irc, _msg, p)
                             ),
                             cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                            list_reminders_fn=lambda _caller=caller: self._get_user_reminders(
-                                _caller
-                            ),
-                            set_reminder_fn=_set_reminder_capped,
-                            delete_reminder_fn=lambda r, _caller=caller: (
-                                self._remind_delete_for_assistant(_caller, r)
-                            ),
-                            cancel_all_reminders_fn=lambda _caller=caller: (
-                                self._remind_clear_for_assistant(_caller)
+                            **self._reminder_fns(
+                                caller=caller,
+                                irc=active_irc,
+                                msg=synthetic_msg,
+                                set_reminder_fn=_set_reminder_capped,
+                                pass_irc_msg_to_callbacks=False,
                             ),
                             # Note: action fires use a synthetic_msg with no
                             # msgid, so passing irc/msg here would just fail
@@ -2257,14 +2255,7 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    list_reminders_fn=lambda: self._get_user_reminders(caller),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
-                        caller, r, irc=irc, msg=msg
-                    ),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
-                        caller, irc=irc, msg=msg
-                    ),
+                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2372,14 +2363,7 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    list_reminders_fn=lambda: self._get_user_reminders(caller),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
-                        caller, r, irc=irc, msg=msg
-                    ),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
-                        caller, irc=irc, msg=msg
-                    ),
+                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
                 )
 
                 response = result.content
@@ -2468,14 +2452,7 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=[],
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    list_reminders_fn=lambda: self._get_user_reminders(caller),
-                    set_reminder_fn=lambda t: self._remind_set_for_assistant(irc, msg, caller, t),
-                    delete_reminder_fn=lambda r: self._remind_delete_for_assistant(
-                        caller, r, irc=irc, msg=msg
-                    ),
-                    cancel_all_reminders_fn=lambda: self._remind_clear_for_assistant(
-                        caller, irc=irc, msg=msg
-                    ),
+                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
                 )
 
                 response = result.content
@@ -2825,6 +2802,59 @@ class LLM(callbacks.Plugin):
         irc.reply(chan_part, prefixNick=False)
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
+
+    def _reminder_fns(
+        self,
+        *,
+        caller: Identity,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        set_reminder_fn: Callable[[str], str] | None = None,
+        pass_irc_msg_to_callbacks: bool = True,
+    ) -> dict[str, Callable[..., object]]:
+        """Build the four-lambda reminder-tool dict for assistant calls.
+
+        ``set_reminder_fn`` overrides the default ``_remind_set_for_assistant`` —
+        the action-fire path passes a capped wrapper (``_set_reminder_capped``)
+        that enforces the one-nested-set rule.
+
+        ``pass_irc_msg_to_callbacks`` is False on the action-fire path: its
+        ``synthetic_msg`` has no msgid, so passing ``irc``/``msg`` through would
+        just invoke ``_react`` only to have its msgid check fail.
+        """
+        if pass_irc_msg_to_callbacks:
+
+            def delete_fn(r: str) -> str:
+                return self._remind_delete_for_assistant(
+                    caller,
+                    r,
+                    irc=irc,
+                    msg=msg,
+                )
+
+            def clear_fn() -> str:
+                return self._remind_clear_for_assistant(
+                    caller,
+                    irc=irc,
+                    msg=msg,
+                )
+        else:
+
+            def delete_fn(r: str) -> str:
+                return self._remind_delete_for_assistant(caller, r)
+
+            def clear_fn() -> str:
+                return self._remind_clear_for_assistant(caller)
+
+        def default_set_fn(t: str) -> str:
+            return self._remind_set_for_assistant(irc, msg, caller, t)
+
+        return {
+            "list_reminders_fn": lambda: self._get_user_reminders(caller),
+            "set_reminder_fn": set_reminder_fn or default_set_fn,
+            "delete_reminder_fn": delete_fn,
+            "cancel_all_reminders_fn": clear_fn,
+        }
 
     def _get_user_reminders(self, caller: Identity) -> list[tuple[str, ReminderRow]]:
         """Get reminders belonging to a specific user.
