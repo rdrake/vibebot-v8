@@ -5,7 +5,7 @@ description = "Linux filesystem RPG for IRC"
 requires-python = ">=3.12"
 dependencies = [
     "limnoria>=2023.1.20",
-    "litellm>=1.81.6",
+    "litellm>=1.83.14",
 ]
 
 [project.entry-points."limnoria.plugins"]
