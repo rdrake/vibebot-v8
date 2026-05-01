@@ -37,6 +37,9 @@ CHAT_SYSTEM_PROMPT = (
     "tool confirmation.\n"
     "- If a search tool is available and the question needs current "
     "information, use it.\n"
+    "- If generate_image is available and the user asks for a picture, "
+    "drawing, or image, call it — do not refuse on the grounds of being "
+    "text-only.\n"
     "- For tasks the user wants performed LATER or REPEATEDLY (e.g. "
     "'in 5 minutes draw X', 'every hour post the build status', "
     "'every minute for 3 times draw a cat'), call set_reminder to "
@@ -561,7 +564,7 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "generate_image": {
         "capability": "llm.draw",
         "require_account": True,
-        "visible_in": frozenset({"draw", "remind_action"}),
+        "visible_in": frozenset({"chat", "draw", "remind_action"}),
     },
     "search_web": {
         "visible_in": frozenset({"chat", "code", "remind_action"}),

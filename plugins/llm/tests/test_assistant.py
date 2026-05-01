@@ -2036,9 +2036,9 @@ class TestToolSpecVisibility:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_code"].visible_in == frozenset({"chat", "code", "remind_action"})
 
-    def test_generate_image_visible_in_draw_and_remind_action(self) -> None:
+    def test_generate_image_visible_in_chat_draw_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_image"].visible_in == frozenset({"draw", "remind_action"})
+        assert specs["generate_image"].visible_in == frozenset({"chat", "draw", "remind_action"})
 
     def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
         """Action reminders need the union of @ask + @draw tool surfaces."""
@@ -2055,6 +2055,7 @@ class TestToolSpecVisibility:
         names = {t["function"]["name"] for t in tools}
         assert "search_web" in names
         assert "generate_code" in names
+        assert "generate_image" in names
 
     def test_profile_tools_draw_includes_generate_image(self) -> None:
         tools = get_tools_for_profile("draw")
