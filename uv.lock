@@ -803,6 +803,7 @@ dependencies = [
     { name = "nh3" },
     { name = "pillow" },
     { name = "pygments" },
+    { name = "python-dateutil" },
     { name = "tenacity" },
 ]
 
@@ -815,6 +816,7 @@ requires-dist = [
     { name = "nh3", specifier = ">=0.2.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pygments", specifier = ">=2.17.0" },
+    { name = "python-dateutil", specifier = ">=2.9" },
     { name = "tenacity", specifier = ">=8.0.0" },
 ]
 
