@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -353,6 +353,40 @@ class LLMDatabase:
                     ALTER TABLE reminders ADD COLUMN recurrence_seconds INTEGER;
                     ALTER TABLE reminders ADD COLUMN recurrence_rrule TEXT;
                     ALTER TABLE reminders ADD COLUMN watch_mode INTEGER NOT NULL DEFAULT 0;
+                """)
+                conn.commit()
+
+            if current_version < 13:
+                # Task 3 (Limnoria bridge Phase 2): native LLM tool
+                # ``schedule_llm_task`` and friends. One row per active
+                # schedule. Persists wire-format msg so the fire closure can
+                # rebuild a fresh IrcMsg without relying on pickle (msg.tags
+                # would be lost over IrcMsg.__reduce__).
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS scheduled_llm_tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_name TEXT UNIQUE NOT NULL,
+                        creator_nick TEXT NOT NULL,
+                        account TEXT,
+                        channel TEXT NOT NULL,
+                        network TEXT NOT NULL,
+                        wire_msg TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        fire_at REAL NOT NULL,
+                        created_at REAL NOT NULL,
+                        recurrence_seconds INTEGER,
+                        recurrence_rrule TEXT,
+                        chain_position INTEGER NOT NULL DEFAULT 1,
+                        watch_mode INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_fire_at
+                        ON scheduled_llm_tasks(fire_at);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_account
+                        ON scheduled_llm_tasks(account);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_creator_nick
+                        ON scheduled_llm_tasks(creator_nick);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_owner_channel
+                        ON scheduled_llm_tasks(account, creator_nick, channel);
                 """)
                 conn.commit()
 

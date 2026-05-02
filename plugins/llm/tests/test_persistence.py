@@ -1918,3 +1918,71 @@ class TestPendingTasksAccountColumn:
         assert task_id > 0
         rows = test_db.load_pending_tasks()
         assert rows[0].account is None
+
+
+def test_schema_v13_creates_scheduled_llm_tasks_table(tmp_path: Path) -> None:
+    """Task 3/A1: SCHEMA_VERSION bumps to 13; scheduled_llm_tasks table
+    exists with the documented columns, indexes, and uniqueness constraint."""
+    from llm.persistence import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION >= 13
+
+    db_path = tmp_path / "llm.sqlite"
+    LLMDatabase(str(db_path))  # runs migrations
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cols = {row[1]: row for row in conn.execute("PRAGMA table_info(scheduled_llm_tasks)")}
+        for expected in (
+            "id",
+            "event_name",
+            "creator_nick",
+            "account",
+            "channel",
+            "network",
+            "wire_msg",
+            "prompt",
+            "fire_at",
+            "created_at",
+            "recurrence_seconds",
+            "recurrence_rrule",
+            "chain_position",
+            "watch_mode",
+        ):
+            assert expected in cols, f"missing column: {expected}"
+
+        idx_names = {
+            row[1]
+            for row in conn.execute(
+                "SELECT * FROM sqlite_master WHERE type = 'index' "
+                "AND tbl_name = 'scheduled_llm_tasks'"
+            )
+        }
+        assert "idx_scheduled_llm_tasks_fire_at" in idx_names
+        assert "idx_scheduled_llm_tasks_account" in idx_names
+        assert "idx_scheduled_llm_tasks_creator_nick" in idx_names
+        assert "idx_scheduled_llm_tasks_owner_channel" in idx_names
+
+        # event_name is UNIQUE
+        conn.execute(
+            "INSERT INTO scheduled_llm_tasks "
+            "(event_name, creator_nick, channel, network, wire_msg, prompt, "
+            "fire_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("ev1", "nick1", "#a", "afternet", ":wire1", "p", 0.0, 0.0),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO scheduled_llm_tasks "
+                "(event_name, creator_nick, channel, network, wire_msg, prompt, "
+                "fire_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("ev1", "nick2", "#a", "afternet", ":wire2", "p", 0.0, 0.0),
+            )
+    finally:
+        conn.close()
+
+
+def test_schema_v13_idempotent(tmp_path: Path) -> None:
+    """Re-opening a v13 DB does not error or re-run the migration body."""
+    db_path = tmp_path / "llm.sqlite"
+    LLMDatabase(str(db_path))
+    LLMDatabase(str(db_path))  # second open must succeed unchanged
