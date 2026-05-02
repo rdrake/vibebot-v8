@@ -93,6 +93,7 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/service.py` - main LLM execution path
 - `plugins/llm/src/llm/plugin.py` - command surface and IRC integration
 - `plugins/llm/src/llm/context.py` - volatile memory implementation
+- `plugins/llm/src/llm/limnoria_bridge.py` - Limnoria → LLM tool bridge (Phase 1; see docs/plans/2026-05-02-limnoria-tool-bridge-plan.md)
 - `plugins/rpg/src/rpg/` - RPG plugin implementation
 - `README.md` - setup and operator-facing documentation
 - `mkdocs.yml` and `docs/guide/` - published guide source
