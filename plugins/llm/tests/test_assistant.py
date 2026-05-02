@@ -2292,3 +2292,27 @@ class TestToolSpecVisibility:
         names = {t["function"]["name"] for t in tools}
         for tool in ("set_reminder", "list_reminders", "delete_reminder", "cancel_all_reminders"):
             assert tool not in names, f"{tool} should not be visible in code profile"
+
+
+class TestScheduleLlmTaskFamily:
+    """Phase 2 Task 3 / C1 — schedule_llm_task tool registration."""
+
+    def test_assistant_tools_includes_schedule_llm_task_family(self) -> None:
+        names = {t["function"]["name"] for t in ASSISTANT_TOOLS}
+        assert "schedule_llm_task" in names
+        assert "list_scheduled_llm_tasks" in names
+        assert "cancel_scheduled_llm_task" in names
+
+        by_name = {t["function"]["name"]: t for t in ASSISTANT_TOOLS}
+        sch = by_name["schedule_llm_task"]
+        # Description must call out the @ask-with-tools shape and contrast
+        # with set_reminder so the LLM picks the right tool.
+        desc = sch["function"]["description"].lower()
+        assert "@ask" in desc or "ask " in desc
+        assert "set_reminder" in desc
+        assert "tool" in desc
+
+        params = sch["function"]["parameters"]
+        assert "when_natural" in params["properties"]
+        assert "prompt" in params["properties"]
+        assert set(params["required"]) >= {"when_natural", "prompt"}

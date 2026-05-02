@@ -431,6 +431,77 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "schedule_llm_task",
+            "description": (
+                "Schedule a future LLM task. At fire time the bot runs an "
+                "@ask invocation as you, with full tool access (search, fetch, "
+                "draw, code, Limnoria bridge). Use this for tasks that need "
+                "TOOLS at fire time, e.g. 'every Monday at 9am check my open "
+                "PRs and tell me which are stale'. For plain text reminders "
+                "with no action, use set_reminder instead. Recurring is "
+                "supported (numeric and calendar cadences)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "when_natural": {
+                        "type": "string",
+                        "description": (
+                            "Natural-language schedule, e.g. 'in 30 min', "
+                            "'every Monday at 9am', 'every 5 minutes'."
+                        ),
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "The bare instruction the bot should run at fire "
+                            "time. Write it like you would type after `@ask`. "
+                            "No 'remind me to', no time qualifier."
+                        ),
+                    },
+                },
+                "required": ["when_natural", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_scheduled_llm_tasks",
+            "description": (
+                "List your scheduled LLM tasks. Returns id, when, channel, "
+                "and prompt for each. Use before cancel_scheduled_llm_task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_scheduled_llm_task",
+            "description": (
+                "Cancel one of your scheduled LLM tasks by id. Get ids "
+                "from list_scheduled_llm_tasks."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The scheduled-task id (e.g. 'llm_task_abc123').",
+                    },
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
             "description": (
                 "Generate an image from a text description. Returns a URL to the generated image."
