@@ -32,6 +32,7 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
+from .config import resolve_setting
 from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase, ReminderRow
 from .service import (
@@ -857,13 +858,21 @@ class LLM(callbacks.Plugin):
                 if not channel_msgs:
                     return
 
-                api_key = self.registryValue("spontaneousApiKey", channel)
-                if not api_key:
-                    api_key = self.registryValue("askApiKey", channel)
+                api_key = resolve_setting(
+                    self,
+                    "assistantApiKey",
+                    channel,
+                    fallbacks=("spontaneousApiKey", "askApiKey"),
+                )
                 if not api_key:
                     return
 
-                model = self.registryValue("spontaneousModel", channel)
+                model = resolve_setting(
+                    self,
+                    "assistantModel",
+                    channel,
+                    fallbacks=("spontaneousModel", "askModel"),
+                )
                 system_prompt = self.registryValue("spontaneousSystemPrompt", channel)
 
                 prompt = "Respond to the conversation above, or say PASS."
@@ -1165,7 +1174,12 @@ class LLM(callbacks.Plugin):
                         history, channel_history = self._gather_history(nick, channel)
                         memories = self._get_user_memories(nick)
                         user_instruction = self.db.get_instruction(nick)
-                        ask_prompt = self.registryValue("askSystemPrompt", channel)
+                        ask_prompt = resolve_setting(
+                            self,
+                            "assistantSystemPrompt",
+                            channel,
+                            fallbacks=("askSystemPrompt",),
+                        )
                         effective_prompt = (
                             f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
                         )
@@ -2469,7 +2483,12 @@ class LLM(callbacks.Plugin):
             user_instruction = self.db.get_instruction(nick)
 
             # Build system prompt with optional user instruction
-            ask_prompt = self.registryValue("askSystemPrompt", channel)
+            ask_prompt = resolve_setting(
+                self,
+                "assistantSystemPrompt",
+                channel,
+                fallbacks=("askSystemPrompt",),
+            )
             effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
 
             with self._allow_concurrent():
