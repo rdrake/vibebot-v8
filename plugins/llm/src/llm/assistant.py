@@ -725,6 +725,9 @@ class AssistantToolExecutor:
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
         code_fn: Callable[[str], ToolResult] | None = None,
+        schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
+        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.db = db
         self.context = context
@@ -743,6 +746,9 @@ class AssistantToolExecutor:
         self._search_fn = search_fn
         self._fetch_fn = fetch_fn
         self._code_fn = code_fn
+        self._schedule_llm_task_fn = schedule_llm_task_fn
+        self._list_scheduled_llm_tasks_fn = list_scheduled_llm_tasks_fn
+        self._cancel_scheduled_llm_task_fn = cancel_scheduled_llm_task_fn
 
         # Accumulator fields for structured returns
         self.grounding_used: bool = False
@@ -1010,6 +1016,33 @@ class AssistantToolExecutor:
         if self._cancel_all_reminders_fn is None:
             return self._err("Reminders are not available.")
         return self._ok(self._cancel_all_reminders_fn())
+
+    def _tool_schedule_llm_task(self, args: dict[str, Any]) -> str:
+        if self._schedule_llm_task_fn is None:
+            return self._err("Scheduling is not configured on this bot.")
+        when_natural = str(args.get("when_natural") or "").strip()
+        prompt = str(args.get("prompt") or "").strip()
+        if not when_natural:
+            return self._err("when_natural is required.")
+        if not prompt:
+            return self._err("prompt is required.")
+        result = self._schedule_llm_task_fn(when_natural=when_natural, prompt=prompt)
+        return json.dumps(result)
+
+    def _tool_list_scheduled_llm_tasks(self, _args: dict[str, Any]) -> str:
+        if self._list_scheduled_llm_tasks_fn is None:
+            return self._err("Scheduling is not configured on this bot.")
+        tasks = self._list_scheduled_llm_tasks_fn()
+        return json.dumps({"status": "ok", "tasks": tasks})
+
+    def _tool_cancel_scheduled_llm_task(self, args: dict[str, Any]) -> str:
+        if self._cancel_scheduled_llm_task_fn is None:
+            return self._err("Scheduling is not configured on this bot.")
+        event_name = str(args.get("id") or "").strip()
+        if not event_name:
+            return self._err("id is required.")
+        result = self._cancel_scheduled_llm_task_fn(event_name=event_name)
+        return json.dumps(result)
 
     def _tool_generate_image(self, args: dict[str, Any]) -> str:
         if self._draw_fn is None:

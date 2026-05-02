@@ -2336,3 +2336,116 @@ class TestScheduleLlmTaskFamily:
         assert can.capability == "llm.ask"
         assert can.require_account is False
         assert can.visible_in == frozenset({"chat", "remind_action"})
+
+    def test_executor_accepts_scheduled_task_fns(self, mocker: MockerFixture) -> None:
+        """C3: AssistantToolExecutor accepts the three new fn kwargs."""
+        schedule_fn = mocker.MagicMock()
+        list_fn = mocker.MagicMock()
+        cancel_fn = mocker.MagicMock()
+
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+            schedule_llm_task_fn=schedule_fn,
+            list_scheduled_llm_tasks_fn=list_fn,
+            cancel_scheduled_llm_task_fn=cancel_fn,
+        )
+        assert ex._schedule_llm_task_fn is schedule_fn
+        assert ex._list_scheduled_llm_tasks_fn is list_fn
+        assert ex._cancel_scheduled_llm_task_fn is cancel_fn
+
+    def test_tool_schedule_llm_task_calls_callback_and_returns_json(
+        self, mocker: MockerFixture
+    ) -> None:
+        import json
+
+        schedule_fn = mocker.MagicMock(
+            return_value={
+                "status": "ok",
+                "event_name": "llm_task_abc",
+                "fire_at": 1700000000.0,
+                "message": "Scheduled.",
+            }
+        )
+
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+            schedule_llm_task_fn=schedule_fn,
+        )
+
+        out = ex.execute(
+            "schedule_llm_task",
+            {"when_natural": "in 60s", "prompt": "ping me"},
+        )
+        parsed = json.loads(out.content)
+        assert parsed["status"] == "ok"
+        assert parsed["event_name"] == "llm_task_abc"
+        schedule_fn.assert_called_once_with(when_natural="in 60s", prompt="ping me")
+
+    def test_tool_list_scheduled_llm_tasks_returns_summary(self, mocker: MockerFixture) -> None:
+        import json
+
+        list_fn = mocker.MagicMock(
+            return_value=[
+                {
+                    "id": "ev1",
+                    "when": "2026-05-02T13:00:00Z",
+                    "channel": "#t",
+                    "prompt": "check build",
+                    "recurrence": None,
+                },
+                {
+                    "id": "ev2",
+                    "when": "2026-05-09T13:00:00Z",
+                    "channel": "#t",
+                    "prompt": "weekly digest",
+                    "recurrence": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",
+                },
+            ]
+        )
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+            list_scheduled_llm_tasks_fn=list_fn,
+        )
+        out = ex.execute("list_scheduled_llm_tasks", {})
+        parsed = json.loads(out.content)
+        assert parsed["status"] == "ok"
+        assert len(parsed["tasks"]) == 2
+
+    def test_tool_cancel_scheduled_llm_task_passes_id(self, mocker: MockerFixture) -> None:
+        import json
+
+        cancel_fn = mocker.MagicMock(
+            return_value={
+                "status": "ok",
+                "event_name": "llm_task_abc",
+                "message": "Cancelled.",
+            }
+        )
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+            cancel_scheduled_llm_task_fn=cancel_fn,
+        )
+        out = ex.execute("cancel_scheduled_llm_task", {"id": "llm_task_abc"})
+        parsed = json.loads(out.content)
+        assert parsed["status"] == "ok"
+        cancel_fn.assert_called_once_with(event_name="llm_task_abc")
