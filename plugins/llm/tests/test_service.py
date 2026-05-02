@@ -1721,24 +1721,22 @@ class TestSanitizeOutput:
         assert result == "/msg someone hello"
 
     def test_sanitize_output_multiline_dot(self) -> None:
-        """GIVEN multiline text with dot lines WHEN sanitizing THEN collapses to single line."""
+        """GIVEN multiline text with dot lines WHEN sanitizing THEN preserves lines safely."""
         text = "Line 1\n.ban user\nLine 3\n.part"
         result = self.service.sanitize_output(text)
-        assert result == "Line 1 .ban user Line 3 .part"
+        assert result == "Line 1\n .ban user\nLine 3\n .part"
 
     def test_sanitize_output_multiline_slash(self) -> None:
-        """GIVEN multiline text with slash lines WHEN sanitizing THEN collapses to single line."""
+        """GIVEN multiline text with slash lines WHEN sanitizing THEN preserves lines."""
         text = "Line 1\n/quit message\nLine 3"
         result = self.service.sanitize_output(text)
-        assert result == "Line 1 /quit message Line 3"
+        assert result == "Line 1\n/quit message\nLine 3"
 
     def test_sanitize_output_mixed_prefixes(self) -> None:
-        """GIVEN multiline text with dots and slashes WHEN sanitizing THEN collapses to single line."""
+        """GIVEN multiline text with mixed prefixes WHEN sanitizing THEN checks each line."""
         text = ".dot command\n/slash command\nNormal line"
         result = self.service.sanitize_output(text)
-        assert (
-            result == " .dot command /slash command Normal line"
-        )  # only leading prefix gets space
+        assert result == " .dot command\n/slash command\nNormal line"
 
     def test_sanitize_output_preserves_internal_dots(self) -> None:
         """GIVEN text with dots not at start WHEN sanitizing THEN preserves them."""
