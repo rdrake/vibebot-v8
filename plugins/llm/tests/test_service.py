@@ -5051,3 +5051,312 @@ class TestPendingTaskResultCarriesAccount:
             account="alice_acct",
         )
         assert r.account == "alice_acct"
+
+
+# =============================================================================
+# Phase 2 Task 3 — schedule_llm_task service method
+# =============================================================================
+
+
+import time as _time  # noqa: E402
+
+from llm.service import ReminderParseResult  # noqa: E402
+
+
+@pytest.fixture
+def db(test_db):
+    return test_db
+
+
+@pytest.fixture
+def llm_service(make_service, db):
+    service, plugin = make_service()
+    plugin.db = db
+    return service
+
+
+def _msg_mock(mocker: MockerFixture, *, depth: int | None = None):
+    msg = mocker.MagicMock()
+    msg.__str__ = lambda self: ":rdrake!u@h PRIVMSG #t :@ask hi"
+    msg.nick = "rdrake"
+    msg.args = ("#t", "@ask hi")
+    msg.tagged.side_effect = lambda key: depth if key == "llm_schedule_depth" else None
+    return msg
+
+
+def _irc_mock(mocker: MockerFixture):
+    irc = mocker.MagicMock()
+    irc.network = "afternet"
+    return irc
+
+
+def test_schedule_llm_task_creates_db_row_and_schedules_event(
+    llm_service, db, mocker: MockerFixture
+):
+    """B1: a one-shot schedule writes a DB row and registers the event with
+    supybot.schedule.addEvent."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="check build",
+            confirmation="ok",
+            note=None,
+            action_prompt="check the build",
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#test",
+        when_natural="in 60s",
+        prompt="check the build",
+    )
+
+    assert result.status == "ok"
+    assert result.event_name.startswith("llm_task_")
+    rows = db.load_active_scheduled_llm_tasks()
+    [row] = [r for r in rows if r.event_name == result.event_name]
+    assert row.creator_nick == "rdrake"
+    assert row.account == "rdrake_a"
+    assert row.channel == "#test"
+    assert row.network == "afternet"
+    assert row.prompt == "check the build"
+    assert row.recurrence_seconds is None
+    assert row.recurrence_rrule is None
+
+    add_event.assert_called_once()
+    args = add_event.call_args
+    callback = args[0][0]
+    fire_at = args[0][1]
+    name_kwarg = args.kwargs.get("name") or args[0][2]
+    assert callable(callback)
+    assert name_kwarg == result.event_name
+    assert fire_at == pytest.approx(_time.time() + 60, abs=2)
+
+
+def test_schedule_llm_task_recurrence_seconds(llm_service, db, mocker: MockerFixture):
+    """B1: numeric-cadence recurrence stores recurrence_seconds and schedules
+    the FIRST fire at parser.seconds."""
+    mocker.patch("llm.service.schedule.addEvent")
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="ping me",
+            confirmation="ok",
+            note=None,
+            action_prompt="ping me",
+            recurrence_seconds=300,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account="acct",
+        channel="#t",
+        when_natural="every 5 minutes",
+        prompt="ping me",
+    )
+    assert result.status == "ok"
+    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == result.event_name]
+    assert row.recurrence_seconds == 300
+    assert row.recurrence_rrule is None
+
+
+def test_schedule_llm_task_recurrence_rrule(llm_service, db, mocker: MockerFixture):
+    """B1: RRULE recurrence stored as-is; recurrence_seconds remains null."""
+    mocker.patch("llm.service.schedule.addEvent")
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=3600,
+            message="weekly",
+            confirmation="ok",
+            note=None,
+            action_prompt="post the weekly summary",
+            recurrence_seconds=None,
+            recurrence_rrule="FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",
+            watch_mode=False,
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account="acct",
+        channel="#t",
+        when_natural="every Monday at 9am",
+        prompt="post the weekly summary",
+    )
+    assert result.status == "ok"
+    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == result.event_name]
+    assert row.recurrence_rrule.startswith("FREQ=WEEKLY")
+
+
+def test_schedule_llm_task_refuses_when_depth_tag_set(llm_service, mocker: MockerFixture):
+    """B1 + D4: a fired task can't recursively call schedule_llm_task."""
+    msg = _msg_mock(mocker, depth=1)
+    irc = _irc_mock(mocker)
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account=None,
+        channel="#t",
+        when_natural="in 1m",
+        prompt="do something else",
+    )
+    assert result.status == "error"
+    assert "depth" in result.message.lower() or "scheduled" in result.message.lower()
+
+
+def test_schedule_llm_task_enforces_per_creator_limit(llm_service, db, mocker: MockerFixture):
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    for i in range(5):
+        db.save_scheduled_llm_task(
+            event_name=f"existing_{i}",
+            creator_nick="n",
+            account="a",
+            channel="#t",
+            network="afternet",
+            wire_msg=":n!u@h PRIVMSG #t :@ask hi",
+            prompt="p",
+            fire_at=_time.time() + 60,
+        )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="x",
+            confirmation="ok",
+            note=None,
+            action_prompt="x",
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account="a",
+        channel="#t",
+        when_natural="in 1m",
+        prompt="do x",
+    )
+    assert result.status == "error"
+    assert "limit" in result.message.lower()
+
+
+def test_schedule_llm_task_limit_zero_disables_scheduling(llm_service, mocker: MockerFixture):
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        0 if k == "bridgeScheduledTaskLimit" else None
+    )
+
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account="a",
+        channel="#t",
+        when_natural="in 1m",
+        prompt="do x",
+    )
+
+    assert result.status == "error"
+    assert "disabled" in result.message.lower()
+
+
+def test_schedule_llm_task_clarify_returns_clarify_envelope(llm_service, mocker: MockerFixture):
+    """When parse_reminder returns action='clarify', schedule_llm_task surfaces
+    the parser's clarification text instead of scheduling."""
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="clarify",
+            confirmation="When should I run that?",
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="n",
+        account="acct",
+        channel="#t",
+        when_natural="vague request",
+        prompt="some action",
+    )
+    assert result.status == "clarify"
+    assert "When should I run that?" in result.message
+
+
+def test_schedule_llm_task_requires_account(llm_service, mocker: MockerFixture):
+    """schedule_llm_task refuses unauthenticated callers (defense in depth)."""
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+    result = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="anon",
+        account=None,
+        channel="#t",
+        when_natural="in 1m",
+        prompt="do x",
+    )
+    assert result.status == "error"
+    assert "account" in result.message.lower() or "auth" in result.message.lower()

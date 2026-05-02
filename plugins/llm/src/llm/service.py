@@ -7,8 +7,10 @@ import contextlib
 import hashlib
 import json
 import re
+import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,7 @@ import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
+import supybot.schedule as schedule
 import supybot.world as world
 from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
@@ -30,6 +33,7 @@ from supybot.utils.file import AtomicFile
 
 from .config import resolve_setting
 from .context import Role
+from .persistence import ScheduledLlmTaskRow
 from .tracing import TraceFilter, extract_server_headers, request_id
 
 # MUST be set before any LiteLLM calls create HTTPHandler
@@ -321,6 +325,16 @@ class ReminderParseResult(NamedTuple):
         None  # RFC 5545 RRULE body (no DTSTART), mutually exclusive with seconds
     )
     watch_mode: bool = False  # if true, fire-time engine suppresses negative-result replies
+
+
+class ScheduleLlmTaskResult(NamedTuple):
+    """Outcome of a schedule_llm_task / cancel_scheduled_llm_task call."""
+
+    status: str  # "ok", "clarify", "error"
+    event_name: str = ""
+    fire_at: float = 0.0
+    message: str = ""  # confirmation (status=ok) or reason (clarify/error)
+    note: str | None = None
 
 
 if TYPE_CHECKING:
@@ -3674,3 +3688,313 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             return CleanupResult(error="Cleanup would leave user with zero memories")
 
         return CleanupResult(drop=drop, merge=validated_merge)
+
+    # ------------------------------------------------------------------
+    # Phase 2 Task 3 — schedule_llm_task (Scheduler-as-agent)
+    # ------------------------------------------------------------------
+
+    def schedule_llm_task(
+        self,
+        *,
+        irc: Irc,
+        msg: IrcMsg,
+        creator_nick: str,
+        account: str | None,
+        channel: str,
+        when_natural: str,
+        prompt: str,
+    ) -> ScheduleLlmTaskResult:
+        """Schedule a future @ask invocation (Phase 2 Task 3).
+
+        Uses ``parse_reminder`` for the natural-language → seconds / rrule shape
+        by parsing ``f"{when_natural} {prompt}"``. The parsed message/action text
+        is ignored; ``prompt`` is the LLM's already-bare instruction and is stored
+        verbatim.
+
+        Refuses (without scheduling) when:
+        - The caller is already inside a fired schedule
+          (``msg.tagged('llm_schedule_depth')`` is truthy) — depth cap of 1.
+        - The caller is unidentified (defense in depth; the tool spec also
+          requires an authenticated account).
+        - ``bridgeScheduledTaskLimit`` is 0 (scheduling disabled in this channel)
+          or the caller already has that many active tasks here.
+        - ``parse_reminder`` returns ``action='clarify'`` — surface the parser's
+          question via the ``clarify`` status.
+        """
+        db = getattr(self.plugin, "db", None)
+        if db is None:
+            return ScheduleLlmTaskResult(status="error", message="No database available.")
+
+        # Depth cap. Tags are set fresh on the rehydrated msg in the fire
+        # callback (msg.tags is lost on pickle — see plan §Architecture).
+        if msg.tagged("llm_schedule_depth"):
+            return ScheduleLlmTaskResult(
+                status="error",
+                message="Cannot schedule another task from inside a fired "
+                "schedule (depth cap reached).",
+            )
+
+        if not account:
+            return ScheduleLlmTaskResult(
+                status="error",
+                message="schedule_llm_task requires an authenticated account.",
+            )
+
+        limit = int(self.plugin.registryValue("bridgeScheduledTaskLimit", channel) or 0)
+        if limit == 0:
+            return ScheduleLlmTaskResult(
+                status="error",
+                message="Scheduled LLM tasks are disabled in this channel.",
+            )
+        existing = db.count_scheduled_llm_tasks_for(
+            account=account, nick=creator_nick, channel=channel
+        )
+        if existing >= limit:
+            return ScheduleLlmTaskResult(
+                status="error",
+                message=(
+                    f"Scheduled-task limit reached ({existing}/{limit}). Cancel "
+                    "one with cancel_scheduled_llm_task to free a slot."
+                ),
+            )
+
+        # parse_reminder expects both time AND message in one string, so compose.
+        # The structured prompt is stored verbatim; parsed.message/action_prompt
+        # are discarded.
+        parsed = self.parse_reminder(f"{when_natural} {prompt}", channel=channel)
+        if parsed.action != "schedule" or not parsed.seconds:
+            return ScheduleLlmTaskResult(
+                status="clarify",
+                message=parsed.confirmation or "Could not parse that schedule.",
+                note=parsed.note,
+            )
+
+        fire_at = time.time() + parsed.seconds
+        event_name = f"llm_task_{uuid.uuid4().hex[:12]}"
+        try:
+            db.save_scheduled_llm_task(
+                event_name=event_name,
+                creator_nick=creator_nick,
+                account=account,
+                channel=channel,
+                network=irc.network,
+                wire_msg=str(msg),
+                prompt=prompt,
+                fire_at=fire_at,
+                recurrence_seconds=parsed.recurrence_seconds,
+                recurrence_rrule=parsed.recurrence_rrule,
+                chain_position=1,
+                watch_mode=parsed.watch_mode,
+            )
+        except sqlite3.IntegrityError:
+            return ScheduleLlmTaskResult(
+                status="error",
+                message="event-name collision; please retry",
+            )
+
+        callback = self._make_scheduled_llm_task_callback(event_name)
+        try:
+            schedule.addEvent(callback, fire_at, name=event_name)
+        except Exception:
+            db.delete_scheduled_llm_task(event_name)
+            self.log.exception("schedule_llm_task addEvent failed: %s", event_name)
+            return ScheduleLlmTaskResult(
+                status="error",
+                message="Could not register the scheduled task.",
+            )
+
+        return ScheduleLlmTaskResult(
+            status="ok",
+            event_name=event_name,
+            fire_at=fire_at,
+            message=parsed.confirmation
+            or f"Scheduled for {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(fire_at))}.",
+            note=parsed.note,
+        )
+
+    def _make_scheduled_llm_task_callback(self, event_name: str):
+        """Build the no-arg fire closure for ``schedule.addEvent``.
+
+        Rebuilds a fresh ``IrcMsg`` from the persisted wire string, tags it with
+        ``llm_schedule_depth=1``, and dispatches via ``assistant_request``
+        directly (not via the wrapped ``ask`` command, which would bypass normal
+        Limnoria dispatch from the scheduler thread).
+        """
+        db = self.plugin.db
+
+        def fire() -> None:
+            row = db.get_scheduled_llm_task(event_name)
+            if row is None:
+                self.log.info("scheduled_llm_task fire: %s cancelled", event_name)
+                return
+
+            irc = world.getIrc(row.network) or (world.ircs[0] if world.ircs else None)
+            if irc is None:
+                self.log.warning(
+                    "scheduled_llm_task fire: %s no irc; skipping (no reschedule)",
+                    event_name,
+                )
+                return
+
+            try:
+                msg = row.rehydrate_msg()
+                msg.tag("llm_schedule_depth", 1)
+                self._dispatch_scheduled_task(irc, msg, row)
+            except Exception:
+                self.log.exception("scheduled_llm_task fire failed: %s", event_name)
+
+            self._maybe_reschedule_or_clean(row, db)
+
+        return fire
+
+    def _dispatch_scheduled_task(
+        self,
+        irc: Irc,
+        msg: IrcMsg,
+        row: ScheduledLlmTaskRow,
+    ) -> None:
+        """Run the fired prompt through ``assistant_request`` directly.
+
+        Mirrors the reminder action-fire path in ``plugin.py``: the manual
+        rate-limit check, synthetic AssistantRequestContext, the direct service
+        call, output sanitization, and usage logging are all needed because the
+        scheduler thread bypasses the normal command-wrapper preflight.
+        """
+        plugin = self.plugin
+        now = time.time()
+        rl_account = row.account if row.account else row.creator_nick
+        rl_tier = "registered" if row.account else "unregistered"
+        target = row.channel if ircutils.isChannel(row.channel) else row.creator_nick
+        if plugin._check_rate_limit(
+            None,
+            "ask",
+            rl_account,
+            "",
+            "",
+            "",
+            tier=rl_tier,
+            silent=True,
+            now=now,
+        ):
+            irc.queueMsg(
+                ircmsgs.privmsg(
+                    target,
+                    f"{row.creator_nick}: Scheduled task skipped — daily ask limit reached.",
+                )
+            )
+            return
+
+        request_context = AssistantRequestContext(
+            entry_route="scheduled_llm_task",
+            profile="remind_action",
+            nick=row.creator_nick,
+            raw_nick=row.creator_nick,
+            account=row.account,
+            channel=row.channel,
+            is_private=not ircutils.isChannel(row.channel),
+            is_owner=False,
+            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
+        )
+        history, channel_history = plugin._gather_history(row.creator_nick, row.channel)
+        memories = plugin._get_user_memories(row.creator_nick)
+        user_instruction = plugin.db.get_instruction(row.creator_nick)
+        ask_prompt = resolve_setting(
+            plugin,
+            "assistantSystemPrompt",
+            row.channel,
+            fallbacks=("askSystemPrompt",),
+        )
+        effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+        # Local import avoids a service.py -> plugin.py import cycle at module load.
+        from .plugin import Identity
+
+        caller = Identity(raw_nick=row.creator_nick, account=row.account)
+
+        # The depth tag on ``msg`` keeps schedule_llm_task itself off the tool
+        # surface for this turn (the tool refuses on depth>=1). Task D3 adds
+        # the scheduled-task companion fns into the unpack here.
+        reminder_fns: dict[str, Any] = plugin._reminder_fns(
+            caller=caller,
+            irc=irc,
+            msg=msg,
+            pass_irc_msg_to_callbacks=False,
+        )
+
+        result = self.assistant_request(
+            prompt=row.prompt,
+            request_context=request_context,
+            db=plugin.db,
+            context=plugin.context,
+            bot_nick=irc.nick,
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
+            memories=memories,
+            system_prompt=effective_prompt,
+            search_fn=lambda q: self.search_completion(q, channel=row.channel),
+            fetch_fn=lambda u: self.url_completion(u, channel=row.channel),
+            code_fn=lambda p: plugin._code_for_assistant(p, row.channel),
+            draw_fn=lambda p, _i=irc, _m=msg: plugin._draw_for_assistant(_i, _m, p),
+            cleanup_fn=lambda n: plugin._run_memory_cleanup(n, row.channel),
+            **reminder_fns,
+        )
+
+        response = (result.content or "").strip()
+        try:
+            plugin.db.log_usage(
+                row.account or row.creator_nick,
+                row.channel,
+                "scheduled_llm_task",
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+                prompt=row.prompt,
+                status=("silent" if row.watch_mode and response == "[silent]" else "success"),
+                error_detail=(result.error or "")[:200],
+            )
+        except Exception:
+            self.log.exception("scheduled_llm_task usage log failed: %s", row.event_name)
+
+        if not response or (row.watch_mode and response == "[silent]"):
+            return
+        safe_response = self.sanitize_output(response)
+        irc.queueMsg(ircmsgs.privmsg(target, safe_response))
+
+    def _maybe_reschedule_or_clean(
+        self,
+        row: ScheduledLlmTaskRow,
+        db: LLMDatabase,
+    ) -> None:
+        """Reschedule recurring tasks; delete one-shots after fire.
+
+        Rechecks the DB row before rescheduling so a cancel during an in-flight
+        recurring fire wins (mirrors the reminder clear-vs-mid-fire guard).
+        """
+        if row.recurrence_seconds is None and row.recurrence_rrule is None:
+            db.delete_scheduled_llm_task(row.event_name)
+            return
+        if db.get_scheduled_llm_task(row.event_name) is None:
+            self.log.info(
+                "scheduled_llm_task reschedule skipped: %s cancelled mid-fire",
+                row.event_name,
+            )
+            return
+        next_fire = self._compute_next_fire(row)
+        if next_fire is None:
+            db.delete_scheduled_llm_task(row.event_name)
+            return
+        db.update_scheduled_llm_task_fire_at(
+            row.event_name, next_fire, chain_position=row.chain_position + 1
+        )
+        callback = self._make_scheduled_llm_task_callback(row.event_name)
+        schedule.addEvent(callback, next_fire, name=row.event_name)
+
+    def _compute_next_fire(self, row: ScheduledLlmTaskRow) -> float | None:
+        """Next fire time for a recurring task; ``None`` exhausts the schedule."""
+        if row.recurrence_seconds:
+            return time.time() + row.recurrence_seconds
+        if row.recurrence_rrule:
+            return self.plugin._next_rrule_fire(row.recurrence_rrule, time.time())
+        return None
