@@ -381,6 +381,37 @@ def _patch_irc_dojoin(plugin: LLM) -> None:
     irclib.Irc.doJoin = doJoin  # ty: ignore[invalid-assignment]
 
 
+def _patch_irc_docapnew() -> None:
+    """Make doCapNew also request experimental caps (draft/multiline et al).
+
+    Why: Limnoria's stock doCapNew filters CAP NEW announcements through
+    REQUEST_CAPABILITIES only, ignoring REQUEST_EXPERIMENTAL_CAPABILITIES
+    even when experimentalExtensions is enabled. AfterNET's bouncer
+    advertises draft/multiline via CAP NEW post-SASL, so without this
+    patch Limnoria never requests it and long replies fall back to
+    @more pagination.
+    """
+    from supybot import conf, irclib
+
+    def doCapNew(self, msg):  # noqa: N802
+        if len(msg.args) != 3:
+            log.warning("Bad CAP NEW from server: %r", msg)
+            return
+        caps = msg.args[2].split()
+        assert caps, "Empty list of capabilities"
+        self._addCapabilities(msg.args[2], msg)
+        if self.state.fsm.state == irclib.IrcStateFsm.States.SHUTTING_DOWN:
+            return
+        want = irclib.Irc.REQUEST_CAPABILITIES
+        if conf.supybot.protocols.irc.experimentalExtensions():
+            want = want | irclib.Irc.REQUEST_EXPERIMENTAL_CAPABILITIES
+        new = set(self.state.capabilities_ls) & want - self.state.capabilities_ack
+        if new:
+            self.requestCapabilities(new)
+
+    irclib.Irc.doCapNew = doCapNew  # ty: ignore[invalid-assignment]
+
+
 class LLM(callbacks.Plugin):
     """AI-powered commands using LiteLLM.
 
@@ -413,6 +444,7 @@ class LLM(callbacks.Plugin):
         self.db = LLMDatabase(db_path)
 
         _patch_irc_dojoin(self)
+        _patch_irc_docapnew()
 
         # Initialize conversation context (loads persisted conversations from DB)
         self._init_context()
