@@ -5500,3 +5500,93 @@ def test_restore_scheduled_llm_tasks_reregisters_events(llm_service, db, mocker:
         fire_at = call.args[1]
         if name == "overdue_ev":
             assert fire_at <= now + 5
+
+
+# =============================================================================
+# Phase 2 Task 3 / D4 — depth-cap end-to-end on fired schedule
+# =============================================================================
+
+
+def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: MockerFixture):
+    """End-to-end: schedule a task; trigger the fire callback; observe that
+    within the fired @ask, schedule_llm_task refuses (llm_schedule_depth=1)."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+    msg = _msg_mock(mocker)
+    irc = _irc_mock(mocker)
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="x",
+            confirmation="ok",
+            note=None,
+            action_prompt="check the build",
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+        5 if k == "bridgeScheduledTaskLimit" else None
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="do x",
+    )
+    assert res.status == "ok"
+
+    # Capture the registered closure so we can fire it manually.
+    fire_callable = add_event.call_args.args[0]
+
+    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
+    fake_world.getIrc.return_value = irc
+    fake_world.ircs = [irc]
+
+    plugin = llm_service.plugin
+    plugin._check_rate_limit.return_value = False
+    plugin._gather_history.return_value = ([], [])
+    plugin._get_user_memories.return_value = []
+    mocker.patch.object(plugin.db, "get_instruction", return_value="")
+    plugin._reminder_fns.return_value = {}
+    plugin._scheduled_llm_task_fns.return_value = {}
+
+    captured: dict[str, object] = {}
+
+    def fake_assistant_request(*, msg, **_kwargs):
+        captured["depth"] = msg.tagged("llm_schedule_depth")
+        nested = llm_service.schedule_llm_task(
+            irc=irc,
+            msg=msg,
+            creator_nick="rdrake",
+            account="rdrake_a",
+            channel="#t",
+            when_natural="in 60s",
+            prompt="do y",
+        )
+        captured["nested_status"] = nested.status
+        captured["nested_message"] = nested.message
+        return mocker.MagicMock(
+            content="",
+            model="m",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            error=None,
+        )
+
+    mocker.patch.object(llm_service, "assistant_request", side_effect=fake_assistant_request)
+
+    fire_callable()
+
+    assert captured["depth"] == 1
+    assert captured["nested_status"] == "error"
+    msg_lower = str(captured["nested_message"]).lower()
+    assert "depth" in msg_lower or "scheduled" in msg_lower
