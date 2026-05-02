@@ -131,3 +131,53 @@ def enumerate_commands(
                 arg_syntax=arg_syntax,
                 description=description,
             )
+
+
+def dispatch(
+    irc: Any,
+    msg: Any,
+    *,
+    plugin: str,
+    command: str,
+    arg_string: str,
+) -> dict[str, Any]:
+    """Run ``plugin.command arg_string`` through Limnoria's command path.
+
+    Layered checks before dispatch:
+    1. Plugin must resolve via ``irc.getCallback(plugin)``.
+    2. Plugin must not be in ``DENY_PLUGINS``.
+    3. (canonical_plugin, command) must not be in ``DENY_COMMANDS``.
+    4. ``cb.isCommandMethod(command)`` must be True.
+    5. ``checkCommandCapability(msg, cb, command)`` must be falsy.
+
+    On success, returns ``{"status": "ok", "reply": "<captured text>"}``.
+    On any check failure or uncaught exception, returns
+    ``{"error": "<reason>"}``. The shape matches ``AssistantToolExecutor._ok``
+    / ``_err`` (see assistant.py:676-683) so the assistant loop's
+    ``last_successful_tool`` guard at service.py:2705-2710 fires correctly.
+    """
+    cb = irc.getCallback(plugin)
+    if cb is None:
+        return {"error": f"unknown plugin: {plugin}"}
+    if cb.name() in DENY_PLUGINS:
+        return {"error": f"denied: {plugin}.{command}"}
+    if (cb.canonicalName(), command) in DENY_COMMANDS:
+        return {"error": f"denied: {plugin}.{command}"}
+    if not cb.isCommandMethod(command):
+        return {"error": f"unknown command: {plugin}.{command}"}
+    denial = callbacks.checkCommandCapability(msg, cb, command)
+    if denial:
+        return {"error": f"not permitted: {plugin}.{command}"}
+
+    proxy = BufferingIrcProxy(irc, msg)
+    try:
+        # tokenize() raises SyntaxError on malformed bracket/pipe/quote
+        # syntax (callbacks.py:431) — keep it inside the try so the
+        # error-envelope contract holds for malformed args too.
+        tokens = callbacks.tokenize(arg_string, channel=msg.channel, network=irc.network)
+        # Positional args; keyword `args=tokens` would land in **kwargs and
+        # break wrap()-based commands. See callbacks.py:1213.
+        cb._callCommand([command], proxy, msg, tokens)
+    except Exception as exc:  # noqa: BLE001 — translating to JSON envelope
+        return {"error": str(exc) or exc.__class__.__name__}
+    return {"status": "ok", "reply": "\n".join(proxy.buffer)}

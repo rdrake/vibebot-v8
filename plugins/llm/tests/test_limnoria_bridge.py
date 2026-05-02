@@ -287,3 +287,183 @@ def test_enumerate_passes_string_form_to_capability_check(mocker):
 
     assert seen == ["ping"]
     assert all(isinstance(n, str) for n in seen)
+
+
+def test_dispatch_unknown_plugin(mocker):
+    from llm import limnoria_bridge as lb
+
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = None
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Nope", command="x", arg_string="")
+    assert out == {"error": "unknown plugin: Nope"}
+
+
+def test_dispatch_deny_plugin_blocks_call(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Owner", commands=["load"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Owner", command="load", arg_string="Foo")
+    assert out == {"error": "denied: Owner.load"}
+
+
+def test_dispatch_deny_command_blocks_call(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Web", canonical="web", commands=["fetch"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Web", command="fetch", arg_string="http://x")
+    assert out == {"error": "denied: Web.fetch"}
+
+
+def test_dispatch_unknown_command(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="bogus", arg_string="")
+    assert out == {"error": "unknown command: Misc.bogus"}
+
+
+def test_dispatch_capability_denied(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value="anti.cap")
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    assert out == {"error": "not permitted: Misc.ping"}
+
+
+def test_dispatch_captures_reply(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+
+    def _fake_call(command, proxy, _msg, _tokens):
+        proxy.reply("pong")
+
+    cb._callCommand.side_effect = _fake_call
+
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    assert out == {"status": "ok", "reply": "pong"}
+
+
+def test_dispatch_passes_command_as_list_and_tokens_positionally(mocker):
+    """Regression: _callCommand requires a list-form command and positional tokens.
+
+    Keyword `args=tokens` ends up in **kwargs (the wrap() spec receives an
+    empty positional args list), breaking argument parsing.
+    """
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    cb._callCommand.return_value = None
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=["arg1", "arg2"])
+
+    lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="arg1 arg2")
+
+    args, kwargs = cb._callCommand.call_args
+    assert args[0] == ["ping"]
+    # args = (command_list, irc, msg, tokens)
+    assert args[3] == ["arg1", "arg2"]
+    assert "args" not in kwargs
+
+
+def test_dispatch_uncaught_exception_returns_error(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    cb._callCommand.side_effect = RuntimeError("boom")
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    assert out == {"error": "boom"}
+
+
+def test_dispatch_argument_error_returned_as_reply(mocker):
+    """wrap() argument errors come through irc.reply(help_text), not irc.error."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+
+    def _fake_call(_command, proxy, _msg, _tokens):
+        proxy.reply("(ping takes no arguments)")
+
+    cb._callCommand.side_effect = _fake_call
+
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=["unexpected"])
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="unexpected")
+    assert out == {"status": "ok", "reply": "(ping takes no arguments)"}
+
+
+def test_dispatch_malformed_args_returns_error_envelope(mocker):
+    """tokenize() raises SyntaxError on malformed brackets/pipes — the
+    bridge must catch it and return an error envelope, not propagate."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", side_effect=SyntaxError("unmatched bracket"))
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="[oops")
+    assert out == {"error": "unmatched bracket"}
+    cb._callCommand.assert_not_called()
+
+
+def test_dispatch_tokenize_called_with_channel_and_network(mocker):
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    cb._callCommand.return_value = None
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker, channel="#test")
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    tok = mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="hi")
+
+    tok.assert_called_once_with("hi", channel="#test", network="testnet")
