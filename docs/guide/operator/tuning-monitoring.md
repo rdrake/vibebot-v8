@@ -165,6 +165,33 @@ When the gate is closed and an allowlisted plugin has at least one hidden write,
 
 **Phase 1 → Phase 2 migration:** an operator who allowlisted `Later`, `Note`, `Karma`, `QuoteGrabs`, or `RSS` in Phase 1 will see those plugins' write commands disappear after upgrading. `Misc` is also affected — `Misc.tell` and `Misc.noticetell` send PMs/notices to other users on the caller's behalf and are classified mutating, so the recommended starter set's `Misc` will also lose those two leaves. Setting `bridgeAllowMutating True` per channel restores the prior behavior. `Time`, `Math`, `Utilities`, `Seen`, `Web`, and `DDG` are pure-read in the bridge and are unaffected.
 
+### Scheduled LLM tasks (`schedule_llm_task`)
+
+The `schedule_llm_task` tool schedules a future `@ask` invocation — at fire time the bot replays the user's IRC identity and runs the prompt through the assistant loop with full tool access (search, fetch, draw, code, the bridge). It is distinct from `set_reminder`:
+
+- `set_reminder` delivers fixed text at fire time. Use it for "remind me to switch laundry over at 6pm".
+- `schedule_llm_task` runs an LLM turn at fire time. Use it for "every Monday at 9am check my open PRs and tell me which are stale" — anything that needs *tools* when it fires.
+
+Both tools coexist; the LLM is taught to pick between them based on whether tool use is required at fire time.
+
+**Per-channel budget:**
+
+```
+@config channel #yourchan plugins.LLM.bridgeScheduledTaskLimit 10
+```
+
+Default is `5`. Each creator's active scheduled tasks (in this channel) are capped here. Setting the value to `0` disables scheduling entirely for the channel. Each fire still counts against the user's normal `askRateLimit` bucket — this knob caps the *number* of pending schedules, not their cumulative cost.
+
+**Identity at fire time:** schedules are bound to the creator's account at create time (the tool refuses unauthenticated callers). The persisted IRC prefix is replayed as a synthetic message at fire time, so account-identified users keep their capabilities across disconnects. Identity-only refusals at create time are a hard no — point users at NickServ-style auth before they can schedule.
+
+**Loop guard:** a fired task cannot recursively call `schedule_llm_task` (depth cap of 1). It can still call `set_reminder`, the bridge tools, and any other LLM-native tool — only nested *scheduling* is blocked.
+
+**Inspection:**
+
+- The LLM lists/cancels schedules through the `list_scheduled_llm_tasks` and `cancel_scheduled_llm_task` tools — drive these by asking the bot in chat. `@scheduler list` will *not* show these tasks because they live in the LLM's own DB-backed schedule, not in Limnoria's Scheduler plugin events.
+- Enable `bridgeDebugInChannel` to see fire-time bridge calls inline.
+- Phase 2 Task 1's read/write gate (`bridgeAllowMutating` + `MUTATING_COMMANDS`) applies to bridge calls made *during* a fired task's @ask turn — write commands are hidden unless the channel has the gate open.
+
 ### Known limitation: nested subcommand groups
 
 Plugins that group sub-leaves under a nested `Commands` class (notably `RSS`'s `announce add` / `announce remove` / `announce list` / `announce channels`) are not surfaced by the bridge today — Limnoria returns those leaves as multi-word strings and the bridge's enumerate/dispatch path expects single-token leaves. They are unreachable through the LLM whether the gate is open or closed. Operators who need to manage RSS announce subscriptions should keep using the native `@rss announce …` IRC command.
