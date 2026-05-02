@@ -1237,6 +1237,12 @@ class LLM(callbacks.Plugin):
                                 msg=synthetic_msg,
                                 pass_irc_msg_to_callbacks=False,
                             ),
+                            **self._scheduled_llm_task_fns(
+                                caller=caller,
+                                irc=active_irc,
+                                msg=synthetic_msg,
+                                channel=channel,
+                            ),
                         )
                         response = result.content.strip() if result.content else ""
                         # Watch-mode sentinel: action LLM signals "no news to
@@ -2548,6 +2554,9 @@ class LLM(callbacks.Plugin):
                     extra_tools=extra_tools,
                     extra_handlers=bridge_handlers,
                     **self._reminder_fns(caller=caller, irc=irc, msg=msg),
+                    **self._scheduled_llm_task_fns(
+                        caller=caller, irc=irc, msg=msg, channel=channel
+                    ),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2676,6 +2685,9 @@ class LLM(callbacks.Plugin):
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     **self._reminder_fns(caller=caller, irc=irc, msg=msg),
+                    **self._scheduled_llm_task_fns(
+                        caller=caller, irc=irc, msg=msg, channel=channel
+                    ),
                 )
 
                 response = result.content
@@ -2785,6 +2797,9 @@ class LLM(callbacks.Plugin):
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     **self._reminder_fns(caller=caller, irc=irc, msg=msg),
+                    **self._scheduled_llm_task_fns(
+                        caller=caller, irc=irc, msg=msg, channel=channel
+                    ),
                 )
 
                 response = result.content
@@ -2883,6 +2898,9 @@ class LLM(callbacks.Plugin):
                     memories=[],
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     **self._reminder_fns(caller=caller, irc=irc, msg=msg),
+                    **self._scheduled_llm_task_fns(
+                        caller=caller, irc=irc, msg=msg, channel=channel
+                    ),
                 )
 
                 response = result.content

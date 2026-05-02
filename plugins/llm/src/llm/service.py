@@ -1970,6 +1970,9 @@ class LLMService:
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
+        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
@@ -2035,6 +2038,9 @@ class LLMService:
             search_fn=search_fn,
             fetch_fn=fetch_fn,
             code_fn=code_fn,
+            schedule_llm_task_fn=schedule_llm_task_fn,
+            list_scheduled_llm_tasks_fn=list_scheduled_llm_tasks_fn,
+            cancel_scheduled_llm_task_fn=cancel_scheduled_llm_task_fn,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
             exclude_tools=exclude_tools,
@@ -2517,6 +2523,9 @@ Examples (echo → action_prompt: ""):
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
+        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
@@ -2622,6 +2631,9 @@ Examples (echo → action_prompt: ""):
                 search_fn=search_fn,
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
+                schedule_llm_task_fn=schedule_llm_task_fn,
+                list_scheduled_llm_tasks_fn=list_scheduled_llm_tasks_fn,
+                cancel_scheduled_llm_task_fn=cancel_scheduled_llm_task_fn,
             )
 
             profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
@@ -3911,13 +3923,18 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         caller = Identity(raw_nick=row.creator_nick, account=row.account)
 
         # The depth tag on ``msg`` keeps schedule_llm_task itself off the tool
-        # surface for this turn (the tool refuses on depth>=1). Task D3 adds
-        # the scheduled-task companion fns into the unpack here.
+        # surface for this turn (the tool refuses on depth>=1).
         reminder_fns: dict[str, Any] = plugin._reminder_fns(
             caller=caller,
             irc=irc,
             msg=msg,
             pass_irc_msg_to_callbacks=False,
+        )
+        scheduled_task_fns: dict[str, Any] = plugin._scheduled_llm_task_fns(
+            caller=caller,
+            irc=irc,
+            msg=msg,
+            channel=row.channel,
         )
 
         result = self.assistant_request(
@@ -3938,6 +3955,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             draw_fn=lambda p, _i=irc, _m=msg: plugin._draw_for_assistant(_i, _m, p),
             cleanup_fn=lambda n: plugin._run_memory_cleanup(n, row.channel),
             **reminder_fns,
+            **scheduled_task_fns,
         )
 
         response = (result.content or "").strip()

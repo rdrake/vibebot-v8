@@ -228,6 +228,9 @@ def plugin_env(mocker: MockerFixture):
         set_reminder_fn=None,
         delete_reminder_fn=None,
         cancel_all_reminders_fn=None,
+        schedule_llm_task_fn=None,
+        list_scheduled_llm_tasks_fn=None,
+        cancel_scheduled_llm_task_fn=None,
         extra_tools=None,
         extra_handlers=None,
     ):
