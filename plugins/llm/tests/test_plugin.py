@@ -617,6 +617,92 @@ class TestBuildBridgeTool:
 
         assert dispatch_mock.call_args.kwargs["allow_mutating"] is False
 
+    def test_appends_footer_when_gate_closed_and_both_kinds_present(self, plugin_env, mocker):
+        """Allowlist contains 'Later' (has both writes and reads), gate closed
+        → tool description ends with the footer."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Later"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Later", command="notes", arg_syntax="", description="")
+            ],
+        )
+
+        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schema["function"]["description"]
+        assert "write commands hidden" in desc
+        assert "bridgeAllowMutating" in desc
+
+    def test_omits_footer_when_gate_open(self, plugin_env, mocker):
+        """Gate open → no footer (writes are exposed; nothing to flag)."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Later"]
+            if k == "bridgeAllowedPlugins"
+            else True
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(
+                    plugin="Later",
+                    command="tell",
+                    arg_syntax="<nick> <text>",
+                    description="",
+                )
+            ],
+        )
+
+        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schema["function"]["description"]
+        assert "write commands hidden" not in desc
+
+    def test_omits_footer_when_only_pure_read_plugins_allowed(self, plugin_env, mocker):
+        """Allowlist is Time + Math (both pure-read) and gate is closed —
+        nothing was hidden, so the footer would be misleading."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Time", "Math"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Time", command="time", arg_syntax="", description=""),
+                mocker.MagicMock(
+                    plugin="Math", command="calc", arg_syntax="<expr>", description=""
+                ),
+            ],
+        )
+
+        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schema["function"]["description"]
+        assert "write commands hidden" not in desc
+
     def test_behavior_later_notes_visible_tell_hidden_when_gate_closed(self, plugin_env, mocker):
         """Behavior-level (not plumbing): with Later allowlisted and the gate
         closed, the rendered tool description must list Later.notes (read) and

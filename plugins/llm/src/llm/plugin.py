@@ -1597,13 +1597,25 @@ class LLM(callbacks.Plugin):
             + (f" — {c.description}" if c.description else "")
             for c in commands
         )
+        # Footer: if the gate is closed AND any allowlisted plugin has at least
+        # one mutating leaf, hint that more commands exist behind the gate.
+        # Skips the hint for pure-read allowlists (Time, Math, etc.) where no
+        # writes would be hidden.
+        mutating_plugins = {p for (p, _leaf) in limnoria_bridge.MUTATING_COMMANDS}
+        allowed_canonical = {p.lower() for p in allowed}
+        hidden_writes_present = not allow_mutating and bool(allowed_canonical & mutating_plugins)
+        footer = (
+            "\n\n(write commands hidden — set bridgeAllowMutating True to expose)"
+            if hidden_writes_present
+            else ""
+        )
         schema = {
             "type": "function",
             "function": {
                 "name": "run_limnoria_command",
                 "description": (
                     "Run a Limnoria plugin command on the user's behalf. "
-                    "Available commands:\n" + table
+                    "Available commands:\n" + table + footer
                 ),
                 "parameters": {
                     "type": "object",
