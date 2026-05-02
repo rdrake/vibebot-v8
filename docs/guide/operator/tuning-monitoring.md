@@ -103,6 +103,7 @@ Three independent layers limit what the bridge can reach:
 |---------|--------|
 | `Web.fetch` | SSRF vector |
 | `Utilities.apply` | Re-dispatch bypass |
+| `Utilities.let` | Re-dispatch bypass (same shape as `apply`) |
 | `Misc.more` | Interactive scrollback only |
 | `Misc.clearmores` | Interactive scrollback only |
 
@@ -111,6 +112,26 @@ Three independent layers limit what the bridge can reach:
 ### Plugin name format
 
 Names in `bridgeAllowedPlugins` must match Limnoria's CamelCase form exactly — `Misc`, `Time`, `Math`. Lowercase or mismatched names are ignored silently.
+
+### Write-command gate (`bridgeAllowMutating`)
+
+Commands that modify persistent state — sending offline notes, registering RSS feeds, mutating karma, queueing PMs to other users — are hidden from the LLM by default, even when their host plugin is allowlisted. The bridge tool description omits them, and any hallucinated dispatch returns `denied: write commands disabled` as defense in depth.
+
+To expose write commands per channel:
+
+```
+@config channel #yourchan plugins.LLM.bridgeAllowMutating True
+```
+
+Default is `False`. The classification list — what counts as a write — lives in `MUTATING_COMMANDS` in `plugins/llm/src/llm/limnoria_bridge.py`.
+
+When the gate is closed and an allowlisted plugin has at least one hidden write, the bridge tool description appends a footer telling the LLM the gate exists. Pure-read allowlists (e.g. `Time Math Utilities Seen`) get no footer because nothing was hidden.
+
+**Phase 1 → Phase 2 migration:** an operator who allowlisted `Later`, `Note`, `Karma`, `QuoteGrabs`, or `RSS` in Phase 1 will see those plugins' write commands disappear after upgrading. `Misc` is also affected — `Misc.tell` and `Misc.noticetell` send PMs/notices to other users on the caller's behalf and are classified mutating, so the recommended starter set's `Misc` will also lose those two leaves. Setting `bridgeAllowMutating True` per channel restores the prior behavior. `Time`, `Math`, `Utilities`, `Seen`, `Web`, and `DDG` are pure-read in the bridge and are unaffected.
+
+### Known limitation: nested subcommand groups
+
+Plugins that group sub-leaves under a nested `Commands` class (notably `RSS`'s `announce add` / `announce remove` / `announce list` / `announce channels`) are not surfaced by the bridge today — Limnoria returns those leaves as multi-word strings and the bridge's enumerate/dispatch path expects single-token leaves. They are unreachable through the LLM whether the gate is open or closed. Operators who need to manage RSS announce subscriptions should keep using the native `@rss announce …` IRC command.
 
 ### Source
 
