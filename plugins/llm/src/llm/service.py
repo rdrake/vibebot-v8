@@ -2272,6 +2272,51 @@ Examples (echo → action_prompt: ""):
             self.log.debug("Summarization failed: %s", self._sanitize(str(e)))
             return None
 
+    def summarize_for_irc(
+        self, content: str, channel: str | None = None, *, max_chars: int = 220
+    ) -> str | None:
+        """Generate a one-line IRC teaser for a longer answer."""
+        try:
+            target = channel if channel and channel.startswith(("#", "&")) else None
+            if not self.plugin.registryValue("askApiKey", target):
+                return None
+            model = self.plugin.registryValue("askModel", target)
+
+            system_prompt = (
+                "You write concise IRC teasers. Summarize the provided answer as one sentence "
+                f"of at most {max_chars} characters. Output plain text only: no Markdown, "
+                "no bullet points, no links, no introductory phrases."
+            )
+            messages = [
+                {"role": Role.SYSTEM, "content": system_prompt},
+                {"role": Role.USER, "content": content},
+            ]
+            timeout = self.plugin.registryValue("timeout")
+            optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
+
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                api_key=self.plugin.registryValue("askApiKey", target),
+                timeout=timeout,
+                **optional_kwargs,
+            )
+
+            teaser = response.choices[0].message.content
+            if not teaser:
+                return None
+            teaser = " ".join(teaser.strip().split())
+            if max_chars > 0 and len(teaser) > max_chars:
+                teaser = teaser[:max_chars].rstrip()
+                last_space = teaser.rfind(" ")
+                if last_space > 0:
+                    teaser = teaser[:last_space].rstrip()
+            teaser = self.sanitize_output(teaser)
+            return teaser or None
+        except Exception as e:
+            self.log.debug("IRC teaser summarization failed: %s", self._sanitize(str(e)))
+            return None
+
     @staticmethod
     def _is_content_safety_error(error: Exception) -> bool:
         """Check if a BadRequestError is actually a content safety rejection.
@@ -3005,6 +3050,10 @@ Examples (echo → action_prompt: ""):
 
         return http_root, url_base
 
+    def save_markdown_to_http(self, content: str | None) -> str | None:
+        """Save Markdown answer content to HTTP server as HTML and return URL."""
+        return self._save_markdown_to_http(content, title="Answer", filename_prefix="answer")
+
     def save_code_to_http(self, content: str | None) -> str | None:
         """Save content to HTTP server as HTML and return URL.
 
@@ -3016,6 +3065,12 @@ Examples (echo → action_prompt: ""):
         Returns:
             Public URL to saved file or None on error
         """
+        return self._save_markdown_to_http(content, title="Code", filename_prefix="code")
+
+    def _save_markdown_to_http(
+        self, content: str | None, *, title: str, filename_prefix: str
+    ) -> str | None:
+        """Render Markdown content to an HTML file and return its public URL."""
         if not content:
             return None
 
@@ -3024,7 +3079,7 @@ Examples (echo → action_prompt: ""):
         # Create unique filename
         hash_input = f"{content}{time.time()}".encode()
         hash_str = hashlib.sha256(hash_input).hexdigest()[:16]
-        filename = f"code_{hash_str}.html"
+        filename = f"{filename_prefix}_{hash_str}.html"
         filepath = Path(http_root) / filename
 
         # Protect LaTeX delimiters from markdown escaping
@@ -3067,7 +3122,7 @@ Examples (echo → action_prompt: ""):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Code</title>
+<title>{title}</title>
 <style>
 body {{ margin: 0; padding: 20px; background: #272822; color: #f8f8f2; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }}
 pre {{ padding: 16px; background: #1e1e1e; border-radius: 6px; overflow-x: auto; margin: 1em 0; }}
@@ -3107,7 +3162,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 f.write(html)
             return f"{url_base}/{filename}"
         except OSError as e:
-            self.log.error("Failed to save code file: %s", e)
+            self.log.error("Failed to save output file: %s", e)
             return None
 
     @staticmethod

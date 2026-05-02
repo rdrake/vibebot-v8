@@ -614,6 +614,141 @@ class TestSendLongReply:
         mock_irc.reply.assert_called_once_with("line one\nline two", prefixNick=False)
         mock_irc.queueMultilineBatches.assert_not_called()
 
+    def test_long_reply_uses_teaser_and_full_answer_link(self, plugin_env, mocker):
+        """GIVEN reply over line threshold WHEN sent THEN channel gets teaser plus link."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+            )
+        )
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+        long_text = "\n".join(
+            [
+                "### Abbreviated History of Liberia",
+                "- 1822: Founded by freed US slaves.",
+                "- 1847: Declared independence.",
+                "- 1870s: Expanded inland.",
+                "- 1920s: Forced labor scandal.",
+                "- 1980: Doe coup.",
+                "- 2003: Civil war ends.",
+            ]
+        )
+        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
+        plugin.llm_service.summarize_for_irc.return_value = (
+            "Liberia's history spans colonization, independence, coups, civil war, and recovery."
+        )
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
+        plugin.llm_service.summarize_for_irc.assert_called_once_with(
+            long_text, channel="#test", max_chars=220
+        )
+        mock_irc.reply.assert_called_once_with(
+            "Liberia's history spans colonization, independence, coups, civil war, and recovery. "
+            "- Full answer: https://example.com/llm/full.html",
+            prefixNick=False,
+        )
+        mock_irc.queueMultilineBatches.assert_not_called()
+
+    def test_long_reply_threshold_zero_disables_linking(self, plugin_env, mocker):
+        """GIVEN threshold disabled WHEN long reply sent THEN existing multiline path is used."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"longReplyLineThreshold": 0})
+        )
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+        long_text = "\n".join(f"line {i}" for i in range(1, 8))
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
+        mock_irc.queueMultilineBatches.assert_called_once()
+        mock_irc.reply.assert_not_called()
+
+    def test_long_reply_falls_back_when_http_save_fails(self, plugin_env, mocker):
+        """GIVEN full answer cannot be saved WHEN long reply sent THEN existing path is used."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"longReplyLineThreshold": 6})
+        )
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+        long_text = "\n".join(f"line {i}" for i in range(1, 8))
+        plugin.llm_service.save_markdown_to_http.return_value = None
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.summarize_for_irc.assert_not_called()
+        mock_irc.queueMultilineBatches.assert_called_once()
+        mock_irc.reply.assert_not_called()
+
+    def test_long_reply_uses_fallback_teaser_when_summary_fails(self, plugin_env, mocker):
+        """GIVEN teaser generation fails WHEN long reply linked THEN first heading is used."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+            )
+        )
+        long_text = "\n".join(
+            [
+                "### Abbreviated History of Liberia",
+                "- 1822: Founded by freed US slaves.",
+                "- 1847: Declared independence.",
+                "- 1870s: Expanded inland.",
+                "- 1920s: Forced labor scandal.",
+                "- 1980: Doe coup.",
+                "- 2003: Civil war ends.",
+            ]
+        )
+        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
+        plugin.llm_service.summarize_for_irc.return_value = None
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        mock_irc.reply.assert_called_once_with(
+            "Abbreviated History of Liberia - Full answer: https://example.com/llm/full.html",
+            prefixNick=False,
+        )
+        mock_irc.queueMultilineBatches.assert_not_called()
+
+    def test_long_reply_caps_teaser_to_link_budget(self, plugin_env, mocker):
+        """GIVEN a tight IRC line budget WHEN linked THEN teaser leaves room for the URL."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+            )
+        )
+        mocker.patch("llm.plugin.conf.get", return_value=80)
+        long_text = "\n".join(f"line {i}" for i in range(1, 8))
+        url = "https://example.com/llm/full.html"
+        suffix = f" - Full answer: {url}"
+        plugin.llm_service.save_markdown_to_http.return_value = url
+        plugin.llm_service.summarize_for_irc.return_value = (
+            "Liberia has a much longer summary than the available budget allows."
+        )
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.summarize_for_irc.assert_called_once_with(
+            long_text, channel="#test", max_chars=80 - len(suffix)
+        )
+        final_reply = mock_irc.reply.call_args.args[0]
+        assert len(final_reply) <= 80
+        assert final_reply.endswith(suffix)
+        mock_irc.queueMultilineBatches.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # draw

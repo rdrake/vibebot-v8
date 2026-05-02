@@ -319,6 +319,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "maxPromptLength": 10000,
         "commandPrefixes": ["."],
         "httpUrlBase": TEST_URL_BASE,
+        "longReplyLineThreshold": 6,
+        "longReplyTeaserMaxChars": 220,
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",

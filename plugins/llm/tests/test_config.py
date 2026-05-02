@@ -190,6 +190,14 @@ class TestConfigValues:
         value = config.LLM.databasePath()
         assert value == ""
 
+    def test_long_reply_hybrid_defaults_registered(self) -> None:
+        """GIVEN LLM config WHEN checking long reply UX THEN defaults are registered."""
+        import supybot.conf as conf
+        from llm import config  # noqa: F401
+
+        assert conf.supybot.plugins.LLM.longReplyLineThreshold() == 6
+        assert conf.supybot.plugins.LLM.longReplyTeaserMaxChars() == 220
+
 
 class TestValidatedModelNameThreadSafety:
     """Test thread safety of ValidatedModelName._warned set."""

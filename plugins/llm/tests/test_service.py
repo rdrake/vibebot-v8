@@ -1688,6 +1688,25 @@ class TestXssSanitization:
         assert self.service.save_code_to_http("") is None
         assert self.service.save_code_to_http(None) is None
 
+    def test_save_markdown_to_http_uses_answer_title_and_filename(self, tmp_path: object) -> None:
+        """GIVEN Markdown answer WHEN saved THEN HTML uses answer semantics."""
+        from pathlib import Path
+
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+        url = self.service.save_markdown_to_http("# Full answer")
+
+        assert url is not None
+        filename = url.split("/")[-1]
+        assert filename.startswith("answer_")
+        filepath = Path(str(tmp_path)) / filename
+        assert "<title>Answer</title>" in filepath.read_text()
+
 
 class TestSanitizeOutput:
     """Tests for sanitize_output IRC command injection prevention."""
@@ -2325,6 +2344,40 @@ class TestSummarize:
         self.service.summarize("content")
 
         assert completion_kwargs.get("safety_settings") is None
+
+    def test_summarize_for_irc_returns_one_line_teaser(self) -> None:
+        """GIVEN content WHEN IRC teaser requested THEN returns one compact line."""
+        mock_response = self.mocker.Mock()
+        mock_response.choices = [self.mocker.Mock()]
+        mock_response.choices[0].message = self.mocker.Mock()
+        mock_response.choices[0].message.content = (
+            "  Liberia's history spans colonization, independence,\n"
+            "  coups, civil war, and recovery. Extra text that should be trimmed."
+        )
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=mock_response
+        )
+
+        result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=72)
+
+        assert result == "Liberia's history spans colonization, independence, coups, civil war,"
+        messages = mock_completion.call_args.kwargs["messages"]
+        assert "one sentence" in messages[0]["content"]
+        assert "no Markdown" in messages[0]["content"]
+
+    def test_summarize_for_irc_returns_none_on_missing_api_key(self) -> None:
+        """GIVEN no ask key WHEN IRC teaser requested THEN returns None."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "askApiKey": "",
+                "askModel": "gpt-4",
+                "timeout": 30,
+            }.get(key)
+        )
+
+        result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=80)
+
+        assert result is None
 
 
 class TestImageUrlSsrfProtection:

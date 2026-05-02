@@ -1562,6 +1562,26 @@ class LLM(callbacks.Plugin):
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
 
+    @staticmethod
+    def _trim_long_reply_teaser(teaser: str, max_chars: int) -> str:
+        """Collapse and trim a teaser so the link reply stays on one line."""
+        teaser = " ".join(teaser.split()) or "Full answer"
+        if max_chars > 0 and len(teaser) > max_chars:
+            trimmed = teaser[:max_chars].rstrip()
+            last_space = trimmed.rfind(" ")
+            if last_space > 0:
+                trimmed = trimmed[:last_space].rstrip()
+            teaser = trimmed.rstrip(" ,;:-")
+        return teaser or "Full answer"
+
+    @staticmethod
+    def _fallback_long_reply_teaser(text: str, max_chars: int) -> str:
+        """Return a deterministic one-line teaser when LLM summarization fails."""
+        teaser = next((line.strip() for line in text.splitlines() if line.strip()), "Full answer")
+        teaser = teaser.lstrip("#").strip()
+        teaser = teaser.lstrip("-* ").strip()
+        return LLM._trim_long_reply_teaser(teaser, max_chars)
+
     def _send_long_reply(
         self,
         irc: callbacks.Irc,
@@ -1594,6 +1614,26 @@ class LLM(callbacks.Plugin):
                 continue
             wrapped = ircutils.wrap(line, allowed)
             chunks.extend(wrapped if wrapped else [line])
+
+        line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
+        logical_lines = [line for line in raw_lines if line.strip()]
+        if line_threshold > 0 and len(logical_lines) > line_threshold:
+            url = self.llm_service.save_markdown_to_http(text)
+            if url:
+                suffix = f" - Full answer: {url}"
+                configured_max_chars = int(
+                    self.registryValue("longReplyTeaserMaxChars", target) or 220
+                )
+                max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
+                if max_chars <= 0:
+                    irc.reply(f"Full answer: {url}", prefixNick=prefixNick)
+                    return
+                teaser = self.llm_service.summarize_for_irc(
+                    text, channel=target, max_chars=max_chars
+                ) or self._fallback_long_reply_teaser(text, max_chars)
+                teaser = self._trim_long_reply_teaser(teaser, max_chars)
+                irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
+                return
 
         if len(chunks) <= 1:
             irc.reply(text, prefixNick=prefixNick)

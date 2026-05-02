@@ -419,7 +419,7 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# HTTP Server Settings (for code/image output)
+# HTTP Server Settings (for code/image/answer output)
 # ============================================================================
 
 conf.registerGlobalValue(
@@ -450,6 +450,27 @@ conf.registerGlobalValue(
     registry.String(
         "https://rdrake.github.io/vibebot-v8/",
         _("""URL to the help documentation page. Shown in plugin help output."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "longReplyLineThreshold",
+    registry.NonNegativeInteger(
+        6,
+        _("""Number of logical lines after which chat replies are saved as a full
+        HTML answer and replaced in IRC with a one-line teaser plus link. Set to
+        0 to disable hybrid long-reply linking."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "longReplyTeaserMaxChars",
+    registry.PositiveInteger(
+        220,
+        _("""Maximum characters for the one-line teaser shown in IRC when a
+        long reply is linked to the full HTML answer."""),
     ),
 )
 
