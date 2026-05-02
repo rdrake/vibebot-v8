@@ -150,7 +150,9 @@ class TestImageGenerationErrors:
     @pytest.fixture
     def service(self, make_service) -> LLMService:
         """Create service with draw config."""
-        service, _ = make_service(drawApiKey="test-key", drawModel="dall-e-3", drawAutoRewriteMax=0)
+        service, _ = make_service(
+            imageApiKey="test-key", imageModel="dall-e-3", drawAutoRewriteMax=0
+        )
         return service
 
     def test_handles_empty_response_data(self, service: LLMService, mocker: MockerFixture) -> None:
@@ -286,7 +288,9 @@ class TestGeminiSpecificBehaviors:
     @pytest.fixture
     def gemini_service(self, make_service) -> LLMService:
         """Create service configured for Gemini."""
-        service, _ = make_service(askApiKey="AIza-test-key", askModel="gemini/gemini-2.0-flash")
+        service, _ = make_service(
+            assistantApiKey="AIza-test-key", assistantModel="gemini/gemini-2.0-flash"
+        )
         return service
 
     def test_gemini_tools_included_for_2x_models(self, gemini_service: LLMService) -> None:
@@ -359,7 +363,7 @@ class TestOpenAISpecificBehaviors:
     @pytest.fixture
     def openai_service(self, make_service) -> LLMService:
         """Create service configured for OpenAI."""
-        service, _ = make_service(askApiKey="sk-test-key")
+        service, _ = make_service(assistantApiKey="sk-test-key")
         return service
 
     def test_no_gemini_tools_for_openai(self, openai_service: LLMService) -> None:
@@ -393,7 +397,9 @@ class TestAnthropicSpecificBehaviors:
     @pytest.fixture
     def anthropic_service(self, make_service) -> LLMService:
         """Create service configured for Anthropic."""
-        service, _ = make_service(askApiKey="sk-ant-test-key", askModel="anthropic/claude-3-opus")
+        service, _ = make_service(
+            assistantApiKey="sk-ant-test-key", assistantModel="anthropic/claude-3-opus"
+        )
         return service
 
     def test_no_gemini_tools_for_anthropic(self, anthropic_service: LLMService) -> None:
@@ -484,7 +490,7 @@ class TestAPIKeyHandling:
 
     def test_missing_ask_key_returns_error(self, make_service) -> None:
         """GIVEN no ask API key WHEN completing THEN returns error."""
-        service, _ = make_service(askApiKey=None)
+        service, _ = make_service(assistantApiKey=None)
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
@@ -492,7 +498,7 @@ class TestAPIKeyHandling:
 
     def test_empty_ask_key_returns_error(self, make_service) -> None:
         """GIVEN empty ask API key WHEN completing THEN returns error."""
-        service, _ = make_service(askApiKey="")
+        service, _ = make_service(assistantApiKey="")
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
@@ -500,7 +506,7 @@ class TestAPIKeyHandling:
     def test_api_key_sanitized_in_errors(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN API error containing key WHEN handling THEN key sanitized."""
         fake_key = "sk-" + "x" * 25  # noqa: S105
-        service, _ = make_service(askApiKey=fake_key)
+        service, _ = make_service(assistantApiKey=fake_key)
 
         mocker.patch(
             "llm.service.litellm.completion",

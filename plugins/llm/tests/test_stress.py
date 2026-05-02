@@ -288,9 +288,9 @@ class TestConcurrentAPIKeyIsolation:
                 side_effect=lambda key, channel=None: {
                     "maxPromptLength": 10000,
                     "commandPrefixes": ["."],
-                    "askApiKey": unique_key,
-                    "askModel": "gpt-4",
-                    "askSystemPrompt": "You are helpful.",
+                    "assistantApiKey": unique_key,
+                    "assistantModel": "gpt-4",
+                    "assistantSystemPrompt": "You are helpful.",
                     "timeout": 30,
                 }.get(key)
             )

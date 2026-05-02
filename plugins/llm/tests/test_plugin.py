@@ -2761,14 +2761,12 @@ class TestCommandRegistry:
         expected = {
             "ask",
             "code",
-            "g",
             "draw",
             "forget",
             "memories",
             "instruct",
             "remind",
             "usage",
-            "migrateconfig",
         }
         assert names == expected
 

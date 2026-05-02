@@ -16,46 +16,39 @@ Or view current values:
 
 ## API keys
 
-Each command has its own API key setting. Keys are stored as private values -- they are never displayed or logged by Limnoria.
+API keys are stored as private values -- they are never displayed or logged by Limnoria. Capability-based, channel-overridable.
 
 | Setting | Description |
 |---------|-------------|
-| `askApiKey` | API key for the `@ask` command |
-| `codeApiKey` | API key for the `@code` command |
-| `drawApiKey` | API key for the `@draw` command |
-| `searchApiKey` | API key for web search and URL fetching. Falls back to `askApiKey` if empty |
-| `memoryApiKey` | API key for memory extraction. Falls back to `askApiKey` if empty |
-| `spontaneousApiKey` | API key for spontaneous participation. Falls back to `askApiKey` if empty |
+| `assistantApiKey` | API key for all assistant work: `@ask`, planner loop, memory, spontaneous, reminder parsing, scheduled tasks |
+| `codeApiKey` | API key for `@code` |
+| `imageApiKey` | API key for `@draw`. Does not auto-fall-back to `assistantApiKey` (image providers usually use a separate account) |
+| `searchApiKey` | API key for web search/URL fetch tools. Falls back to `assistantApiKey` if empty |
 
 Set a key from IRC (as bot owner):
 
 ```
-@config plugins.LLM.askApiKey sk-your-key-here
+@config plugins.LLM.assistantApiKey sk-your-key-here
 ```
-
-API keys are global settings -- they cannot be overridden per channel.
 
 ## Model selection
 
-Each command uses a separate model setting. Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/providers):
+Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/providers):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `askModel` | `gemini/gemini-flash-latest` | Model for `@ask` (supports vision) |
+| `assistantModel` | `gemini/gemini-flash-latest` | All assistant text+tool work (chat, planner, memory, spontaneous, reminders, scheduled tasks). Must support vision if image URLs in chat should work. |
 | `codeModel` | `gemini/gemini-1.5-flash` | Model for `@code` |
-| `drawModel` | `vertex_ai/imagen-4.0-generate-001` | Model for `@draw` |
-| `memoryExtractionModel` | `gemini/gemini-2.0-flash-lite` | Model for memory extraction |
-| `memoryCleanupModel` | `gemini/gemini-3.1-flash-lite-preview` | Model for memory cleanup |
-| `searchModel` | (empty, falls back to `askModel`) | Model for web search and URL fetching |
-| `spontaneousModel` | `gemini/gemini-2.0-flash-lite` | Model for spontaneous replies |
+| `imageModel` | `vertex_ai/imagen-4.0-generate-001` | Model for `@draw` |
+| `searchModel` | (empty, falls back to `assistantModel`) | Model for web search and URL fetching |
 
 Model names are validated against LiteLLM's known providers. If you set an unrecognized model, the bot will reject it and suggest alternatives.
 
 Models are channel-overridable, so you can run different models in different channels:
 
 ```
-@config channel #dev plugins.LLM.askModel anthropic/claude-sonnet-4-20250514
-@config channel #casual plugins.LLM.askModel gemini/gemini-flash-latest
+@config channel #dev plugins.LLM.assistantModel anthropic/claude-sonnet-4-20250514
+@config channel #casual plugins.LLM.assistantModel gemini/gemini-flash-latest
 ```
 
 ## System prompts
@@ -64,14 +57,14 @@ System prompts define the bot's personality and behavior. They are channel-overr
 
 | Setting | Description |
 |---------|-------------|
-| `askSystemPrompt` | Personality and constraints for `@ask` |
+| `assistantSystemPrompt` | Personality and constraints for all assistant work |
 | `codeSystemPrompt` | Instructions for `@code` output format |
 | `spontaneousSystemPrompt` | Personality for spontaneous channel participation |
 
 Example -- give a channel a specialized personality:
 
 ```
-@config channel #python plugins.LLM.askSystemPrompt You are a Python expert. Answer questions with Python examples. Be concise.
+@config channel #python plugins.LLM.assistantSystemPrompt You are a Python expert. Answer questions with Python examples. Be concise.
 ```
 
 ## Per-channel overrides
@@ -82,7 +75,7 @@ Most settings support per-channel values. Channel values override the global def
 @config channel #channel plugins.LLM.<settingName> <value>
 ```
 
-Settings that support per-channel overrides include: model selection, system prompts, context settings, memory, and spontaneous participation. API keys and rate limits are global only.
+Most settings support per-channel overrides: API keys, model selection, system prompts, context settings, memory, and spontaneous participation. Rate limits are global only.
 
 ## Other settings
 

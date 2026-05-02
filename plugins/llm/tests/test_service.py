@@ -191,9 +191,9 @@ class TestLLMService:
         api_key = "sk-test-fake"  # noqa: S105
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": api_key,
+                "assistantApiKey": api_key,
                 "codeApiKey": "",
-                "drawApiKey": "",
+                "imageApiKey": "",
             }.get(key, "")
         )
         text_with_key = f"Error: Invalid API key {api_key}"
@@ -206,9 +206,9 @@ class TestLLMService:
         api_key = "AIzaSyFAKE_TEST_KEY_FOR_SANITIZE_TEST"
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "",
+                "assistantApiKey": "",
                 "codeApiKey": "",
-                "drawApiKey": api_key,
+                "imageApiKey": api_key,
             }.get(key, "")
         )
         text_with_key = f"Error with key {api_key}"
@@ -227,9 +227,9 @@ class TestLLMService:
         code_key = "sk-code-key-67890"
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": ask_key,
+                "assistantApiKey": ask_key,
                 "codeApiKey": code_key,
-                "drawApiKey": "",
+                "imageApiKey": "",
             }.get(key, "")
         )
         text = f"Error with {ask_key} and also {code_key}"
@@ -242,9 +242,9 @@ class TestLLMService:
         """GIVEN no API keys configured WHEN sanitized THEN text unchanged."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "",
+                "assistantApiKey": "",
                 "codeApiKey": "",
-                "drawApiKey": "",
+                "imageApiKey": "",
             }.get(key, "")
         )
         text = "Error: some random text with no keys"
@@ -265,9 +265,9 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are a helpful IRC bot.",
+                "assistantApiKey": "test-key",
+                "assistantModel": "gpt-4",
+                "assistantSystemPrompt": "You are a helpful IRC bot.",
                 "timeout": 30,
                 "maxPromptLength": 10000,
             }.get(key)
@@ -298,9 +298,9 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "",  # Empty base prompt
+                "assistantApiKey": "test-key",
+                "assistantModel": "gpt-4",
+                "assistantSystemPrompt": "",  # Empty base prompt
                 "timeout": 30,
                 "maxPromptLength": 10000,
             }.get(key)
@@ -330,9 +330,9 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "test-key",
-                "askModel": "gpt-4",
-                "askSystemPrompt": "You are helpful.",
+                "assistantApiKey": "test-key",
+                "assistantModel": "gpt-4",
+                "assistantSystemPrompt": "You are helpful.",
                 "timeout": 30,
                 "maxPromptLength": 10000,
             }.get(key)
@@ -523,9 +523,9 @@ class TestGroundingDetection:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            askApiKey="test-key",
-            askModel="gemini/gemini-2.0-flash",
-            askSystemPrompt="You are helpful.",
+            assistantApiKey="test-key",
+            assistantModel="gemini/gemini-2.0-flash",
+            assistantSystemPrompt="You are helpful.",
             timeout=30,
             maxPromptLength=10000,
             commandPrefixes=["."],
@@ -1365,8 +1365,8 @@ class TestImageGenerationWithBase64:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            drawApiKey="test-api-key",
-            drawModel="gemini/imagen-4.0-generate-001",
+            imageApiKey="test-api-key",
+            imageModel="gemini/imagen-4.0-generate-001",
             timeout=30,
             maxPromptLength=10000,
             httpRoot="/tmp/test",
@@ -1423,8 +1423,8 @@ class TestImageGenerationWithBase64:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "drawApiKey": "test-api-key",
-                "drawModel": "gemini/imagen",
+                "imageApiKey": "test-api-key",
+                "imageModel": "gemini/imagen",
                 "timeout": 30,
                 "maxPromptLength": 10000,
                 "httpRoot": str(tmp_path),
@@ -1680,8 +1680,8 @@ class TestDrawContext:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            drawApiKey="test-api-key",
-            drawModel="gemini/imagen",
+            imageApiKey="test-api-key",
+            imageModel="gemini/imagen",
             timeout=30,
             maxPromptLength=10000,
             drawAutoRewriteMax=0,
@@ -2282,8 +2282,8 @@ class TestSummarize:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            askApiKey="test-api-key",
-            askModel="gpt-4",
+            assistantApiKey="test-api-key",
+            assistantModel="gpt-4",
             timeout=30,
         )
 
@@ -2317,8 +2317,8 @@ class TestSummarize:
         """GIVEN no API key WHEN summarize called THEN returns None."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": None,
-                "askModel": "gpt-4",
+                "assistantApiKey": None,
+                "assistantModel": "gpt-4",
                 "timeout": 30,
             }.get(key)
         )
@@ -2331,8 +2331,8 @@ class TestSummarize:
         """GIVEN empty API key WHEN summarize called THEN returns None."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "",
-                "askModel": "gpt-4",
+                "assistantApiKey": "",
+                "assistantModel": "gpt-4",
                 "timeout": 30,
             }.get(key)
         )
@@ -2384,7 +2384,7 @@ class TestSummarize:
 
         def track_registry(key, channel=None):
             registry_calls.append((key, channel))
-            return {"askApiKey": "key", "askModel": "gpt-4", "timeout": 30}.get(key)
+            return {"assistantApiKey": "key", "assistantModel": "gpt-4", "timeout": 30}.get(key)
 
         self.mock_plugin.registryValue = self.mocker.Mock(side_effect=track_registry)
 
@@ -2396,8 +2396,8 @@ class TestSummarize:
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         self.service.summarize("content", channel="#test")
 
-        # askModel should be called with channel
-        model_call = next(c for c in registry_calls if c[0] == "askModel")
+        # assistantModel should be called with channel
+        model_call = next(c for c in registry_calls if c[0] == "assistantModel")
         assert model_call[1] == "#test"
 
     def test_summarize_includes_system_prompt(self) -> None:
@@ -2426,8 +2426,8 @@ class TestSummarize:
         """GIVEN gemini model WHEN summarize called THEN includes safety settings."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "key",
-                "askModel": "gemini/gemini-2.0-flash",
+                "assistantApiKey": "key",
+                "assistantModel": "gemini/gemini-2.0-flash",
                 "timeout": 30,
             }.get(key)
         )
@@ -2488,8 +2488,8 @@ class TestSummarize:
         """GIVEN no ask key WHEN IRC teaser requested THEN returns None."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "askApiKey": "",
-                "askModel": "gpt-4",
+                "assistantApiKey": "",
+                "assistantModel": "gpt-4",
                 "timeout": 30,
             }.get(key)
         )
@@ -2702,10 +2702,10 @@ class TestDrawAutoRewrite:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            drawApiKey="test-draw-key",
-            drawModel="vertex_ai/imagen-4.0-generate-001",
-            askApiKey="test-ask-key",
-            askModel="gemini/gemini-flash-latest",
+            imageApiKey="test-draw-key",
+            imageModel="vertex_ai/imagen-4.0-generate-001",
+            assistantApiKey="test-ask-key",
+            assistantModel="gemini/gemini-flash-latest",
             timeout=30,
             maxPromptLength=10000,
             httpRoot="/tmp/test",
@@ -2713,10 +2713,10 @@ class TestDrawAutoRewrite:
             drawAutoRewriteMax=3,
         )
         self.config_values = {
-            "drawApiKey": "test-draw-key",
-            "drawModel": "vertex_ai/imagen-4.0-generate-001",
-            "askApiKey": "test-ask-key",
-            "askModel": "gemini/gemini-flash-latest",
+            "imageApiKey": "test-draw-key",
+            "imageModel": "vertex_ai/imagen-4.0-generate-001",
+            "assistantApiKey": "test-ask-key",
+            "assistantModel": "gemini/gemini-flash-latest",
             "timeout": 30,
             "maxPromptLength": 10000,
             "httpRoot": "/tmp/test",
@@ -2872,8 +2872,8 @@ class TestDrawAutoRewrite:
         assert "Error" in result.content
 
     def test_auto_rewrite_skipped_when_ask_key_missing(self) -> None:
-        """GIVEN askApiKey not configured WHEN content blocked THEN skips rewrite."""
-        self.config_values["askApiKey"] = ""
+        """GIVEN assistantApiKey not configured WHEN content blocked THEN skips rewrite."""
+        self.config_values["assistantApiKey"] = ""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: self.config_values.get(key)
         )
@@ -3931,8 +3931,8 @@ class TestMemoryCleanup:
         assert "[0] likes Python" in prompt_text
         assert "[1] works at Acme" in prompt_text
 
-    def test_cleanup_uses_cleanup_model(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN cleanup call WHEN LLM invoked THEN uses memoryCleanupModel."""
+    def test_cleanup_uses_assistant_model(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN cleanup call WHEN LLM invoked THEN uses assistantModel."""
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
@@ -3946,16 +3946,19 @@ class TestMemoryCleanup:
         service.cleanup_memories("user1", "#test", rows)
 
         call_kwargs = mock_litellm.completion.call_args.kwargs
-        assert call_kwargs["model"] == "gemini/gemini-3.1-flash-lite-preview"
-        assert call_kwargs["api_key"] == "test-key"  # fallback to askApiKey in test fixture
+        # T5b: cleanup uses assistantModel/assistantApiKey directly.
+        from .conftest import TEST_API_KEY, TEST_MODEL
+
+        assert call_kwargs["model"] == TEST_MODEL
+        assert call_kwargs["api_key"] == TEST_API_KEY
 
     def test_cleanup_uses_memory_api_key_when_set(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN memoryApiKey set WHEN cleanup THEN uses memoryApiKey over askApiKey."""
+        """GIVEN assistantApiKey set WHEN cleanup THEN uses assistantApiKey over assistantApiKey."""
         from llm.persistence import MemoryRow
 
-        service, mock_plugin = make_service(memoryApiKey="memory-specific-key")
+        service, mock_plugin = make_service(assistantApiKey="memory-specific-key")
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
@@ -4020,8 +4023,8 @@ class TestCompletionValidation:
         assert "Error" in result.content
 
     def test_completion_missing_api_key(self) -> None:
-        """GIVEN service with empty askApiKey WHEN completion called THEN returns API key error."""
-        service, _ = self.make_service(askApiKey="")
+        """GIVEN service with empty assistantApiKey WHEN completion called THEN returns API key error."""
+        service, _ = self.make_service(assistantApiKey="")
 
         result = service.completion("Hello world", command="ask")
 
@@ -4047,8 +4050,8 @@ class TestImageGenerationValidation:
         assert "Error" in result.content
 
     def test_image_generation_missing_draw_key(self) -> None:
-        """GIVEN service with empty drawApiKey WHEN image_generation called THEN returns API key error."""
-        service, _ = self.make_service(drawApiKey="")
+        """GIVEN service with empty imageApiKey WHEN image_generation called THEN returns API key error."""
+        service, _ = self.make_service(imageApiKey="")
 
         result = service.image_generation("A beautiful sunset")
 
@@ -4064,10 +4067,10 @@ class TestImageGenerationPaths:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            drawApiKey="test-draw-key",
-            drawModel="dall-e-3",
-            askApiKey="test-ask-key",
-            askModel="gemini/gemini-flash-latest",
+            imageApiKey="test-draw-key",
+            imageModel="dall-e-3",
+            assistantApiKey="test-ask-key",
+            assistantModel="gemini/gemini-flash-latest",
             timeout=30,
             drawTimeout=30,
             maxPromptLength=10000,
@@ -4332,11 +4335,11 @@ class TestRetryImage:
         assert "Malformed" in result.reason
 
     def test_retry_image_no_api_key(self) -> None:
-        """GIVEN drawApiKey is empty WHEN _retry_image called THEN returns failed_terminal with API key reason."""
+        """GIVEN imageApiKey is empty WHEN _retry_image called THEN returns failed_terminal with API key reason."""
         from .conftest import make_registry_side_effect
 
         self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=make_registry_side_effect({"drawApiKey": ""})
+            side_effect=make_registry_side_effect({"imageApiKey": ""})
         )
         service = LLMService(self.mock_plugin)
         task = self._make_task()
@@ -4497,11 +4500,11 @@ class TestBuildMessages:
 
 
 class TestExtractMemories:
-    """Test extract_memories API key fallback from memoryApiKey to askApiKey."""
+    """Test extract_memories uses the assistant key/model."""
 
-    def test_api_key_fallback_to_ask_key(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN memoryApiKey is empty WHEN extract_memories called THEN uses askApiKey."""
-        service, mock_plugin = make_service(memoryApiKey="")
+    def test_api_key_uses_assistant_key(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN assistantApiKey set WHEN extract_memories called THEN it is used."""
+        service, mock_plugin = make_service()
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_response = mocker.Mock()
         mock_response.choices = [mocker.Mock()]
@@ -4511,8 +4514,9 @@ class TestExtractMemories:
         result = service.extract_memories("nick", "#chan", "I like cats", "Cool!", [])
 
         assert result.add == ["likes cats"]
-        actual_key = mock_completion.call_args.kwargs.get("api_key")
-        assert actual_key == "test-key"
+        from .conftest import TEST_API_KEY
+
+        assert mock_completion.call_args.kwargs.get("api_key") == TEST_API_KEY
 
 
 class TestCleanupMemoriesValidation:
@@ -4723,8 +4727,8 @@ class TestSearchCompletion:
     @pytest.fixture()
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
-            askModel="gemini/gemini-2.5-flash",
-            askApiKey="test-ask-key",
+            assistantModel="gemini/gemini-2.5-flash",
+            assistantApiKey="test-ask-key",
             searchModel="",
             searchApiKey="",
         )
@@ -4748,15 +4752,15 @@ class TestSearchCompletion:
     def test_uses_search_model_when_configured(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """search_completion prefers searchModel over askModel."""
+        """search_completion prefers searchModel over assistantModel."""
         # Override to provide a searchModel
         service.plugin = mocker.Mock()
         service.plugin.registryValue = mocker.Mock(
             side_effect=lambda key, *a: {
                 "searchModel": "gemini/gemini-2.5-pro",
-                "askModel": "gemini/gemini-2.5-flash",
+                "assistantModel": "gemini/gemini-2.5-flash",
                 "searchApiKey": "search-key",
-                "askApiKey": "ask-key",
+                "assistantApiKey": "ask-key",
                 "timeout": 30,
             }.get(key, "")
         )
@@ -4771,7 +4775,7 @@ class TestSearchCompletion:
         assert call_kwargs.kwargs["model"] == "gemini/gemini-2.5-pro"
 
     def test_falls_back_to_ask_model(self, service: LLMService, mocker: MockerFixture) -> None:
-        """search_completion uses askModel when searchModel is empty."""
+        """search_completion uses assistantModel when searchModel is empty."""
         resp = _make_litellm_response(mocker)
         mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -4822,8 +4826,8 @@ class TestUrlCompletion:
     @pytest.fixture()
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
-            askModel="gemini/gemini-2.5-flash",
-            askApiKey="test-ask-key",
+            assistantModel="gemini/gemini-2.5-flash",
+            assistantApiKey="test-ask-key",
             searchModel="",
             searchApiKey="",
         )

@@ -83,8 +83,8 @@ class TestValidatedModelName:
         with pytest.raises(registry.InvalidRegistryValue, match="docs.litellm.ai"):
             v.setValue("zzz-no-match-zzz")
 
-    def test_default_ask_model_passes(self) -> None:
-        """GIVEN default askModel value WHEN validated THEN passes."""
+    def test_default_assistant_model_passes(self) -> None:
+        """GIVEN default assistantModel value WHEN validated THEN passes."""
         v = self._make()
         v.setValue("gemini/gemini-flash-latest")
         assert v() == "gemini/gemini-flash-latest"
@@ -95,8 +95,8 @@ class TestValidatedModelName:
         v.setValue("gemini/gemini-1.5-flash")
         assert v() == "gemini/gemini-1.5-flash"
 
-    def test_default_draw_model_passes(self) -> None:
-        """GIVEN default drawModel value WHEN validated THEN passes (warn OK)."""
+    def test_default_image_model_passes(self) -> None:
+        """GIVEN default imageModel value WHEN validated THEN passes (warn OK)."""
         v = self._make()
         # vertex_ai/imagen-4.0-generate-001 may not be in model_list but
         # provider is valid, so it should be accepted (with warning)
@@ -134,7 +134,7 @@ class TestConfigure:
         result = output.getvalue()
         assert "LLM Plugin Configuration" in result
         assert "API keys" in result
-        assert "config plugins.LLM.askApiKey" in result
+        assert "config plugins.LLM.assistantApiKey" in result
 
     def test_configure_registers_plugin(self, mocker: MockerFixture) -> None:
         """GIVEN configure function WHEN called THEN registers plugin."""
@@ -156,17 +156,6 @@ class TestConfigValues:
 
         assert hasattr(config, "LLM")
 
-    def test_ask_api_key_is_private(self) -> None:
-        """GIVEN askApiKey config WHEN accessed THEN marked as private."""
-        import supybot.conf as conf
-
-        # Access the registry value - private keys should not be logged
-        from llm import config  # noqa: F401
-
-        ask_key_value = conf.supybot.plugins.LLM.askApiKey
-        # Private registry values have _private attribute
-        assert ask_key_value._private is True
-
     def test_code_api_key_is_private(self) -> None:
         """GIVEN codeApiKey config WHEN accessed THEN marked as private."""
         import supybot.conf as conf
@@ -174,14 +163,6 @@ class TestConfigValues:
 
         code_key_value = conf.supybot.plugins.LLM.codeApiKey
         assert code_key_value._private is True
-
-    def test_draw_api_key_is_private(self) -> None:
-        """GIVEN drawApiKey config WHEN accessed THEN marked as private."""
-        import supybot.conf as conf
-        from llm import config  # noqa: F401
-
-        draw_key_value = conf.supybot.plugins.LLM.drawApiKey
-        assert draw_key_value._private is True
 
     def test_database_path_registered(self) -> None:
         """GIVEN LLM config WHEN checking databasePath THEN exists with empty default."""
@@ -207,17 +188,17 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
-    def test_capability_settings_registered_with_safe_defaults(self) -> None:
-        """T5a: new capability-based registry values default to empty so the
-        resolve_setting shim falls back to the existing command-era keys."""
+    def test_capability_settings_registered_with_defaults(self) -> None:
+        """T5b: capability-based registry values are the sole surface for
+        assistant/image model+key after the command-era keys were removed."""
         import llm.config  # noqa: F401 — import side effect registers values
         import supybot.conf as conf
 
         assert conf.supybot.plugins.LLM.assistantApiKey() == ""
-        assert conf.supybot.plugins.LLM.assistantModel() == ""
-        assert conf.supybot.plugins.LLM.assistantSystemPrompt() == ""
+        assert conf.supybot.plugins.LLM.assistantModel() == "gemini/gemini-flash-latest"
+        assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
         assert conf.supybot.plugins.LLM.imageApiKey() == ""
-        assert conf.supybot.plugins.LLM.imageModel() == ""
+        assert conf.supybot.plugins.LLM.imageModel() == "vertex_ai/imagen-4.0-generate-001"
 
     def test_capability_api_keys_are_private(self) -> None:
         """T5a: assistantApiKey and imageApiKey must be marked private so
@@ -249,161 +230,6 @@ class TestConfigValues:
         import supybot.conf as conf
 
         assert conf.supybot.plugins.LLM.bridgeScheduledTaskLimit() == 5
-
-
-class TestResolveSetting:
-    """T5a: compat shim that prefers the new capability-based key,
-    falling back to old command-era keys with a one-time deprecation
-    warning per fallback used."""
-
-    def setup_method(self) -> None:
-        from llm import config as cfg
-
-        cfg._resolve_setting_warned.clear()
-
-    def _plugin(self, mocker: MockerFixture, values: dict[str, object]):
-        plugin = mocker.MagicMock()
-        plugin.registryValue.side_effect = lambda k, ch=None: values.get(k, "")
-        return plugin
-
-    def test_returns_new_key_when_set(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {"assistantApiKey": "sk-new", "askApiKey": "sk-old"})
-
-        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-        assert out == "sk-new"
-
-    def test_falls_back_when_new_key_empty(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {"assistantApiKey": "", "askApiKey": "sk-old"})
-
-        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-        assert out == "sk-old"
-
-    def test_walks_multiple_fallbacks_in_order(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(
-            mocker,
-            {
-                "assistantApiKey": "",
-                "metaApiKey": "",
-                "askApiKey": "sk-ask",
-            },
-        )
-
-        out = cfg.resolve_setting(
-            plugin,
-            "assistantApiKey",
-            "#test",
-            fallbacks=("metaApiKey", "askApiKey"),
-        )
-        assert out == "sk-ask"
-
-    def test_first_non_empty_fallback_wins(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(
-            mocker,
-            {
-                "assistantApiKey": "",
-                "metaApiKey": "sk-meta",
-                "askApiKey": "sk-ask",
-            },
-        )
-
-        out = cfg.resolve_setting(
-            plugin,
-            "assistantApiKey",
-            "#test",
-            fallbacks=("metaApiKey", "askApiKey"),
-        )
-        assert out == "sk-meta"
-
-    def test_returns_empty_when_everything_empty(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {})
-
-        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-        assert out == ""
-
-    def test_warns_once_per_process_per_fallback(
-        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {"assistantApiKey": "", "askApiKey": "sk-old"})
-
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-            cfg.resolve_setting(plugin, "assistantApiKey", "#other", fallbacks=("askApiKey",))
-
-        warnings = [rec for rec in caplog.records if "askApiKey" in rec.getMessage()]
-        assert len(warnings) == 1
-        assert "assistantApiKey" in warnings[0].getMessage()
-
-    def test_warns_per_distinct_fallback(
-        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from llm import config as cfg
-
-        # First call uses askApiKey fallback; second uses askModel fallback.
-        plugin = self._plugin(
-            mocker,
-            {
-                "assistantApiKey": "",
-                "askApiKey": "sk-old",
-                "assistantModel": "",
-                "askModel": "gpt-4",
-            },
-        )
-
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-            cfg.resolve_setting(plugin, "assistantModel", "#test", fallbacks=("askModel",))
-
-        msgs = [rec.getMessage() for rec in caplog.records]
-        assert any("askApiKey" in m for m in msgs)
-        assert any("askModel" in m for m in msgs)
-
-    def test_no_warning_when_new_key_used(
-        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {"assistantApiKey": "sk-new", "askApiKey": "sk-old"})
-
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
-
-        warnings = [rec for rec in caplog.records if "askApiKey" in rec.getMessage()]
-        assert warnings == []
-
-    def test_passes_channel_to_registry_lookup(self, mocker: MockerFixture) -> None:
-        """The shim must scope reads to the per-channel value, not global."""
-        from llm import config as cfg
-
-        plugin = mocker.MagicMock()
-
-        def _lookup(key, ch=None):
-            return {("assistantApiKey", "#a"): "channel-a-key"}.get((key, ch), "")
-
-        plugin.registryValue.side_effect = _lookup
-
-        out = cfg.resolve_setting(plugin, "assistantApiKey", "#a", fallbacks=("askApiKey",))
-        assert out == "channel-a-key"
-
-    def test_no_fallbacks_returns_new_key_value(self, mocker: MockerFixture) -> None:
-        from llm import config as cfg
-
-        plugin = self._plugin(mocker, {"imageModel": "dall-e-3"})
-
-        out = cfg.resolve_setting(plugin, "imageModel", "#test")
-        assert out == "dall-e-3"
 
 
 class TestValidatedModelNameThreadSafety:

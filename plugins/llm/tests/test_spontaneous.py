@@ -44,9 +44,8 @@ def spontaneous_env(
             "spontaneousEnabled": True,
             "spontaneousChance": 100,
             "spontaneousCooldown": 0,
-            "spontaneousApiKey": "",
-            "askApiKey": "sk-test-ask-key",
-            "spontaneousModel": "gemini/gemini-2.0-flash-lite",
+            "assistantApiKey": "sk-test-ask-key",
+            "assistantModel": "gemini/gemini-2.0-flash-lite",
             "spontaneousSystemPrompt": "You are a regular in this IRC channel.",
         }
         defaults.update(overrides)
@@ -248,32 +247,11 @@ class TestSpontaneousEvaluate:
 
         mock_irc.queueMsg.assert_called_once()
 
-    def test_uses_ask_api_key_as_fallback(self, evaluate_env: Callable) -> None:
-        """GIVEN spontaneousApiKey empty WHEN _evaluate runs THEN askApiKey used."""
+    def test_uses_assistant_api_key(self, evaluate_env: Callable) -> None:
+        """GIVEN assistantApiKey set WHEN _evaluate runs THEN that key is used."""
         from llm.service import CompletionResult
 
-        plugin, mock_irc, callback = evaluate_env(spontaneousApiKey="", askApiKey="sk-fallback-key")
-
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="Hi!",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gemini/gemini-2.0-flash-lite",
-        )
-
-        callback()
-
-        call_kwargs = plugin.llm_service.completion.call_args
-        assert call_kwargs.kwargs.get("api_key") == "sk-fallback-key"
-
-    def test_uses_dedicated_api_key_when_set(self, evaluate_env: Callable) -> None:
-        """GIVEN spontaneousApiKey set WHEN _evaluate runs THEN dedicated key used."""
-        from llm.service import CompletionResult
-
-        plugin, mock_irc, callback = evaluate_env(
-            spontaneousApiKey="sk-special", askApiKey="sk-fallback-key"
-        )
+        plugin, mock_irc, callback = evaluate_env(assistantApiKey="sk-special")
 
         plugin.llm_service.completion.return_value = CompletionResult(
             content="Hi!",
@@ -291,7 +269,7 @@ class TestSpontaneousEvaluate:
     def test_no_message_when_no_channel_history(self, evaluate_env: Callable) -> None:
         """GIVEN empty channel history WHEN _evaluate runs THEN no completion called."""
         plugin, mock_irc, callback = evaluate_env(
-            channel="#empty", messages=[], spontaneousApiKey="sk-test"
+            channel="#empty", messages=[], assistantApiKey="sk-test"
         )
 
         callback()
@@ -301,7 +279,7 @@ class TestSpontaneousEvaluate:
 
     def test_no_message_when_no_api_key(self, evaluate_env: Callable) -> None:
         """GIVEN no API keys configured WHEN _evaluate runs THEN no completion called."""
-        plugin, mock_irc, callback = evaluate_env(spontaneousApiKey="", askApiKey="")
+        plugin, mock_irc, callback = evaluate_env(assistantApiKey="")
 
         callback()
 
@@ -435,7 +413,7 @@ class TestCompletionOverrides:
         self, make_service, mocker: MockerFixture
     ) -> None:
         """GIVEN no config API key but api_key override WHEN completion THEN succeeds."""
-        service, plugin = make_service(askApiKey="")
+        service, plugin = make_service(assistantApiKey="")
 
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]

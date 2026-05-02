@@ -162,7 +162,7 @@ class TestSystemPromptEtiquette:
     def setup(self, make_service) -> None:
         """Set up test fixtures."""
         self.service, self.mock_plugin = make_service(
-            askSystemPrompt=(
+            assistantSystemPrompt=(
                 "You are a helpful IRC assistant. Keep responses concise and suitable for IRC chat. "
                 "Avoid markdown formatting. Be direct and informative."
             ),
@@ -177,27 +177,27 @@ class TestSystemPromptEtiquette:
         return self.mock_plugin.registryValue(key)
 
     def test_ask_system_prompt_instructs_conciseness(self) -> None:
-        """GIVEN askSystemPrompt WHEN examined THEN contains conciseness instruction."""
-        prompt = self._config_lookup("askSystemPrompt")
+        """GIVEN assistantSystemPrompt WHEN examined THEN contains conciseness instruction."""
+        prompt = self._config_lookup("assistantSystemPrompt")
 
         assert "concise" in prompt.lower()
 
     def test_ask_system_prompt_discourages_markdown(self) -> None:
-        """GIVEN askSystemPrompt WHEN examined THEN mentions avoiding markdown."""
-        prompt = self._config_lookup("askSystemPrompt")
+        """GIVEN assistantSystemPrompt WHEN examined THEN mentions avoiding markdown."""
+        prompt = self._config_lookup("assistantSystemPrompt")
 
         assert "markdown" in prompt.lower()
         assert "avoid" in prompt.lower()
 
     def test_ask_system_prompt_mentions_irc_context(self) -> None:
-        """GIVEN askSystemPrompt WHEN examined THEN references IRC chat."""
-        prompt = self._config_lookup("askSystemPrompt")
+        """GIVEN assistantSystemPrompt WHEN examined THEN references IRC chat."""
+        prompt = self._config_lookup("assistantSystemPrompt")
 
         assert "irc" in prompt.lower()
 
     def test_ask_system_prompt_instructs_direct_responses(self) -> None:
-        """GIVEN askSystemPrompt WHEN examined THEN instructs direct/informative tone."""
-        prompt = self._config_lookup("askSystemPrompt")
+        """GIVEN assistantSystemPrompt WHEN examined THEN instructs direct/informative tone."""
+        prompt = self._config_lookup("assistantSystemPrompt")
 
         assert "direct" in prompt.lower() or "informative" in prompt.lower()
 
@@ -257,8 +257,8 @@ class TestResponseLengthHandling:
 
         self.mock_plugin.registryValue = mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "drawApiKey": "test-key",
-                "drawModel": "imagen",
+                "imageApiKey": "test-key",
+                "imageModel": "imagen",
                 "timeout": 30,
                 "maxPromptLength": 10000,
             }.get(key)

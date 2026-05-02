@@ -31,7 +31,6 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from .config import resolve_setting
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
 from .tracing import TraceFilter, extract_server_headers, request_id
@@ -442,13 +441,10 @@ class LLMService:
             return ""
         result = str(text)
         for key_name in (
-            "askApiKey",
+            "assistantApiKey",
             "codeApiKey",
-            "drawApiKey",
+            "imageApiKey",
             "searchApiKey",
-            "memoryApiKey",
-            "metaApiKey",
-            "spontaneousApiKey",
         ):
             key = self.plugin.registryValue(key_name)
             if key and isinstance(key, str):
@@ -1427,7 +1423,13 @@ class LLMService:
             )
 
         target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
-        api_key = self.plugin.registryValue(f"{task.task_type}ApiKey", target)
+        if task.task_type == "code":
+            api_key_name = "codeApiKey"
+        elif task.task_type == "draw":
+            api_key_name = "imageApiKey"
+        else:
+            api_key_name = "assistantApiKey"
+        api_key = self.plugin.registryValue(api_key_name, target)
         if not api_key:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -1492,7 +1494,7 @@ class LLMService:
             )
 
         target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
-        if not resolve_setting(self.plugin, "imageApiKey", target, fallbacks=("drawApiKey",)):
+        if not self.plugin.registryValue("imageApiKey", target):
             return PendingTaskResult(
                 status="failed_terminal",
                 task_type=task.task_type,
@@ -1768,8 +1770,16 @@ class LLMService:
 
             # Get configuration (channel-specific for model/prompt, global for api key)
             channel = msg.args[0] if msg and msg.args else None
-            # Use override if provided, otherwise fall back to config
-            effective_api_key = api_key or self.plugin.registryValue(f"{command}ApiKey", channel)
+            # Map command to capability-based registry keys.
+            if command == "code":
+                api_key_name = "codeApiKey"
+                model_name = "codeModel"
+                prompt_name = "codeSystemPrompt"
+            else:
+                api_key_name = "assistantApiKey"
+                model_name = "assistantModel"
+                prompt_name = "assistantSystemPrompt"
+            effective_api_key = api_key or self.plugin.registryValue(api_key_name, channel)
             if not effective_api_key:
                 error_content = _("Error: API key not configured for %s command") % command
                 return CompletionResult(
@@ -1777,9 +1787,9 @@ class LLMService:
                     grounding_used=False,
                     error=error_content,
                 )
-            model = model_override or self.plugin.registryValue(f"{command}Model", channel)
+            model = model_override or self.plugin.registryValue(model_name, channel)
             if system_prompt is None:
-                base_system_prompt = self.plugin.registryValue(f"{command}SystemPrompt", channel)
+                base_system_prompt = self.plugin.registryValue(prompt_name, channel)
             else:
                 base_system_prompt = system_prompt
 
@@ -1892,12 +1902,12 @@ class LLMService:
 
         try:
             target = channel if channel.startswith(("#", "&")) else None
-            model = self.plugin.registryValue("searchModel", target) or resolve_setting(
-                self.plugin, "assistantModel", target, fallbacks=("askModel",)
+            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
+                "assistantModel", target
             )
-            api_key = self.plugin.registryValue("searchApiKey", target) or resolve_setting(
-                self.plugin, "assistantApiKey", target, fallbacks=("askApiKey",)
-            )
+            api_key = self.plugin.registryValue(
+                "searchApiKey", target
+            ) or self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
 
             messages: list[dict[str, object]] = [{"role": "user", "content": query}]
@@ -1947,12 +1957,12 @@ class LLMService:
 
         try:
             target = channel if channel.startswith(("#", "&")) else None
-            model = self.plugin.registryValue("searchModel", target) or resolve_setting(
-                self.plugin, "assistantModel", target, fallbacks=("askModel",)
+            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
+                "assistantModel", target
             )
-            api_key = self.plugin.registryValue("searchApiKey", target) or resolve_setting(
-                self.plugin, "assistantApiKey", target, fallbacks=("askApiKey",)
-            )
+            api_key = self.plugin.registryValue(
+                "searchApiKey", target
+            ) or self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
 
             messages: list[dict[str, object]] = [
@@ -2115,12 +2125,12 @@ class LLMService:
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
         target = channel if channel and channel.startswith(("#", "&")) else None
-        if not resolve_setting(self.plugin, "assistantApiKey", target, fallbacks=("askApiKey",)):
+        if not self.plugin.registryValue("assistantApiKey", target):
             return ReminderParseResult(
                 action="clarify",
                 confirmation=_("Error: API key not configured."),
             )
-        model = resolve_setting(self.plugin, "assistantModel", target, fallbacks=("askModel",))
+        model = self.plugin.registryValue("assistantModel", target)
         timeout = self.plugin.registryValue("timeout")
 
         # Current UTC time for context
@@ -2185,12 +2195,7 @@ Examples (echo → action_prompt: ""):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                api_key=resolve_setting(
-                    self.plugin,
-                    "assistantApiKey",
-                    target,
-                    fallbacks=("askApiKey",),
-                ),
+                api_key=self.plugin.registryValue("assistantApiKey", target),
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
             )
@@ -2303,12 +2308,10 @@ Examples (echo → action_prompt: ""):
         """Call the configured ``ask`` model with system + user content."""
         try:
             target = channel if channel and channel.startswith(("#", "&")) else None
-            api_key = resolve_setting(
-                self.plugin, "assistantApiKey", target, fallbacks=("askApiKey",)
-            )
+            api_key = self.plugin.registryValue("assistantApiKey", target)
             if not api_key:
                 return None
-            model = resolve_setting(self.plugin, "assistantModel", target, fallbacks=("askModel",))
+            model = self.plugin.registryValue("assistantModel", target)
             messages = [
                 {"role": Role.SYSTEM, "content": system_prompt},
                 {"role": Role.USER, "content": user_content},
@@ -2408,13 +2411,11 @@ Examples (echo → action_prompt: ""):
         """
         try:
             target = channel if channel and channel.startswith(("#", "&")) else None
-            api_key = resolve_setting(
-                self.plugin, "assistantApiKey", target, fallbacks=("askApiKey",)
-            )
+            api_key = self.plugin.registryValue("assistantApiKey", target)
             if not api_key:
                 return None, 0, 0, 0.0
 
-            model = resolve_setting(self.plugin, "assistantModel", target, fallbacks=("askModel",))
+            model = self.plugin.registryValue("assistantModel", target)
             timeout = self.plugin.registryValue("timeout")
 
             system_prompt = (
@@ -2476,7 +2477,7 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
-            channel: Channel for per-channel drawApiKey lookup
+            channel: Channel for per-channel imageApiKey lookup
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
@@ -2491,7 +2492,7 @@ Examples (echo → action_prompt: ""):
         response = litellm.image_generation(
             prompt=prompt,
             model=model,
-            api_key=resolve_setting(self.plugin, "imageApiKey", channel, fallbacks=("drawApiKey",)),
+            api_key=self.plugin.registryValue("imageApiKey", channel),
             n=1,
             timeout=timeout,
             metadata=self._get_litellm_metadata(),
@@ -2608,21 +2609,9 @@ Examples (echo → action_prompt: ""):
         stop_typing = self._begin_typing(irc, msg)
 
         try:
-            # Resolve model and API key — capability-based assistantModel/Key
-            # win, falling back through the legacy meta and ask keys (T5a).
             target = channel if channel.startswith(("#", "&")) else None
-            model = model_override or resolve_setting(
-                self.plugin,
-                "assistantModel",
-                target,
-                fallbacks=("metaModel", "askModel"),
-            )
-            effective_api_key = api_key or resolve_setting(
-                self.plugin,
-                "assistantApiKey",
-                target,
-                fallbacks=("metaApiKey", "askApiKey"),
-            )
+            model = model_override or self.plugin.registryValue("assistantModel", target)
+            effective_api_key = api_key or self.plugin.registryValue("assistantApiKey", target)
             if not effective_api_key:
                 return AssistantResult(
                     content="Error: No API key configured.",
@@ -2903,10 +2892,10 @@ Examples (echo → action_prompt: ""):
             # Get configuration (channel-specific for model, global for api key)
             # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
-            if not resolve_setting(self.plugin, "imageApiKey", channel, fallbacks=("drawApiKey",)):
+            if not self.plugin.registryValue("imageApiKey", channel):
                 error_content = _("Error: API key not configured for draw command")
                 return ImageResult(content=error_content, error=error_content)
-            model = resolve_setting(self.plugin, "imageModel", channel, fallbacks=("drawModel",))
+            model = self.plugin.registryValue("imageModel", channel)
             timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue(
                 "timeout"
             )
@@ -3600,18 +3589,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         try:
             target = channel if channel and channel.startswith(("#", "&")) else None
-            model = resolve_setting(
-                self.plugin,
-                "assistantModel",
-                target,
-                fallbacks=("memoryExtractionModel", "askModel"),
-            )
-            api_key = resolve_setting(
-                self.plugin,
-                "assistantApiKey",
-                target,
-                fallbacks=("memoryApiKey", "askApiKey"),
-            )
+            model = self.plugin.registryValue("assistantModel", target)
+            api_key = self.plugin.registryValue("assistantApiKey", target)
             response = litellm.completion(
                 model=model,
                 messages=messages,
@@ -3665,18 +3644,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         try:
             target = channel if channel and channel.startswith(("#", "&")) else None
-            model = resolve_setting(
-                self.plugin,
-                "assistantModel",
-                target,
-                fallbacks=("memoryCleanupModel", "askModel"),
-            )
-            api_key = resolve_setting(
-                self.plugin,
-                "assistantApiKey",
-                target,
-                fallbacks=("memoryApiKey", "askApiKey"),
-            )
+            model = self.plugin.registryValue("assistantModel", target)
+            api_key = self.plugin.registryValue("assistantApiKey", target)
             response = litellm.completion(
                 model=model,
                 messages=messages,
@@ -3951,12 +3920,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         history, channel_history = plugin._gather_history(row.creator_nick, row.channel)
         memories = plugin._get_user_memories(row.creator_nick)
         user_instruction = plugin.db.get_instruction(row.creator_nick)
-        ask_prompt = resolve_setting(
-            plugin,
-            "assistantSystemPrompt",
-            row.channel,
-            fallbacks=("askSystemPrompt",),
-        )
+        ask_prompt = plugin.registryValue("assistantSystemPrompt", row.channel)
         effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
         # Local import avoids a service.py -> plugin.py import cycle at module load.
         from .plugin import Identity

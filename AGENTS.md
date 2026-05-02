@@ -43,7 +43,7 @@ make docs
 For `plugins/llm/src/llm/`:
 - `plugin.py` - IRC protocol layer, command routing, and command wrappers
 - `service.py` - LiteLLM integration and business logic
-- `config.py` - Limnoria registry configuration definitions; also exposes `resolve_setting` (T5a compat shim that prefers capability-based keys over command-era keys with a one-time deprecation warning)
+- `config.py` - Limnoria registry configuration definitions (capability-based keys: `assistantModel`, `assistantApiKey`, `assistantSystemPrompt`, `imageModel`, `imageApiKey`, `codeModel`, `codeApiKey`, `codeSystemPrompt`, `searchModel`, `searchApiKey`)
 - `context.py` - conversation history and thread-safe state
 
 Keep those boundaries intact:

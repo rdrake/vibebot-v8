@@ -27,7 +27,7 @@ make run
 
 Configure API keys via bot commands:
 ```
-%config plugins.LLM.askApiKey YOUR_KEY
+%config plugins.LLM.assistantApiKey YOUR_KEY
 ```
 
 ## Docker
@@ -109,11 +109,11 @@ Configure models in `bot.conf`:
 
 ```
 # Free tier (Gemini Flash)
-supybot.plugins.LLM.askModel: gemini/gemini-1.5-flash
+supybot.plugins.LLM.assistantModel: gemini/gemini-1.5-flash
 supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
 
 # Paid tier (Vertex Imagen)
-supybot.plugins.LLM.drawModel: vertex_ai/imagen-4.0-generate-001
+supybot.plugins.LLM.imageModel: vertex_ai/imagen-4.0-generate-001
 ```
 
 See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for supported models.
@@ -132,9 +132,10 @@ Volatile memory is per-user per-channel. Cleared by `%forget`, after the configu
 
 ```
 supybot.plugins.LLM.memoryEnabled: True
-supybot.plugins.LLM.memoryExtractionModel: gemini/gemini-2.0-flash-lite
 supybot.plugins.LLM.memoryMaxPerUser: 50
 ```
+
+Memory extraction and cleanup share the configured `assistantModel` / `assistantApiKey`.
 
 Facts are automatically extracted from `%ask` and `%code` conversations. Users manage non-volatile memory with `%memories`.
 
@@ -278,7 +279,7 @@ vibebot-v8/
 
 Check configuration via `%config`:
 ```
-%config plugins.LLM.askApiKey
+%config plugins.LLM.assistantApiKey
 ```
 
 Should show the key is set (value is private and not displayed in full).

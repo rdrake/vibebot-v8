@@ -279,15 +279,12 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         A callable suitable for ``registryValue.side_effect``.
     """
     defaults: dict[str, Any] = {
-        # T5a capability-based settings (introduced alongside command-era
-        # keys; resolve_setting in production code prefers these but falls
-        # back to old keys when these are empty). Default empty so the shim
-        # exercises the legacy path the way Phase-1 operators do.
-        "assistantApiKey": "",
-        "assistantModel": "",
-        "assistantSystemPrompt": "",
-        "imageApiKey": "",
-        "imageModel": "",
+        # Capability-based settings (Phase 2 Task 5a/5b — sole surface).
+        "assistantApiKey": TEST_API_KEY,
+        "assistantModel": TEST_MODEL,
+        "assistantSystemPrompt": "You are helpful.",
+        "imageApiKey": TEST_API_KEY,
+        "imageModel": "dall-e-3",
         # Plugin-level init config
         "httpRoot": "",
         "databasePath": "",
@@ -296,17 +293,11 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "contextEnabled": True,
         "channelContextMaxMessages": 10,
         "contextTrackAllMessages": False,
-        # Ask command
-        "askApiKey": TEST_API_KEY,
-        "askModel": TEST_MODEL,
-        "askSystemPrompt": "You are helpful.",
         # Code command
         "codeApiKey": TEST_API_KEY,
         "codeModel": TEST_MODEL,
         "codeSystemPrompt": "You write code.",
         # Draw command
-        "drawApiKey": TEST_API_KEY,
-        "drawModel": "dall-e-3",
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
         "drawContextMaxAgeSeconds": 60,
@@ -316,17 +307,12 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawExpiry": 60,
         # Memory extraction
         "memoryEnabled": True,
-        "memoryExtractionModel": "gemini/gemini-2.0-flash-lite",
-        "memoryCleanupModel": "gemini/gemini-3.1-flash-lite-preview",
-        "memoryApiKey": "",
         "memoryMaxPerUser": 50,
         "memoryCleanupInterval": 3,
         # Spontaneous participation
         "spontaneousEnabled": False,
         "spontaneousChance": 15,
         "spontaneousCooldown": 2,
-        "spontaneousModel": "gemini/gemini-2.0-flash-lite",
-        "spontaneousApiKey": "",
         "spontaneousSystemPrompt": "You are a regular in this IRC channel.",
         # Shared
         "timeout": 30,
@@ -365,8 +351,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "searchApiKey": "",
         "searchModel": "",
         # Assistant tool-calling backend
-        "metaModel": "",
-        "metaApiKey": "",
         "metaMaxSteps": 7,
         # IRCv3 join optimization
         "skipAutoWhoOnJoin": True,
@@ -399,7 +383,7 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         def test_something(make_service):
             service, plugin = make_service()
             # or with overrides:
-            service, plugin = make_service(askModel="gemini/gemini-2.0-flash")
+            service, plugin = make_service(assistantModel="gemini/gemini-2.0-flash")
     """
 
     def _make(**overrides: Any) -> tuple[LLMService, Mock]:

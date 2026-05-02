@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import logging
 import threading
-from typing import Any
 
 import litellm
 import supybot.conf as conf
@@ -15,56 +14,6 @@ from supybot.i18n import PluginInternationalization
 _ = PluginInternationalization("LLM")
 
 _log = logging.getLogger("supybot.plugins.LLM.config")
-
-# T5a compat shim: tracks which old setting keys have produced a deprecation
-# warning so we don't spam the log on every lookup. Keyed by the old key name
-# alone (process-global, not per-channel) — once an operator sees the warning
-# for ``askApiKey``, they don't need to see it again for every channel.
-_resolve_setting_warned: set[str] = set()
-_resolve_setting_lock: threading.Lock = threading.Lock()
-
-
-def resolve_setting(
-    plugin: Any,
-    new_key: str,
-    channel: str | None,
-    *,
-    fallbacks: tuple[str, ...] = (),
-) -> Any:
-    """Read ``new_key`` per channel; fall back to old keys if it is empty.
-
-    Returns the first non-empty value among ``[new_key, *fallbacks]``. When a
-    fallback is used (i.e. the operator still relies on a command-era setting),
-    log a one-shot deprecation warning naming the old key and the new
-    replacement so they know what to rename. Empty result (every key empty)
-    returns the empty value of the last-checked key — never raises.
-
-    Why this helper instead of calling ``registryValue`` inline: the LLM
-    plugin's registry surface is being migrated from command-era names
-    (``askModel``, ``drawApiKey``, ...) to capability-based names
-    (``assistantModel``, ``imageApiKey``, ...). Phase 2 Task 5a introduces
-    the new keys with this shim; Task 5b removes the old registrations a
-    release later.
-    """
-    primary = plugin.registryValue(new_key, channel)
-    if primary:
-        return primary
-    for old_key in fallbacks:
-        value = plugin.registryValue(old_key, channel)
-        if value:
-            with _resolve_setting_lock:
-                already = old_key in _resolve_setting_warned
-                if not already:
-                    _resolve_setting_warned.add(old_key)
-            if not already:
-                _log.warning(
-                    "LLM config: %r is deprecated; rename to %r "
-                    "(this warning fires once per process per old key).",
-                    old_key,
-                    new_key,
-                )
-            return value
-    return primary  # empty value of the right type
 
 
 class ValidatedModelName(registry.String):
@@ -162,7 +111,7 @@ def configure(advanced: bool) -> None:
     print("\nThis plugin provides AI-powered commands using LiteLLM.")
     print("You'll need API keys for the models you want to use.")
     print("\nYou can configure API keys now or later using:")
-    print("  config plugins.LLM.askApiKey YOUR_KEY")
+    print("  config plugins.LLM.assistantApiKey YOUR_KEY")
     print("\nFor more info, see the README.md")
     print("=" * 60)
 
@@ -170,15 +119,7 @@ def configure(advanced: bool) -> None:
 LLM = conf.registerPlugin("LLM")
 
 # ============================================================================
-# Capability-based settings (T5a). New names introduced alongside the
-# command-era keys below; ``resolve_setting`` reads these first and falls
-# back to the old key with a one-time deprecation warning. T5b removes the
-# old registrations a release later. See
-# docs/plans/2026-05-02-settings-config-simplification-findings.md.
-#
-# All defaults are empty so ``resolve_setting`` falls through to the
-# existing command-era key on the first lookup — that preserves Phase-1
-# operator behaviour without forcing them to migrate immediately.
+# API Keys (private - never logged)
 # ============================================================================
 
 conf.registerChannelValue(
@@ -186,10 +127,9 @@ conf.registerChannelValue(
     "assistantApiKey",
     registry.String(
         "",
-        _("""API key for assistant text+tool work (chat, planner loop, memory,
-        spontaneous, reminder parsing, image-prompt rewrite). Replaces
-        askApiKey, metaApiKey, memoryApiKey, spontaneousApiKey. When empty,
-        resolve_setting falls back to those old keys in order."""),
+        _("""API key for assistant text+tool work (chat, planner loop, memory
+        extraction/cleanup, spontaneous participation, reminder parsing,
+        image-prompt rewrite, scheduled tasks)."""),
         private=True,
     ),
 )
@@ -199,55 +139,11 @@ conf.registerChannelValue(
     "imageApiKey",
     registry.String(
         "",
-        _("""API key for image generation. Replaces drawApiKey. When empty,
-        resolve_setting falls back to drawApiKey. Does NOT auto-fall-back to
+        _("""API key for image generation. Does not auto-fall-back to
         assistantApiKey because image providers usually use a separate
         account."""),
         private=True,
     ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "assistantSystemPrompt",
-    registry.String(
-        "",
-        _("""System prompt that defines bot personality and constraints for
-        all assistant work. Replaces askSystemPrompt. When empty,
-        resolve_setting falls back to askSystemPrompt."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "assistantModel",
-    ValidatedModelName(
-        "",
-        _("""Model used for assistant text+tool work. Replaces askModel,
-        metaModel, memoryExtractionModel, memoryCleanupModel, and
-        spontaneousModel. When empty, resolve_setting falls back to those old
-        keys in order."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageModel",
-    ValidatedModelName(
-        "",
-        _("""Model used for image generation. Replaces drawModel. When empty,
-        resolve_setting falls back to drawModel."""),
-    ),
-)
-
-# ============================================================================
-# API Keys (private - never logged)
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "askApiKey",
-    registry.String("", _("""API key for ask command (channel-overridable)."""), private=True),
 )
 
 conf.registerChannelValue(
@@ -258,24 +154,14 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "drawApiKey",
-    registry.String("", _("""API key for draw command (channel-overridable)."""), private=True),
-)
-
-conf.registerChannelValue(
-    LLM,
     "searchApiKey",
     registry.String(
         "",
-        _("""API key for search/fetch tools (channel-overridable). Falls back to askApiKey."""),
+        _(
+            """API key for search/fetch tools (channel-overridable). Falls back to assistantApiKey."""
+        ),
         private=True,
     ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "grokApiKey",
-    registry.String("", _("""API key for grok (g) command (channel-overridable)."""), private=True),
 )
 
 # ============================================================================
@@ -284,11 +170,11 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "askSystemPrompt",
+    "assistantSystemPrompt",
     registry.String(
         "You are a helpful IRC assistant. Keep responses concise and suitable for IRC chat. "
         "Avoid markdown formatting. Be direct and informative.",
-        _("""System prompt for ask command - defines bot personality and constraints"""),
+        _("""System prompt for all assistant work - defines bot personality and constraints."""),
     ),
 )
 
@@ -303,26 +189,18 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "grokSystemPrompt",
-    registry.String(
-        "",
-        _("""Optional personality/instruction prefix for grok (g) command.
-        Prepended to the chat-profile system prompt. Empty by default."""),
-    ),
-)
-
 # ============================================================================
 # Model Configuration (channel-specific with global defaults)
 # ============================================================================
 
 conf.registerChannelValue(
     LLM,
-    "askModel",
+    "assistantModel",
     ValidatedModelName(
         "gemini/gemini-flash-latest",
-        _("""Model for ask command (supports vision)"""),
+        _("""Model used for all assistant text+tool work (chat, planner loop,
+        memory, spontaneous, reminder parsing, scheduled tasks). Must support
+        vision if image URLs in chat should work."""),
     ),
 )
 
@@ -337,7 +215,7 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "drawModel",
+    "imageModel",
     ValidatedModelName(
         "vertex_ai/imagen-4.0-generate-001",
         _("""Model for image generation"""),
@@ -349,16 +227,7 @@ conf.registerChannelValue(
     "searchModel",
     ValidatedModelName(
         "",
-        _("""Model for search/fetch tools. Falls back to askModel if empty."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "grokModel",
-    ValidatedModelName(
-        "xai/grok-4.3-latest",
-        _("""Model for grok (g) command - direct passthrough to xAI."""),
+        _("""Model for search/fetch tools. Falls back to assistantModel if empty."""),
     ),
 )
 
@@ -407,38 +276,10 @@ conf.registerChannelValue(
     registry.Boolean(True, _("""Enable automatic memory extraction from command interactions.""")),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "memoryExtractionModel",
-    ValidatedModelName(
-        "gemini/gemini-2.0-flash-lite",
-        _("""Model for memory extraction (cheap flash-tier recommended)."""),
-    ),
-)
-
 conf.registerGlobalValue(
     LLM,
     "memoryMaxPerUser",
     registry.PositiveInteger(50, _("""Maximum number of memories stored per user.""")),
-)
-conf.registerChannelValue(
-    LLM,
-    "memoryApiKey",
-    registry.String(
-        "",
-        _("""API key for memory extraction model (channel-overridable).
-        Falls back to askApiKey if empty."""),
-        private=True,
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "memoryCleanupModel",
-    ValidatedModelName(
-        "gemini/gemini-3.1-flash-lite-preview",
-        _("""Model for memory cleanup (flash-tier recommended)."""),
-    ),
 )
 
 conf.registerGlobalValue(
@@ -474,24 +315,6 @@ conf.registerChannelValue(
     LLM,
     "spontaneousCooldown",
     registry.PositiveInteger(2, _("""Minimum minutes between spontaneous replies per channel.""")),
-)
-conf.registerChannelValue(
-    LLM,
-    "spontaneousModel",
-    ValidatedModelName(
-        "gemini/gemini-2.0-flash-lite",
-        _("""Model for spontaneous participation (cheap flash-tier recommended)."""),
-    ),
-)
-conf.registerChannelValue(
-    LLM,
-    "spontaneousApiKey",
-    registry.String(
-        "",
-        _("""API key for spontaneous model (channel-overridable).
-        Falls back to askApiKey if empty."""),
-        private=True,
-    ),
 )
 conf.registerChannelValue(
     LLM,
@@ -922,27 +745,6 @@ conf.registerGlobalValue(
 # ============================================================================
 # Assistant Tool-Calling Backend (shared by @ask, @code, @draw, invalidCommand)
 # ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "metaModel",
-    ValidatedModelName(
-        "",
-        _("""Model for the shared assistant tool-calling backend.
-        Must support function/tool calling. If empty, falls back to askModel."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "metaApiKey",
-    registry.String(
-        "",
-        _("""API key for the shared assistant backend (channel-overridable).
-        Falls back to askApiKey if empty."""),
-        private=True,
-    ),
-)
 
 conf.registerGlobalValue(
     LLM,

@@ -637,8 +637,8 @@ class TestParseReminderService:
         """Create a mock plugin for service tests."""
         plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args: {
-            "askApiKey": "test-api-key",
-            "askModel": "gemini/gemini-2.0-flash",
+            "assistantApiKey": "test-api-key",
+            "assistantModel": "gemini/gemini-2.0-flash",
             "timeout": 30,
         }.get(key, "")
         return plugin
@@ -701,19 +701,14 @@ class TestParseReminderService:
         assert "API key" in result.confirmation
 
     def test_parse_reminder_uses_assistant_keys_when_set(self, mocker: MockerFixture) -> None:
-        """T5a: when assistantApiKey/Model are set, parse_reminder uses them
-        instead of askApiKey/Model — verifies the migration wired the
-        capability-based settings into the reminder parser."""
-        from llm import config as cfg
+        """T5b: parse_reminder uses assistantApiKey/Model directly. Verifies
+        the capability-based settings are the lookup target."""
         from llm.service import LLMService
 
-        cfg._resolve_setting_warned.clear()
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
             "assistantApiKey": "sk-assistant",
             "assistantModel": "gemini/gemini-flash-latest",
-            "askApiKey": "sk-ask-old",
-            "askModel": "gemini/legacy-old",
             "timeout": 30,
         }.get(key, "")
         mocker.patch("llm.service.log")
@@ -734,47 +729,6 @@ class TestParseReminderService:
         kwargs = mock_completion.call_args.kwargs
         assert kwargs["model"] == "gemini/gemini-flash-latest"
         assert kwargs["api_key"] == "sk-assistant"
-
-    def test_parse_reminder_falls_back_to_ask_keys_when_assistant_empty(
-        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """T5a: when only the legacy askApiKey/Model are set (upgrade path),
-        parse_reminder still works AND emits a one-time deprecation warning."""
-        import logging
-
-        from llm import config as cfg
-        from llm.service import LLMService
-
-        cfg._resolve_setting_warned.clear()
-        mock_plugin = mocker.MagicMock()
-        mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "askApiKey": "sk-ask-only",
-            "askModel": "gemini/old-model",
-            "timeout": 30,
-        }.get(key, "")
-        mocker.patch("llm.service.log")
-        service = LLMService(mock_plugin)
-
-        mock_completion = mocker.patch("llm.service.litellm.completion")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = (
-            '{"action": "schedule", "seconds": 60, "message": "x", "confirmation": "ok"}'
-        )
-        mock_completion.return_value = mock_response
-
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            service.parse_reminder("in 60s test")
-
-        kwargs = mock_completion.call_args.kwargs
-        assert kwargs["api_key"] == "sk-ask-only"
-        assert kwargs["model"] == "gemini/old-model"
-        assert any(
-            "askApiKey" in rec.getMessage() and "assistantApiKey" in rec.getMessage()
-            for rec in caplog.records
-        )
 
     def test_parse_reminder_schedule_success(
         self, service: MagicMock, mocker: MockerFixture
@@ -982,8 +936,8 @@ class TestParseReminderService:
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "askApiKey": "test-api-key",
-            "askModel": "openai/gpt-4",  # Non-Gemini model
+            "assistantApiKey": "test-api-key",
+            "assistantModel": "openai/gpt-4",  # Non-Gemini model
             "timeout": 30,
         }.get(key, "")
 

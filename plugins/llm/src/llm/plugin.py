@@ -32,7 +32,6 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
-from .config import resolve_setting
 from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase, ReminderRow
 from .service import (
@@ -180,20 +179,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         category="generation",
     ),
     CommandInfo(
-        name="g",
-        args="<question>",
-        description=(
-            "Ask Grok with full chat-profile tool access (search, fetch, code, "
-            "draw, reminders, memory). Tool gating respects IRC capabilities. "
-            "Shares the ask rate-limit bucket."
-        ),
-        examples=(
-            "%g what's the deal with airline food",
-            "%g search the web for today's CVEs and summarize",
-        ),
-        category="generation",
-    ),
-    CommandInfo(
         name="draw",
         args="<prompt>",
         description="Generate an image from a text description.",
@@ -260,17 +245,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="[nick | #channel]",
         description="Show API usage statistics.",
         examples=("%usage", "%usage someone", "%usage #channel"),
-        category="utility",
-    ),
-    CommandInfo(
-        name="migrateconfig",
-        args="(no arguments)",
-        description=(
-            "Owner-only. PMs a report of every non-empty command-era LLM "
-            "registry value and the matching capability-based key to mirror "
-            "it onto, in preparation for Phase 2 Task 5b."
-        ),
-        examples=("%migrateconfig",),
         category="utility",
     ),
 )
@@ -876,21 +850,11 @@ class LLM(callbacks.Plugin):
                 if not channel_msgs:
                     return
 
-                api_key = resolve_setting(
-                    self,
-                    "assistantApiKey",
-                    channel,
-                    fallbacks=("spontaneousApiKey", "askApiKey"),
-                )
+                api_key = self.registryValue("assistantApiKey", channel)
                 if not api_key:
                     return
 
-                model = resolve_setting(
-                    self,
-                    "assistantModel",
-                    channel,
-                    fallbacks=("spontaneousModel", "askModel"),
-                )
+                model = self.registryValue("assistantModel", channel)
                 system_prompt = self.registryValue("spontaneousSystemPrompt", channel)
 
                 prompt = "Respond to the conversation above, or say PASS."
@@ -1201,12 +1165,7 @@ class LLM(callbacks.Plugin):
                         history, channel_history = self._gather_history(nick, channel)
                         memories = self._get_user_memories(nick)
                         user_instruction = self.db.get_instruction(nick)
-                        ask_prompt = resolve_setting(
-                            self,
-                            "assistantSystemPrompt",
-                            channel,
-                            fallbacks=("askSystemPrompt",),
-                        )
+                        ask_prompt = self.registryValue("assistantSystemPrompt", channel)
                         effective_prompt = (
                             f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
                         )
@@ -2520,12 +2479,7 @@ class LLM(callbacks.Plugin):
             user_instruction = self.db.get_instruction(nick)
 
             # Build system prompt with optional user instruction
-            ask_prompt = resolve_setting(
-                self,
-                "assistantSystemPrompt",
-                channel,
-                fallbacks=("askSystemPrompt",),
-            )
+            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
             effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
 
             with self._allow_concurrent():
@@ -2726,127 +2680,6 @@ class LLM(callbacks.Plugin):
             )
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
-
-    def g(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """<question>
-
-        Ask Grok directly with full chat-profile tool access (search, fetch,
-        code, draw, reminders, memory). Tool gating still respects your IRC
-        capabilities. Shares the ask rate-limit bucket.
-
-        Examples:
-          %g what's the deal with airline food
-          %g search the web for the latest CVE on openssl
-        """
-        if self._is_old_message(msg):
-            return
-
-        # Share ask's rate-limit bucket and capability.
-        pf = self._run_preflight(
-            irc,
-            msg,
-            text,
-            "ask",
-            require_account=False,
-        )
-        if pf.blocked:
-            return
-        nick, channel = pf.nick, pf.channel
-
-        request_context = self._build_request_context(
-            irc,
-            msg,
-            pf,
-            entry_route="g",
-            profile="chat",
-        )
-        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
-        with self._trace_request("g", nick, channel):
-            images = self.llm_service.detect_images(text)
-            history, channel_history = self._gather_history(nick, channel)
-            memories = self._get_user_memories(nick)
-            user_instruction = self.db.get_instruction(nick)
-
-            grok_personality = self.registryValue("grokSystemPrompt", channel)
-            prefix_parts = [p for p in (user_instruction, grok_personality) if p]
-            effective_prompt = "\n\n".join(prefix_parts) if prefix_parts else None
-
-            grok_api_key = self.registryValue("grokApiKey", channel)
-            grok_model = self.registryValue("grokModel", channel)
-
-            with self._allow_concurrent():
-                request_text = text
-                if images:
-                    for img in images:
-                        request_text = request_text.replace(img, "").strip()
-
-                result = self.llm_service.assistant_request(
-                    request_text,
-                    request_context=request_context,
-                    db=self.db,
-                    context=self.context,
-                    bot_nick=irc.nick,
-                    images=images,
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                    memories=memories,
-                    system_prompt=effective_prompt,
-                    api_key=grok_api_key or None,
-                    model_override=grok_model or None,
-                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                    code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
-                    **self._scheduled_llm_task_fns(
-                        caller=caller, irc=irc, msg=msg, channel=channel
-                    ),
-                )
-
-                response = result.content
-
-                if (
-                    result.last_successful_tool in _REMINDER_MUTATION_TOOLS
-                    and not result.final_text_after_tools.strip()
-                ):
-                    self.log.info(
-                        "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
-                        result.last_successful_tool,
-                        channel,
-                        nick,
-                    )
-                elif not response or not response.strip():
-                    irc.error(_("The model returned an empty response. Please try again."))
-                    return
-                else:
-                    action_text = self._extract_action(irc, response)
-                    if action_text:
-                        if result.grounding_used:
-                            action_text = f"{GROUNDING_ICON} {action_text}"
-                        self.log.info("sending action to %s/%s", channel, nick)
-                        target = channel if ircutils.isChannel(channel) else nick
-                        irc.queueMsg(ircmsgs.action(target, action_text))
-                        response = f"* {irc.nick} {action_text}"
-                    else:
-                        display_response = (
-                            f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                        )
-                        self.log.info("replying to %s/%s", channel, nick)
-                        self._send_long_reply(irc, msg, display_response, prefixNick=False)
-
-            self._store_context_and_log_usage(nick, channel, "g", text, response, result, irc, msg)
-
-    g = wrap(g, [("checkCapability", "llm.ask"), "text"])
 
     def draw(
         self,
@@ -3102,116 +2935,6 @@ class LLM(callbacks.Plugin):
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
-
-    # Mapping of T5a old (command-era) registry keys to new (capability-based)
-    # keys. Used by the ``migrateLlmConfig`` helper to surface what an operator
-    # still needs to mirror onto the new keys before T5b removes the old
-    # registrations. Keep aligned with config.py and the T5b plan
-    # (docs/plans/2026-05-02-task-5b-config-cleanup-plan.md).
-    _LLM_CONFIG_MIGRATION_MAP: tuple[tuple[str, str], ...] = (
-        ("askModel", "assistantModel"),
-        ("askApiKey", "assistantApiKey"),
-        ("askSystemPrompt", "assistantSystemPrompt"),
-        ("metaModel", "assistantModel"),
-        ("metaApiKey", "assistantApiKey"),
-        ("memoryExtractionModel", "assistantModel"),
-        ("memoryCleanupModel", "assistantModel"),
-        ("memoryApiKey", "assistantApiKey"),
-        ("spontaneousModel", "assistantModel"),
-        ("spontaneousApiKey", "assistantApiKey"),
-        ("drawModel", "imageModel"),
-        ("drawApiKey", "imageApiKey"),
-        ("grokModel", "(remove — %g command is being removed)"),
-        ("grokApiKey", "(remove — %g command is being removed)"),
-        ("grokSystemPrompt", "(remove — %g command is being removed)"),
-    )
-
-    def migrateconfig(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-    ) -> None:
-        """takes no arguments
-
-        List every non-empty command-era LLM registry value that still needs
-        to be mirrored onto the capability-based key before Task 5b removes
-        the old registrations. Owner-only. PM the report to the caller —
-        API key values are redacted in the report but a separate "raw" PM
-        contains the actual values so you can copy/paste into ``@config``.
-        """
-        if not ircdb.checkCapability(msg.prefix, "owner"):
-            irc.error(_("Only bot owners can run migrateconfig."))
-            return
-
-        # Channels to inspect: every channel the bot is currently in, plus
-        # ``None`` for the global default. Per-channel values that match the
-        # global value are not reported (no migration needed).
-        channels: list[str | None] = [None, *sorted(irc.state.channels)]
-
-        report_lines: list[str] = []
-        raw_pairs: list[tuple[str, str | None, str]] = []
-
-        for old_key, new_key in self._LLM_CONFIG_MIGRATION_MAP:
-            global_value = ""
-            for channel in channels:
-                value = self.registryValue(old_key, channel)
-                value_str = str(value or "").strip()
-                if channel is None:
-                    global_value = value_str
-                    if not value_str:
-                        continue
-                    scope_label = "global"
-                else:
-                    if not value_str or value_str == global_value:
-                        continue
-                    scope_label = channel
-                redacted = self._redact_for_migration(old_key, value_str)
-                report_lines.append(f"{old_key} [{scope_label}] = {redacted}  ->  set {new_key}")
-                raw_pairs.append((old_key, channel, value_str))
-
-        target = msg.nick
-        if not report_lines:
-            irc.queueMsg(
-                ircmsgs.privmsg(
-                    target,
-                    "migrateLlmConfig: no command-era LLM keys with non-default "
-                    "values found. Nothing to migrate.",
-                )
-            )
-            return
-
-        header = (
-            f"migrateLlmConfig: {len(report_lines)} value(s) to mirror before "
-            "Task 5b. Recommended: copy each into the matching new key with "
-            "@config plugins.LLM.<newKey> [channel #foo] <value>."
-        )
-        irc.queueMsg(ircmsgs.privmsg(target, header))
-        for line in report_lines:
-            irc.queueMsg(ircmsgs.privmsg(target, line))
-
-        # Send a follow-up "raw values" PM block so the operator can read the
-        # actual API key values when they're ready to copy. Separate so the
-        # main report can be pasted into a ticket or commit message safely.
-        irc.queueMsg(
-            ircmsgs.privmsg(
-                target,
-                "Raw values follow (API keys NOT redacted; do not share):",
-            )
-        )
-        for old_key, channel, value_str in raw_pairs:
-            scope = "global" if channel is None else channel
-            irc.queueMsg(ircmsgs.privmsg(target, f"{old_key} [{scope}] = {value_str}"))
-
-    migrateconfig = wrap(migrateconfig, [])
-
-    @staticmethod
-    def _redact_for_migration(key: str, value: str) -> str:
-        """Redact an API-key value for the safe-to-paste migration report."""
-        if "ApiKey" in key:
-            tail = value[-4:] if len(value) > 4 else ""
-            return f"<redacted, ends ...{tail}>" if tail else "<redacted>"
-        return value
 
     def usage(
         self,

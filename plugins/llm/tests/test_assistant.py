@@ -667,7 +667,7 @@ class TestMetaCompletion:
 
     @pytest.fixture
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
-        svc, _plugin = make_service(metaModel="gpt-4")
+        svc, _plugin = make_service(assistantModel="gpt-4")
         return svc
 
     def test_text_response_no_tools(self, service: LLMService, mocker: MockerFixture) -> None:
@@ -2130,7 +2130,7 @@ class TestMetaIntegration:
         """Create an LLMService with meta config defaults."""
         plugin = mocker.MagicMock()
         plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"metaModel": "gpt-4"})
+            side_effect=make_registry_side_effect({"assistantModel": "gpt-4"})
         )
         plugin.log = mocker.Mock()
         return LLMService(plugin), plugin

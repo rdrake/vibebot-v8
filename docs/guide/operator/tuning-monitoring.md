@@ -2,26 +2,22 @@
 
 ## Models and API keys (capability-based)
 
-The model/key surface is being migrated from per-command names (`askModel`, `drawApiKey`, `metaModel`, `memoryExtractionModel`, `spontaneousApiKey`, …) to capability-based names that match how the assistant actually works today: one assistant loop with a few specialized tools.
+The model/key surface is capability-based: one assistant loop, an image generator, and a couple of specialized tool models.
 
-| Setting | Scope | Replaces | Used for |
-|---------|-------|----------|----------|
-| `assistantModel` | Channel | `askModel`, `metaModel`, `memoryExtractionModel`, `memoryCleanupModel`, `spontaneousModel` | Chat, planner loop, bridge tool selection, reminder parsing, memory extraction, memory cleanup, spontaneous participation, image-prompt rewrite |
-| `assistantApiKey` | Channel | `askApiKey`, `metaApiKey`, `memoryApiKey`, `spontaneousApiKey` | Same as above (private) |
-| `assistantSystemPrompt` | Channel | `askSystemPrompt` | Personality and constraints for assistant work |
-| `imageModel` | Channel | `drawModel` | Image generation |
-| `imageApiKey` | Channel | `drawApiKey` | Image generation (private) |
-
-`codeModel` / `codeApiKey` / `codeSystemPrompt` and `searchModel` / `searchApiKey` are unchanged — those workloads have genuinely different requirements from chat and stay separate.
-
-**Migration:** the new keys are read first; if empty, the bridge falls back to the old keys for one release cycle. A one-time deprecation warning logs the first time each old key satisfies a lookup. To migrate cleanly:
+| Setting | Scope | Used for |
+|---------|-------|----------|
+| `assistantModel` | Channel | Chat, planner loop, bridge tool selection, reminder parsing, memory extraction, memory cleanup, spontaneous participation, image-prompt rewrite, scheduled tasks |
+| `assistantApiKey` | Channel | Same as above (private) |
+| `assistantSystemPrompt` | Channel | Personality and constraints for assistant work |
+| `imageModel` | Channel | Image generation |
+| `imageApiKey` | Channel | Image generation (private) — does not auto-fall-back to `assistantApiKey` |
+| `codeModel` / `codeApiKey` / `codeSystemPrompt` | Channel | `@code` (separate so cost/quality can differ from chat) |
+| `searchModel` / `searchApiKey` | Channel | Web search/URL fetch tools (provider-specific grounding requirements). `searchApiKey` falls back to `assistantApiKey`; `searchModel` falls back to `assistantModel` if empty |
 
 ```
 @config channel #yourchan plugins.LLM.assistantApiKey <your-key>
 @config channel #yourchan plugins.LLM.assistantModel gemini/gemini-flash-latest
 ```
-
-You can keep the old keys set during the transition; the new keys win over the old. Once you set every new key your channel needs, the deprecation warnings stop. The old registrations themselves are removed in a later release.
 
 ## Context tuning
 
@@ -51,12 +47,9 @@ Non-volatile memory stores facts about users that persist across sessions and co
 |---------|---------|-------|-------------|
 | `memoryEnabled` | `True` | Channel | Enable automatic memory extraction |
 | `memoryMaxPerUser` | `50` | Global | Maximum memories stored per user |
-| `memoryExtractionModel` | `gemini/gemini-2.0-flash-lite` | Channel | Model for extracting facts (cheap flash-tier recommended) |
-| `memoryCleanupModel` | `gemini/gemini-3.1-flash-lite-preview` | Channel | Model for deduplicating and cleaning memories |
 | `memoryCleanupInterval` | `3` | Global | Extraction passes (with saves) between cleanup runs. `0` to disable |
-| `memoryApiKey` | (empty) | Global | API key for memory models. Falls back to `askApiKey` if empty |
 
-Memory extraction runs in the background after `@ask` interactions. The cleanup process periodically consolidates duplicate or outdated memories.
+Memory extraction and cleanup both run on the configured `assistantModel`/`assistantApiKey`. The extraction runs in the background after `@ask` interactions; the cleanup process periodically consolidates duplicate or outdated memories.
 
 ## Spontaneous participation
 
@@ -67,11 +60,9 @@ When enabled, the bot occasionally joins channel conversations without being exp
 | `spontaneousEnabled` | `False` | Channel | Enable spontaneous replies |
 | `spontaneousChance` | `15` | Channel | Percent chance (1-100) of evaluating a reply per message |
 | `spontaneousCooldown` | `2` | Channel | Minimum minutes between spontaneous replies per channel |
-| `spontaneousModel` | `gemini/gemini-2.0-flash-lite` | Channel | Model for spontaneous replies (cheap flash-tier recommended) |
 | `spontaneousSystemPrompt` | *(see below)* | Channel | Personality prompt for spontaneous participation |
-| `spontaneousApiKey` | (empty) | Global | API key. Falls back to `askApiKey` if empty |
 
-Spontaneous participation requires `contextTrackAllMessages` to be enabled in the channel -- the bot needs to see the conversation to decide when to join in.
+Spontaneous participation runs on the configured `assistantModel`/`assistantApiKey`. It requires `contextTrackAllMessages` to be enabled in the channel -- the bot needs to see the conversation to decide when to join in.
 
 The default system prompt instructs the model to act as a channel regular who can respond naturally or reply with `PASS` to stay silent.
 
@@ -272,7 +263,7 @@ The bot stores reminders, usage statistics, and memories in a SQLite database. T
 
 **API key not working**
 
-- Verify the key is set: `@config plugins.LLM.askApiKey` (it will show as masked)
+- Verify the key is set: `@config plugins.LLM.assistantApiKey` (it will show as masked)
 - Check that the key matches the model's provider. A Google API key will not work with an `anthropic/` model.
 - Set `logLevel` to `DEBUG` and retry to see the full error in logs.
 
