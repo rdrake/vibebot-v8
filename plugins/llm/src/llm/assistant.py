@@ -439,7 +439,12 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                 "TOOLS at fire time, e.g. 'every Monday at 9am check my open "
                 "PRs and tell me which are stale'. For plain text reminders "
                 "with no action, use set_reminder instead. Recurring is "
-                "supported (numeric and calendar cadences)."
+                "supported (numeric and calendar cadences). When confirming "
+                "to the user, describe the schedule in plain English ('I'll "
+                "check every 2 minutes and post when there's a new release'); "
+                "do NOT expose tool names, ids, or `@ask` syntax — if they "
+                "want to cancel or list, they'll just ask you and you'll "
+                "call the relevant tool yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -470,7 +475,10 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
             "name": "list_scheduled_llm_tasks",
             "description": (
                 "List your scheduled LLM tasks. Returns id, when, channel, "
-                "and prompt for each. Use before cancel_scheduled_llm_task."
+                "and prompt for each. Use before cancel_scheduled_llm_task. "
+                "When summarizing to the user, describe each task in plain "
+                "English (when it fires + what it does); do NOT print the "
+                "raw id or tell the user to invoke any tool by name."
             ),
             "parameters": {
                 "type": "object",
@@ -484,8 +492,11 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "cancel_scheduled_llm_task",
             "description": (
-                "Cancel one of your scheduled LLM tasks by id. Get ids "
-                "from list_scheduled_llm_tasks."
+                "Cancel one of your scheduled LLM tasks by id. To find the "
+                "id, call list_scheduled_llm_tasks first and match by the "
+                "task description the user referred to. Confirm cancellation "
+                "to the user in plain English; do NOT expose the id or any "
+                "tool name."
             ),
             "parameters": {
                 "type": "object",
