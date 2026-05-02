@@ -397,6 +397,129 @@ def test_enumerate_passes_string_form_to_capability_check(mocker):
     assert all(isinstance(n, str) for n in seen)
 
 
+def test_enumerate_skips_mutating_commands_when_gate_closed(mocker):
+    """With allow_mutating=False (the default), MUTATING_COMMANDS leaves
+    are filtered out even if their plugin is allowlisted."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(
+        mocker,
+        "Later",
+        canonical="later",
+        commands=["tell", "notes", "remove", "undo"],
+        docstrings={
+            "tell": "<nick> <text>",
+            "notes": "takes no arguments",
+            "remove": "<id>",
+            "undo": "takes no arguments",
+        },
+    )
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"}), allow_mutating=False))
+
+    leaves = {c.command for c in result}
+    assert leaves == {"notes"}  # tell, remove, undo all in MUTATING_COMMANDS
+
+
+def test_enumerate_yields_mutating_commands_when_gate_open(mocker):
+    """With allow_mutating=True, MUTATING_COMMANDS is not consulted —
+    the existing capability + DENY filters still apply, but writes pass."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(
+        mocker,
+        "Later",
+        canonical="later",
+        commands=["tell", "notes", "remove", "undo"],
+        docstrings={
+            "tell": "<nick> <text>",
+            "notes": "takes no arguments",
+            "remove": "<id>",
+            "undo": "takes no arguments",
+        },
+    )
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"}), allow_mutating=True))
+
+    leaves = {c.command for c in result}
+    assert leaves == {"tell", "notes", "remove", "undo"}
+
+
+def test_enumerate_default_keyword_is_gate_closed(mocker):
+    """Calling enumerate_commands without allow_mutating= defaults to the
+    closed gate — backwards-compat safety: an old caller that forgets to
+    pass the kwarg still gets safe behavior."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(
+        mocker,
+        "Later",
+        canonical="later",
+        commands=["tell", "notes"],
+        docstrings={"tell": "<nick> <text>", "notes": "x"},
+    )
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"})))
+    leaves = {c.command for c in result}
+    assert leaves == {"notes"}
+
+
+def test_enumerate_gate_does_not_affect_pure_read_only_plugins(mocker):
+    """A plugin with no entries in MUTATING_COMMANDS (e.g. Time) yields
+    the same set whether the gate is open or closed."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(
+        mocker,
+        "Time",
+        canonical="time",
+        commands=["time", "at", "until"],
+        docstrings={"time": "x", "at": "y", "until": "z"},
+    )
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    closed = {
+        c.command
+        for c in lb.enumerate_commands(irc, msg, frozenset({"Time"}), allow_mutating=False)
+    }
+    open_ = {
+        c.command for c in lb.enumerate_commands(irc, msg, frozenset({"Time"}), allow_mutating=True)
+    }
+    assert closed == open_ == {"time", "at", "until"}
+
+
+def test_enumerate_gate_preserves_deny_commands_filtering(mocker):
+    """DENY_COMMANDS still bites even when allow_mutating=True. Web.fetch
+    is denied unconditionally (SSRF), independent of the mutation gate."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(
+        mocker,
+        "Web",
+        canonical="web",
+        commands=["fetch", "title"],
+        docstrings={"fetch": "<url>", "title": "<url>"},
+    )
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    result = list(lb.enumerate_commands(irc, msg, frozenset({"Web"}), allow_mutating=True))
+    leaves = {c.command for c in result}
+    assert leaves == {"title"}  # fetch is in DENY_COMMANDS
+
+
 def test_dispatch_unknown_plugin(mocker):
     from llm import limnoria_bridge as lb
 

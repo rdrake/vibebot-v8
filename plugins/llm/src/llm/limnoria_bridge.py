@@ -185,6 +185,8 @@ def enumerate_commands(
     irc: Any,
     msg: Any,
     allowed_plugins: frozenset[str],
+    *,
+    allow_mutating: bool = False,
 ) -> Iterator[BridgeCommand]:
     """Yield every loaded command the LLM is allowed to call.
 
@@ -192,6 +194,8 @@ def enumerate_commands(
     - Its plugin is in ``allowed_plugins`` (operator allowlist).
     - Its plugin is NOT in ``DENY_PLUGINS`` (hard deny).
     - Its (canonical_plugin, leaf) tuple is NOT in ``DENY_COMMANDS``.
+    - When ``allow_mutating`` is False (the default), its
+      (canonical_plugin, leaf) tuple is NOT in ``MUTATING_COMMANDS``.
     - ``checkCommandCapability(msg, cb, leaf)`` returns falsy
       (i.e. allowed for the calling user).
 
@@ -209,6 +213,8 @@ def enumerate_commands(
         canonical = cb.canonicalName()
         for leaf in cb.listCommands():
             if (canonical, leaf) in DENY_COMMANDS:
+                continue
+            if not allow_mutating and (canonical, leaf) in MUTATING_COMMANDS:
                 continue
             denial = callbacks.checkCommandCapability(msg, cb, leaf)
             if denial:
