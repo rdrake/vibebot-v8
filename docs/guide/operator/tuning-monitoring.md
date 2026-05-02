@@ -58,14 +58,29 @@ The bridge exposes loaded Limnoria plugin commands to the LLM as a single dispat
 
 ### Enabling the bridge
 
-Two per-channel settings control it:
+One per-channel setting opts the channel in:
 
 ```
 @config channel #yourchan plugins.LLM.bridgeEnabled True
+```
+
+That activates the bridge with the curated default plugin set (see below). To override the default with a custom list, also set `bridgeAllowedPlugins`:
+
+```
 @config channel #yourchan plugins.LLM.bridgeAllowedPlugins Misc Time
 ```
 
-`bridgeEnabled` activates the bridge for that channel. `bridgeAllowedPlugins` is a space-separated list of plugin names to expose. The bridge tool is not registered with the LLM at all until at least one plugin is listed — an empty allowlist is the same as a disabled bridge.
+A non-empty list replaces the default — you take full control of what the LLM sees. To disable the bridge entirely, set `bridgeEnabled False`.
+
+### Curated default plugin set
+
+When `bridgeAllowedPlugins` is empty (the registry default), the bridge falls back to:
+
+`Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG`
+
+Each of those is either pure-read or has its write commands gated separately by `bridgeAllowMutating` (see below). The set is curated so a fresh `bridgeEnabled True` gives operators useful coverage without forcing per-channel allowlisting.
+
+The list is defined as `DEFAULT_ALLOWED_PLUGINS` in `plugins/llm/src/llm/limnoria_bridge.py`.
 
 ### Plugin loading prerequisite
 
@@ -74,13 +89,11 @@ The bridge can only expose plugins that are already loaded in Limnoria. Load the
 ```
 @load Misc
 @load Time
+@load Later
+@load Note
 ```
 
-If a plugin named in `bridgeAllowedPlugins` is not loaded, its commands are silently absent from the tool.
-
-### Recommended starter set
-
-`Misc Time Math Utilities Seen` — all read-only and low-risk. These cover the most common factual queries without opening any write or network-fetch surface.
+If a plugin in the (effective) allowlist is not loaded, its commands are silently absent from the tool.
 
 ### Security model
 
