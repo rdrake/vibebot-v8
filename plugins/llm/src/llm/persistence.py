@@ -796,6 +796,24 @@ class LLMDatabase:
         ).fetchone()
         return self._row_to_scheduled_llm_task(row) if row else None
 
+    def load_scheduled_llm_tasks_for_target(self, target: str) -> list[ScheduledLlmTaskRow]:
+        """Active rows whose creator_nick OR account matches ``target``.
+
+        Owner-only callers identify another user by either the nick that
+        scheduled the task or the NickServ account it was stored under,
+        case-insensitively.
+        """
+        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+        conn = self._connect()
+        rows = conn.execute(
+            f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+            "FROM scheduled_llm_tasks "
+            "WHERE (lower(creator_nick) = lower(?) OR lower(account) = lower(?)) "
+            "AND fire_at > ? ORDER BY fire_at",
+            (target, target, cutoff),
+        ).fetchall()
+        return [self._row_to_scheduled_llm_task(r) for r in rows]
+
     def load_scheduled_llm_tasks_for(
         self, *, account: str | None, nick: str
     ) -> list[ScheduledLlmTaskRow]:

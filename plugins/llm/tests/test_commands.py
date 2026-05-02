@@ -1857,6 +1857,196 @@ class TestRemindClearCommand:
 
 
 # ---------------------------------------------------------------------------
+
+
+class TestRemindAdminCommand:
+    """Tests for the owner-only ``remind admin`` subcommand."""
+
+    def _seed(self, plugin) -> None:
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_aaaa_a1"] = make_reminder_row(
+                event_name="llm_remind_aaaa_a1",
+                nick="targetnick",
+                channel="#test",
+                message="target one",
+            )
+            plugin._reminders["llm_remind_aaaa_a2"] = make_reminder_row(
+                event_name="llm_remind_aaaa_a2",
+                nick="targetnick",
+                channel="#test",
+                message="target two",
+                account="TargetAccount",
+            )
+            plugin._reminders["llm_remind_aaaa_a3"] = make_reminder_row(
+                event_name="llm_remind_aaaa_a3",
+                nick="someoneelse",
+                channel="#test",
+                message="not target",
+            )
+
+    def test_admin_requires_owner(self, plugin_env, mocker: MockerFixture):
+        """Non-owner invoking remind admin gets an error and no state changes."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+
+        plugin.remind(mock_irc, mock_msg, ["admin clear targetnick"])
+
+        mock_irc.error.assert_called_once()
+        assert "owner" in mock_irc.error.call_args[0][0].lower()
+        assert "llm_remind_aaaa_a1" in plugin._reminders
+        assert "llm_remind_aaaa_a2" in plugin._reminders
+
+    def test_admin_list_shows_target_reminders(self, plugin_env, mocker: MockerFixture):
+        """Owner running remind admin list <nick> sees that user's reminders."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
+
+        plugin.remind(mock_irc, mock_msg, ["admin list targetnick"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "target one" in reply_text
+        assert "target two" in reply_text
+        assert "not target" not in reply_text
+
+    def test_admin_list_matches_account(self, plugin_env, mocker: MockerFixture):
+        """Account name resolves the same rows as the nick."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
+
+        plugin.remind(mock_irc, mock_msg, ["admin list targetaccount"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "target two" in reply_text
+
+    def test_admin_list_no_reminders(self, plugin_env, mocker: MockerFixture):
+        """Reports no reminders when target has none."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
+
+        plugin.remind(mock_irc, mock_msg, ["admin list ghost"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "no pending reminders" in reply_text.lower()
+
+    def test_admin_list_includes_scheduled_tasks(self, plugin_env, mocker: MockerFixture):
+        """Owner list shows scheduled_llm_tasks alongside reminders."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        fake_task = mocker.MagicMock(
+            event_name="llm_task_abc",
+            prompt="be annoying every 20s",
+            creator_nick="targetnick",
+            account=None,
+        )
+        mocker.patch.object(
+            plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[fake_task]
+        )
+
+        plugin.remind(mock_irc, mock_msg, ["admin list targetnick"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "task:llm_task_abc" in reply_text
+        assert "be annoying" in reply_text
+
+    def test_admin_clear_removes_only_target_reminders(self, plugin_env, mocker: MockerFixture):
+        """Clearing for a target leaves other users' reminders intact."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
+
+        plugin.remind(mock_irc, mock_msg, ["admin clear targetnick"])
+
+        assert "llm_remind_aaaa_a1" not in plugin._reminders
+        assert "llm_remind_aaaa_a2" not in plugin._reminders
+        assert "llm_remind_aaaa_a3" in plugin._reminders
+
+    def test_admin_clear_cancels_scheduled_tasks_too(self, plugin_env, mocker: MockerFixture):
+        """admin clear nukes scheduled_llm_tasks rows alongside reminders."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        fake_task = mocker.MagicMock(event_name="llm_task_xyz", account=None)
+        mocker.patch.object(
+            plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[fake_task]
+        )
+        delete_mock = mocker.patch.object(plugin.db, "delete_scheduled_llm_task")
+
+        plugin.remind(mock_irc, mock_msg, ["admin clear fc42"])
+
+        delete_mock.assert_called_once_with("llm_task_xyz")
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "1 entry" in reply_text
+
+    def test_admin_clear_no_reminders(self, plugin_env, mocker: MockerFixture):
+        """Reports nothing to clear when target has none."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
+
+        plugin.remind(mock_irc, mock_msg, ["admin clear ghost"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "nothing to clear" in reply_text.lower()
+
+    def test_admin_del_removes_specific_reminder(self, plugin_env, mocker: MockerFixture):
+        """Owner deletes one reminder of a target user by ID."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch.object(plugin.db, "get_scheduled_llm_task", return_value=None)
+
+        plugin.remind(mock_irc, mock_msg, ["admin del targetnick a1"])
+
+        assert "llm_remind_aaaa_a1" not in plugin._reminders
+        assert "llm_remind_aaaa_a2" in plugin._reminders
+        assert "llm_remind_aaaa_a3" in plugin._reminders
+
+    def test_admin_del_scheduled_task_by_event_name(self, plugin_env, mocker: MockerFixture):
+        """Owner deletes a scheduled_llm_task by full event_name."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        fake_row = mocker.MagicMock(creator_nick="fc42", account=None)
+        mocker.patch.object(plugin.db, "get_scheduled_llm_task", return_value=fake_row)
+        delete_mock = mocker.patch.object(plugin.db, "delete_scheduled_llm_task")
+
+        plugin.remind(mock_irc, mock_msg, ["admin del fc42 llm_task_abc"])
+
+        delete_mock.assert_called_once_with("llm_task_abc")
+
+    def test_admin_del_unknown_id_errors(self, plugin_env, mocker: MockerFixture):
+        """Unknown ID produces an error and leaves reminders untouched."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin.db, "get_scheduled_llm_task", return_value=None)
+
+        plugin.remind(mock_irc, mock_msg, ["admin del targetnick zzzz"])
+
+        mock_irc.error.assert_called_once()
+        assert "llm_remind_aaaa_a1" in plugin._reminders
+
+    def test_admin_usage_error_when_args_missing(self, plugin_env, mocker: MockerFixture):
+        """Bare ``remind admin`` returns a usage error."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        plugin.remind(mock_irc, mock_msg, ["admin"])
+
+        mock_irc.error.assert_called_once()
+        assert "usage" in mock_irc.error.call_args[0][0].lower()
+
+
+# ---------------------------------------------------------------------------
 # Account-based identity
 # ---------------------------------------------------------------------------
 

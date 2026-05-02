@@ -230,13 +230,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
     ),
     CommandInfo(
         name="remind",
-        args="[<text> | list | del <id> | clear]",
+        args="[<text> | list | del <id> | clear | admin <list|del|clear> <nick> [<id>...]]",
         description="Set and manage reminders using natural language.",
         examples=(
             "%remind in 30 minutes check the build",
             "%remind list",
             "%remind delete abc1",
             "%remind clear",
+            "%remind admin list someone",
+            "%remind admin del someone abc1",
+            "%remind admin clear someone",
         ),
         category="utility",
     ),
@@ -3282,6 +3285,35 @@ class LLM(callbacks.Plugin):
             return
         irc.reply(self._format_reminders(user_reminders))
 
+    def _get_reminders_for_target(self, target: str) -> list[tuple[str, ReminderRow]]:
+        """Return reminders whose stored nick or account matches ``target``.
+
+        Owner-only callers identify another user by either the nick that
+        scheduled the reminder or the NickServ account it was stored
+        under, case-insensitively.
+        """
+        target_lower = ircutils.toLower(target)
+        with self._reminders_lock:
+            return [
+                (name, data)
+                for name, data in self._reminders.items()
+                if ircutils.toLower(data.nick) == target_lower
+                or (data.account and ircutils.toLower(data.account) == target_lower)
+            ]
+
+    def _find_reminder_for_target(self, target: str, reminder_id: str) -> str | None:
+        """Find a single reminder owned by ``target`` by reminder ID."""
+        target_lower = ircutils.toLower(target)
+        with self._reminders_lock:
+            for name, data in self._reminders.items():
+                if not name.endswith(f"_{reminder_id}"):
+                    continue
+                if ircutils.toLower(data.nick) == target_lower or (
+                    data.account and ircutils.toLower(data.account) == target_lower
+                ):
+                    return name
+            return None
+
     _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
@@ -3717,6 +3749,9 @@ class LLM(callbacks.Plugin):
           %remind list
           %remind delete abc1
           %remind clear
+          %remind admin list <nick>      (owner only)
+          %remind admin del <nick> <id>  (owner only)
+          %remind admin clear <nick>     (owner only)
         """
         caller = self._resolve_identity(irc, msg)
 
@@ -3726,6 +3761,13 @@ class LLM(callbacks.Plugin):
 
         parts = text.split(None, 1)
         subcommand = parts[0].lower()
+
+        if subcommand == "admin":
+            if not ircdb.checkCapability(msg.prefix, "owner"):
+                irc.error(_("Only bot owners can manage other users' reminders."))
+                return
+            self._remind_admin(irc, msg, parts[1] if len(parts) >= 2 else "")
+            return
 
         if subcommand == "list":
             self._remind_list(irc, caller)
@@ -3757,6 +3799,88 @@ class LLM(callbacks.Plugin):
 
         else:
             self._remind_set(irc, msg, caller, text)
+
+    def _cancel_scheduled_llm_task_admin(self, event_name: str) -> None:
+        """Owner-only cancel: skip ownership check, remove schedule + DB row."""
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(event_name)
+        self.db.delete_scheduled_llm_task(event_name)
+
+    def _remind_admin(self, irc: callbacks.Irc, msg: IrcMsg, rest: str) -> None:
+        """Owner-only dispatcher for cross-user reminder management.
+
+        Subcommands: ``list <target>``, ``del <target> <id> [<id>...]``,
+        ``clear <target>``.  ``target`` matches stored nick or account
+        case-insensitively.  ``clear`` cancels both ``reminders`` and
+        ``scheduled_llm_tasks`` rows because users speak of both as
+        "reminders" and the difference is invisible to them.
+        """
+        tokens = rest.split()
+        if len(tokens) < 2:
+            irc.error(_("Usage: remind admin <list|del|clear> <nick> [<id>...]"))
+            return
+
+        action = tokens[0].lower()
+        target = tokens[1]
+
+        if action == "list":
+            reminder_rows = self._get_reminders_for_target(target)
+            task_rows = self.db.load_scheduled_llm_tasks_for_target(target)
+            if not reminder_rows and not task_rows:
+                irc.reply(f"No pending reminders or scheduled tasks for {target}.")
+                return
+            parts = []
+            if reminder_rows:
+                parts.append(self._format_reminders(reminder_rows))
+            for row in task_rows:
+                preview = (row.prompt[:40] + "...") if len(row.prompt) > 40 else row.prompt
+                parts.append(f"task:{row.event_name}: {preview}")
+            irc.reply(f"{target}: " + " | ".join(parts))
+
+        elif action in ("delete", "del"):
+            if len(tokens) < 3:
+                irc.error(_("Usage: remind admin del <nick> <id> [<id>...]"))
+                return
+            deleted = 0
+            for rid in tokens[2:]:
+                reminder_event = self._find_reminder_for_target(target, rid)
+                if reminder_event:
+                    self._cancel_reminder(reminder_event)
+                    deleted += 1
+                    continue
+                task_row = self.db.get_scheduled_llm_task(rid)
+                if task_row is not None and (
+                    ircutils.toLower(task_row.creator_nick) == ircutils.toLower(target)
+                    or (
+                        task_row.account
+                        and ircutils.toLower(task_row.account) == ircutils.toLower(target)
+                    )
+                ):
+                    self._cancel_scheduled_llm_task_admin(rid)
+                    deleted += 1
+            if deleted == 0:
+                self._react(irc, msg, "❌")
+                irc.error(_("No matching reminders or tasks found."))
+            else:
+                label = "entry" if deleted == 1 else "entries"
+                self._ack(irc, msg, "👍", f"Cancelled {deleted} {label} for {target}.")
+
+        elif action == "clear":
+            reminder_rows = self._get_reminders_for_target(target)
+            task_rows = self.db.load_scheduled_llm_tasks_for_target(target)
+            total = len(reminder_rows) + len(task_rows)
+            if total == 0:
+                self._ack(irc, msg, "👌", f"Nothing to clear for {target}.")
+                return
+            for name, _data in reminder_rows:
+                self._cancel_reminder(name)
+            for row in task_rows:
+                self._cancel_scheduled_llm_task_admin(row.event_name)
+            label = "entry" if total == 1 else "entries"
+            self._ack(irc, msg, "👍", f"Cleared {total} {label} for {target}.")
+
+        else:
+            irc.error(_("Usage: remind admin <list|del|clear> <nick> [<id>...]"))
 
     remind = wrap(remind, [optional("text")])
 
