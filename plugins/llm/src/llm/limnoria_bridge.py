@@ -238,6 +238,7 @@ def dispatch(
     plugin: str,
     command: str,
     arg_string: str,
+    allow_mutating: bool = False,
 ) -> dict[str, Any]:
     """Run ``plugin.command arg_string`` through Limnoria's command path.
 
@@ -246,7 +247,11 @@ def dispatch(
     2. Plugin must not be in ``DENY_PLUGINS``.
     3. (canonical_plugin, command) must not be in ``DENY_COMMANDS``.
     4. ``cb.isCommandMethod(command)`` must be True.
-    5. ``checkCommandCapability(msg, cb, command)`` must be falsy.
+    5. When ``allow_mutating`` is False (the default), (canonical_plugin,
+       command) must not be in ``MUTATING_COMMANDS``. Defense in depth on
+       top of ``enumerate_commands``'s filter — even if the LLM hallucinates
+       a write command, the dispatch path still rejects.
+    6. ``checkCommandCapability(msg, cb, command)`` must be falsy.
 
     On success, returns ``{"status": "ok", "reply": "<captured text>"}``.
     On any check failure or uncaught exception, returns
@@ -255,12 +260,13 @@ def dispatch(
     ``last_successful_tool`` guard at service.py:2705-2710 fires correctly.
     """
     _log.info(
-        "bridge call: %s.%s args=%r nick=%s channel=%s",
+        "bridge call: %s.%s args=%r nick=%s channel=%s allow_mutating=%s",
         plugin,
         command,
         arg_string,
         getattr(msg, "nick", "?"),
         getattr(msg, "channel", "?"),
+        allow_mutating,
     )
     cb = irc.getCallback(plugin)
     if cb is None:
@@ -275,6 +281,13 @@ def dispatch(
     if not cb.isCommandMethod(command):
         _log.info("bridge result: %s.%s -> error: unknown command", plugin, command)
         return {"error": f"unknown command: {plugin}.{command}"}
+    if not allow_mutating and (cb.canonicalName(), command) in MUTATING_COMMANDS:
+        _log.info(
+            "bridge result: %s.%s -> error: denied (mutation gate closed)",
+            plugin,
+            command,
+        )
+        return {"error": "denied: write commands disabled"}
     denial = callbacks.checkCommandCapability(msg, cb, command)
     if denial:
         _log.info("bridge result: %s.%s -> error: not permitted", plugin, command)

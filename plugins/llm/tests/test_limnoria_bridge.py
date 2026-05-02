@@ -698,3 +698,126 @@ def test_dispatch_tokenize_called_with_channel_and_network(mocker):
     lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="hi")
 
     tok.assert_called_once_with("hi", channel="#test", network="testnet")
+
+
+def test_dispatch_rejects_mutating_when_gate_closed(mocker):
+    """With allow_mutating=False (default), dispatching a MUTATING_COMMANDS
+    leaf returns {"error": "denied: write commands disabled"}."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Later", canonical="later", commands=["tell"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Later", command="tell", arg_string="alice hi")
+    assert out == {"error": "denied: write commands disabled"}
+    cb._callCommand.assert_not_called()
+
+
+def test_dispatch_allows_mutating_when_gate_open(mocker):
+    """With allow_mutating=True, dispatch goes through to _callCommand
+    and returns the captured reply envelope."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Later", canonical="later", commands=["tell"])
+
+    def _fake_call(_command, proxy, _msg, _tokens):
+        proxy.reply("ok, I'll tell alice next time I see her")
+
+    cb._callCommand.side_effect = _fake_call
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=["alice", "hi"])
+
+    out = lb.dispatch(
+        irc,
+        msg,
+        plugin="Later",
+        command="tell",
+        arg_string="alice hi",
+        allow_mutating=True,
+    )
+    assert out == {"status": "ok", "reply": "ok, I'll tell alice next time I see her"}
+
+
+def test_dispatch_default_keyword_is_gate_closed(mocker):
+    """Same backwards-compat safety as enumerate: a caller that forgets
+    the kwarg defaults to safe behavior."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Note", canonical="note", commands=["send"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    out = lb.dispatch(irc, msg, plugin="Note", command="send", arg_string="bob hi")
+    assert out == {"error": "denied: write commands disabled"}
+
+
+def test_dispatch_gate_does_not_affect_read_commands(mocker):
+    """A non-MUTATING leaf dispatches normally regardless of allow_mutating."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", canonical="misc", commands=["ping"])
+
+    def _fake_call(_command, proxy, _msg, _tokens):
+        proxy.reply("pong")
+
+    cb._callCommand.side_effect = _fake_call
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    closed = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    open_ = lb.dispatch(
+        irc,
+        msg,
+        plugin="Misc",
+        command="ping",
+        arg_string="",
+        allow_mutating=True,
+    )
+    assert closed == {"status": "ok", "reply": "pong"}
+    assert open_ == {"status": "ok", "reply": "pong"}
+
+
+def test_dispatch_gate_check_runs_after_command_existence_check(mocker):
+    """An unknown command must still surface as 'unknown command', not
+    'denied: write commands disabled' — order matters for clear errors."""
+    from llm import limnoria_bridge as lb
+
+    # canonical=note, but the leaf doesn't exist on the plugin.
+    cb = _stub_callback(mocker, "Note", canonical="note", commands=["search"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+
+    # 'send' IS in MUTATING_COMMANDS, but it's not a valid command on this
+    # particular cb (isCommandMethod returns False). Existence wins.
+    out = lb.dispatch(irc, msg, plugin="Note", command="send", arg_string="bob hi")
+    assert out == {"error": "unknown command: Note.send"}
+
+
+def test_dispatch_gate_check_runs_before_capability_check(mocker):
+    """A capability-blocked mutating command must surface as 'denied: write
+    commands disabled' (the gate), not 'not permitted' — we don't want to
+    leak which mutating commands the user would otherwise be allowed to run."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Later", canonical="later", commands=["tell"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+    # Capability check would block — but the gate fires first.
+    cap = mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value="anti.cap")
+
+    out = lb.dispatch(irc, msg, plugin="Later", command="tell", arg_string="alice hi")
+    assert out == {"error": "denied: write commands disabled"}
+    cap.assert_not_called()
