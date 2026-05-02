@@ -375,6 +375,15 @@ class ConversationContext:
                 return True
             return False
 
+    def clear_channel(self, channel: str) -> bool:
+        """Clear shared volatile context for a channel."""
+        with self._lock:
+            ch_key = channel.lower()
+            if ch_key in self._channel_contexts:
+                del self._channel_contexts[ch_key]
+                return True
+            return False
+
     def clear_all(self) -> int:
         """Clear all conversation and channel contexts.
 

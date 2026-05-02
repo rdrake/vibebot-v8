@@ -1108,6 +1108,18 @@ class TestForgetCommand:
         # Context should be empty
         assert len(plugin.context.get_messages("testnick", "#test")) == 0
 
+    def test_forget_clears_shared_channel_context(self, plugin_env):
+        """GIVEN channel context has stale bot text WHEN forget called THEN channel context cleared."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        stale = "Search down again. No nefarious2 release news since 2026-05-02 check."
+        plugin.context.add_channel_message("#test", "testnick", "user", "search latest nefarious")
+        plugin.context.add_channel_message("#test", "testbot", "assistant", stale)
+
+        plugin.forget(mock_irc, mock_msg, [])
+
+        assert plugin.context.get_channel_messages("#test") == []
+
     def test_forget_reports_cleared_even_when_empty(self, plugin_env):
         """GIVEN user has no context WHEN forget called THEN still says cleared."""
         plugin, mock_irc, mock_msg = plugin_env

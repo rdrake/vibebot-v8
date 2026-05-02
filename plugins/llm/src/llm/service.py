@@ -54,12 +54,20 @@ CLEANUP_INTERVAL_SECONDS = 3600
 CHANNEL_MSG_TRUNCATE_LEN = 150
 CODE_PREVIEW_MAX_LEN = 60
 CODE_PREVIEW_TRUNCATE_LEN = 57  # 60 - len("...")
+EXPLICIT_SEARCH_RE = re.compile(
+    r"\b(search|find|look\s+up|latest|news|recent|current)\b",
+    re.IGNORECASE,
+)
 
 # Pending task retry constants
 PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
+
+
+def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
+    return any(tool.get("function", {}).get("name") == name for tool in tools)
 
 
 def account_from_server_tags(msg: IrcMsg) -> str | None:
@@ -2692,6 +2700,12 @@ Examples (echo → action_prompt: ""):
             profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
+            force_initial_search = (
+                route_profile in {"chat", "remind_action"}
+                and search_fn is not None
+                and _has_tool(profile_tools, "search_web")
+                and EXPLICIT_SEARCH_RE.search(prompt) is not None
+            )
 
             last_assistant_text = ""
             # Tracks the most recent tool call that completed without an
@@ -2708,13 +2722,20 @@ Examples (echo → action_prompt: ""):
                     len(messages),
                 )
 
+                completion_kwargs: dict[str, Any] = dict(optional_kwargs)
+                if force_initial_search and _step == 0:
+                    completion_kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": "search_web"},
+                    }
+
                 response = litellm.completion(
                     model=model,
                     messages=messages,
                     api_key=effective_api_key,
                     timeout=timeout,
                     tools=profile_tools,
-                    **optional_kwargs,
+                    **completion_kwargs,
                 )
 
                 # Accumulate usage via _extract_usage for proper cost

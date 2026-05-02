@@ -2794,6 +2794,7 @@ class LLM(callbacks.Plugin):
         if channel is None:
             channel = self._get_channel(msg)
         self.context.clear(caller.key, channel)
+        self.context.clear_channel(channel)
         irc.reply(_("Context cleared."), prefixNick=False)
 
     forget = wrap(forget, [optional("channel")])

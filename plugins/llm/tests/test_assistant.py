@@ -965,6 +965,51 @@ class TestMetaCompletion:
         assert call_kwargs["fetch_fn"] is sentinel_fetch
         assert call_kwargs["code_fn"] is sentinel_code
 
+    def test_explicit_search_prompt_forces_search_web_tool_choice(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """assistant_completion forces search_web first for explicit current-info prompts."""
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_search"
+        tool_call.function.name = "search_web"
+        tool_call.function.arguments = '{"query": "latest nefarious 2 release"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Nefarious 2 details..."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="search for the latest nefarious 2 release",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            search_fn=lambda _query: ToolResult(content="search results"),
+        )
+
+        assert result.content == "Nefarious 2 details..."
+        first_kwargs = mock_completion.call_args_list[0].kwargs
+        assert first_kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "search_web"},
+        }
+        assert "tool_choice" not in mock_completion.call_args_list[1].kwargs
+
     def test_meta_result_includes_grounding_used(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
