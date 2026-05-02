@@ -1186,6 +1186,201 @@ class TestMetaCompletion:
         assert "tool" not in roles
         assert not any(m.get("tool_calls") for m in stashed_messages)
 
+    def test_extra_tools_appended_to_profile_tools(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """extra_tools are included in the tools kwarg passed to litellm.completion."""
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=mock_response,
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        fake_schema = {
+            "type": "function",
+            "function": {
+                "name": "run_limnoria_command",
+                "description": "Run a Limnoria command",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+
+        service.assistant_completion(
+            prompt="ping",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_tools=[fake_schema],
+        )
+
+        assert mock_completion.call_count == 1
+        called_tools = mock_completion.call_args.kwargs["tools"]
+        assert fake_schema in called_tools
+
+    def test_extra_handlers_dispatched_before_executor(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """When a tool name is in extra_handlers, the handler runs instead of the executor."""
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_bridge"
+        tool_call.function.name = "run_limnoria_command"
+        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Pong."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"status": "ok", "reply": "pong"}')
+        )
+
+        service.assistant_completion(
+            prompt="ping",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"run_limnoria_command": handler},
+        )
+
+        handler.assert_called_once_with({"plugin": "Misc", "command": "ping"})
+        # executor.execute must NOT have been called for this tool name
+        for call in mock_executor.execute.call_args_list:
+            assert call.args[0] != "run_limnoria_command"
+
+    def test_extra_handlers_error_envelope_does_not_set_last_successful_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Handler returning an error envelope leaves last_successful_tool as None."""
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_bridge"
+        tool_call.function.name = "run_limnoria_command"
+        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Sorry, that failed."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"error": "denied: Misc.ping"}')
+        )
+
+        result = service.assistant_completion(
+            prompt="ping",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"run_limnoria_command": handler},
+        )
+
+        assert result.last_successful_tool is None
+
+    def test_extra_handlers_ok_envelope_sets_last_successful_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Handler returning a success envelope sets last_successful_tool on the result."""
+        tool_call = mocker.MagicMock()
+        tool_call.id = "call_bridge"
+        tool_call.function.name = "run_limnoria_command"
+        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
+
+        first_response = mocker.MagicMock()
+        first_choice = mocker.MagicMock()
+        first_choice.message.content = None
+        first_choice.message.tool_calls = [tool_call]
+        first_choice.message.role = "assistant"
+        first_response.choices = [first_choice]
+
+        second_response = mocker.MagicMock()
+        second_choice = mocker.MagicMock()
+        second_choice.message.content = "Pong."
+        second_choice.message.tool_calls = None
+        second_response.choices = [second_choice]
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"status": "ok", "reply": "pong"}')
+        )
+
+        result = service.assistant_completion(
+            prompt="ping",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"run_limnoria_command": handler},
+        )
+
+        assert result.last_successful_tool == "run_limnoria_command"
+
 
 # =========================================================================
 # Plugin-level command tests

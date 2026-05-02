@@ -75,6 +75,17 @@ def account_from_server_tags(msg: IrcMsg) -> str | None:
     return None
 
 
+def truncate_to_word_boundary(text: str, max_chars: int) -> str:
+    """Truncate ``text`` to ``max_chars``, breaking at the last word boundary."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    trimmed = text[:max_chars].rstrip()
+    last_space = trimmed.rfind(" ")
+    if last_space > 0:
+        trimmed = trimmed[:last_space].rstrip()
+    return trimmed
+
+
 def irc_has_caps(irc: Irc, *names: str) -> bool:
     """Return True iff every named IRCv3 capability is in ``capabilities_ack``.
 
@@ -1944,6 +1955,8 @@ class LLMService:
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        extra_tools: list[dict[str, Any]] | None = None,
+        extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
     ) -> AssistantResult:
         """Unified assistant facade that dispatches to assistant_completion.
@@ -2007,6 +2020,8 @@ class LLMService:
             search_fn=search_fn,
             fetch_fn=fetch_fn,
             code_fn=code_fn,
+            extra_tools=extra_tools,
+            extra_handlers=extra_handlers,
             exclude_tools=exclude_tools,
         )
 
@@ -2215,107 +2230,63 @@ Examples (echo → action_prompt: ""):
                 ),
             )
 
-    def summarize(self, content: str, channel: str | None = None) -> str | None:
-        """Generate a ~50 word summary using the ask model.
-
-        Lightweight method for creating brief summaries of longer content.
-        Uses the ask model/API key configuration for the summarization call.
-
-        Args:
-            content: The content to summarize
-            channel: Optional channel for config lookup
-
-        Returns:
-            Summary string or None on any error (graceful degradation)
-        """
+    def _ask_completion(
+        self, system_prompt: str, user_content: str, channel: str | None
+    ) -> str | None:
+        """Call the configured ``ask`` model with system + user content."""
         try:
-            # Don't store API key in local var to avoid logging in traces
             target = channel if channel and channel.startswith(("#", "&")) else None
             if not self.plugin.registryValue("askApiKey", target):
                 return None
             model = self.plugin.registryValue("askModel", target)
-
-            system_prompt = (
-                "You are a summarization assistant. Generate a ~50 word summary "
-                "of the provided content. Output only the summary as a single paragraph. "
-                "No markdown, no bullet points, no introductory phrases like 'This is...' "
-                "or 'Here is...'. Just the summary itself."
-            )
-
             messages = [
                 {"role": Role.SYSTEM, "content": system_prompt},
-                {"role": Role.USER, "content": content},
+                {"role": Role.USER, "content": user_content},
             ]
-
-            timeout = self.plugin.registryValue("timeout")
-
-            optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
-
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 api_key=self.plugin.registryValue("askApiKey", target),
-                timeout=timeout,
-                **optional_kwargs,
+                timeout=self.plugin.registryValue("timeout"),
+                **self._get_provider_kwargs(model, include_tools=False),
             )
-
-            summary = response.choices[0].message.content
-            if summary:
-                # Clean up: remove any markdown formatting, collapse whitespace
-                summary = summary.strip()
-                summary = " ".join(summary.split())
-                return summary
-            return None
-
+            return response.choices[0].message.content
         except Exception as e:
-            # Log but don't fail - graceful degradation
-            self.log.debug("Summarization failed: %s", self._sanitize(str(e)))
+            self.log.debug("Ask completion failed: %s", self._sanitize(str(e)))
             return None
+
+    def summarize(self, content: str, channel: str | None = None) -> str | None:
+        """Generate a ~50 word summary using the ask model.
+
+        Returns the summary string, or None on any error (graceful degradation).
+        """
+        system_prompt = (
+            "You are a summarization assistant. Generate a ~50 word summary "
+            "of the provided content. Output only the summary as a single paragraph. "
+            "No markdown, no bullet points, no introductory phrases like 'This is...' "
+            "or 'Here is...'. Just the summary itself."
+        )
+        summary = self._ask_completion(system_prompt, content, channel)
+        if not summary:
+            return None
+        return " ".join(summary.split())
 
     def summarize_for_irc(
         self, content: str, channel: str | None = None, *, max_chars: int = 220
     ) -> str | None:
         """Generate a one-line IRC teaser for a longer answer."""
-        try:
-            target = channel if channel and channel.startswith(("#", "&")) else None
-            if not self.plugin.registryValue("askApiKey", target):
-                return None
-            model = self.plugin.registryValue("askModel", target)
-
-            system_prompt = (
-                "You write concise IRC teasers. Summarize the provided answer as one sentence "
-                f"of at most {max_chars} characters. Output plain text only: no Markdown, "
-                "no bullet points, no links, no introductory phrases."
-            )
-            messages = [
-                {"role": Role.SYSTEM, "content": system_prompt},
-                {"role": Role.USER, "content": content},
-            ]
-            timeout = self.plugin.registryValue("timeout")
-            optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
-
-            response = litellm.completion(
-                model=model,
-                messages=messages,
-                api_key=self.plugin.registryValue("askApiKey", target),
-                timeout=timeout,
-                **optional_kwargs,
-            )
-
-            teaser = response.choices[0].message.content
-            if not teaser:
-                return None
-            teaser = " ".join(teaser.strip().split())
-            if max_chars > 0 and len(teaser) > max_chars:
-                teaser = teaser[:max_chars].rstrip()
-                last_space = teaser.rfind(" ")
-                if last_space > 0:
-                    teaser = teaser[:last_space].rstrip()
-            teaser = self.sanitize_output(teaser)
-            return teaser or None
-        except Exception as e:
-            self.log.debug("IRC teaser summarization failed: %s", self._sanitize(str(e)))
+        system_prompt = (
+            "You write concise IRC teasers. Summarize the provided answer as one sentence "
+            f"of at most {max_chars} characters. Output plain text only: no Markdown, "
+            "no bullet points, no links, no introductory phrases."
+        )
+        teaser = self._ask_completion(system_prompt, content, channel)
+        if not teaser:
             return None
+        teaser = " ".join(teaser.split())
+        teaser = truncate_to_word_boundary(teaser, max_chars)
+        teaser = self.sanitize_output(teaser)
+        return teaser or None
 
     @staticmethod
     def _is_content_safety_error(error: Exception) -> bool:
@@ -2520,6 +2491,8 @@ Examples (echo → action_prompt: ""):
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
+        extra_tools: list[dict[str, Any]] | None = None,
+        extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
     ) -> AssistantResult:
         """Run a meta command through a multi-turn tool-calling loop.
@@ -2623,6 +2596,8 @@ Examples (echo → action_prompt: ""):
             )
 
             profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
+            if extra_tools:
+                profile_tools = profile_tools + list(extra_tools)
 
             last_assistant_text = ""
             # Tracks the most recent tool call that completed without an
@@ -2728,7 +2703,10 @@ Examples (echo → action_prompt: ""):
                         tc.function.name,
                     )
 
-                    tool_result = executor.execute(tc.function.name, args)
+                    if extra_handlers and tc.function.name in extra_handlers:
+                        tool_result = extra_handlers[tc.function.name](args)
+                    else:
+                        tool_result = executor.execute(tc.function.name, args)
 
                     # ToolResult.content is a JSON string. Success uses
                     # {"status": "ok", ...}; errors use {"error": ...}.
