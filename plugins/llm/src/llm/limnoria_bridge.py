@@ -50,6 +50,95 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
         # ``apply <command> <args>`` re-dispatches through Limnoria's command
         # engine, which would bypass our per-command deny entries.
         ("utilities", "apply"),
+        # ``let <name> <command> <args>`` is the same arbitrary-command-
+        # redispatch shape as ``apply`` (Utilities/plugin.py:156-178); it
+        # tokenizes user-supplied text and runs it via ``self.Proxy(...)``,
+        # bypassing every DENY_PLUGINS / DENY_COMMANDS / MUTATING_COMMANDS
+        # filter the bridge applies to first-level dispatch.
+        ("utilities", "let"),
+    }
+)
+
+# (canonical_plugin_name, leaf_command) tuples for commands that modify
+# persistent state, send IRC traffic to a different user, or read-with-side-
+# effect (e.g. marking notes as read). Both elements lowercase — matched
+# against ``cb.canonicalName()`` and the leaf name from ``cb.listCommands()``.
+#
+# Gated by the ``bridgeAllowMutating`` channel registry value: when False
+# (the default), ``enumerate_commands`` skips these and ``dispatch`` rejects
+# them defense-in-depth.
+#
+# Sourcing: each entry is keyed to a method in a stock Limnoria plugin
+# under .venv/lib/python3.14/site-packages/supybot/plugins/<Plugin>/plugin.py
+# — see docs/plans/2026-05-02-limnoria-bridge-task-1-implementation-plan.md
+# for line-level citations.
+MUTATING_COMMANDS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Misc — sends a private message to a third user.
+        ("misc", "tell"),
+        ("misc", "noticetell"),
+        # Later — offline-tell DB.
+        ("later", "tell"),
+        ("later", "remove"),
+        ("later", "undo"),
+        # Note — registered-user notes DB. ``note``/``next`` call
+        # ``db.setRead`` but the side effect is a read-receipt scoped to
+        # the caller's own notes (the plugin enforces
+        # ``note.frm/note.to == user.id``); classified read-only.
+        ("note", "send"),
+        ("note", "reply"),
+        ("note", "unsend"),
+        # Karma — clear/dump/load all touch persistent state.
+        ("karma", "clear"),
+        ("karma", "dump"),
+        ("karma", "load"),
+        # QuoteGrabs — grab/ungrab insert/delete rows.
+        ("quotegrabs", "grab"),
+        ("quotegrabs", "ungrab"),
+        # RSS — add/remove register/unregister feeds. ``rss`` and
+        # ``info`` are reads on their face but ``update_feed_if_needed``
+        # (RSS/plugin.py:396) can call ``announce_feed`` (line 434),
+        # which queues PRIVMSG/NOTICE to every channel subscribed to the
+        # feed (line 553-557). Classified mutating to keep LLM-triggered
+        # reads from pushing entries into third-party channels.
+        # NB: nested ``announce add/remove/list/channels`` leaves are
+        # NOT classified here — see "Ambiguous classifications" #3 in
+        # the plan; multi-word leaves are out of scope for Task 1.
+        ("rss", "add"),
+        ("rss", "remove"),
+        ("rss", "rss"),
+        ("rss", "info"),
+        # Forward-look: not in Phase 2 Task 2's default allowlist but
+        # classified now so the gate is correct when they're added.
+        # Quote — ChannelIdDatabasePlugin write commands plus the
+        # plugin-local ``replace`` override.
+        ("quote", "add"),
+        ("quote", "remove"),
+        ("quote", "change"),
+        ("quote", "replace"),
+        # Todo — user-scoped todo DB writes.
+        ("todo", "add"),
+        ("todo", "remove"),
+        ("todo", "setpriority"),
+        ("todo", "change"),
+        # Factoids — channel-scoped fact DB writes. ``whatis`` looks
+        # like a read but ``_replyFactoids`` calls ``_updateRank``
+        # (Factoids/plugin.py:372-383, 397, 420) which UPDATEs
+        # ``relations.usage_count`` whenever ``keepRankInfo`` is True.
+        # ``keepRankInfo`` defaults True (Factoids/config.py:85-87) so
+        # by default ``whatis`` writes the DB on every call.
+        ("factoids", "learn"),
+        ("factoids", "alias"),
+        ("factoids", "lock"),
+        ("factoids", "unlock"),
+        ("factoids", "forget"),
+        ("factoids", "change"),
+        ("factoids", "whatis"),
+        # Scheduler — every leaf except ``list`` is a write.
+        ("scheduler", "add"),
+        ("scheduler", "remind"),
+        ("scheduler", "remove"),
+        ("scheduler", "repeat"),
     }
 )
 

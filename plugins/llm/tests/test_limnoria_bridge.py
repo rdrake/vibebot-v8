@@ -21,12 +21,120 @@ def test_module_exposes_deny_lists_and_dataclass():
     assert ("misc", "clearmores") in lb.DENY_COMMANDS
     assert ("web", "fetch") in lb.DENY_COMMANDS
     assert ("utilities", "apply") in lb.DENY_COMMANDS
+    assert ("utilities", "let") in lb.DENY_COMMANDS
 
     cmd = lb.BridgeCommand(
         plugin="Misc", command="ping", arg_syntax="", description="takes no arguments"
     )
     assert cmd.plugin == "Misc"
     assert cmd.command == "ping"
+
+
+def test_mutating_commands_covers_default_allowlist_writes():
+    """Every mutating command in the Phase 2 Task 2 default allowlist must be
+    in MUTATING_COMMANDS. Reads must NOT be in it. Tuples are
+    (canonical_plugin_lowercase, leaf_lowercase) — same shape as DENY_COMMANDS."""
+    from llm import limnoria_bridge as lb
+
+    assert isinstance(lb.MUTATING_COMMANDS, frozenset)
+
+    expected_mutating = {
+        ("misc", "tell"),
+        ("misc", "noticetell"),
+        ("later", "tell"),
+        ("later", "remove"),
+        ("later", "undo"),
+        ("note", "send"),
+        ("note", "reply"),
+        ("note", "unsend"),
+        ("karma", "clear"),
+        ("karma", "dump"),
+        ("karma", "load"),
+        ("quotegrabs", "grab"),
+        ("quotegrabs", "ungrab"),
+        ("rss", "add"),
+        ("rss", "remove"),
+        ("rss", "rss"),  # update_feed_if_needed → announce_feed → IRC writes
+        ("rss", "info"),  # same update_feed_if_needed side effect
+    }
+    assert expected_mutating <= lb.MUTATING_COMMANDS
+
+    # Reads in the same plugins must NOT be classified mutating.
+    expected_read_only = {
+        ("misc", "ping"),
+        ("misc", "last"),
+        ("misc", "version"),
+        ("time", "time"),
+        ("math", "calc"),
+        ("utilities", "echo"),
+        ("seen", "seen"),
+        ("seen", "last"),
+        ("web", "title"),
+        ("later", "notes"),
+        ("note", "search"),
+        ("note", "list"),
+        ("note", "note"),
+        ("note", "next"),
+        ("karma", "karma"),
+        ("karma", "most"),
+        ("quotegrabs", "quote"),
+        ("quotegrabs", "random"),
+        ("ddg", "search"),
+    }
+    assert expected_read_only.isdisjoint(lb.MUTATING_COMMANDS)
+
+
+def test_mutating_commands_covers_forward_look_writes():
+    """Quote/Todo/Factoids/Scheduler are not yet in the default allowlist but
+    we classify them now so the gate is correct when they're added later."""
+    from llm import limnoria_bridge as lb
+
+    expected_mutating = {
+        ("quote", "add"),
+        ("quote", "remove"),
+        ("quote", "change"),
+        ("quote", "replace"),
+        ("todo", "add"),
+        ("todo", "remove"),
+        ("todo", "setpriority"),
+        ("todo", "change"),
+        ("factoids", "learn"),
+        ("factoids", "alias"),
+        ("factoids", "lock"),
+        ("factoids", "unlock"),
+        ("factoids", "forget"),
+        ("factoids", "change"),
+        ("factoids", "whatis"),  # _updateRank writes when keepRankInfo=True (default)
+        ("scheduler", "add"),
+        ("scheduler", "remind"),
+        ("scheduler", "remove"),
+        ("scheduler", "repeat"),
+    }
+    assert expected_mutating <= lb.MUTATING_COMMANDS
+
+    expected_read_only = {
+        ("quote", "search"),
+        ("quote", "get"),
+        ("quote", "stats"),
+        ("quote", "random"),
+        ("todo", "todo"),
+        ("todo", "search"),
+        ("factoids", "random"),
+        ("factoids", "info"),
+        ("factoids", "rank"),
+        ("factoids", "search"),
+        ("scheduler", "list"),
+    }
+    assert expected_read_only.isdisjoint(lb.MUTATING_COMMANDS)
+
+
+def test_mutating_commands_lowercase_invariant():
+    """Match the DENY_COMMANDS shape — both elements lowercase."""
+    from llm import limnoria_bridge as lb
+
+    for plugin, leaf in lb.MUTATING_COMMANDS:
+        assert plugin == plugin.lower(), plugin
+        assert leaf == leaf.lower(), leaf
 
 
 def test_buffering_proxy_captures_reply_text(mocker):
