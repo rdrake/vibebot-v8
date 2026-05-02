@@ -39,6 +39,31 @@ class ReminderRow(NamedTuple):
     watch_mode: bool
 
 
+class ScheduledLlmTaskRow(NamedTuple):
+    """A scheduled LLM task loaded from the database."""
+
+    id: int
+    event_name: str
+    creator_nick: str
+    account: str | None
+    channel: str
+    network: str
+    wire_msg: str
+    prompt: str
+    fire_at: float
+    created_at: float
+    recurrence_seconds: int | None
+    recurrence_rrule: str | None
+    chain_position: int
+    watch_mode: bool
+
+    def rehydrate_msg(self):
+        """Build a fresh ``IrcMsg`` from the persisted wire string."""
+        from supybot.ircmsgs import IrcMsg
+
+        return IrcMsg(s=self.wire_msg)
+
+
 class UsageSummary(NamedTuple):
     """Aggregated usage statistics."""
 
@@ -638,6 +663,186 @@ class LLMDatabase:
             return cursor.rowcount
         finally:
             pass
+
+    # ------------------------------------------------------------------
+    # Scheduled LLM task operations
+    # ------------------------------------------------------------------
+
+    _SCHEDULED_LLM_TASK_COLUMNS = (
+        "id, event_name, creator_nick, account, channel, network, wire_msg, "
+        "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
+        "chain_position, watch_mode"
+    )
+
+    @staticmethod
+    def _row_to_scheduled_llm_task(row: tuple) -> ScheduledLlmTaskRow:
+        return ScheduledLlmTaskRow(
+            id=row[0],
+            event_name=row[1],
+            creator_nick=row[2],
+            account=row[3],
+            channel=row[4],
+            network=row[5],
+            wire_msg=row[6],
+            prompt=row[7],
+            fire_at=row[8],
+            created_at=row[9],
+            recurrence_seconds=row[10],
+            recurrence_rrule=row[11],
+            chain_position=row[12],
+            watch_mode=bool(row[13]),
+        )
+
+    def save_scheduled_llm_task(
+        self,
+        event_name: str,
+        creator_nick: str,
+        account: str | None,
+        channel: str,
+        network: str,
+        wire_msg: str,
+        prompt: str,
+        fire_at: float,
+        *,
+        recurrence_seconds: int | None = None,
+        recurrence_rrule: str | None = None,
+        chain_position: int = 1,
+        watch_mode: bool = False,
+    ) -> int:
+        """Save a scheduled LLM task row.
+
+        Raises:
+            ValueError: if both recurrence kinds are non-null.
+            sqlite3.IntegrityError: if event_name already exists.
+        """
+        if recurrence_seconds is not None and recurrence_rrule is not None:
+            raise ValueError("recurrence_seconds and recurrence_rrule are mutually exclusive")
+        now = time.time()
+        conn = self._connect()
+        cursor = conn.execute(
+            "INSERT INTO scheduled_llm_tasks "
+            "(event_name, creator_nick, account, channel, network, wire_msg, "
+            "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
+            "chain_position, watch_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_name,
+                creator_nick,
+                account,
+                channel,
+                network,
+                wire_msg,
+                prompt,
+                fire_at,
+                now,
+                recurrence_seconds,
+                recurrence_rrule,
+                chain_position,
+                int(watch_mode),
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid or 0
+
+    def update_scheduled_llm_task_fire_at(
+        self,
+        event_name: str,
+        fire_at: float,
+        *,
+        chain_position: int | None = None,
+    ) -> None:
+        """Update fire_at (and optionally chain_position) for a row."""
+        conn = self._connect()
+        if chain_position is None:
+            conn.execute(
+                "UPDATE scheduled_llm_tasks SET fire_at = ? WHERE event_name = ?",
+                (fire_at, event_name),
+            )
+        else:
+            conn.execute(
+                "UPDATE scheduled_llm_tasks SET fire_at = ?, chain_position = ? "
+                "WHERE event_name = ?",
+                (fire_at, chain_position, event_name),
+            )
+        conn.commit()
+
+    def delete_scheduled_llm_task(self, event_name: str) -> bool:
+        conn = self._connect()
+        cursor = conn.execute(
+            "DELETE FROM scheduled_llm_tasks WHERE event_name = ?",
+            (event_name,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    def load_active_scheduled_llm_tasks(self) -> list[ScheduledLlmTaskRow]:
+        """Load rows whose fire_at is within the last 24 hours or in the future."""
+        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+        conn = self._connect()
+        rows = conn.execute(
+            f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+            "FROM scheduled_llm_tasks WHERE fire_at > ? ORDER BY fire_at",
+            (cutoff,),
+        ).fetchall()
+        return [self._row_to_scheduled_llm_task(r) for r in rows]
+
+    def get_scheduled_llm_task(self, event_name: str) -> ScheduledLlmTaskRow | None:
+        """Indexed point-lookup by event_name."""
+        conn = self._connect()
+        row = conn.execute(
+            f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+            "FROM scheduled_llm_tasks WHERE event_name = ?",
+            (event_name,),
+        ).fetchone()
+        return self._row_to_scheduled_llm_task(row) if row else None
+
+    def load_scheduled_llm_tasks_for(
+        self, *, account: str | None, nick: str
+    ) -> list[ScheduledLlmTaskRow]:
+        """Active rows owned by the caller. Case-insensitive Identity semantics."""
+        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+        conn = self._connect()
+        if account is not None:
+            rows = conn.execute(
+                f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+                "FROM scheduled_llm_tasks "
+                "WHERE lower(account) = lower(?) AND fire_at > ? "
+                "ORDER BY fire_at",
+                (account, cutoff),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+                "FROM scheduled_llm_tasks "
+                "WHERE account IS NULL AND lower(creator_nick) = lower(?) "
+                "AND fire_at > ? ORDER BY fire_at",
+                (nick, cutoff),
+            ).fetchall()
+        return [self._row_to_scheduled_llm_task(r) for r in rows]
+
+    def count_scheduled_llm_tasks_for(self, *, account: str | None, nick: str, channel: str) -> int:
+        """Count active rows owned by the caller in this channel.
+
+        When ``account`` is non-None, count rows with that account regardless of
+        nick. Otherwise count by raw nick. Comparisons are case-insensitive to
+        match ``Identity.matches``.
+        """
+        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+        conn = self._connect()
+        if account is not None:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM scheduled_llm_tasks "
+                "WHERE lower(account) = lower(?) AND channel = ? AND fire_at > ?",
+                (account, channel, cutoff),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM scheduled_llm_tasks "
+                "WHERE account IS NULL AND lower(creator_nick) = lower(?) "
+                "AND channel = ? AND fire_at > ?",
+                (nick, channel, cutoff),
+            ).fetchone()
+        return int(row[0] if row else 0)
 
     # ------------------------------------------------------------------
     # Pending task operations

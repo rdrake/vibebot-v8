@@ -1273,13 +1273,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_12(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 12."""
+    def test_schema_version_is_13(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 13."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 12
+            assert row[0] == 13
         finally:
             conn.close()
 
@@ -1986,3 +1986,240 @@ def test_schema_v13_idempotent(tmp_path: Path) -> None:
     db_path = tmp_path / "llm.sqlite"
     LLMDatabase(str(db_path))
     LLMDatabase(str(db_path))  # second open must succeed unchanged
+
+
+def test_save_scheduled_llm_task_inserts_row(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    row_id = db.save_scheduled_llm_task(
+        event_name="llm_task_abc",
+        creator_nick="rdrake",
+        account="rdrake_acct",
+        channel="#test",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #test :@ask hi",
+        prompt="check the build",
+        fire_at=1_700_000_000.0,
+        recurrence_seconds=None,
+        recurrence_rrule=None,
+        chain_position=1,
+    )
+    assert row_id > 0
+
+
+def test_save_scheduled_llm_task_rejects_duplicate_event_name(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="dup",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=0.0,
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        db.save_scheduled_llm_task(
+            event_name="dup",
+            creator_nick="n",
+            account=None,
+            channel="#x",
+            network="afternet",
+            wire_msg=":n!u@h PRIVMSG #x :@ask hi2",
+            prompt="p2",
+            fire_at=0.0,
+        )
+
+
+def test_save_scheduled_llm_task_rejects_both_recurrence_kinds(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        db.save_scheduled_llm_task(
+            event_name="ev",
+            creator_nick="n",
+            account=None,
+            channel="#x",
+            network="afternet",
+            wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+            prompt="p",
+            fire_at=0.0,
+            recurrence_seconds=300,
+            recurrence_rrule="FREQ=DAILY",
+        )
+
+
+def test_load_active_scheduled_llm_tasks_excludes_old(tmp_path: Path) -> None:
+    """Mirror reminders: anything past EXPIRY_THRESHOLD is excluded."""
+    from llm.persistence import EXPIRY_THRESHOLD_SECONDS
+
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    now = time.time()
+    db.save_scheduled_llm_task(
+        event_name="future",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now + 60,
+    )
+    db.save_scheduled_llm_task(
+        event_name="recent_overdue",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now - 60,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ancient",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now - EXPIRY_THRESHOLD_SECONDS - 60,
+    )
+    rows = db.load_active_scheduled_llm_tasks()
+    names = {r.event_name for r in rows}
+    assert "future" in names
+    assert "recent_overdue" in names
+    assert "ancient" not in names
+
+
+def test_count_scheduled_llm_tasks_for_account_then_nick(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="ev1",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#x",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 1,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ev2",
+        creator_nick="rdrake_alt",
+        account="rdrake_a",
+        channel="#x",
+        network="afternet",
+        wire_msg=":rdrake_alt!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 2,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ev3",
+        creator_nick="anon",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":anon!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 3,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ev4",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#other",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #other :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 4,
+    )
+    # Account match is channel-scoped and case-insensitive.
+    assert db.count_scheduled_llm_tasks_for(account="RDRAKE_A", nick="anything", channel="#x") == 2
+    assert (
+        db.count_scheduled_llm_tasks_for(account="rdrake_a", nick="anything", channel="#other") == 1
+    )
+    # When account is None, count by nick.
+    assert db.count_scheduled_llm_tasks_for(account=None, nick="anon", channel="#x") == 1
+    assert db.count_scheduled_llm_tasks_for(account=None, nick="rdrake", channel="#x") == 0
+
+
+def test_update_scheduled_llm_task_fire_at(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="ev",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 1,
+    )
+    future = time.time() + 9
+    db.update_scheduled_llm_task_fire_at("ev", future, chain_position=2)
+    rows = db.load_active_scheduled_llm_tasks()
+    [row] = [r for r in rows if r.event_name == "ev"]
+    assert row.fire_at == future
+    assert row.chain_position == 2
+
+
+def test_delete_scheduled_llm_task_returns_bool(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="ev",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 1,
+    )
+    assert db.delete_scheduled_llm_task("ev") is True
+    assert db.delete_scheduled_llm_task("ev") is False
+
+
+def test_get_scheduled_llm_task_point_lookup(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="ev",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 1,
+    )
+    row = db.get_scheduled_llm_task("ev")
+    assert row is not None
+    assert row.event_name == "ev"
+    assert db.get_scheduled_llm_task("missing") is None
+
+
+def test_load_scheduled_llm_tasks_for_owner(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    db.save_scheduled_llm_task(
+        event_name="ev_acct",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#x",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 1,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ev_nick",
+        creator_nick="anon",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":anon!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=time.time() + 2,
+    )
+    rows = db.load_scheduled_llm_tasks_for(account="RDRAKE_A", nick="anything")
+    assert {r.event_name for r in rows} == {"ev_acct"}
+    rows = db.load_scheduled_llm_tasks_for(account=None, nick="ANON")
+    assert {r.event_name for r in rows} == {"ev_nick"}
