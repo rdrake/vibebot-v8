@@ -2316,3 +2316,23 @@ class TestScheduleLlmTaskFamily:
         assert "when_natural" in params["properties"]
         assert "prompt" in params["properties"]
         assert set(params["required"]) >= {"when_natural", "prompt"}
+
+    def test_schedule_llm_task_specs_overrides_applied(self) -> None:
+        """C2: ToolSpec overrides give schedule_llm_task require_account=True;
+        list/cancel inherit defaults (llm.ask, no account, chat+remind_action)."""
+        from llm.assistant import ASSISTANT_TOOL_REGISTRY
+
+        sch = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
+        assert sch.capability == "llm.ask"
+        assert sch.require_account is True
+        assert sch.visible_in == frozenset({"chat", "remind_action"})
+
+        lst = ASSISTANT_TOOL_REGISTRY["list_scheduled_llm_tasks"]
+        assert lst.capability == "llm.ask"
+        assert lst.require_account is False
+        assert lst.visible_in == frozenset({"chat", "remind_action"})
+
+        can = ASSISTANT_TOOL_REGISTRY["cancel_scheduled_llm_task"]
+        assert can.capability == "llm.ask"
+        assert can.require_account is False
+        assert can.visible_in == frozenset({"chat", "remind_action"})

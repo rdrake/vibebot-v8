@@ -647,6 +647,13 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
         "capability": "llm.code",
         "visible_in": frozenset({"chat", "code", "remind_action"}),
     },
+    # Phase 2 Task 3 / C2 — schedule_llm_task fires "as you" with full bridge
+    # access at fire time, so creating a schedule must require an authenticated
+    # account. list/cancel inherit the default capability=llm.ask /
+    # require_account=False / visible_in={"chat", "remind_action"}.
+    "schedule_llm_task": {
+        "require_account": True,
+    },
 }
 
 
