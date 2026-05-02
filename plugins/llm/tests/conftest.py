@@ -356,6 +356,9 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "metaMaxSteps": 7,
         # IRCv3 join optimization
         "skipAutoWhoOnJoin": True,
+        # Limnoria bridge
+        "bridgeEnabled": False,
+        "bridgeAllowedPlugins": [],
     }
     if overrides:
         defaults.update(overrides)

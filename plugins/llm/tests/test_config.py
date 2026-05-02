@@ -198,6 +198,15 @@ class TestConfigValues:
         assert conf.supybot.plugins.LLM.longReplyLineThreshold() == 6
         assert conf.supybot.plugins.LLM.longReplyTeaserMaxChars() == 220
 
+    def test_bridge_registry_values_registered_with_safe_defaults(self) -> None:
+        """B1: bridgeEnabled defaults to False and bridgeAllowedPlugins to []."""
+        import llm.config  # noqa: F401 — import side effect registers the values
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.bridgeEnabled() is False
+        # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
+        assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
+
 
 class TestValidatedModelNameThreadSafety:
     """Test thread safety of ValidatedModelName._warned set."""

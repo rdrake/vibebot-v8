@@ -846,3 +846,31 @@ conf.registerGlobalValue(
         ),
     ),
 )
+
+# ============================================================================
+# Limnoria tool bridge (Phase 1)
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "bridgeEnabled",
+    registry.Boolean(
+        False,
+        _("""When True, expose loaded Limnoria plugin commands to the LLM
+        as a tool, restricted by bridgeAllowedPlugins and Limnoria's
+        capability system. Default off."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "bridgeAllowedPlugins",
+    registry.SpaceSeparatedListOfStrings(
+        [],
+        _("""Space-separated list of Limnoria plugin names whose commands
+        the LLM may call when bridgeEnabled is True. Empty (the default)
+        means no commands are exposed — the bridge tool is not registered
+        with the LLM at all. Recommended starter set: Misc Time Math
+        Utilities Seen."""),
+    ),
+)
