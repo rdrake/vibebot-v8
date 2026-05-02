@@ -1109,11 +1109,13 @@ class LLMService:
 
         - Gemini / Vertex AI: native grounding tools
           (``googleSearch`` / ``urlContext``).
-        - xAI (Grok): Agent Tools API — ``{"type": "web_search"}`` server-side
+        - xAI (Grok): Agent Tools API — ``{"type": "live_search"}`` server-side
           tool surfaced via the standard ``tools`` field. Replaces the
-          ``search_parameters``/Live Search API deprecated 2026-05-02 (returns
-          410 Gone). URL kind reuses the same web_search tool — there is no
-          native urlContext equivalent on xAI.
+          ``extra_body.search_parameters`` form deprecated 2026-05-02
+          (returns 410 Gone with a "switch to Agent Tools" message); the
+          chat-completions schema accepts ``function`` or ``live_search``
+          as tool types. URL kind reuses ``live_search`` — no native
+          urlContext equivalent on xAI.
         - Anything else: returns ``{}`` — the request runs without grounding
           tools and the model answers from training.
 
@@ -1133,11 +1135,11 @@ class LLMService:
             return {"tools": [{tool_name: {}}]}
 
         if provider == "xai":
-            # xAI Agent Tools — Grok decides at runtime whether to invoke
-            # web_search. The legacy `search_parameters`/Live Search field
-            # was deprecated upstream (returns 410 Gone) and is replaced by
-            # the standard `tools` array carrying `{"type": "web_search"}`.
-            return {"tools": [{"type": "web_search"}]}
+            # Grok decides at runtime whether to invoke live_search. The
+            # legacy `extra_body.search_parameters` form was deprecated
+            # upstream (returns 410 Gone) and is replaced by the standard
+            # `tools` array carrying `{"type": "live_search"}`.
+            return {"tools": [{"type": "live_search"}]}
 
         # Unknown / unsupported provider: no grounding, plain completion.
         return {"tools": []}
