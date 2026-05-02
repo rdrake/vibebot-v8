@@ -207,6 +207,27 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
+    def test_capability_settings_registered_with_safe_defaults(self) -> None:
+        """T5a: new capability-based registry values default to empty so the
+        resolve_setting shim falls back to the existing command-era keys."""
+        import llm.config  # noqa: F401 — import side effect registers values
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.assistantApiKey() == ""
+        assert conf.supybot.plugins.LLM.assistantModel() == ""
+        assert conf.supybot.plugins.LLM.assistantSystemPrompt() == ""
+        assert conf.supybot.plugins.LLM.imageApiKey() == ""
+        assert conf.supybot.plugins.LLM.imageModel() == ""
+
+    def test_capability_api_keys_are_private(self) -> None:
+        """T5a: assistantApiKey and imageApiKey must be marked private so
+        Limnoria never logs their values."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.assistantApiKey._private is True
+        assert conf.supybot.plugins.LLM.imageApiKey._private is True
+
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
         """B1: bridgeAllowMutating defaults to False (gate closed).
 

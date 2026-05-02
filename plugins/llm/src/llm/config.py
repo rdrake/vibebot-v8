@@ -170,6 +170,77 @@ def configure(advanced: bool) -> None:
 LLM = conf.registerPlugin("LLM")
 
 # ============================================================================
+# Capability-based settings (T5a). New names introduced alongside the
+# command-era keys below; ``resolve_setting`` reads these first and falls
+# back to the old key with a one-time deprecation warning. T5b removes the
+# old registrations a release later. See
+# docs/plans/2026-05-02-settings-config-simplification-findings.md.
+#
+# All defaults are empty so ``resolve_setting`` falls through to the
+# existing command-era key on the first lookup — that preserves Phase-1
+# operator behaviour without forcing them to migrate immediately.
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "assistantApiKey",
+    registry.String(
+        "",
+        _("""API key for assistant text+tool work (chat, planner loop, memory,
+        spontaneous, reminder parsing, image-prompt rewrite). Replaces
+        askApiKey, metaApiKey, memoryApiKey, spontaneousApiKey. When empty,
+        resolve_setting falls back to those old keys in order."""),
+        private=True,
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageApiKey",
+    registry.String(
+        "",
+        _("""API key for image generation. Replaces drawApiKey. When empty,
+        resolve_setting falls back to drawApiKey. Does NOT auto-fall-back to
+        assistantApiKey because image providers usually use a separate
+        account."""),
+        private=True,
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "assistantSystemPrompt",
+    registry.String(
+        "",
+        _("""System prompt that defines bot personality and constraints for
+        all assistant work. Replaces askSystemPrompt. When empty,
+        resolve_setting falls back to askSystemPrompt."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "assistantModel",
+    ValidatedModelName(
+        "",
+        _("""Model used for assistant text+tool work. Replaces askModel,
+        metaModel, memoryExtractionModel, memoryCleanupModel, and
+        spontaneousModel. When empty, resolve_setting falls back to those old
+        keys in order."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageModel",
+    ValidatedModelName(
+        "",
+        _("""Model used for image generation. Replaces drawModel. When empty,
+        resolve_setting falls back to drawModel."""),
+    ),
+)
+
+# ============================================================================
 # API Keys (private - never logged)
 # ============================================================================
 
