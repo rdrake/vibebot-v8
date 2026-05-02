@@ -396,6 +396,125 @@ class TestLLMService:
         assert self.service._get_gemini_tools(model) is None
 
 
+class TestResolveGroundingKwargs:
+    """Provider-aware grounding kwargs for search/url completion."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service) -> None:
+        self.service, _ = make_service()
+
+    @pytest.mark.parametrize(
+        ("model", "kind", "expected_tool"),
+        [
+            ("gemini/gemini-2.5-flash", "search", "googleSearch"),
+            ("gemini/gemini-2.5-flash", "url", "urlContext"),
+            ("vertex_ai/gemini-2.5-pro", "search", "googleSearch"),
+            ("vertex_ai_beta/gemini-2.5-pro", "url", "urlContext"),
+        ],
+    )
+    def test_gemini_provider_uses_native_grounding_tool(
+        self, model: str, kind: str, expected_tool: str
+    ) -> None:
+        kwargs = self.service._resolve_grounding_kwargs(model, kind)
+        assert kwargs == {"tools": [{expected_tool: {}}]}
+
+    @pytest.mark.parametrize("kind", ["search", "url"])
+    def test_xai_provider_uses_live_search_extra_body(self, kind: str) -> None:
+        kwargs = self.service._resolve_grounding_kwargs("xai/grok-3", kind)
+        assert kwargs["tools"] == []
+        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["openai/gpt-4", "anthropic/claude-3-sonnet", "gpt-4o-mini", "ollama/llama3"],
+    )
+    @pytest.mark.parametrize("kind", ["search", "url"])
+    def test_other_providers_drop_tools_for_plain_completion(self, model: str, kind: str) -> None:
+        kwargs = self.service._resolve_grounding_kwargs(model, kind)
+        assert kwargs == {"tools": []}
+
+    def test_unknown_kind_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown grounding kind"):
+            self.service._resolve_grounding_kwargs("gemini/gemini-2.5-flash", "wat")
+
+
+class TestSearchCompletionProviderRouting:
+    """search_completion + url_completion route grounding kwargs by provider."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.service, self.plugin = make_service()
+        self._completion_mock = mocker.patch.object(self.service, "_completion_with_tool_fallback")
+        # Minimal response object — search_completion only reads choices and
+        # passes the response to _check_grounding_used / _extract_usage.
+        response = mocker.MagicMock()
+        response.choices[0].message.content = "result"
+        self._completion_mock.return_value = response
+        mocker.patch.object(self.service, "_check_grounding_used", return_value=False)
+        mocker.patch.object(self.service, "_extract_usage", return_value=(10, 20, 0.001))
+
+    def _captured_kwargs(self):
+        return self._completion_mock.call_args.kwargs["optional_kwargs"]
+
+    def test_gemini_search_keeps_google_search_tool(self) -> None:
+        self.plugin.registryValue.side_effect = lambda k, ch=None: (
+            "gemini/gemini-2.5-flash"
+            if k == "searchModel"
+            else "key"
+            if k == "searchApiKey"
+            else 30
+            if k == "timeout"
+            else ""
+        )
+        self.service.search_completion("hi", channel="#t")
+        kwargs = self._captured_kwargs()
+        assert kwargs["tools"] == [{"googleSearch": {}}]
+
+    def test_xai_search_uses_extra_body_and_drops_tools(self) -> None:
+        self.plugin.registryValue.side_effect = lambda k, ch=None: (
+            "xai/grok-3"
+            if k == "searchModel"
+            else "key"
+            if k == "searchApiKey"
+            else 30
+            if k == "timeout"
+            else ""
+        )
+        self.service.search_completion("hi", channel="#t")
+        kwargs = self._captured_kwargs()
+        assert kwargs["tools"] == []
+        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+
+    def test_gemini_url_uses_url_context(self) -> None:
+        self.plugin.registryValue.side_effect = lambda k, ch=None: (
+            "gemini/gemini-2.5-flash"
+            if k == "searchModel"
+            else "key"
+            if k == "searchApiKey"
+            else 30
+            if k == "timeout"
+            else ""
+        )
+        self.service.url_completion("https://example.com", channel="#t")
+        kwargs = self._captured_kwargs()
+        assert kwargs["tools"] == [{"urlContext": {}}]
+
+    def test_xai_url_falls_back_to_live_search(self) -> None:
+        self.plugin.registryValue.side_effect = lambda k, ch=None: (
+            "xai/grok-3"
+            if k == "searchModel"
+            else "key"
+            if k == "searchApiKey"
+            else 30
+            if k == "timeout"
+            else ""
+        )
+        self.service.url_completion("https://example.com", channel="#t")
+        kwargs = self._captured_kwargs()
+        assert kwargs["tools"] == []
+        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+
+
 class TestGroundingDetection:
     """Tests for _check_grounding_used and CompletionResult."""
 

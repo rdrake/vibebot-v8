@@ -1103,6 +1103,49 @@ class LLMService:
         # Default: no tools
         return None
 
+    def _resolve_grounding_kwargs(self, model: str, kind: str) -> dict[str, Any]:
+        """Provider-aware grounding kwargs for ``search_completion`` /
+        ``url_completion``.
+
+        ``kind`` is ``"search"`` (web search grounding) or ``"url"`` (URL
+        context fetching). Returns a dict to ``update()`` into the
+        ``optional_kwargs`` passed to LiteLLM.
+
+        - Gemini / Vertex AI: native grounding tools
+          (``googleSearch`` / ``urlContext``).
+        - xAI (Grok): Live Search via the ``search_parameters`` request body
+          field — surfaced through LiteLLM's ``extra_body`` passthrough. Grok
+          decides at runtime whether to search; URL kind reuses Live Search
+          (no native urlContext equivalent on xAI).
+        - Anything else: returns ``{}`` — the request runs without grounding
+          tools and the model answers from training.
+
+        Returns the kwargs *plus* an explicit ``"tools": []`` to clobber
+        anything ``_get_provider_kwargs`` may have already added — callers
+        should ``update()`` (not merge) so the override takes effect.
+        """
+        if kind not in ("search", "url"):
+            raise ValueError(f"Unknown grounding kind: {kind}")
+
+        provider = ""
+        if "/" in model:
+            provider = model.split("/", 1)[0].lower()
+
+        if provider in ("gemini", "vertex_ai", "vertex_ai_beta"):
+            tool_name = "googleSearch" if kind == "search" else "urlContext"
+            return {"tools": [{tool_name: {}}]}
+
+        if provider == "xai":
+            # xAI Live Search — Grok decides whether to actually search.
+            # Drop tools so we don't send a conflicting Gemini-shaped payload.
+            return {
+                "tools": [],
+                "extra_body": {"search_parameters": {"mode": "auto"}},
+            }
+
+        # Unknown / unsupported provider: no grounding, plain completion.
+        return {"tools": []}
+
     def _check_grounding_used(self, response: Any) -> bool:
         """Check if Google grounding/search was used in the response.
 
@@ -1860,8 +1903,7 @@ class LLMService:
             messages: list[dict[str, object]] = [{"role": "user", "content": query}]
 
             optional_kwargs = self._get_provider_kwargs(model)
-            # Force Google Search grounding only
-            optional_kwargs["tools"] = [{"googleSearch": {}}]
+            optional_kwargs.update(self._resolve_grounding_kwargs(model, "search"))
 
             response = self._completion_with_tool_fallback(
                 model=model,
@@ -1918,8 +1960,7 @@ class LLMService:
             ]
 
             optional_kwargs = self._get_provider_kwargs(model)
-            # Force URL Context grounding only
-            optional_kwargs["tools"] = [{"urlContext": {}}]
+            optional_kwargs.update(self._resolve_grounding_kwargs(model, "url"))
 
             response = self._completion_with_tool_fallback(
                 model=model,
