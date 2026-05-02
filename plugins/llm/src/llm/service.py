@@ -1169,6 +1169,17 @@ class LLMService:
                 if hidden.get("vertex_ai_grounding_metadata"):
                     return True
 
+            # xAI live_search emits citation evidence at the response top-level
+            # (`citations` list) or under `_hidden_params["citations"]`. Either
+            # form indicates Grok actually invoked live_search and grounded on
+            # web sources. Empty list = tool offered but unused.
+            if getattr(response, "citations", None):
+                return True
+            if hasattr(response, "_hidden_params") and (
+                (response._hidden_params or {}).get("citations")
+            ):
+                return True
+
             # Check choices for grounding chunks/metadata
             if response.choices:
                 choice = response.choices[0]
@@ -1917,6 +1928,7 @@ class LLMService:
             optional_kwargs = self._get_provider_kwargs(model)
             optional_kwargs.update(self._resolve_grounding_kwargs(model, "search"))
 
+            self.log.info("search_completion start model=%s query_len=%d", model, len(query))
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
@@ -1928,6 +1940,15 @@ class LLMService:
             content = response.choices[0].message.content
             grounding_used = self._check_grounding_used(response)
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+            self.log.info(
+                "search_completion ok model=%s grounding_used=%s content_len=%d "
+                "prompt_tokens=%d completion_tokens=%d",
+                model,
+                grounding_used,
+                len(content or ""),
+                prompt_tokens,
+                completion_tokens,
+            )
 
             return ToolResult(
                 content=content,
