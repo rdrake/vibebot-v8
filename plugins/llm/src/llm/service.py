@@ -3998,3 +3998,60 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         if row.recurrence_rrule:
             return self.plugin._next_rrule_fire(row.recurrence_rrule, time.time())
         return None
+
+    def list_scheduled_llm_tasks(
+        self, *, creator_nick: str, account: str | None
+    ) -> list[ScheduledLlmTaskRow]:
+        """Return active rows owned by the caller.
+
+        Match policy is the standard account-when-known / nick-fallback applied
+        by the indexed query in ``load_scheduled_llm_tasks_for``.
+        """
+        return self.plugin.db.load_scheduled_llm_tasks_for(account=account, nick=creator_nick)
+
+    def cancel_scheduled_llm_task(
+        self,
+        *,
+        event_name: str,
+        creator_nick: str,
+        account: str | None,
+    ) -> ScheduleLlmTaskResult:
+        """Cancel a single task (owner-scoped).
+
+        On success removes the schedule event AND deletes the DB row. Uses
+        ``Identity.matches`` so the owner check is consistent with the
+        reminder system's ``_get_user_reminders`` policy.
+        """
+        db = self.plugin.db
+        row = db.get_scheduled_llm_task(event_name)
+        if row is None:
+            return ScheduleLlmTaskResult(
+                status="error",
+                message=f"No scheduled task with id {event_name}.",
+            )
+        # Local import avoids a service.py -> plugin.py import cycle at module load.
+        from .plugin import Identity
+
+        caller = Identity(raw_nick=creator_nick, account=account)
+        owner = Identity(raw_nick=row.creator_nick, account=row.account)
+        if not owner.matches(caller):
+            return ScheduleLlmTaskResult(
+                status="error",
+                message=f"Scheduled task {event_name} belongs to someone else.",
+            )
+
+        try:
+            schedule.removeEvent(event_name)
+        except KeyError:
+            # Already fired or already cancelled in the scheduler — DB row is
+            # the authoritative state, keep going and delete it.
+            self.log.info(
+                "cancel_scheduled_llm_task: %s not in scheduler (already fired?)",
+                event_name,
+            )
+        db.delete_scheduled_llm_task(event_name)
+        return ScheduleLlmTaskResult(
+            status="ok",
+            event_name=event_name,
+            message=f"Cancelled scheduled task {event_name}.",
+        )

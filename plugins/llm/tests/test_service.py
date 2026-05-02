@@ -5360,3 +5360,94 @@ def test_schedule_llm_task_requires_account(llm_service, mocker: MockerFixture):
     )
     assert result.status == "error"
     assert "account" in result.message.lower() or "auth" in result.message.lower()
+
+
+# =============================================================================
+# Phase 2 Task 3 / B2 — list + cancel scheduled_llm_task service methods
+# =============================================================================
+
+
+def test_list_scheduled_llm_tasks_filters_by_owner(llm_service, db):
+    """B2: list returns only the caller's active tasks. Match policy:
+    account-when-account, nick-when-no-account (mirrors reminders)."""
+    db.save_scheduled_llm_task(
+        event_name="ev1",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 60,
+    )
+    db.save_scheduled_llm_task(
+        event_name="ev2",
+        creator_nick="rdrake_alt",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake_alt!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 600,
+    )
+    db.save_scheduled_llm_task(
+        event_name="other",
+        creator_nick="other_user",
+        account="other_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":other!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 600,
+    )
+
+    rows = llm_service.list_scheduled_llm_tasks(creator_nick="rdrake", account="rdrake_a")
+    names = {r.event_name for r in rows}
+    assert names == {"ev1", "ev2"}
+
+
+def test_cancel_scheduled_llm_task_owner_scoped(llm_service, db, mocker: MockerFixture):
+    """B2: cancelling your own task removes it; cancelling someone else's refuses."""
+    remove_event = mocker.patch("llm.service.schedule.removeEvent")
+    db.save_scheduled_llm_task(
+        event_name="mine",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 60,
+    )
+    db.save_scheduled_llm_task(
+        event_name="theirs",
+        creator_nick="other",
+        account="other_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":other!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 60,
+    )
+
+    ok = llm_service.cancel_scheduled_llm_task(
+        event_name="mine", creator_nick="rdrake", account="rdrake_a"
+    )
+    assert ok.status == "ok"
+    # Cancel deleted the row, so a follow-up delete returns False.
+    assert db.delete_scheduled_llm_task("mine") is False
+    remove_event.assert_called_once_with("mine")
+
+    remove_event.reset_mock()
+    foreign = llm_service.cancel_scheduled_llm_task(
+        event_name="theirs", creator_nick="rdrake", account="rdrake_a"
+    )
+    assert foreign.status == "error"
+    remove_event.assert_not_called()
+
+
+def test_cancel_scheduled_llm_task_unknown_returns_error(llm_service):
+    out = llm_service.cancel_scheduled_llm_task(
+        event_name="does_not_exist", creator_nick="x", account=None
+    )
+    assert out.status == "error"
