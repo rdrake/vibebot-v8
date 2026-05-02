@@ -12,7 +12,9 @@ See docs/plans/2026-05-02-limnoria-tool-bridge-plan.md for the full design.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any  # noqa: F401  (used in later tasks)
 
 from supybot import callbacks
 
@@ -85,3 +87,47 @@ class BridgeCommand:
     command: str  # leaf command name from cb.listCommands()
     arg_syntax: str  # first line of method.__doc__
     description: str  # remaining lines of method.__doc__, joined
+
+
+def enumerate_commands(
+    irc: Any,
+    msg: Any,
+    allowed_plugins: frozenset[str],
+) -> Iterator[BridgeCommand]:
+    """Yield every loaded command the LLM is allowed to call.
+
+    A command is yielded when ALL of:
+    - Its plugin is in ``allowed_plugins`` (operator allowlist).
+    - Its plugin is NOT in ``DENY_PLUGINS`` (hard deny).
+    - Its (canonical_plugin, leaf) tuple is NOT in ``DENY_COMMANDS``.
+    - ``checkCommandCapability(msg, cb, leaf)`` returns falsy
+      (i.e. allowed for the calling user).
+
+    The capability check uses the string form of the leaf name to
+    mirror ``_callCommand``'s pattern at supybot/callbacks.py:1591;
+    list form ``[leaf]`` triggers an AssertionError because the leaf
+    is not the plugin's canonical name.
+    """
+    for cb in irc.callbacks:
+        plugin_name = cb.name()
+        if plugin_name in DENY_PLUGINS:
+            continue
+        if plugin_name not in allowed_plugins:
+            continue
+        canonical = cb.canonicalName()
+        for leaf in cb.listCommands():
+            if (canonical, leaf) in DENY_COMMANDS:
+                continue
+            denial = callbacks.checkCommandCapability(msg, cb, leaf)
+            if denial:
+                continue
+            method = cb.getCommandMethod([leaf])
+            doc_lines = (method.__doc__ or "").strip().splitlines()
+            arg_syntax = doc_lines[0].strip() if doc_lines else ""
+            description = " ".join(line.strip() for line in doc_lines[1:]).strip()
+            yield BridgeCommand(
+                plugin=plugin_name,
+                command=leaf,
+                arg_syntax=arg_syntax,
+                description=description,
+            )
