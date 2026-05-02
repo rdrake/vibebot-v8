@@ -421,7 +421,14 @@ class TestResolveGroundingKwargs:
     @pytest.mark.parametrize("kind", ["search", "url"])
     def test_xai_provider_uses_agent_tools_live_search(self, kind: str) -> None:
         kwargs = self.service._resolve_grounding_kwargs("xai/grok-3", kind)
-        assert kwargs == {"tools": [{"type": "live_search"}]}
+        assert kwargs == {
+            "tools": [
+                {
+                    "type": "live_search",
+                    "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}],
+                }
+            ]
+        }
         assert "extra_body" not in kwargs
 
     @pytest.mark.parametrize(
@@ -482,7 +489,9 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.search_completion("hi", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [{"type": "live_search"}]
+        assert kwargs["tools"] == [
+            {"type": "live_search", "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}]}
+        ]
         assert "extra_body" not in kwargs
 
     def test_gemini_url_uses_url_context(self) -> None:
@@ -511,7 +520,9 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.url_completion("https://example.com", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [{"type": "live_search"}]
+        assert kwargs["tools"] == [
+            {"type": "live_search", "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}]}
+        ]
         assert "extra_body" not in kwargs
 
 

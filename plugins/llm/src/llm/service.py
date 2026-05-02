@@ -1117,13 +1117,12 @@ class LLMService:
 
         - Gemini / Vertex AI: native grounding tools
           (``googleSearch`` / ``urlContext``).
-        - xAI (Grok): Agent Tools API — ``{"type": "live_search"}`` server-side
-          tool surfaced via the standard ``tools`` field. Replaces the
-          ``extra_body.search_parameters`` form deprecated 2026-05-02
-          (returns 410 Gone with a "switch to Agent Tools" message); the
-          chat-completions schema accepts ``function`` or ``live_search``
-          as tool types. URL kind reuses ``live_search`` — no native
-          urlContext equivalent on xAI.
+        - xAI (Grok): ``{"type": "live_search", "sources": [...]}``
+          server-side tool. The ``sources`` field is required — bare
+          ``{"type": "live_search"}`` returns 422 ``missing field "sources"``.
+          Replaces the deprecated ``extra_body.search_parameters`` form
+          (which now returns 410 Gone). URL kind reuses live_search —
+          no native urlContext equivalent on xAI.
         - Anything else: returns ``{}`` — the request runs without grounding
           tools and the model answers from training.
 
@@ -1144,10 +1143,18 @@ class LLMService:
 
         if provider == "xai":
             # Grok decides at runtime whether to invoke live_search. The
-            # legacy `extra_body.search_parameters` form was deprecated
-            # upstream (returns 410 Gone) and is replaced by the standard
-            # `tools` array carrying `{"type": "live_search"}`.
-            return {"tools": [{"type": "live_search"}]}
+            # `sources` field is REQUIRED — bare `{"type":"live_search"}`
+            # returns 422 `missing field "sources"`. The legacy
+            # `extra_body.search_parameters` form was deprecated upstream
+            # (returns 410 Gone) and replaced by this `tools` shape.
+            return {
+                "tools": [
+                    {
+                        "type": "live_search",
+                        "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}],
+                    }
+                ]
+            }
 
         # Unknown / unsupported provider: no grounding, plain completion.
         return {"tools": []}
