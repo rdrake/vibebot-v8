@@ -2641,6 +2641,90 @@ class TestInstructCommand:
 
 
 # ---------------------------------------------------------------------------
+# migrateconfig (T5b prep)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrateConfigCommand:
+    """Tests for the @migrateconfig owner command (Phase 2 Task 5b prep)."""
+
+    def test_migrateconfig_requires_owner(self, plugin_env, mocker):
+        """GIVEN non-owner WHEN migrateconfig called THEN errors and does not list."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        plugin.migrateconfig(mock_irc, mock_msg, [])
+        mock_irc.error.assert_called_once()
+        mock_irc.queueMsg.assert_not_called()
+
+    def test_migrateconfig_lists_old_keys_with_values(self, plugin_env, mocker):
+        """GIVEN old keys set WHEN migrateconfig called THEN PMs report with new-key targets."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "owner",
+        )
+        values = {
+            "askModel": "gemini/gemini-flash-latest",
+            "askApiKey": "sk-secret-1234",
+            "drawModel": "vertex_ai/imagen-4.0-generate-001",
+            "grokModel": "xai/grok-4.3-latest",
+        }
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, channel=None: values.get(key, "")
+        )
+        plugin.migrateconfig(mock_irc, mock_msg, [])
+
+        # No irc.error; PM channel = msg.nick.
+        mock_irc.error.assert_not_called()
+        all_msgs = [call.args[0].args[1] for call in mock_irc.queueMsg.call_args_list]
+        joined = "\n".join(all_msgs)
+        # Header naming the count.
+        assert "4 value(s) to mirror" in joined
+        # Each old key surfaces with the right new-key mapping.
+        assert "askModel" in joined and "assistantModel" in joined
+        assert "drawModel" in joined and "imageModel" in joined
+        # Grok keys flagged as removable, not redirected.
+        assert "grokModel" in joined and "%g command is being removed" in joined
+        # API key is redacted in the report block but raw value follows after.
+        assert "<redacted, ends ...1234>" in joined
+        assert "sk-secret-1234" in joined  # raw block
+
+    def test_migrateconfig_skips_empty_keys(self, plugin_env, mocker):
+        """GIVEN no old keys set WHEN migrateconfig called THEN reports nothing to migrate."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "owner",
+        )
+        plugin.registryValue = mocker.MagicMock(return_value="")
+        plugin.migrateconfig(mock_irc, mock_msg, [])
+
+        mock_irc.error.assert_not_called()
+        msgs = [call.args[0].args[1] for call in mock_irc.queueMsg.call_args_list]
+        assert len(msgs) == 1
+        assert "no command-era LLM keys" in msgs[0]
+
+    def test_migrateconfig_redacts_short_api_key(self, plugin_env, mocker):
+        """GIVEN api key shorter than 4 chars WHEN reported THEN redacted without tail."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "owner",
+        )
+        values = {"askApiKey": "abc"}
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, channel=None: values.get(key, "")
+        )
+        plugin.migrateconfig(mock_irc, mock_msg, [])
+        msgs = [call.args[0].args[1] for call in mock_irc.queueMsg.call_args_list]
+        joined = "\n".join(msgs)
+        assert "<redacted>" in joined
+
+
+# ---------------------------------------------------------------------------
 # ask + instruct integration
 # ---------------------------------------------------------------------------
 

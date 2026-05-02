@@ -2768,6 +2768,7 @@ class TestCommandRegistry:
             "instruct",
             "remind",
             "usage",
+            "migrateconfig",
         }
         assert names == expected
 

@@ -262,6 +262,17 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%usage", "%usage someone", "%usage #channel"),
         category="utility",
     ),
+    CommandInfo(
+        name="migrateconfig",
+        args="(no arguments)",
+        description=(
+            "Owner-only. PMs a report of every non-empty command-era LLM "
+            "registry value and the matching capability-based key to mirror "
+            "it onto, in preparation for Phase 2 Task 5b."
+        ),
+        examples=("%migrateconfig",),
+        category="utility",
+    ),
 )
 
 
@@ -3091,6 +3102,116 @@ class LLM(callbacks.Plugin):
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
+
+    # Mapping of T5a old (command-era) registry keys to new (capability-based)
+    # keys. Used by the ``migrateLlmConfig`` helper to surface what an operator
+    # still needs to mirror onto the new keys before T5b removes the old
+    # registrations. Keep aligned with config.py and the T5b plan
+    # (docs/plans/2026-05-02-task-5b-config-cleanup-plan.md).
+    _LLM_CONFIG_MIGRATION_MAP: tuple[tuple[str, str], ...] = (
+        ("askModel", "assistantModel"),
+        ("askApiKey", "assistantApiKey"),
+        ("askSystemPrompt", "assistantSystemPrompt"),
+        ("metaModel", "assistantModel"),
+        ("metaApiKey", "assistantApiKey"),
+        ("memoryExtractionModel", "assistantModel"),
+        ("memoryCleanupModel", "assistantModel"),
+        ("memoryApiKey", "assistantApiKey"),
+        ("spontaneousModel", "assistantModel"),
+        ("spontaneousApiKey", "assistantApiKey"),
+        ("drawModel", "imageModel"),
+        ("drawApiKey", "imageApiKey"),
+        ("grokModel", "(remove — %g command is being removed)"),
+        ("grokApiKey", "(remove — %g command is being removed)"),
+        ("grokSystemPrompt", "(remove — %g command is being removed)"),
+    )
+
+    def migrateconfig(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """takes no arguments
+
+        List every non-empty command-era LLM registry value that still needs
+        to be mirrored onto the capability-based key before Task 5b removes
+        the old registrations. Owner-only. PM the report to the caller —
+        API key values are redacted in the report but a separate "raw" PM
+        contains the actual values so you can copy/paste into ``@config``.
+        """
+        if not ircdb.checkCapability(msg.prefix, "owner"):
+            irc.error(_("Only bot owners can run migrateconfig."))
+            return
+
+        # Channels to inspect: every channel the bot is currently in, plus
+        # ``None`` for the global default. Per-channel values that match the
+        # global value are not reported (no migration needed).
+        channels: list[str | None] = [None, *sorted(irc.state.channels)]
+
+        report_lines: list[str] = []
+        raw_pairs: list[tuple[str, str | None, str]] = []
+
+        for old_key, new_key in self._LLM_CONFIG_MIGRATION_MAP:
+            global_value = ""
+            for channel in channels:
+                value = self.registryValue(old_key, channel)
+                value_str = str(value or "").strip()
+                if channel is None:
+                    global_value = value_str
+                    if not value_str:
+                        continue
+                    scope_label = "global"
+                else:
+                    if not value_str or value_str == global_value:
+                        continue
+                    scope_label = channel
+                redacted = self._redact_for_migration(old_key, value_str)
+                report_lines.append(f"{old_key} [{scope_label}] = {redacted}  ->  set {new_key}")
+                raw_pairs.append((old_key, channel, value_str))
+
+        target = msg.nick
+        if not report_lines:
+            irc.queueMsg(
+                ircmsgs.privmsg(
+                    target,
+                    "migrateLlmConfig: no command-era LLM keys with non-default "
+                    "values found. Nothing to migrate.",
+                )
+            )
+            return
+
+        header = (
+            f"migrateLlmConfig: {len(report_lines)} value(s) to mirror before "
+            "Task 5b. Recommended: copy each into the matching new key with "
+            "@config plugins.LLM.<newKey> [channel #foo] <value>."
+        )
+        irc.queueMsg(ircmsgs.privmsg(target, header))
+        for line in report_lines:
+            irc.queueMsg(ircmsgs.privmsg(target, line))
+
+        # Send a follow-up "raw values" PM block so the operator can read the
+        # actual API key values when they're ready to copy. Separate so the
+        # main report can be pasted into a ticket or commit message safely.
+        irc.queueMsg(
+            ircmsgs.privmsg(
+                target,
+                "Raw values follow (API keys NOT redacted; do not share):",
+            )
+        )
+        for old_key, channel, value_str in raw_pairs:
+            scope = "global" if channel is None else channel
+            irc.queueMsg(ircmsgs.privmsg(target, f"{old_key} [{scope}] = {value_str}"))
+
+    migrateconfig = wrap(migrateconfig, [])
+
+    @staticmethod
+    def _redact_for_migration(key: str, value: str) -> str:
+        """Redact an API-key value for the safe-to-paste migration report."""
+        if "ApiKey" in key:
+            tail = value[-4:] if len(value) > 4 else ""
+            return f"<redacted, ends ...{tail}>" if tail else "<redacted>"
+        return value
 
     def usage(
         self,
