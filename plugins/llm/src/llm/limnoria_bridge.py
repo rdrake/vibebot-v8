@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from typing import Any  # noqa: F401  (used in later tasks)
 
 from supybot import callbacks
+from supybot import log as supylog
+
+_log = supylog.getPluginLogger("LLM.bridge")
 
 # Plugin names matched against ``cb.name()`` (the user-facing CamelCase form).
 DENY_PLUGINS: frozenset[str] = frozenset(
@@ -156,17 +159,30 @@ def dispatch(
     / ``_err`` (see assistant.py:676-683) so the assistant loop's
     ``last_successful_tool`` guard at service.py:2705-2710 fires correctly.
     """
+    _log.info(
+        "bridge call: %s.%s args=%r nick=%s channel=%s",
+        plugin,
+        command,
+        arg_string,
+        getattr(msg, "nick", "?"),
+        getattr(msg, "channel", "?"),
+    )
     cb = irc.getCallback(plugin)
     if cb is None:
+        _log.info("bridge result: %s.%s -> error: unknown plugin", plugin, command)
         return {"error": f"unknown plugin: {plugin}"}
     if cb.name() in DENY_PLUGINS:
+        _log.info("bridge result: %s.%s -> error: denied (plugin)", plugin, command)
         return {"error": f"denied: {plugin}.{command}"}
     if (cb.canonicalName(), command) in DENY_COMMANDS:
+        _log.info("bridge result: %s.%s -> error: denied (command)", plugin, command)
         return {"error": f"denied: {plugin}.{command}"}
     if not cb.isCommandMethod(command):
+        _log.info("bridge result: %s.%s -> error: unknown command", plugin, command)
         return {"error": f"unknown command: {plugin}.{command}"}
     denial = callbacks.checkCommandCapability(msg, cb, command)
     if denial:
+        _log.info("bridge result: %s.%s -> error: not permitted", plugin, command)
         return {"error": f"not permitted: {plugin}.{command}"}
 
     proxy = BufferingIrcProxy(irc, msg)
@@ -179,5 +195,9 @@ def dispatch(
         # break wrap()-based commands. See callbacks.py:1213.
         cb._callCommand([command], proxy, msg, tokens)
     except Exception as exc:  # noqa: BLE001 — translating to JSON envelope
+        _log.info("bridge result: %s.%s -> exception: %s", plugin, command, exc)
         return {"error": str(exc) or exc.__class__.__name__}
-    return {"status": "ok", "reply": "\n".join(proxy.buffer)}
+    reply = "\n".join(proxy.buffer)
+    _log.debug("bridge result: %s.%s -> ok reply=%r", plugin, command, reply)
+    _log.info("bridge result: %s.%s -> ok (%d chars)", plugin, command, len(reply))
+    return {"status": "ok", "reply": reply}

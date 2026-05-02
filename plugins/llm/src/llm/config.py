@@ -874,3 +874,15 @@ conf.registerChannelValue(
         Utilities Seen."""),
     ),
 )
+
+conf.registerChannelValue(
+    LLM,
+    "bridgeDebugInChannel",
+    registry.Boolean(
+        False,
+        _("""When True, append a one-line debug footer to LLM replies listing
+        every Limnoria bridge tool call made during the turn (plugin, command,
+        args, ok/err). Off by default; useful to confirm the LLM is actually
+        using bridged commands."""),
+    ),
+)

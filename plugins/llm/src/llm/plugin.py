@@ -42,6 +42,7 @@ from .service import (
     LLMService,
     account_from_server_tags,
     irc_has_caps,
+    truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 
@@ -74,6 +75,8 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
 # reply is suppressed to avoid a duplicate ack. See Task B5 of the
 # 2026-04-30 reminder simplification plan.
 _REMINDER_MUTATION_TOOLS = frozenset({"set_reminder", "delete_reminder", "cancel_all_reminders"})
+
+_FULL_ANSWER_LABEL = "Full answer"
 
 
 @dataclass(frozen=True)
@@ -1563,13 +1566,17 @@ class LLM(callbacks.Plugin):
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
 
-    def _build_bridge_tool(self, irc, msg, channel: str):
+    def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
         """Build the per-request Limnoria bridge tool schema + handler.
 
         Returns ``(None, None)`` when the bridge is disabled, the allowlist is
         empty, or no allowed command is currently exposable. Otherwise returns
         ``(schema_dict, {"run_limnoria_command": handler})`` for injection
         into ``assistant_completion`` via ``extra_tools`` / ``extra_handlers``.
+
+        When ``trace`` is provided, each successful or failed dispatch appends
+        a ``(plugin, command, args, status)`` tuple — used by the optional
+        ``bridgeDebugInChannel`` reply footer.
         """
         if not self.registryValue("bridgeEnabled", channel):
             return None, None
@@ -1622,33 +1629,53 @@ class LLM(callbacks.Plugin):
         from .assistant import ToolResult
 
         def handler(arguments):
+            plugin_name = str(arguments.get("plugin", ""))
+            command_name = str(arguments.get("command", ""))
+            arg_string = str(arguments.get("args", ""))
             envelope = limnoria_bridge.dispatch(
                 irc,
                 msg,
-                plugin=str(arguments.get("plugin", "")),
-                command=str(arguments.get("command", "")),
-                arg_string=str(arguments.get("args", "")),
+                plugin=plugin_name,
+                command=command_name,
+                arg_string=arg_string,
             )
+            if trace is not None:
+                status = (
+                    "ok" if envelope.get("status") == "ok" else f"err:{envelope.get('error', '?')}"
+                )
+                trace.append((plugin_name, command_name, arg_string, status))
             return ToolResult(content=json.dumps(envelope))
 
         return schema, {"run_limnoria_command": handler}
 
     @staticmethod
+    def _format_bridge_debug_footer(trace: list) -> str:
+        """Render a one-line debug footer for the optional bridgeDebugInChannel mode."""
+        if not trace:
+            return ""
+        parts = []
+        for plugin_name, command_name, arg_string, status in trace:
+            call = f"{plugin_name}.{command_name}"
+            if arg_string:
+                call += f" {arg_string}"
+            parts.append(f"{call} [{status}]")
+        return "[bridge: " + " ; ".join(parts) + "]"
+
+    @staticmethod
     def _trim_long_reply_teaser(teaser: str, max_chars: int) -> str:
         """Collapse and trim a teaser so the link reply stays on one line."""
-        teaser = " ".join(teaser.split()) or "Full answer"
-        if max_chars > 0 and len(teaser) > max_chars:
-            trimmed = teaser[:max_chars].rstrip()
-            last_space = trimmed.rfind(" ")
-            if last_space > 0:
-                trimmed = trimmed[:last_space].rstrip()
-            teaser = trimmed.rstrip(" ,;:-")
-        return teaser or "Full answer"
+        teaser = " ".join(teaser.split()) or _FULL_ANSWER_LABEL
+        truncated = truncate_to_word_boundary(teaser, max_chars)
+        if truncated != teaser:
+            truncated = truncated.rstrip(" ,;:-")
+        return truncated or _FULL_ANSWER_LABEL
 
     @staticmethod
     def _fallback_long_reply_teaser(text: str, max_chars: int) -> str:
         """Return a deterministic one-line teaser when LLM summarization fails."""
-        teaser = next((line.strip() for line in text.splitlines() if line.strip()), "Full answer")
+        teaser = next(
+            (line.strip() for line in text.splitlines() if line.strip()), _FULL_ANSWER_LABEL
+        )
         teaser = teaser.lstrip("#").strip()
         teaser = teaser.lstrip("-* ").strip()
         return LLM._trim_long_reply_teaser(teaser, max_chars)
@@ -1693,13 +1720,13 @@ class LLM(callbacks.Plugin):
         ):
             url = self.llm_service.save_markdown_to_http(text)
             if url:
-                suffix = f" - Full answer: {url}"
+                suffix = f" - {_FULL_ANSWER_LABEL}: {url}"
                 configured_max_chars = int(
                     self.registryValue("longReplyTeaserMaxChars", target) or 220
                 )
                 max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
                 if max_chars <= 0:
-                    irc.reply(f"Full answer: {url}", prefixNick=prefixNick)
+                    irc.reply(f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
                     return
                 teaser = self.llm_service.summarize_for_irc(
                     text, channel=target, max_chars=max_chars
@@ -2432,8 +2459,14 @@ class LLM(callbacks.Plugin):
                     for img in images:
                         request_text = request_text.replace(img, "").strip()
 
-                bridge_schema, bridge_handlers = self._build_bridge_tool(irc, msg, channel)
+                bridge_trace: list = []
+                bridge_schema, bridge_handlers = self._build_bridge_tool(
+                    irc, msg, channel, trace=bridge_trace
+                )
                 extra_tools = [bridge_schema] if bridge_schema else None
+                bridge_debug = bool(
+                    bridge_schema and self.registryValue("bridgeDebugInChannel", channel)
+                )
 
                 result = self.llm_service.assistant_request(
                     request_text,
@@ -2460,6 +2493,12 @@ class LLM(callbacks.Plugin):
 
                 # Format response with grounding icon if search was used
                 response = result.content
+
+                # Optional in-channel debug footer listing bridge tool calls.
+                if bridge_debug and bridge_trace:
+                    footer = self._format_bridge_debug_footer(bridge_trace)
+                    if footer:
+                        response = f"{response}\n{footer}" if response else footer
 
                 # Structured suppression: when the assistant just performed
                 # a successful reminder mutation and produced no follow-up
