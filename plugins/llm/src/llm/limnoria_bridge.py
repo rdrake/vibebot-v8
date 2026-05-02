@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from supybot import callbacks
+
 # Plugin names matched against ``cb.name()`` (the user-facing CamelCase form).
 DENY_PLUGINS: frozenset[str] = frozenset(
     {
@@ -45,6 +47,34 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
         ("utilities", "apply"),
     }
 )
+
+
+class BufferingIrcProxy(callbacks.ReplyIrcProxy):
+    """An ``IrcProxy`` that captures replies into a list instead of
+    queueing them onto the IRC connection.
+
+    All the rich-reply machinery (``reply``, ``error``, ``replies``,
+    ``replySuccess``, etc.) flows through ``reply()`` and ``error()``
+    in the base class, so overriding those two is sufficient.
+    """
+
+    def __init__(self, irc, msg):
+        super().__init__(irc, msg)
+        self.buffer: list[str] = []
+
+    def reply(self, s, msg=None, **kwargs):  # noqa: ARG002 (signature compat)
+        self.buffer.append(s)
+        return None
+
+    def error(self, s, msg=None, **kwargs):  # noqa: ARG002 (signature compat)
+        # Buffer the text first so the dispatch error envelope can include
+        # it on the Raise=True path (the exception is caught in dispatch()).
+        self.buffer.append(s)
+        if kwargs.get("Raise"):
+            # Preserve ReplyIrcProxy.error()'s control-flow contract — some
+            # commands use Raise=True for early-exit. See callbacks.py:675.
+            raise callbacks.Error(s)
+        return None
 
 
 @dataclass(frozen=True)
