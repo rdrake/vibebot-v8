@@ -1,5 +1,28 @@
 # Tuning & Monitoring
 
+## Models and API keys (capability-based)
+
+The model/key surface is being migrated from per-command names (`askModel`, `drawApiKey`, `metaModel`, `memoryExtractionModel`, `spontaneousApiKey`, …) to capability-based names that match how the assistant actually works today: one assistant loop with a few specialized tools.
+
+| Setting | Scope | Replaces | Used for |
+|---------|-------|----------|----------|
+| `assistantModel` | Channel | `askModel`, `metaModel`, `memoryExtractionModel`, `memoryCleanupModel`, `spontaneousModel` | Chat, planner loop, bridge tool selection, reminder parsing, memory extraction, memory cleanup, spontaneous participation, image-prompt rewrite |
+| `assistantApiKey` | Channel | `askApiKey`, `metaApiKey`, `memoryApiKey`, `spontaneousApiKey` | Same as above (private) |
+| `assistantSystemPrompt` | Channel | `askSystemPrompt` | Personality and constraints for assistant work |
+| `imageModel` | Channel | `drawModel` | Image generation |
+| `imageApiKey` | Channel | `drawApiKey` | Image generation (private) |
+
+`codeModel` / `codeApiKey` / `codeSystemPrompt` and `searchModel` / `searchApiKey` are unchanged — those workloads have genuinely different requirements from chat and stay separate.
+
+**Migration:** the new keys are read first; if empty, the bridge falls back to the old keys for one release cycle. A one-time deprecation warning logs the first time each old key satisfies a lookup. To migrate cleanly:
+
+```
+@config channel #yourchan plugins.LLM.assistantApiKey <your-key>
+@config channel #yourchan plugins.LLM.assistantModel gemini/gemini-flash-latest
+```
+
+You can keep the old keys set during the transition; the new keys win over the old. Once you set every new key your channel needs, the deprecation warnings stop. The old registrations themselves are removed in a later release.
+
 ## Context tuning
 
 Conversation context allows the bot to remember recent exchanges within a channel. These settings control how context behaves.

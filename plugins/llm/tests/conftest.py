@@ -276,6 +276,15 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         A callable suitable for ``registryValue.side_effect``.
     """
     defaults: dict[str, Any] = {
+        # T5a capability-based settings (introduced alongside command-era
+        # keys; resolve_setting in production code prefers these but falls
+        # back to old keys when these are empty). Default empty so the shim
+        # exercises the legacy path the way Phase-1 operators do.
+        "assistantApiKey": "",
+        "assistantModel": "",
+        "assistantSystemPrompt": "",
+        "imageApiKey": "",
+        "imageModel": "",
         # Plugin-level init config
         "httpRoot": "",
         "databasePath": "",
