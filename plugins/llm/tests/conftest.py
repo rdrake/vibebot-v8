@@ -361,6 +361,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Limnoria bridge
         "bridgeEnabled": False,
         "bridgeAllowedPlugins": [],
+        "bridgeAllowMutating": False,
+        "bridgeDebugInChannel": False,
     }
     if overrides:
         defaults.update(overrides)

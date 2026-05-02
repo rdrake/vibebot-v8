@@ -427,7 +427,15 @@ class TestBuildBridgeTool:
     def test_returns_none_when_disabled(self, plugin_env):
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (
-            False if k == "bridgeEnabled" else [] if k == "bridgeAllowedPlugins" else None
+            False
+            if k == "bridgeEnabled"
+            else []
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
         )
 
         schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
@@ -438,7 +446,15 @@ class TestBuildBridgeTool:
     def test_returns_none_when_allowlist_empty(self, plugin_env):
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (
-            True if k == "bridgeEnabled" else [] if k == "bridgeAllowedPlugins" else None
+            True
+            if k == "bridgeEnabled"
+            else []
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
         )
 
         schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
@@ -449,7 +465,15 @@ class TestBuildBridgeTool:
     def test_returns_schema_and_handler_when_commands_present(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (
-            True if k == "bridgeEnabled" else ["Misc"] if k == "bridgeAllowedPlugins" else None
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
         )
         fake_cmds = [
             mocker.MagicMock(
@@ -473,7 +497,15 @@ class TestBuildBridgeTool:
     def test_handler_returns_tool_result_with_json(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (
-            True if k == "bridgeEnabled" else ["Misc"] if k == "bridgeAllowedPlugins" else None
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
         )
         mocker.patch(
             "llm.limnoria_bridge.enumerate_commands",
@@ -489,6 +521,160 @@ class TestBuildBridgeTool:
         import json
 
         assert json.loads(result.content) == {"status": "ok", "reply": "pong"}
+
+    def test_passes_allow_mutating_false_by_default(self, plugin_env, mocker):
+        """When bridgeAllowMutating is False (default), enumerate_commands is
+        called with allow_mutating=False."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        enum_mock = mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+
+        plugin._build_bridge_tool(irc, msg, "#test")
+
+        assert enum_mock.call_args.kwargs["allow_mutating"] is False
+
+    def test_passes_allow_mutating_true_when_gate_open(self, plugin_env, mocker):
+        """When bridgeAllowMutating is True, enumerate_commands receives
+        allow_mutating=True and the bridge dispatch handler does too."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Later"]
+            if k == "bridgeAllowedPlugins"
+            else True
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        enum_mock = mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(
+                    plugin="Later",
+                    command="tell",
+                    arg_syntax="<nick> <text>",
+                    description="",
+                )
+            ],
+        )
+        dispatch_mock = mocker.patch(
+            "llm.limnoria_bridge.dispatch",
+            return_value={"status": "ok", "reply": "ok"},
+        )
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+
+        assert enum_mock.call_args.kwargs["allow_mutating"] is True
+
+        handlers["run_limnoria_command"]({"plugin": "Later", "command": "tell", "args": "alice hi"})
+        assert dispatch_mock.call_args.kwargs["allow_mutating"] is True
+
+    def test_dispatch_handler_uses_closed_gate_by_default(self, plugin_env, mocker):
+        """The handler closure captures the gate value at build time and uses it
+        for every dispatch call within that turn."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+        dispatch_mock = mocker.patch(
+            "llm.limnoria_bridge.dispatch",
+            return_value={"status": "ok", "reply": "pong"},
+        )
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        handlers["run_limnoria_command"]({"plugin": "Misc", "command": "ping", "args": ""})
+
+        assert dispatch_mock.call_args.kwargs["allow_mutating"] is False
+
+    def test_behavior_later_notes_visible_tell_hidden_when_gate_closed(self, plugin_env, mocker):
+        """Behavior-level (not plumbing): with Later allowlisted and the gate
+        closed, the rendered tool description must list Later.notes (read) and
+        NOT list Later.tell (mutating). Same setup with gate open must list both.
+        """
+        plugin, irc, msg = plugin_env
+
+        # Stub callback shaped to look like the Later plugin: 'tell' (mutating)
+        # and 'notes' (read-only).
+        later = mocker.MagicMock()
+        later.name.return_value = "Later"
+        later.canonicalName.return_value = "later"
+        later.listCommands.return_value = ["tell", "notes"]
+        later.getCommandMethod.side_effect = lambda cmd: mocker.MagicMock(
+            __doc__={
+                "tell": "<nick> <text>\n\nQueue offline message.",
+                "notes": "takes no arguments\n\nList queued notes.",
+            }[cmd[0]]
+        )
+        irc.callbacks = [later]
+        mocker.patch(
+            "llm.limnoria_bridge.callbacks.checkCommandCapability",
+            return_value=False,
+        )
+
+        # Gate closed: only 'notes' should appear in the description table.
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Later"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        schema_closed, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc_closed = schema_closed["function"]["description"]
+        assert "later.notes" in desc_closed.lower()
+        assert "later.tell" not in desc_closed.lower()
+
+        # Gate open: both should appear.
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Later"]
+            if k == "bridgeAllowedPlugins"
+            else True
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        schema_open, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc_open = schema_open["function"]["description"]
+        assert "later.notes" in desc_open.lower()
+        assert "later.tell" in desc_open.lower()
 
 
 class TestDoPrivmsg:

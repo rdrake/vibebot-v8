@@ -1583,8 +1583,11 @@ class LLM(callbacks.Plugin):
         allowed = frozenset(self.registryValue("bridgeAllowedPlugins", channel) or [])
         if not allowed:
             return None, None
+        allow_mutating = bool(self.registryValue("bridgeAllowMutating", channel))
 
-        commands = list(limnoria_bridge.enumerate_commands(irc, msg, allowed))
+        commands = list(
+            limnoria_bridge.enumerate_commands(irc, msg, allowed, allow_mutating=allow_mutating)
+        )
         if not commands:
             return None, None
 
@@ -1638,6 +1641,7 @@ class LLM(callbacks.Plugin):
                 plugin=plugin_name,
                 command=command_name,
                 arg_string=arg_string,
+                allow_mutating=allow_mutating,
             )
             if trace is not None:
                 status = (
