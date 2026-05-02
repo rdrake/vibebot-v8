@@ -3425,3 +3425,45 @@ class TestChatProfileBridgeWiring:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs.get("extra_tools") is None
         assert kwargs.get("extra_handlers") is None
+
+
+class TestExtractActionFloodSafety:
+    """``_extract_action`` must collapse newlines so the IRC ACTION is single-line.
+
+    Sending raw ``\\n`` inside an ACTION puts literal newlines on the wire; the
+    server parses each as a separate command and disconnects with Excess Flood
+    (regression for vibebot disconnect on a multi-line ``/me`` reply).
+    """
+
+    @pytest.fixture
+    def plugin_with_extract(self, mocker: MockerFixture):
+        from llm.plugin import LLM
+
+        irc = mocker.MagicMock()
+        irc.nick = "vibebot"
+        # Wire a stand-in that exposes the real _collapse_for_irc but doesn't
+        # require a full Limnoria callback boot.
+        stand_in = mocker.MagicMock(spec_set=["_collapse_for_irc"])
+        stand_in._collapse_for_irc = LLM._collapse_for_irc
+        return LLM._extract_action.__get__(stand_in, LLM), irc
+
+    def test_collapses_multiline_me_action(self, plugin_with_extract) -> None:
+        extract, irc = plugin_with_extract
+        result = extract(irc, "/me draws a cookbook\nwith many recipes\nand pictures")
+        assert result == "draws a cookbook | with many recipes | and pictures"
+        assert "\n" not in result
+
+    def test_collapses_multiline_star_action(self, plugin_with_extract) -> None:
+        extract, irc = plugin_with_extract
+        result = extract(irc, "* vibebot draws\nline 2\nline 3")
+        assert result == "draws | line 2 | line 3"
+        assert "\n" not in result
+
+    def test_returns_none_for_blank_collapsed_body(self, plugin_with_extract) -> None:
+        extract, irc = plugin_with_extract
+        # All-whitespace body should not produce an empty-string action.
+        assert extract(irc, "/me \n\n  \n") is None
+
+    def test_returns_none_for_non_action(self, plugin_with_extract) -> None:
+        extract, irc = plugin_with_extract
+        assert extract(irc, "Just a regular reply.") is None

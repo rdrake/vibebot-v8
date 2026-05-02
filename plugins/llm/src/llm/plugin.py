@@ -710,6 +710,10 @@ class LLM(callbacks.Plugin):
         else:
             return
 
+        # Pending-task delivery bypasses _send_long_reply, so collapse multi-line
+        # content. A raw \n on PRIVMSG triggers Excess Flood disconnects.
+        text = self._collapse_for_irc(text) or text
+
         # Try to deliver via IRC
         delivered = False
         try:
@@ -893,7 +897,12 @@ class LLM(callbacks.Plugin):
                 if action_text:
                     irc.queueMsg(ircmsgs.action(channel, action_text))
                 else:
-                    irc.queueMsg(ircmsgs.privmsg(channel, response))
+                    # Spontaneous replies bypass _send_long_reply, so collapse
+                    # multi-line content here — raw \n on PRIVMSG triggers
+                    # Excess Flood disconnects on AfterNET.
+                    irc.queueMsg(
+                        ircmsgs.privmsg(channel, self._collapse_for_irc(response) or response)
+                    )
 
                 self.db.log_usage(
                     irc.nick,
@@ -1106,6 +1115,10 @@ class LLM(callbacks.Plugin):
 
                     def _send(text: str, *, _irc=active_irc) -> None:
                         safe_text = self.llm_service.sanitize_output(text)
+                        # Reminders go straight to PRIVMSG without the
+                        # _send_long_reply pagination, so collapse newlines —
+                        # raw \n in a PRIVMSG body causes Excess Flood.
+                        safe_text = self._collapse_for_irc(safe_text) or safe_text
                         _irc.queueMsg(ircmsgs.privmsg(target, f"{nick}: {safe_text}"))
 
                     # Legacy reminder path: plain echo delivery.
@@ -1567,12 +1580,16 @@ class LLM(callbacks.Plugin):
         """Return action text if *response* looks like an IRC action, else ``None``.
 
         Recognises both ``/me does something`` and ``* BotNick does something``.
+        Embedded newlines are collapsed because IRC ACTION payloads are
+        single-line; sending a multi-line action would put raw ``\\n`` bytes on
+        the wire, which the server parses as separate commands and treats as
+        Excess Flood.
         """
         if response.startswith("/me ") and len(response) > 4:
-            return response[4:]
+            return self._collapse_for_irc(response[4:]) or None
         star_prefix = f"* {irc.nick} "
         if response.startswith(star_prefix) and len(response) > len(star_prefix):
-            return response[len(star_prefix) :]
+            return self._collapse_for_irc(response[len(star_prefix) :]) or None
         return None
 
     @staticmethod
