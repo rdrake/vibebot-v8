@@ -4009,6 +4009,37 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         """
         return self.plugin.db.load_scheduled_llm_tasks_for(account=account, nick=creator_nick)
 
+    def restore_scheduled_llm_tasks(self) -> tuple[int, int]:
+        """Re-register every active scheduled task with the schedule module.
+
+        Past-due rows fire ~immediately (next ``schedule.run`` tick). Mirrors
+        ``_reload_reminders``. Returns ``(restored, skipped)``.
+        """
+        db = self.plugin.db
+        now = time.time()
+        rows = db.load_active_scheduled_llm_tasks()
+        restored = 0
+        skipped = 0
+        for row in rows:
+            callback = self._make_scheduled_llm_task_callback(row.event_name)
+            fire_at = max(row.fire_at, now + 1)  # past-due → fire ~immediately
+            try:
+                schedule.addEvent(callback, fire_at, name=row.event_name)
+                restored += 1
+            except AssertionError:
+                skipped += 1
+                self.log.warning(
+                    "restore_scheduled_llm_tasks: %s already scheduled; skip",
+                    row.event_name,
+                )
+        if rows:
+            self.log.info(
+                "restore_scheduled_llm_tasks: restored=%s skipped=%s",
+                restored,
+                skipped,
+            )
+        return restored, skipped
+
     def cancel_scheduled_llm_task(
         self,
         *,

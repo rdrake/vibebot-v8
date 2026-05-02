@@ -5451,3 +5451,52 @@ def test_cancel_scheduled_llm_task_unknown_returns_error(llm_service):
         event_name="does_not_exist", creator_nick="x", account=None
     )
     assert out.status == "error"
+
+
+# =============================================================================
+# Phase 2 Task 3 / B3 — restore_scheduled_llm_tasks
+# =============================================================================
+
+
+def test_restore_scheduled_llm_tasks_reregisters_events(llm_service, db, mocker: MockerFixture):
+    """B3: restore reads active rows, registers each with schedule.addEvent;
+    overdue rows fire ~immediately."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+    now = _time.time()
+    db.save_scheduled_llm_task(
+        event_name="future_ev",
+        creator_nick="n",
+        account=None,
+        channel="#t",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=now + 600,
+    )
+    db.save_scheduled_llm_task(
+        event_name="overdue_ev",
+        creator_nick="n",
+        account=None,
+        channel="#t",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=now - 60,
+    )
+
+    restored, skipped = llm_service.restore_scheduled_llm_tasks()
+    assert restored == 2
+    assert skipped == 0
+
+    names = set()
+    for call in add_event.call_args_list:
+        name = call.kwargs.get("name") or call.args[2]
+        names.add(name)
+    assert names == {"future_ev", "overdue_ev"}
+
+    # Overdue events fire ~immediately (clamped to now+1).
+    for call in add_event.call_args_list:
+        name = call.kwargs.get("name") or call.args[2]
+        fire_at = call.args[1]
+        if name == "overdue_ev":
+            assert fire_at <= now + 5

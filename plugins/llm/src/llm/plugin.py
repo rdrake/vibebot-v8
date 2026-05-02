@@ -472,6 +472,9 @@ class LLM(callbacks.Plugin):
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
+        # Re-register persisted scheduled LLM tasks (Phase 2 Task 3 / B3).
+        self.llm_service.restore_scheduled_llm_tasks()
+
         # Startup notification tracking
         self._pending_channels: set[str] = set()
         self._startup_notified: bool = False
