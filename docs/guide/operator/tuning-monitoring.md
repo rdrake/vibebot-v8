@@ -68,7 +68,7 @@ Set `httpRoot` to a filesystem path (e.g., `/var/www/llm`) and `httpUrlBase` to 
 |---------|---------|-------------|
 | `httpRoot` | (empty) | Filesystem path for output files. Empty = use Limnoria's built-in server |
 | `httpUrlBase` | (empty) | Base URL for accessing files. Empty = use Limnoria's public URL + `/llm/` |
-| `longReplyLineThreshold` | `6` | Lines after which chat replies are saved as HTML and replaced with a one-line teaser plus link. Set `0` to disable |
+| `longReplyLineThreshold` | `6` | Generated IRC reply lines after which chat replies are saved as HTML and replaced with a one-line teaser plus link. Set `0` to disable |
 | `longReplyTeaserMaxChars` | `220` | Maximum characters in the one-line teaser for linked long replies |
 
 ### File cleanup

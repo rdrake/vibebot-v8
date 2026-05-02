@@ -1617,7 +1617,9 @@ class LLM(callbacks.Plugin):
 
         line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
         logical_lines = [line for line in raw_lines if line.strip()]
-        if line_threshold > 0 and len(logical_lines) > line_threshold:
+        if line_threshold > 0 and (
+            len(logical_lines) > line_threshold or len(chunks) > line_threshold
+        ):
             url = self.llm_service.save_markdown_to_http(text)
             if url:
                 suffix = f" - Full answer: {url}"

@@ -749,6 +749,38 @@ class TestSendLongReply:
         assert final_reply.endswith(suffix)
         mock_irc.queueMultilineBatches.assert_not_called()
 
+    def test_spaced_markdown_reply_uses_link_when_batch_would_exceed_threshold(
+        self, plugin_env, mocker
+    ):
+        """GIVEN blank-spaced Markdown WHEN IRC batch is long THEN link the full answer."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+            )
+        )
+        long_text = "\n\n".join(
+            [
+                "### Abbreviated History of Liberia",
+                "- 1822: Founded by freed US slaves.",
+                "- 1847: Declared independence.",
+                "- 1870s: Expanded inland.",
+                "- 1920s: Forced labor scandal.",
+                "- 2003: Civil war ends.",
+            ]
+        )
+        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Liberia's history in brief."
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
+        mock_irc.reply.assert_called_once_with(
+            "Liberia's history in brief. - Full answer: https://example.com/llm/full.html",
+            prefixNick=False,
+        )
+        mock_irc.queueMultilineBatches.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # draw
