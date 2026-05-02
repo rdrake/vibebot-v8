@@ -3467,3 +3467,98 @@ class TestExtractActionFloodSafety:
     def test_returns_none_for_non_action(self, plugin_with_extract) -> None:
         extract, irc = plugin_with_extract
         assert extract(irc, "Just a regular reply.") is None
+
+
+class TestScheduledLlmTaskFns:
+    """Phase 2 Task 3 / D2 — _scheduled_llm_task_fns helper wiring."""
+
+    def test_helper_returns_three_callables_with_owner_identity_bound(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The helper closes over caller/irc/msg/channel and dispatches to the
+        service layer with the correct identity."""
+        from llm.persistence import ScheduledLlmTaskRow
+        from llm.plugin import LLM, Identity
+        from llm.service import ScheduleLlmTaskResult
+
+        # Bind the unbound method to a mock self that exposes llm_service.
+        stand_in = mocker.MagicMock()
+        stand_in.llm_service = mocker.MagicMock()
+        stand_in.llm_service.schedule_llm_task.return_value = ScheduleLlmTaskResult(
+            status="ok",
+            event_name="llm_task_xyz",
+            fire_at=1700000000.0,
+            message="Scheduled.",
+            note=None,
+        )
+        stand_in.llm_service.list_scheduled_llm_tasks.return_value = [
+            ScheduledLlmTaskRow(
+                id=1,
+                event_name="ev1",
+                creator_nick="rdrake",
+                account="rdrake_a",
+                channel="#t",
+                network="afternet",
+                wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
+                prompt="check the build" * 4,  # >80 chars to verify truncation
+                fire_at=1700000000.0,
+                created_at=1699999000.0,
+                chain_position=1,
+                recurrence_seconds=300,
+                recurrence_rrule=None,
+                watch_mode=False,
+            ),
+        ]
+        stand_in.llm_service.cancel_scheduled_llm_task.return_value = ScheduleLlmTaskResult(
+            status="ok",
+            event_name="ev1",
+            fire_at=0.0,
+            message="Cancelled.",
+            note=None,
+        )
+
+        helper = LLM._scheduled_llm_task_fns.__get__(stand_in, LLM)
+        caller = Identity(raw_nick="rdrake", account="rdrake_a")
+        irc = mocker.MagicMock()
+        msg = mocker.MagicMock()
+        fns = helper(caller=caller, irc=irc, msg=msg, channel="#t")
+
+        assert set(fns.keys()) == {
+            "schedule_llm_task_fn",
+            "list_scheduled_llm_tasks_fn",
+            "cancel_scheduled_llm_task_fn",
+        }
+
+        # schedule_fn forwards keyword args and binds caller identity.
+        out = fns["schedule_llm_task_fn"](when_natural="in 60s", prompt="ping me")
+        assert out["status"] == "ok"
+        assert out["event_name"] == "llm_task_xyz"
+        stand_in.llm_service.schedule_llm_task.assert_called_once_with(
+            irc=irc,
+            msg=msg,
+            creator_nick="rdrake",
+            account="rdrake_a",
+            channel="#t",
+            when_natural="in 60s",
+            prompt="ping me",
+        )
+
+        # list_fn returns id/when/channel/prompt/recurrence per row, prompt
+        # truncated to 80 chars.
+        listed = fns["list_scheduled_llm_tasks_fn"]()
+        assert len(listed) == 1
+        row = listed[0]
+        assert row["id"] == "ev1"
+        assert row["channel"] == "#t"
+        assert len(row["prompt"]) <= 80
+        assert row["recurrence"] == "every 300s"
+
+        # cancel_fn forwards event_name and binds caller identity.
+        cancelled = fns["cancel_scheduled_llm_task_fn"](event_name="ev1")
+        assert cancelled["status"] == "ok"
+        assert cancelled["event_name"] == "ev1"
+        stand_in.llm_service.cancel_scheduled_llm_task.assert_called_once_with(
+            event_name="ev1",
+            creator_nick="rdrake",
+            account="rdrake_a",
+        )

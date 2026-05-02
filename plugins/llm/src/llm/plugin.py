@@ -3283,6 +3283,71 @@ class LLM(callbacks.Plugin):
             "cancel_all_reminders_fn": clear_fn,
         }
 
+    def _scheduled_llm_task_fns(
+        self,
+        *,
+        caller: Identity,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        channel: str,
+    ) -> dict[str, Callable[..., object]]:
+        """Build the three-callable dict for the scheduled-task tools."""
+
+        def schedule_fn(*, when_natural: str, prompt: str) -> dict[str, object]:
+            result = self.llm_service.schedule_llm_task(
+                irc=irc,
+                msg=msg,
+                creator_nick=caller.raw_nick,
+                account=caller.account,
+                channel=channel,
+                when_natural=when_natural,
+                prompt=prompt,
+            )
+            return {
+                "status": result.status,
+                "event_name": result.event_name,
+                "fire_at": result.fire_at,
+                "message": result.message,
+                "note": result.note,
+            }
+
+        def list_fn() -> list[dict[str, object]]:
+            rows = self.llm_service.list_scheduled_llm_tasks(
+                creator_nick=caller.raw_nick, account=caller.account
+            )
+            return [
+                {
+                    "id": row.event_name,
+                    "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row.fire_at)),
+                    "channel": row.channel,
+                    "prompt": row.prompt[:80],
+                    "recurrence": (
+                        f"every {row.recurrence_seconds}s"
+                        if row.recurrence_seconds is not None
+                        else row.recurrence_rrule
+                    ),
+                }
+                for row in rows
+            ]
+
+        def cancel_fn(*, event_name: str) -> dict[str, object]:
+            result = self.llm_service.cancel_scheduled_llm_task(
+                event_name=event_name,
+                creator_nick=caller.raw_nick,
+                account=caller.account,
+            )
+            return {
+                "status": result.status,
+                "event_name": result.event_name,
+                "message": result.message,
+            }
+
+        return {
+            "schedule_llm_task_fn": schedule_fn,
+            "list_scheduled_llm_tasks_fn": list_fn,
+            "cancel_scheduled_llm_task_fn": cancel_fn,
+        }
+
     def _get_user_reminders(self, caller: Identity) -> list[tuple[str, ReminderRow]]:
         """Get reminders belonging to a specific user.
 
