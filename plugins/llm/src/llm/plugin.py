@@ -31,6 +31,7 @@ from supybot import world
 from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
+from . import limnoria_bridge
 from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase, ReminderRow
 from .service import (
@@ -1561,6 +1562,76 @@ class LLM(callbacks.Plugin):
     def _collapse_for_irc(text: str) -> str:
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
+
+    def _build_bridge_tool(self, irc, msg, channel: str):
+        """Build the per-request Limnoria bridge tool schema + handler.
+
+        Returns ``(None, None)`` when the bridge is disabled, the allowlist is
+        empty, or no allowed command is currently exposable. Otherwise returns
+        ``(schema_dict, {"run_limnoria_command": handler})`` for injection
+        into ``assistant_completion`` via ``extra_tools`` / ``extra_handlers``.
+        """
+        if not self.registryValue("bridgeEnabled", channel):
+            return None, None
+        allowed = frozenset(self.registryValue("bridgeAllowedPlugins", channel) or [])
+        if not allowed:
+            return None, None
+
+        commands = list(limnoria_bridge.enumerate_commands(irc, msg, allowed))
+        if not commands:
+            return None, None
+
+        table = "\n".join(
+            f"- {c.plugin}.{c.command}"
+            + (f" — {c.arg_syntax}" if c.arg_syntax else "")
+            + (f" — {c.description}" if c.description else "")
+            for c in commands
+        )
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "run_limnoria_command",
+                "description": (
+                    "Run a Limnoria plugin command on the user's behalf. "
+                    "Available commands:\n" + table
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "plugin": {
+                            "type": "string",
+                            "description": "Plugin name (e.g. Misc).",
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "Leaf command name (e.g. ping).",
+                        },
+                        "args": {
+                            "type": "string",
+                            "description": (
+                                "Argument string passed to the plugin command. "
+                                "Empty string for commands taking no arguments."
+                            ),
+                        },
+                    },
+                    "required": ["plugin", "command", "args"],
+                },
+            },
+        }
+
+        from .assistant import ToolResult
+
+        def handler(arguments):
+            envelope = limnoria_bridge.dispatch(
+                irc,
+                msg,
+                plugin=str(arguments.get("plugin", "")),
+                command=str(arguments.get("command", "")),
+                arg_string=str(arguments.get("args", "")),
+            )
+            return ToolResult(content=json.dumps(envelope))
+
+        return schema, {"run_limnoria_command": handler}
 
     @staticmethod
     def _trim_long_reply_teaser(teaser: str, max_chars: int) -> str:

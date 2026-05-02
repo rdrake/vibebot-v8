@@ -420,6 +420,76 @@ class TestPluginHelperMethods:
         assert "ask" in result
 
 
+class TestBuildBridgeTool:
+    """Tests for LLM._build_bridge_tool — per-request bridge tool builder."""
+
+    def test_returns_none_when_disabled(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            False if k == "bridgeEnabled" else [] if k == "bridgeAllowedPlugins" else None
+        )
+
+        schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+
+        assert schema is None
+        assert handlers is None
+
+    def test_returns_none_when_allowlist_empty(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True if k == "bridgeEnabled" else [] if k == "bridgeAllowedPlugins" else None
+        )
+
+        schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+
+        assert schema is None
+        assert handlers is None
+
+    def test_returns_schema_and_handler_when_commands_present(self, plugin_env, mocker):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True if k == "bridgeEnabled" else ["Misc"] if k == "bridgeAllowedPlugins" else None
+        )
+        fake_cmds = [
+            mocker.MagicMock(
+                plugin="Misc",
+                command="ping",
+                arg_syntax="takes no arguments",
+                description="Replies with pong.",
+            )
+        ]
+        mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=fake_cmds)
+
+        schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+
+        assert schema is not None
+        assert handlers is not None
+        assert schema["function"]["name"] == "run_limnoria_command"
+        assert "run_limnoria_command" in handlers
+        # Description should mention the available command.
+        assert "Misc.ping" in schema["function"]["description"]
+
+    def test_handler_returns_tool_result_with_json(self, plugin_env, mocker):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True if k == "bridgeEnabled" else ["Misc"] if k == "bridgeAllowedPlugins" else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description=""),
+            ],
+        )
+        mocker.patch("llm.limnoria_bridge.dispatch", return_value={"status": "ok", "reply": "pong"})
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        result = handlers["run_limnoria_command"]({"plugin": "Misc", "command": "ping", "args": ""})
+
+        import json
+
+        assert json.loads(result.content) == {"status": "ok", "reply": "pong"}
+
+
 class TestDoPrivmsg:
     """Test plugin doPrivmsg for channel message tracking."""
 
