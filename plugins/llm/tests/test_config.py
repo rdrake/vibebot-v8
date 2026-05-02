@@ -223,6 +223,161 @@ class TestConfigValues:
         assert conf.supybot.plugins.LLM.bridgeAllowMutating() is False
 
 
+class TestResolveSetting:
+    """T5a: compat shim that prefers the new capability-based key,
+    falling back to old command-era keys with a one-time deprecation
+    warning per fallback used."""
+
+    def setup_method(self) -> None:
+        from llm import config as cfg
+
+        cfg._resolve_setting_warned.clear()
+
+    def _plugin(self, mocker: MockerFixture, values: dict[str, object]):
+        plugin = mocker.MagicMock()
+        plugin.registryValue.side_effect = lambda k, ch=None: values.get(k, "")
+        return plugin
+
+    def test_returns_new_key_when_set(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {"assistantApiKey": "sk-new", "askApiKey": "sk-old"})
+
+        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+        assert out == "sk-new"
+
+    def test_falls_back_when_new_key_empty(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {"assistantApiKey": "", "askApiKey": "sk-old"})
+
+        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+        assert out == "sk-old"
+
+    def test_walks_multiple_fallbacks_in_order(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(
+            mocker,
+            {
+                "assistantApiKey": "",
+                "metaApiKey": "",
+                "askApiKey": "sk-ask",
+            },
+        )
+
+        out = cfg.resolve_setting(
+            plugin,
+            "assistantApiKey",
+            "#test",
+            fallbacks=("metaApiKey", "askApiKey"),
+        )
+        assert out == "sk-ask"
+
+    def test_first_non_empty_fallback_wins(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(
+            mocker,
+            {
+                "assistantApiKey": "",
+                "metaApiKey": "sk-meta",
+                "askApiKey": "sk-ask",
+            },
+        )
+
+        out = cfg.resolve_setting(
+            plugin,
+            "assistantApiKey",
+            "#test",
+            fallbacks=("metaApiKey", "askApiKey"),
+        )
+        assert out == "sk-meta"
+
+    def test_returns_empty_when_everything_empty(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {})
+
+        out = cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+        assert out == ""
+
+    def test_warns_once_per_process_per_fallback(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {"assistantApiKey": "", "askApiKey": "sk-old"})
+
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+            cfg.resolve_setting(plugin, "assistantApiKey", "#other", fallbacks=("askApiKey",))
+
+        warnings = [rec for rec in caplog.records if "askApiKey" in rec.getMessage()]
+        assert len(warnings) == 1
+        assert "assistantApiKey" in warnings[0].getMessage()
+
+    def test_warns_per_distinct_fallback(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from llm import config as cfg
+
+        # First call uses askApiKey fallback; second uses askModel fallback.
+        plugin = self._plugin(
+            mocker,
+            {
+                "assistantApiKey": "",
+                "askApiKey": "sk-old",
+                "assistantModel": "",
+                "askModel": "gpt-4",
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+            cfg.resolve_setting(plugin, "assistantModel", "#test", fallbacks=("askModel",))
+
+        msgs = [rec.getMessage() for rec in caplog.records]
+        assert any("askApiKey" in m for m in msgs)
+        assert any("askModel" in m for m in msgs)
+
+    def test_no_warning_when_new_key_used(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {"assistantApiKey": "sk-new", "askApiKey": "sk-old"})
+
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            cfg.resolve_setting(plugin, "assistantApiKey", "#test", fallbacks=("askApiKey",))
+
+        warnings = [rec for rec in caplog.records if "askApiKey" in rec.getMessage()]
+        assert warnings == []
+
+    def test_passes_channel_to_registry_lookup(self, mocker: MockerFixture) -> None:
+        """The shim must scope reads to the per-channel value, not global."""
+        from llm import config as cfg
+
+        plugin = mocker.MagicMock()
+
+        def _lookup(key, ch=None):
+            return {("assistantApiKey", "#a"): "channel-a-key"}.get((key, ch), "")
+
+        plugin.registryValue.side_effect = _lookup
+
+        out = cfg.resolve_setting(plugin, "assistantApiKey", "#a", fallbacks=("askApiKey",))
+        assert out == "channel-a-key"
+
+    def test_no_fallbacks_returns_new_key_value(self, mocker: MockerFixture) -> None:
+        from llm import config as cfg
+
+        plugin = self._plugin(mocker, {"imageModel": "dall-e-3"})
+
+        out = cfg.resolve_setting(plugin, "imageModel", "#test")
+        assert out == "dall-e-3"
+
+
 class TestValidatedModelNameThreadSafety:
     """Test thread safety of ValidatedModelName._warned set."""
 

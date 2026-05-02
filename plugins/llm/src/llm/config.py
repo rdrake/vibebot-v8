@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import logging
 import threading
+from typing import Any
 
 import litellm
 import supybot.conf as conf
@@ -14,6 +15,56 @@ from supybot.i18n import PluginInternationalization
 _ = PluginInternationalization("LLM")
 
 _log = logging.getLogger("supybot.plugins.LLM.config")
+
+# T5a compat shim: tracks which old setting keys have produced a deprecation
+# warning so we don't spam the log on every lookup. Keyed by the old key name
+# alone (process-global, not per-channel) — once an operator sees the warning
+# for ``askApiKey``, they don't need to see it again for every channel.
+_resolve_setting_warned: set[str] = set()
+_resolve_setting_lock: threading.Lock = threading.Lock()
+
+
+def resolve_setting(
+    plugin: Any,
+    new_key: str,
+    channel: str | None,
+    *,
+    fallbacks: tuple[str, ...] = (),
+) -> Any:
+    """Read ``new_key`` per channel; fall back to old keys if it is empty.
+
+    Returns the first non-empty value among ``[new_key, *fallbacks]``. When a
+    fallback is used (i.e. the operator still relies on a command-era setting),
+    log a one-shot deprecation warning naming the old key and the new
+    replacement so they know what to rename. Empty result (every key empty)
+    returns the empty value of the last-checked key — never raises.
+
+    Why this helper instead of calling ``registryValue`` inline: the LLM
+    plugin's registry surface is being migrated from command-era names
+    (``askModel``, ``drawApiKey``, ...) to capability-based names
+    (``assistantModel``, ``imageApiKey``, ...). Phase 2 Task 5a introduces
+    the new keys with this shim; Task 5b removes the old registrations a
+    release later.
+    """
+    primary = plugin.registryValue(new_key, channel)
+    if primary:
+        return primary
+    for old_key in fallbacks:
+        value = plugin.registryValue(old_key, channel)
+        if value:
+            with _resolve_setting_lock:
+                already = old_key in _resolve_setting_warned
+                if not already:
+                    _resolve_setting_warned.add(old_key)
+            if not already:
+                _log.warning(
+                    "LLM config: %r is deprecated; rename to %r "
+                    "(this warning fires once per process per old key).",
+                    old_key,
+                    new_key,
+                )
+            return value
+    return primary  # empty value of the right type
 
 
 class ValidatedModelName(registry.String):
