@@ -207,6 +207,21 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
+    def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
+        """B1: bridgeAllowMutating defaults to False (gate closed).
+
+        Note on the assertion shape: ``bridgeAllowMutating`` is a
+        ``registerChannelValue`` (per-channel), but calling it as
+        ``conf.supybot.plugins.LLM.bridgeAllowMutating()`` with no channel
+        argument returns the channel-independent default. That is exactly
+        what we want to verify here — that the registered default is
+        ``False``, not the value for any particular channel.
+        """
+        import llm.config  # noqa: F401 — import side effect registers the value
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.bridgeAllowMutating() is False
+
 
 class TestValidatedModelNameThreadSafety:
     """Test thread safety of ValidatedModelName._warned set."""

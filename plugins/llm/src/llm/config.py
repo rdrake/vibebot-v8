@@ -877,6 +877,22 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "bridgeAllowMutating",
+    registry.Boolean(
+        False,
+        _("""When True, the Limnoria bridge exposes commands that modify
+        persistent state (sending notes, registering feeds, mutating karma,
+        etc.). When False (the default), only read-only commands are exposed
+        — write commands are hidden from the LLM's tool description and any
+        attempt to dispatch one returns an error envelope.
+
+        Per-command classification lives in MUTATING_COMMANDS in
+        plugins/llm/src/llm/limnoria_bridge.py."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "bridgeDebugInChannel",
     registry.Boolean(
         False,
