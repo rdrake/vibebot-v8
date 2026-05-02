@@ -868,10 +868,13 @@ conf.registerChannelValue(
     registry.SpaceSeparatedListOfStrings(
         [],
         _("""Space-separated list of Limnoria plugin names whose commands
-        the LLM may call when bridgeEnabled is True. Empty (the default)
-        means no commands are exposed — the bridge tool is not registered
-        with the LLM at all. Recommended starter set: Misc Time Math
-        Utilities Seen."""),
+        the LLM may call when bridgeEnabled is True. When empty (the
+        default) the bridge falls back to a curated read-safe set: Misc
+        Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG
+        — write commands inside those plugins stay hidden until
+        bridgeAllowMutating is True. Set this to a non-empty list to
+        override the curated set with your own selection. Set
+        bridgeEnabled False to disable the bridge entirely."""),
     ),
 )
 

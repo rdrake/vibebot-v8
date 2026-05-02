@@ -1582,7 +1582,11 @@ class LLM(callbacks.Plugin):
             return None, None
         allowed = frozenset(self.registryValue("bridgeAllowedPlugins", channel) or [])
         if not allowed:
-            return None, None
+            # Empty registry value → fall back to the curated default set.
+            # Limnoria persists every registered value to disk so a code
+            # default change wouldn't reach existing operators on upgrade
+            # (see DEFAULT_ALLOWED_PLUGINS docstring in limnoria_bridge.py).
+            allowed = limnoria_bridge.DEFAULT_ALLOWED_PLUGINS
         allow_mutating = bool(self.registryValue("bridgeAllowMutating", channel))
 
         commands = list(

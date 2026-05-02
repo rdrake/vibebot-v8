@@ -137,6 +137,50 @@ def test_mutating_commands_lowercase_invariant():
         assert leaf == leaf.lower(), leaf
 
 
+def test_default_allowed_plugins_is_curated_set():
+    """Phase 2 Task 2: when bridgeAllowedPlugins is empty, the bridge falls
+    back to this curated CamelCase set. Each plugin is either pure-read or
+    has its writes gated by Task 1's MUTATING_COMMANDS."""
+    from llm import limnoria_bridge as lb
+
+    assert isinstance(lb.DEFAULT_ALLOWED_PLUGINS, frozenset)
+    assert (
+        frozenset(
+            {
+                "Misc",
+                "Time",
+                "Math",
+                "Utilities",
+                "Seen",
+                "Web",
+                "Later",
+                "Note",
+                "Karma",
+                "QuoteGrabs",
+                "RSS",
+                "DDG",
+            }
+        )
+        == lb.DEFAULT_ALLOWED_PLUGINS
+    )
+
+
+def test_default_allowed_plugins_camelcase_invariant():
+    """Bridge enumerate uses cb.name() (CamelCase) for the allowlist match."""
+    from llm import limnoria_bridge as lb
+
+    for name in lb.DEFAULT_ALLOWED_PLUGINS:
+        assert name and name[0].isupper(), name
+
+
+def test_default_allowed_plugins_excludes_deny_plugins():
+    """The curated set must not overlap with DENY_PLUGINS, which would be
+    a contradiction (we'd suggest something we forbid)."""
+    from llm import limnoria_bridge as lb
+
+    assert lb.DEFAULT_ALLOWED_PLUGINS.isdisjoint(lb.DENY_PLUGINS)
+
+
 def test_buffering_proxy_captures_reply_text(mocker):
     from llm.limnoria_bridge import BufferingIrcProxy
 

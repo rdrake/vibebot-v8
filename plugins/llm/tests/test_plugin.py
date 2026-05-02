@@ -443,7 +443,10 @@ class TestBuildBridgeTool:
         assert schema is None
         assert handlers is None
 
-    def test_returns_none_when_allowlist_empty(self, plugin_env):
+    def test_returns_none_when_no_commands_resolve(self, plugin_env):
+        """Empty allowlist falls back to DEFAULT_ALLOWED_PLUGINS, but no
+        callbacks are loaded in this test fixture, so enumerate yields
+        nothing and the bridge tool is not registered."""
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (
             True
@@ -456,11 +459,68 @@ class TestBuildBridgeTool:
             if k == "bridgeDebugInChannel"
             else None
         )
+        irc.callbacks = []
 
         schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
 
         assert schema is None
         assert handlers is None
+
+    def test_empty_allowlist_falls_back_to_curated_default(self, plugin_env, mocker):
+        """T2-A: empty bridgeAllowedPlugins + bridgeEnabled True →
+        enumerate_commands receives the curated DEFAULT_ALLOWED_PLUGINS set."""
+        from llm import limnoria_bridge as lb
+
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else []
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        enum_mock = mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+
+        plugin._build_bridge_tool(irc, msg, "#test")
+
+        called_allowed = enum_mock.call_args.args[2]
+        assert called_allowed == lb.DEFAULT_ALLOWED_PLUGINS
+
+    def test_explicit_non_empty_allowlist_overrides_curated_default(self, plugin_env, mocker):
+        """T2-A: an operator-set allowlist must NOT get expanded with the
+        curated set — explicit config wins."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        enum_mock = mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+
+        plugin._build_bridge_tool(irc, msg, "#test")
+
+        called_allowed = enum_mock.call_args.args[2]
+        assert called_allowed == frozenset({"Misc"})
 
     def test_returns_schema_and_handler_when_commands_present(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env

@@ -35,6 +35,36 @@ DENY_PLUGINS: frozenset[str] = frozenset(
     }
 )
 
+# Phase 2 Task 2: curated default allowlist used when ``bridgeAllowedPlugins``
+# is empty. CamelCase to match ``cb.name()`` (the user-facing form). Each
+# plugin is either pure-read or has its writes gated by ``MUTATING_COMMANDS``
+# behind ``bridgeAllowMutating`` (Phase 2 Task 1). Operators can override
+# with any non-empty list to opt out of the curated set; ``bridgeEnabled
+# False`` disables the bridge entirely.
+#
+# Why a fallback constant instead of a registry default: Limnoria persists
+# every registered value to disk (``_wasSet`` is True from init), so a code
+# default change does not propagate to existing operators on upgrade — the
+# on-disk value (the old empty default) would override the new code default.
+# Treating empty-from-registry as "use the curated set" inside the bridge
+# itself sidesteps that and keeps fresh installs and upgrades aligned.
+DEFAULT_ALLOWED_PLUGINS: frozenset[str] = frozenset(
+    {
+        "Misc",
+        "Time",
+        "Math",
+        "Utilities",
+        "Seen",
+        "Web",
+        "Later",
+        "Note",
+        "Karma",
+        "QuoteGrabs",
+        "RSS",
+        "DDG",
+    }
+)
+
 # (canonical_plugin_name, leaf_command) tuples. Both lowercase — matched
 # against ``cb.canonicalName()`` (already lowercase) and the leaf name from
 # ``cb.listCommands()``.
