@@ -11,8 +11,9 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.service import AssistantResult
 
-from .conftest import make_reminder_row
+from .conftest import make_registry_side_effect, make_reminder_row
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -3028,3 +3029,67 @@ class TestPluginDoJoinPendingChannels:
             "When WHO is skipped, do315 won't fire — the bot must not add to "
             "_pending_channels or startup notification will never send."
         )
+
+
+class TestChatProfileBridgeWiring:
+    """Tests that _ask_impl passes extra_tools/extra_handlers to assistant_request."""
+
+    def _make_assistant_result(self) -> AssistantResult:
+        return AssistantResult(
+            content="bridge wiring reply",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+    def test_passes_bridge_extras_when_enabled(self, plugin_env, mocker: MockerFixture):
+        """GIVEN bridgeEnabled=True with allowed plugins WHEN ask is called
+        THEN assistant_request receives extra_tools (list) and extra_handlers (dict)."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        # Override registry: enable bridge with one allowed plugin.
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Misc"]}
+        )
+
+        fake_cmd = mocker.MagicMock(
+            plugin="Misc",
+            command="ping",
+            arg_syntax="takes no arguments",
+            description="Replies with pong.",
+        )
+        mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=[fake_cmd])
+
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        extra_tools = kwargs.get("extra_tools")
+        extra_handlers = kwargs.get("extra_handlers")
+        assert extra_tools is not None and len(extra_tools) == 1
+        assert extra_tools[0]["function"]["name"] == "run_limnoria_command"
+        assert extra_handlers is not None
+        assert "run_limnoria_command" in extra_handlers
+
+    def test_omits_bridge_extras_when_disabled(self, plugin_env, mocker: MockerFixture):
+        """GIVEN bridgeEnabled=False (default) WHEN ask is called
+        THEN assistant_request receives extra_tools=None and extra_handlers=None."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        # Default conftest registry has bridgeEnabled=False — no override needed.
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs.get("extra_tools") is None
+        assert kwargs.get("extra_handlers") is None

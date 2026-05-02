@@ -2432,6 +2432,9 @@ class LLM(callbacks.Plugin):
                     for img in images:
                         request_text = request_text.replace(img, "").strip()
 
+                bridge_schema, bridge_handlers = self._build_bridge_tool(irc, msg, channel)
+                extra_tools = [bridge_schema] if bridge_schema else None
+
                 result = self.llm_service.assistant_request(
                     request_text,
                     request_context=request_context,
@@ -2450,6 +2453,8 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                    extra_tools=extra_tools,
+                    extra_handlers=bridge_handlers,
                     **self._reminder_fns(caller=caller, irc=irc, msg=msg),
                 )
 

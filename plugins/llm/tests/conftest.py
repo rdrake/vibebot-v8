@@ -228,6 +228,8 @@ def plugin_env(mocker: MockerFixture):
         set_reminder_fn=None,
         delete_reminder_fn=None,
         cancel_all_reminders_fn=None,
+        extra_tools=None,
+        extra_handlers=None,
     ):
         from llm.service import AssistantResult as _AssistantResult
 
