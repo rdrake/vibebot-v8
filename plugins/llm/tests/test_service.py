@@ -419,10 +419,10 @@ class TestResolveGroundingKwargs:
         assert kwargs == {"tools": [{expected_tool: {}}]}
 
     @pytest.mark.parametrize("kind", ["search", "url"])
-    def test_xai_provider_uses_live_search_extra_body(self, kind: str) -> None:
+    def test_xai_provider_uses_agent_tools_web_search(self, kind: str) -> None:
         kwargs = self.service._resolve_grounding_kwargs("xai/grok-3", kind)
-        assert kwargs["tools"] == []
-        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+        assert kwargs == {"tools": [{"type": "web_search"}]}
+        assert "extra_body" not in kwargs
 
     @pytest.mark.parametrize(
         "model",
@@ -470,7 +470,7 @@ class TestSearchCompletionProviderRouting:
         kwargs = self._captured_kwargs()
         assert kwargs["tools"] == [{"googleSearch": {}}]
 
-    def test_xai_search_uses_extra_body_and_drops_tools(self) -> None:
+    def test_xai_search_sends_agent_tools_web_search(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
             "xai/grok-3"
             if k == "searchModel"
@@ -482,8 +482,8 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.search_completion("hi", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == []
-        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+        assert kwargs["tools"] == [{"type": "web_search"}]
+        assert "extra_body" not in kwargs
 
     def test_gemini_url_uses_url_context(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
@@ -499,7 +499,7 @@ class TestSearchCompletionProviderRouting:
         kwargs = self._captured_kwargs()
         assert kwargs["tools"] == [{"urlContext": {}}]
 
-    def test_xai_url_falls_back_to_live_search(self) -> None:
+    def test_xai_url_falls_back_to_web_search_agent_tool(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
             "xai/grok-3"
             if k == "searchModel"
@@ -511,8 +511,8 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.url_completion("https://example.com", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == []
-        assert kwargs["extra_body"] == {"search_parameters": {"mode": "auto"}}
+        assert kwargs["tools"] == [{"type": "web_search"}]
+        assert "extra_body" not in kwargs
 
 
 class TestGroundingDetection:

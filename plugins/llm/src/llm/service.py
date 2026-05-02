@@ -1109,10 +1109,11 @@ class LLMService:
 
         - Gemini / Vertex AI: native grounding tools
           (``googleSearch`` / ``urlContext``).
-        - xAI (Grok): Live Search via the ``search_parameters`` request body
-          field — surfaced through LiteLLM's ``extra_body`` passthrough. Grok
-          decides at runtime whether to search; URL kind reuses Live Search
-          (no native urlContext equivalent on xAI).
+        - xAI (Grok): Agent Tools API — ``{"type": "web_search"}`` server-side
+          tool surfaced via the standard ``tools`` field. Replaces the
+          ``search_parameters``/Live Search API deprecated 2026-05-02 (returns
+          410 Gone). URL kind reuses the same web_search tool — there is no
+          native urlContext equivalent on xAI.
         - Anything else: returns ``{}`` — the request runs without grounding
           tools and the model answers from training.
 
@@ -1132,12 +1133,11 @@ class LLMService:
             return {"tools": [{tool_name: {}}]}
 
         if provider == "xai":
-            # xAI Live Search — Grok decides whether to actually search.
-            # Drop tools so we don't send a conflicting Gemini-shaped payload.
-            return {
-                "tools": [],
-                "extra_body": {"search_parameters": {"mode": "auto"}},
-            }
+            # xAI Agent Tools — Grok decides at runtime whether to invoke
+            # web_search. The legacy `search_parameters`/Live Search field
+            # was deprecated upstream (returns 410 Gone) and is replaced by
+            # the standard `tools` array carrying `{"type": "web_search"}`.
+            return {"tools": [{"type": "web_search"}]}
 
         # Unknown / unsupported provider: no grounding, plain completion.
         return {"tools": []}
