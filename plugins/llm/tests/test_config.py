@@ -243,6 +243,13 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.bridgeAllowMutating() is False
 
+    def test_bridge_scheduled_task_limit_default_is_five(self) -> None:
+        """D1: bridgeScheduledTaskLimit defaults to 5 (per-creator-per-channel)."""
+        import llm.config  # noqa: F401 — import side effect registers the value
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.bridgeScheduledTaskLimit() == 5
+
 
 class TestResolveSetting:
     """T5a: compat shim that prefers the new capability-based key,
