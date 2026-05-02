@@ -52,6 +52,70 @@ Spontaneous participation requires `contextTrackAllMessages` to be enabled in th
 
 The default system prompt instructs the model to act as a channel regular who can respond naturally or reply with `PASS` to stay silent.
 
+## Limnoria tool bridge
+
+The bridge exposes loaded Limnoria plugin commands to the LLM as a single dispatch tool. When the model needs to answer a factual question that a stock plugin already handles — a ping, the current time, a seen lookup — it can defer to that plugin rather than guessing or duplicating the feature inside the LLM plugin. Phase 1 is opt-in per channel; no plugin is bridged globally.
+
+### Enabling the bridge
+
+Two per-channel settings control it:
+
+```
+@config channel #yourchan plugins.LLM.bridgeEnabled True
+@config channel #yourchan plugins.LLM.bridgeAllowedPlugins Misc Time
+```
+
+`bridgeEnabled` activates the bridge for that channel. `bridgeAllowedPlugins` is a space-separated list of plugin names to expose. The bridge tool is not registered with the LLM at all until at least one plugin is listed — an empty allowlist is the same as a disabled bridge.
+
+### Plugin loading prerequisite
+
+The bridge can only expose plugins that are already loaded in Limnoria. Load them through the normal flow first:
+
+```
+@load Misc
+@load Time
+```
+
+If a plugin named in `bridgeAllowedPlugins` is not loaded, its commands are silently absent from the tool.
+
+### Recommended starter set
+
+`Misc Time Math Utilities Seen` — all read-only and low-risk. These cover the most common factual queries without opening any write or network-fetch surface.
+
+### Security model
+
+Three independent layers limit what the bridge can reach:
+
+**Hard-coded denied plugins** — never bridged, regardless of operator config:
+
+| Plugin | Reason |
+|--------|--------|
+| `LLM` | Recursion |
+| `Owner` | Bot management |
+| `Admin` | Bot management |
+| `Config` | Bot management |
+| `Channel` | Channel management |
+| `User` | Account management |
+
+**Hard-coded denied commands** — blocked even when their host plugin is allowlisted:
+
+| Command | Reason |
+|---------|--------|
+| `Web.fetch` | SSRF vector |
+| `Utilities.apply` | Re-dispatch bypass |
+| `Misc.more` | Interactive scrollback only |
+| `Misc.clearmores` | Interactive scrollback only |
+
+**Limnoria's capability system** — applied per command at dispatch time. Commands guarded by default-deny anti-capabilities (`-owner`, `-admin`, `-trusted`, `-aka.*`, `-alias.*`, `-scheduler.add`, `-scheduler.remove`, `-scheduler.repeat`) will be refused unless the bot user has been explicitly granted the capability.
+
+### Plugin name format
+
+Names in `bridgeAllowedPlugins` must match Limnoria's CamelCase form exactly — `Misc`, `Time`, `Math`. Lowercase or mismatched names are ignored silently.
+
+### Source
+
+`plugins/llm/src/llm/limnoria_bridge.py`
+
 ## HTTP output
 
 The `@code` and `@draw` commands save output as files served over HTTP. Two modes exist:
