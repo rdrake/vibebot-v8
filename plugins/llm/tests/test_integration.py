@@ -654,14 +654,14 @@ class TestMemoriesCommand:
     def test_memories_delete_invalid_id(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN invalid id WHEN memories delete abc THEN usage hint shown."""
+        """GIVEN invalid id WHEN memories delete abc THEN usage error shown."""
         plugin, mock_irc = plugin_with_real_db
         mock_msg = self._make_msg(mocker)
 
         plugin.memories(mock_irc, mock_msg, ["delete abc"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Usage" in mock_irc.reply.call_args[0][0]
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
 
     def test_memories_delete_nonexistent_id(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -719,14 +719,14 @@ class TestMemoriesCommand:
     def test_memories_edit_invalid_id(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
-        """GIVEN invalid id WHEN memories edit abc text THEN usage hint shown."""
+        """GIVEN invalid id WHEN memories edit abc text THEN usage error shown."""
         plugin, mock_irc = plugin_with_real_db
         mock_msg = self._make_msg(mocker)
 
         plugin.memories(mock_irc, mock_msg, ["edit abc new text"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Usage" in mock_irc.reply.call_args[0][0]
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
 
     def test_memories_edit_nonexistent_id(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -749,8 +749,8 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["edit 1"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Usage" in mock_irc.reply.call_args[0][0]
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
 
     def test_memories_del_shorthand(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -795,8 +795,25 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["otheruser"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Usage" in mock_irc.reply.call_args[0][0]
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+
+    def test_memories_unrecognized_subcommand_uses_irc_error(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN garbage subcommand WHEN memories ... THEN failure goes through irc.error.
+
+        Pins the failure-reply prefix: Limnoria's irc.error renders as "Error:"
+        so users can distinguish failures from informational replies.
+        """
+        plugin, mock_irc = plugin_with_real_db
+        mock_msg = self._make_msg(mocker)
+
+        plugin.memories(mock_irc, mock_msg, ["frobnicate this and that"])
+
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
+        mock_irc.reply.assert_not_called()
 
     def test_memories_cleanup_own(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
         """GIVEN user with memories WHEN memories cleanup THEN summary shown."""
@@ -879,8 +896,8 @@ class TestMemoriesCommand:
 
         plugin.memories(mock_irc, mock_msg, ["foo bar"])
 
-        mock_irc.reply.assert_called_once()
-        assert "Usage" in mock_irc.reply.call_args[0][0]
+        mock_irc.error.assert_called_once()
+        assert "Usage" in mock_irc.error.call_args[0][0]
 
 
 class TestMemoryCleanup:

@@ -2839,7 +2839,7 @@ class LLM(callbacks.Plugin):
             try:
                 memory_ids = [int(x) for x in raw_ids]
             except ValueError:
-                irc.reply("Usage: memories delete <id> [<id> ...]", prefixNick=False)
+                irc.error("Usage: memories delete <id> [<id> ...]")
                 return
             deleted = sum(1 for mid in memory_ids if self.db.delete_memory(caller.key, mid))
             if deleted == 0:
@@ -2853,11 +2853,11 @@ class LLM(callbacks.Plugin):
             try:
                 memory_id = int(parts[1])
             except ValueError:
-                irc.reply("Usage: memories edit <id> <new text>", prefixNick=False)
+                irc.error("Usage: memories edit <id> <new text>")
                 return
             new_text = parts[2].strip()
             if not new_text:
-                irc.reply("Usage: memories edit <id> <new text>", prefixNick=False)
+                irc.error("Usage: memories edit <id> <new text>")
                 return
             if self.db.update_memory(caller.key, memory_id, new_text):
                 irc.reply("Memory updated.", prefixNick=False)
@@ -2880,19 +2880,13 @@ class LLM(callbacks.Plugin):
         elif len(parts) == 1:
             # Owner viewing another user's memories
             if not ircdb.checkCapability(msg.prefix, "owner"):
-                irc.reply(
-                    "Usage: memories [del <id> | edit <id> <text> | clear | cleanup]",
-                    prefixNick=False,
-                )
+                irc.error("Usage: memories [del <id> | edit <id> <text> | clear | cleanup]")
                 return
             target = parts[0]
             self._memories_list(irc, target, target)
 
         else:
-            irc.reply(
-                "Usage: memories [del <id> | edit <id> <text> | clear | cleanup]",
-                prefixNick=False,
-            )
+            irc.error("Usage: memories [del <id> | edit <id> <text> | clear | cleanup]")
 
     def _memories_list(self, irc: callbacks.Irc, nick: str, display_name: str) -> None:
         """List memories for a user using Limnoria's built-in pagination."""
