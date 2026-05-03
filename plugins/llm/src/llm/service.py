@@ -476,6 +476,14 @@ class LLMService:
             return None
         return channel if channel.startswith(("#", "&")) else None
 
+    @staticmethod
+    def _get_channel_state(irc: Irc, channel: str):
+        """Return ChannelState or None if irc has no state for channel."""
+        state = getattr(irc, "state", None)
+        if not state:
+            return None
+        return getattr(state, "channels", {}).get(channel)
+
     def sanitize_output(self, text: str | None) -> str:
         """Sanitize output to prevent IRC command injection.
 
@@ -637,15 +645,9 @@ class LLMService:
         Returns:
             Channel topic or None
         """
-        state = getattr(irc, "state", None)
-        if not state:
+        ch_state = self._get_channel_state(irc, channel)
+        if ch_state is None:
             return None
-
-        channels = getattr(state, "channels", {})
-        ch_state = channels.get(channel)
-        if not ch_state:
-            return None
-
         topic = getattr(ch_state, "topic", None)
         return topic if topic else None
 
@@ -747,13 +749,8 @@ class LLMService:
         Returns:
             'op', 'halfop', 'voice', or None for regular users
         """
-        state = getattr(irc, "state", None)
-        if not state:
-            return None
-
-        channels = getattr(state, "channels", {})
-        ch_state = channels.get(channel)
-        if not ch_state:
+        ch_state = self._get_channel_state(irc, channel)
+        if ch_state is None:
             return None
 
         # Check in order of highest privilege
