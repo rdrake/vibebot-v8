@@ -6488,3 +6488,23 @@ def test_cancel_scheduled_llm_task_swallows_keyerror(
     )
     assert result.status == "ok"
     assert db.get_scheduled_llm_task("mine") is None
+
+
+# =============================================================================
+# _channel_target helper
+# =============================================================================
+
+
+def test_channel_target_passes_through_channel_names(make_service) -> None:
+    """GIVEN IRC channel names WHEN _channel_target is called THEN returns the name unchanged."""
+    service, _plugin = make_service()
+    assert service._channel_target("#general") == "#general"
+    assert service._channel_target("&local") == "&local"
+
+
+def test_channel_target_returns_none_for_nicks_and_falsy(make_service) -> None:
+    """GIVEN a nick or falsy value WHEN _channel_target is called THEN returns None."""
+    service, _plugin = make_service()
+    assert service._channel_target("alice") is None
+    assert service._channel_target("") is None
+    assert service._channel_target(None) is None

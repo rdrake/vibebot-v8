@@ -465,6 +465,17 @@ class LLMService:
         if headers:
             self.log.debug("server headers: %s", headers)
 
+    @staticmethod
+    def _channel_target(channel: str | None) -> str | None:
+        """Return ``channel`` if it is an IRC channel name, else ``None``.
+
+        Use for registry-value lookups that accept a per-channel scope: a nick
+        or empty value collapses to the global scope (``None``).
+        """
+        if not channel:
+            return None
+        return channel if channel.startswith(("#", "&")) else None
+
     def sanitize_output(self, text: str | None) -> str:
         """Sanitize output to prevent IRC command injection.
 
@@ -1920,7 +1931,7 @@ class LLMService:
         from .assistant import ToolResult
 
         try:
-            target = channel if channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
                 "assistantModel", target
             )
@@ -1989,7 +2000,7 @@ class LLMService:
             )
 
         try:
-            target = channel if channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
                 "assistantModel", target
             )
@@ -2332,7 +2343,7 @@ class LLMService:
             )
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
-        target = channel if channel and channel.startswith(("#", "&")) else None
+        target = self._channel_target(channel)
         if not self.plugin.registryValue("assistantApiKey", target):
             return ReminderParseResult(
                 action="clarify",
@@ -2515,7 +2526,7 @@ Examples (echo → action_prompt: ""):
     ) -> str | None:
         """Call the configured ``ask`` model with system + user content."""
         try:
-            target = channel if channel and channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             api_key = self.plugin.registryValue("assistantApiKey", target)
             if not api_key:
                 return None
@@ -2618,7 +2629,7 @@ Examples (echo → action_prompt: ""):
             rewritten_prompt is None on any failure.
         """
         try:
-            target = channel if channel and channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             api_key = self.plugin.registryValue("assistantApiKey", target)
             if not api_key:
                 return None, 0, 0, 0.0
@@ -2819,7 +2830,7 @@ Examples (echo → action_prompt: ""):
         stop_typing = self._begin_typing(irc, msg)
 
         try:
-            target = channel if channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             model = model_override or self.plugin.registryValue("assistantModel", target)
             effective_api_key = api_key or self.plugin.registryValue("assistantApiKey", target)
             if not effective_api_key:
@@ -3809,7 +3820,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         ]
 
         try:
-            target = channel if channel and channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             api_key = self.plugin.registryValue("assistantApiKey", target)
             response = litellm.completion(
@@ -3864,7 +3875,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         ]
 
         try:
-            target = channel if channel and channel.startswith(("#", "&")) else None
+            target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             api_key = self.plugin.registryValue("assistantApiKey", target)
             response = litellm.completion(
