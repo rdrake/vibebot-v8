@@ -623,16 +623,12 @@ class LLMDatabase:
         Returns:
             True if a reminder was deleted, False if not found.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM reminders WHERE event_name = ?",
                 (event_name,),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def load_pending_reminders(self) -> list[ReminderRow]:
         """Load reminders that are still pending delivery.
@@ -683,16 +679,12 @@ class LLMDatabase:
             Number of reminders deleted.
         """
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM reminders WHERE fire_at <= ?",
                 (cutoff,),
             )
-            conn.commit()
             return cursor.rowcount
-        finally:
-            pass
 
     # ------------------------------------------------------------------
     # Scheduled LLM task operations
@@ -785,28 +777,26 @@ class LLMDatabase:
         chain_position: int | None = None,
     ) -> None:
         """Update fire_at (and optionally chain_position) for a row."""
-        conn = self._connect()
-        if chain_position is None:
-            conn.execute(
-                "UPDATE scheduled_llm_tasks SET fire_at = ? WHERE event_name = ?",
-                (fire_at, event_name),
-            )
-        else:
-            conn.execute(
-                "UPDATE scheduled_llm_tasks SET fire_at = ?, chain_position = ? "
-                "WHERE event_name = ?",
-                (fire_at, chain_position, event_name),
-            )
-        conn.commit()
+        with self._write_txn() as conn:
+            if chain_position is None:
+                conn.execute(
+                    "UPDATE scheduled_llm_tasks SET fire_at = ? WHERE event_name = ?",
+                    (fire_at, event_name),
+                )
+            else:
+                conn.execute(
+                    "UPDATE scheduled_llm_tasks SET fire_at = ?, chain_position = ? "
+                    "WHERE event_name = ?",
+                    (fire_at, chain_position, event_name),
+                )
 
     def delete_scheduled_llm_task(self, event_name: str) -> bool:
-        conn = self._connect()
-        cursor = conn.execute(
-            "DELETE FROM scheduled_llm_tasks WHERE event_name = ?",
-            (event_name,),
-        )
-        conn.commit()
-        return cursor.rowcount > 0
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM scheduled_llm_tasks WHERE event_name = ?",
+                (event_name,),
+            )
+            return cursor.rowcount > 0
 
     def load_active_scheduled_llm_tasks(self) -> list[ScheduledLlmTaskRow]:
         """Load rows whose fire_at is within the last 24 hours or in the future."""
@@ -1059,8 +1049,7 @@ class LLMDatabase:
         Returns:
             True if the task was updated, False if not found.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             if increment_attempt:
                 cursor = conn.execute(
                     "UPDATE pending_tasks SET "
@@ -1076,10 +1065,7 @@ class LLMDatabase:
                     "WHERE id = ?",
                     (next_attempt_at, last_error, task_id),
                 )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def delete_pending_task(self, task_id: int) -> bool:
         """Delete a pending task by ID.
@@ -1090,16 +1076,12 @@ class LLMDatabase:
         Returns:
             True if a task was deleted, False if not found.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM pending_tasks WHERE id = ?",
                 (task_id,),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def update_task_for_delivery(
         self,
@@ -1117,18 +1099,14 @@ class LLMDatabase:
         Returns:
             True if the task was updated, False if not found.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "UPDATE pending_tasks SET "
                 "delivery_state = ?, result_payload = ?, claimed_until = 0 "
                 "WHERE id = ?",
                 (delivery_state, result_payload, task_id),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def update_delivery_attempt(
         self,
@@ -1150,8 +1128,7 @@ class LLMDatabase:
         Returns:
             True if the task was updated, False if not found.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "UPDATE pending_tasks SET "
                 "delivery_state = ?, last_delivery_error = ?, "
@@ -1165,10 +1142,7 @@ class LLMDatabase:
                     task_id,
                 ),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def delete_expired_pending_tasks(self, now: float) -> list[PendingTaskRow]:
         """Delete pending tasks whose expires_at has passed.
@@ -1183,8 +1157,7 @@ class LLMDatabase:
         Returns:
             List of expired PendingTaskRow objects (before deletion).
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             rows = conn.execute(
                 f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
                 "WHERE expires_at <= ? AND delivery_state = 'pending'",
@@ -1197,10 +1170,7 @@ class LLMDatabase:
                     f"DELETE FROM pending_tasks WHERE id IN ({placeholders})",
                     ids,
                 )
-                conn.commit()
             return [PendingTaskRow(*row) for row in rows]
-        finally:
-            pass
 
     def get_next_due_time(self) -> float | None:
         """Return the earliest next_attempt_at for actionable unclaimed tasks.
@@ -1275,16 +1245,12 @@ class LLMDatabase:
         Returns:
             Number of rows updated.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "UPDATE usage SET nick = ? WHERE LOWER(nick) = LOWER(?) AND nick != ?",
                 (new_nick, old_nick, new_nick),
             )
-            conn.commit()
             return cursor.rowcount
-        finally:
-            pass
 
     def migrate_conversations(self, old_nick: str, new_nick: str) -> int:
         """Re-attribute conversation rows from an old nick to a new identity.
@@ -1361,8 +1327,7 @@ class LLMDatabase:
                 ``"auth_failure"``, ``"rate_limited"``.
             error_detail: Additional error context when status is not success.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             conn.execute(
                 "INSERT INTO usage "
                 "(timestamp, nick, channel, command, model, prompt_tokens, "
@@ -1382,9 +1347,6 @@ class LLMDatabase:
                     error_detail,
                 ),
             )
-            conn.commit()
-        finally:
-            pass
 
     def get_usage_summary(self, since: float | None = None) -> UsageSummary:
         """Get aggregated usage statistics.
@@ -1742,16 +1704,12 @@ class LLMDatabase:
         Returns:
             True if a memory was deleted, False if not found or wrong owner.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ? AND nick = ?",
                 (memory_id, nick.lower()),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def update_memory(self, nick: str, memory_id: int, new_fact: str) -> bool:
         """Update the fact text of a specific memory.
@@ -1766,16 +1724,12 @@ class LLMDatabase:
         Returns:
             True if a memory was updated, False if not found or wrong owner.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "UPDATE memories SET fact = ? WHERE id = ? AND nick = ?",
                 (new_fact, memory_id, nick.lower()),
             )
-            conn.commit()
             return cursor.rowcount > 0
-        finally:
-            pass
 
     def delete_all_memories(self, nick: str) -> int:
         """Delete all memories for a user.
@@ -1786,16 +1740,12 @@ class LLMDatabase:
         Returns:
             Number of memories deleted.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM memories WHERE nick = ?",
                 (nick.lower(),),
             )
-            conn.commit()
             return cursor.rowcount
-        finally:
-            pass
 
     def increment_memory_saves(self, nick: str) -> int:
         """Increment the memory-saves-since-cleanup counter for a user.
@@ -1806,8 +1756,7 @@ class LLMDatabase:
         Returns:
             The new counter value after incrementing.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "INSERT INTO memory_cleanup_state (nick, saves_since_cleanup) "
                 "VALUES (?, 1) "
@@ -1816,10 +1765,7 @@ class LLMDatabase:
                 (nick.lower(),),
             )
             row = cursor.fetchone()
-            conn.commit()
             return row[0] if row else 0
-        finally:
-            pass
 
     def reset_memory_saves(self, nick: str) -> None:
         """Reset the memory-saves-since-cleanup counter for a user.
@@ -1827,15 +1773,11 @@ class LLMDatabase:
         Args:
             nick: IRC nick (stored lowercased).
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             conn.execute(
                 "UPDATE memory_cleanup_state SET saves_since_cleanup = 0 WHERE nick = ?",
                 (nick.lower(),),
             )
-            conn.commit()
-        finally:
-            pass
 
     def get_memory_saves(self, nick: str) -> int:
         """Get the current memory-saves-since-cleanup count for a user.
@@ -1871,22 +1813,20 @@ class LLMDatabase:
 
     def save_instruction(self, nick: str, instruction: str) -> None:
         """Save or overwrite the user's persistent instruction."""
-        conn = self._connect()
-        conn.execute(
-            "INSERT INTO user_instructions (nick, instruction, updated_at) "
-            "VALUES (?, ?, ?) "
-            "ON CONFLICT(nick) DO UPDATE SET instruction = excluded.instruction, "
-            "updated_at = excluded.updated_at",
-            (nick, instruction, time.time()),
-        )
-        conn.commit()
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO user_instructions (nick, instruction, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(nick) DO UPDATE SET instruction = excluded.instruction, "
+                "updated_at = excluded.updated_at",
+                (nick, instruction, time.time()),
+            )
 
     def delete_instruction(self, nick: str) -> bool:
         """Delete the user's instruction. Returns True if one was deleted."""
-        conn = self._connect()
-        cursor = conn.execute(
-            "DELETE FROM user_instructions WHERE nick = ?",
-            (nick,),
-        )
-        conn.commit()
-        return cursor.rowcount > 0
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_instructions WHERE nick = ?",
+                (nick,),
+            )
+            return cursor.rowcount > 0
