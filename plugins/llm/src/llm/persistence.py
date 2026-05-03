@@ -877,7 +877,7 @@ class LLMDatabase:
                 "AND channel = ? AND fire_at > ?",
                 (nick, channel, cutoff),
             ).fetchone()
-        return int(row[0] if row else 0)
+        return int(row[0])
 
     # ------------------------------------------------------------------
     # Pending task operations
