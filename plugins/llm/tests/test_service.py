@@ -5044,6 +5044,40 @@ class TestUrlCompletion:
         assert parsed["error"] == "URL fetch failed."
 
 
+def test_search_and_url_completion_use_same_provider_kwargs_base(
+    make_service, mocker: MockerFixture
+) -> None:
+    """search_completion and url_completion produce identical optional_kwargs key sets."""
+    service, plugin = make_service(
+        assistantModel="gemini/gemini-2.5-flash",
+        assistantApiKey="test-key",
+        searchModel="",
+        searchApiKey="",
+    )
+    captured: list[dict] = []
+
+    def fake_call(*, model, messages, api_key, timeout, optional_kwargs):
+        captured.append(optional_kwargs)
+        response = mocker.MagicMock()
+        response.choices[0].message.content = "result"
+        response._hidden_params = {}
+        response.model_extra = {}
+        usage = mocker.Mock()
+        usage.prompt_tokens = 5
+        usage.completion_tokens = 10
+        response.usage = usage
+        return response
+
+    mocker.patch.object(service, "_completion_with_tool_fallback", side_effect=fake_call)
+    mocker.patch.object(service, "_is_xai_model", return_value=False)
+
+    service.search_completion("ping", channel="#c")
+    service.url_completion("https://example.com", channel="#c")
+
+    assert len(captured) == 2
+    assert set(captured[0].keys()) == set(captured[1].keys())
+
+
 # =============================================================================
 # TestAssistantRequestFacade — Task 9
 # =============================================================================
@@ -6495,16 +6529,14 @@ def test_cancel_scheduled_llm_task_swallows_keyerror(
 # =============================================================================
 
 
-def test_channel_target_passes_through_channel_names(make_service) -> None:
+def test_channel_target_passes_through_channel_names() -> None:
     """GIVEN IRC channel names WHEN _channel_target is called THEN returns the name unchanged."""
-    service, _plugin = make_service()
-    assert service._channel_target("#general") == "#general"
-    assert service._channel_target("&local") == "&local"
+    assert LLMService._channel_target("#general") == "#general"
+    assert LLMService._channel_target("&local") == "&local"
 
 
-def test_channel_target_returns_none_for_nicks_and_falsy(make_service) -> None:
+def test_channel_target_returns_none_for_nicks_and_falsy() -> None:
     """GIVEN a nick or falsy value WHEN _channel_target is called THEN returns None."""
-    service, _plugin = make_service()
-    assert service._channel_target("alice") is None
-    assert service._channel_target("") is None
-    assert service._channel_target(None) is None
+    assert LLMService._channel_target("alice") is None
+    assert LLMService._channel_target("") is None
+    assert LLMService._channel_target(None) is None

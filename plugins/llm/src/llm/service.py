@@ -1919,14 +1919,34 @@ class LLMService:
         finally:
             stop_typing()
 
-    def search_completion(self, query: str, *, channel: str) -> ToolResult:
-        """Run a grounded web-search completion and return a ToolResult.
+    def _grounded_completion(
+        self,
+        user_content: str,
+        *,
+        kind: str,
+        channel: str,
+        log_label: str,
+        error_message: str,
+    ) -> ToolResult:
+        """Shared implementation for search_completion and url_completion.
 
         Dispatches by provider:
         - xAI: Responses API with ``{"type": "web_search"}`` (Live Search on
-          Chat Completions is deprecated upstream).
-        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` tool.
+          Chat Completions is deprecated upstream; no native urlContext on xAI).
+        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` /
+          ``urlContext`` tool (both ride the same call so the model can pivot
+          between searching and fetching within one turn).
         - Other providers: plain Chat Completions (no grounding).
+
+        Args:
+            user_content: The user message to send (query text or URL prompt).
+            kind: ``"search"`` or ``"url"`` — controls which grounding kwargs
+                are resolved and which Responses API kind is used for xAI.
+            channel: IRC channel name used to look up per-channel config.
+            log_label: Prefix for start/ok log lines (``"search_completion"``
+                or ``"url_completion"``).
+            error_message: Human-readable error string placed in the returned
+                ``ToolResult`` when an exception is caught.
         """
         from .assistant import ToolResult
 
@@ -1942,15 +1962,18 @@ class LLMService:
 
             if self._is_xai_model(model):
                 return self._xai_responses_call(
-                    query, model=model, api_key=api_key, timeout=timeout, kind="search"
+                    user_content,
+                    model=model,
+                    api_key=api_key,
+                    timeout=timeout,
+                    kind=kind,
                 )
 
-            messages: list[dict[str, object]] = [{"role": "user", "content": query}]
-
+            messages: list[dict[str, object]] = [{"role": "user", "content": user_content}]
             optional_kwargs = self._get_provider_kwargs(model)
-            optional_kwargs.update(self._resolve_grounding_kwargs(model, "search"))
+            optional_kwargs.update(self._resolve_grounding_kwargs(model, kind))
 
-            self.log.info("search_completion start model=%s query_len=%d", model, len(query))
+            self.log.info("%s start model=%s content_len=%d", log_label, model, len(user_content))
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
@@ -1958,20 +1981,19 @@ class LLMService:
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
             )
-
             content = response.choices[0].message.content
             grounding_used = self._check_grounding_used(response)
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
             self.log.info(
-                "search_completion ok model=%s grounding_used=%s content_len=%d "
+                "%s ok model=%s grounding_used=%s content_len=%d "
                 "prompt_tokens=%d completion_tokens=%d",
+                log_label,
                 model,
                 grounding_used,
                 len(content or ""),
                 prompt_tokens,
                 completion_tokens,
             )
-
             return ToolResult(
                 content=content,
                 grounding_used=grounding_used,
@@ -1980,8 +2002,25 @@ class LLMService:
                 cost=cost,
             )
         except Exception as e:
-            self.log.exception("search_completion failed: %s", self._sanitize(str(e)))
-            return ToolResult(content=json.dumps({"error": "Search failed."}))
+            self.log.exception("%s failed: %s", log_label, self._sanitize(str(e)))
+            return ToolResult(content=json.dumps({"error": error_message}))
+
+    def search_completion(self, query: str, *, channel: str) -> ToolResult:
+        """Run a grounded web-search completion and return a ToolResult.
+
+        Dispatches by provider:
+        - xAI: Responses API with ``{"type": "web_search"}`` (Live Search on
+          Chat Completions is deprecated upstream).
+        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` tool.
+        - Other providers: plain Chat Completions (no grounding).
+        """
+        return self._grounded_completion(
+            query,
+            kind="search",
+            channel=channel,
+            log_label="search_completion",
+            error_message="Search failed.",
+        )
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
         """Fetch and summarize a URL.
@@ -1998,55 +2037,13 @@ class LLMService:
             return ToolResult(
                 content='{"error": "URL is not allowed (invalid scheme or private address)."}'
             )
-
-        try:
-            target = self._channel_target(channel)
-            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
-                "assistantModel", target
-            )
-            api_key = self.plugin.registryValue(
-                "searchApiKey", target
-            ) or self.plugin.registryValue("assistantApiKey", target)
-            timeout = self.plugin.registryValue("timeout")
-
-            if self._is_xai_model(model):
-                return self._xai_responses_call(
-                    f"Summarize the content at this URL: {url}",
-                    model=model,
-                    api_key=api_key,
-                    timeout=timeout,
-                    kind="url",
-                )
-
-            messages: list[dict[str, object]] = [
-                {"role": "user", "content": f"Summarize the content at this URL: {url}"}
-            ]
-
-            optional_kwargs = self._get_provider_kwargs(model)
-            optional_kwargs.update(self._resolve_grounding_kwargs(model, "url"))
-
-            response = self._completion_with_tool_fallback(
-                model=model,
-                messages=messages,
-                api_key=api_key,
-                timeout=timeout,
-                optional_kwargs=optional_kwargs,
-            )
-
-            content = response.choices[0].message.content
-            grounding_used = self._check_grounding_used(response)
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-
-            return ToolResult(
-                content=content,
-                grounding_used=grounding_used,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost=cost,
-            )
-        except Exception as e:
-            self.log.exception("url_completion failed: %s", self._sanitize(str(e)))
-            return ToolResult(content=json.dumps({"error": "URL fetch failed."}))
+        return self._grounded_completion(
+            f"Summarize the content at this URL: {url}",
+            kind="url",
+            channel=channel,
+            log_label="url_completion",
+            error_message="URL fetch failed.",
+        )
 
     def _xai_responses_call(
         self,
