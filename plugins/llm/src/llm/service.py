@@ -1109,7 +1109,7 @@ class LLMService:
 
     def _resolve_grounding_kwargs(self, model: str, kind: str) -> dict[str, Any]:
         """Provider-aware grounding kwargs for ``search_completion`` /
-        ``url_completion``.
+        ``url_completion`` on the Chat Completions API.
 
         ``kind`` is ``"search"`` (web search grounding) or ``"url"`` (URL
         context fetching). Returns a dict to ``update()`` into the
@@ -1117,14 +1117,12 @@ class LLMService:
 
         - Gemini / Vertex AI: native grounding tools
           (``googleSearch`` / ``urlContext``).
-        - xAI (Grok): ``{"type": "live_search", "sources": [...]}``
-          server-side tool. The ``sources`` field is required — bare
-          ``{"type": "live_search"}`` returns 422 ``missing field "sources"``.
-          Replaces the deprecated ``extra_body.search_parameters`` form
-          (which now returns 410 Gone). URL kind reuses live_search —
-          no native urlContext equivalent on xAI.
-        - Anything else: returns ``{}`` — the request runs without grounding
-          tools and the model answers from training.
+        - xAI (Grok): returns ``{"tools": []}``. xAI Live Search on
+          ``/v1/chat/completions`` is deprecated; web search is only
+          available on ``/v1/responses`` via ``{"type": "web_search"}``.
+          Callers detect the xAI provider with ``_is_xai_model`` and
+          dispatch to ``_xai_responses_call`` instead of this path.
+        - Anything else: ``{"tools": []}`` — plain completion.
 
         Returns the kwargs *plus* an explicit ``"tools": []`` to clobber
         anything ``_get_provider_kwargs`` may have already added — callers
@@ -1141,23 +1139,15 @@ class LLMService:
             tool_name = "googleSearch" if kind == "search" else "urlContext"
             return {"tools": [{tool_name: {}}]}
 
-        if provider == "xai":
-            # Grok decides at runtime whether to invoke live_search. The
-            # `sources` field is REQUIRED — bare `{"type":"live_search"}`
-            # returns 422 `missing field "sources"`. The legacy
-            # `extra_body.search_parameters` form was deprecated upstream
-            # (returns 410 Gone) and replaced by this `tools` shape.
-            return {
-                "tools": [
-                    {
-                        "type": "live_search",
-                        "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}],
-                    }
-                ]
-            }
-
-        # Unknown / unsupported provider: no grounding, plain completion.
+        # xAI and any other provider: no chat-completions grounding.
+        # xAI search/URL routes through the Responses API (see
+        # ``_xai_responses_call``); other providers run plain completion.
         return {"tools": []}
+
+    @staticmethod
+    def _is_xai_model(model: str) -> bool:
+        """True if ``model`` is an xAI ``provider/name`` identifier."""
+        return "/" in model and model.split("/", 1)[0].lower() == "xai"
 
     def _check_grounding_used(self, response: Any) -> bool:
         """Check if Google grounding/search was used in the response.
@@ -1917,14 +1907,13 @@ class LLMService:
             stop_typing()
 
     def search_completion(self, query: str, *, channel: str) -> ToolResult:
-        """Run a grounded Google Search completion and return a ToolResult.
+        """Run a grounded web-search completion and return a ToolResult.
 
-        Args:
-            query: The search query text
-            channel: Channel name for config lookup
-
-        Returns:
-            ToolResult with the response content and usage metadata
+        Dispatches by provider:
+        - xAI: Responses API with ``{"type": "web_search"}`` (Live Search on
+          Chat Completions is deprecated upstream).
+        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` tool.
+        - Other providers: plain Chat Completions (no grounding).
         """
         from .assistant import ToolResult
 
@@ -1937,6 +1926,11 @@ class LLMService:
                 "searchApiKey", target
             ) or self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
+
+            if self._is_xai_model(model):
+                return self._xai_responses_call(
+                    query, model=model, api_key=api_key, timeout=timeout, kind="search"
+                )
 
             messages: list[dict[str, object]] = [{"role": "user", "content": query}]
 
@@ -1977,14 +1971,13 @@ class LLMService:
             return ToolResult(content=json.dumps({"error": "Search failed."}))
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
-        """Fetch and summarize a URL using Gemini URL Context grounding.
+        """Fetch and summarize a URL.
 
-        Args:
-            url: The URL to summarize
-            channel: Channel name for config lookup
-
-        Returns:
-            ToolResult with the summary content and usage metadata
+        Dispatches by provider:
+        - xAI: Responses API with ``{"type": "web_search"}`` (no native
+          urlContext on xAI; web_search reads URLs).
+        - Gemini / Vertex AI: Chat Completions with ``urlContext`` tool.
+        - Other providers: plain Chat Completions (no grounding).
         """
         from .assistant import ToolResult
 
@@ -2002,6 +1995,15 @@ class LLMService:
                 "searchApiKey", target
             ) or self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
+
+            if self._is_xai_model(model):
+                return self._xai_responses_call(
+                    f"Summarize the content at this URL: {url}",
+                    model=model,
+                    api_key=api_key,
+                    timeout=timeout,
+                    kind="url",
+                )
 
             messages: list[dict[str, object]] = [
                 {"role": "user", "content": f"Summarize the content at this URL: {url}"}
@@ -2032,6 +2034,176 @@ class LLMService:
         except Exception as e:
             self.log.exception("url_completion failed: %s", self._sanitize(str(e)))
             return ToolResult(content=json.dumps({"error": "URL fetch failed."}))
+
+    def _xai_responses_call(
+        self,
+        input_text: str,
+        *,
+        model: str,
+        api_key: str,
+        timeout: int,
+        kind: str,
+    ) -> ToolResult:
+        """Run an xAI Responses-API call with the ``web_search`` tool.
+
+        xAI's Live Search on ``/v1/chat/completions`` is deprecated; web
+        search is only available on the Responses API endpoint with
+        ``tools=[{"type": "web_search"}]``. Citations land as
+        ``annotations`` on ``output_text`` content parts; usage uses
+        ``input_tokens`` / ``output_tokens`` (not the chat-style
+        ``prompt_tokens`` / ``completion_tokens``).
+
+        Args:
+            input_text: The user-facing prompt (search query or
+                ``"Summarize the content at this URL: ..."``).
+            model: xAI model identifier (e.g. ``xai/grok-4.3``).
+            api_key: xAI API key.
+            timeout: Per-request timeout in seconds.
+            kind: ``"search"`` or ``"url"`` — only used for log labelling
+                and the failure message.
+        """
+        from .assistant import ToolResult
+
+        try:
+            self.log.info(
+                "xai_responses_%s start model=%s input_len=%d",
+                kind,
+                model,
+                len(input_text),
+            )
+            response = litellm.responses(
+                model=model,
+                input=input_text,
+                tools=[{"type": "web_search"}],
+                api_key=api_key,
+                timeout=timeout,
+                metadata=self._get_litellm_metadata(),
+            )
+
+            content = self._responses_text(response)
+            grounding_used = self._check_responses_grounding(response)
+            prompt_tokens, completion_tokens, cost = self._extract_responses_usage(response, model)
+
+            self.log.info(
+                "xai_responses_%s ok model=%s grounding_used=%s content_len=%d "
+                "input_tokens=%d output_tokens=%d",
+                kind,
+                model,
+                grounding_used,
+                len(content or ""),
+                prompt_tokens,
+                completion_tokens,
+            )
+
+            return ToolResult(
+                content=content,
+                grounding_used=grounding_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=cost,
+            )
+        except Exception as e:
+            self.log.exception("xai_responses_%s failed: %s", kind, self._sanitize(str(e)))
+            err = "Search failed." if kind == "search" else "URL fetch failed."
+            return ToolResult(content=json.dumps({"error": err}))
+
+    @staticmethod
+    def _responses_text(response: Any) -> str:
+        """Extract concatenated text from a Responses API response."""
+        # LiteLLM's ResponsesAPIResponse exposes an ``output_text`` property
+        # that aggregates every ``output_text`` content part — prefer it
+        # when present and fall back to walking ``output`` for safety
+        # against future shape drift.
+        text = getattr(response, "output_text", None)
+        if text:
+            return text
+
+        parts: list[str] = []
+        output = getattr(response, "output", None) or []
+        for item in output:
+            item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+            if item_type != "message":
+                continue
+            content = (
+                item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+            ) or []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "output_text":
+                        parts.append(part.get("text") or "")
+                else:
+                    if getattr(part, "type", None) == "output_text":
+                        parts.append(getattr(part, "text", "") or "")
+        return "".join(parts)
+
+    def _check_responses_grounding(self, response: Any) -> bool:
+        """True if the Responses API response shows the web_search tool ran.
+
+        Two signals — either is sufficient:
+        - An output item whose ``type`` contains ``"search"`` (e.g.
+          ``web_search_call``) means xAI invoked the tool.
+        - An ``output_text`` content part with non-empty ``annotations``
+          means the model cited at least one search result.
+        """
+        try:
+            output = getattr(response, "output", None) or []
+            for item in output:
+                item_type = (
+                    item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+                )
+                if isinstance(item_type, str) and "search" in item_type.lower():
+                    return True
+                if item_type != "message":
+                    continue
+                content = (
+                    item.get("content")
+                    if isinstance(item, dict)
+                    else getattr(item, "content", None)
+                ) or []
+                for part in content:
+                    annotations = (
+                        part.get("annotations")
+                        if isinstance(part, dict)
+                        else getattr(part, "annotations", None)
+                    )
+                    if annotations:
+                        return True
+        except (AttributeError, TypeError):
+            return False
+        return False
+
+    def _extract_responses_usage(self, response: Any, model: str) -> tuple[int, int, float]:
+        """Extract token usage and cost from a Responses API response.
+
+        Responses API uses ``input_tokens`` / ``output_tokens`` (not the
+        chat-style ``prompt_tokens`` / ``completion_tokens``), so the
+        regular ``_extract_usage`` returns zeros. Cost falls back to
+        ``litellm.completion_cost`` when the response doesn't carry one.
+        """
+        prompt_tokens = 0
+        completion_tokens = 0
+        cost = 0.0
+
+        try:
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "input_tokens", 0) or 0
+                completion_tokens = getattr(usage, "output_tokens", 0) or 0
+                usage_cost = getattr(usage, "cost", None)
+                if usage_cost:
+                    cost = float(usage_cost)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+        if cost == 0.0:
+            try:
+                cost = litellm.completion_cost(completion_response=response, model=model) or 0.0
+            except Exception:
+                self.log.warning(
+                    "completion_cost failed for responses model=%s", model, exc_info=True
+                )
+
+        return prompt_tokens, completion_tokens, cost
 
     def assistant_request(
         self,

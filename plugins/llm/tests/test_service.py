@@ -419,16 +419,12 @@ class TestResolveGroundingKwargs:
         assert kwargs == {"tools": [{expected_tool: {}}]}
 
     @pytest.mark.parametrize("kind", ["search", "url"])
-    def test_xai_provider_uses_agent_tools_live_search(self, kind: str) -> None:
-        kwargs = self.service._resolve_grounding_kwargs("xai/grok-3", kind)
-        assert kwargs == {
-            "tools": [
-                {
-                    "type": "live_search",
-                    "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}],
-                }
-            ]
-        }
+    def test_xai_provider_drops_tools_chat_completions_path(self, kind: str) -> None:
+        # xAI grounding now goes through the Responses API in
+        # ``_xai_responses_call``; this kwargs path is for Chat
+        # Completions only, so it must hand back an empty tools list.
+        kwargs = self.service._resolve_grounding_kwargs("xai/grok-4.3", kind)
+        assert kwargs == {"tools": []}
         assert "extra_body" not in kwargs
 
     @pytest.mark.parametrize(
@@ -477,9 +473,13 @@ class TestSearchCompletionProviderRouting:
         kwargs = self._captured_kwargs()
         assert kwargs["tools"] == [{"googleSearch": {}}]
 
-    def test_xai_search_sends_agent_tools_live_search(self) -> None:
+    def test_xai_search_skips_chat_completions(self, mocker: MockerFixture) -> None:
+        # xAI must not hit the Chat Completions path at all — search goes
+        # through ``_xai_responses_call`` (Responses API).
+        responses_mock = mocker.patch.object(self.service, "_xai_responses_call")
+        responses_mock.return_value = mocker.MagicMock()
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "xai/grok-3"
+            "xai/grok-4.3"
             if k == "searchModel"
             else "key"
             if k == "searchApiKey"
@@ -488,11 +488,14 @@ class TestSearchCompletionProviderRouting:
             else ""
         )
         self.service.search_completion("hi", channel="#t")
-        kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [
-            {"type": "live_search", "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}]}
-        ]
-        assert "extra_body" not in kwargs
+        self._completion_mock.assert_not_called()
+        responses_mock.assert_called_once()
+        call_kwargs = responses_mock.call_args.kwargs
+        assert call_kwargs["model"] == "xai/grok-4.3"
+        assert call_kwargs["api_key"] == "key"
+        assert call_kwargs["timeout"] == 30
+        assert call_kwargs["kind"] == "search"
+        assert responses_mock.call_args.args[0] == "hi"
 
     def test_gemini_url_uses_url_context(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
@@ -508,9 +511,13 @@ class TestSearchCompletionProviderRouting:
         kwargs = self._captured_kwargs()
         assert kwargs["tools"] == [{"urlContext": {}}]
 
-    def test_xai_url_falls_back_to_live_search_agent_tool(self) -> None:
+    def test_xai_url_skips_chat_completions(self, mocker: MockerFixture) -> None:
+        # Same dispatch story for URL fetch — xAI uses Responses API
+        # web_search instead of the Chat Completions urlContext path.
+        responses_mock = mocker.patch.object(self.service, "_xai_responses_call")
+        responses_mock.return_value = mocker.MagicMock()
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "xai/grok-3"
+            "xai/grok-4.3"
             if k == "searchModel"
             else "key"
             if k == "searchApiKey"
@@ -519,11 +526,132 @@ class TestSearchCompletionProviderRouting:
             else ""
         )
         self.service.url_completion("https://example.com", channel="#t")
-        kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [
-            {"type": "live_search", "sources": [{"type": "web"}, {"type": "x"}, {"type": "news"}]}
-        ]
-        assert "extra_body" not in kwargs
+        self._completion_mock.assert_not_called()
+        responses_mock.assert_called_once()
+        call_kwargs = responses_mock.call_args.kwargs
+        assert call_kwargs["kind"] == "url"
+        assert "https://example.com" in responses_mock.call_args.args[0]
+
+
+class TestXAIResponsesCall:
+    """xAI Responses API path: web_search tool, citations, usage shape."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.service, _ = make_service()
+        self.mocker = mocker
+
+    def _make_response(
+        self,
+        text: str,
+        *,
+        annotations: list | None = None,
+        with_search_call: bool = False,
+        input_tokens: int = 11,
+        output_tokens: int = 22,
+    ):
+        output: list[dict] = []
+        if with_search_call:
+            output.append({"type": "web_search_call", "id": "ws_1"})
+        output.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": text, "annotations": annotations or []}
+                ],
+            }
+        )
+        response = self.mocker.MagicMock()
+        response.output_text = text
+        response.output = output
+        response.usage = self.mocker.Mock(
+            input_tokens=input_tokens, output_tokens=output_tokens, cost=None
+        )
+        return response
+
+    def test_sends_web_search_tool_to_responses_api(self) -> None:
+        responses = self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response("ok", with_search_call=True),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        self.service._xai_responses_call(
+            "what is grok", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+
+        responses.assert_called_once()
+        kwargs = responses.call_args.kwargs
+        assert kwargs["model"] == "xai/grok-4.3"
+        assert kwargs["input"] == "what is grok"
+        assert kwargs["tools"] == [{"type": "web_search"}]
+        assert kwargs["api_key"] == "k"
+        assert kwargs["timeout"] == 30
+
+    def test_grounding_true_when_web_search_call_in_output(self) -> None:
+        self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response("ok", with_search_call=True),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        result = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+        assert result.grounding_used is True
+
+    def test_grounding_true_when_annotations_present(self) -> None:
+        self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response(
+                "ok",
+                annotations=[{"type": "url_citation", "url": "https://example.com", "title": "Ex"}],
+            ),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        result = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+        assert result.grounding_used is True
+
+    def test_grounding_false_when_no_search_signal(self) -> None:
+        self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response("ok"),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        result = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+        assert result.grounding_used is False
+
+    def test_extracts_responses_api_token_usage(self) -> None:
+        # Responses API names tokens input_tokens/output_tokens — make sure
+        # the helper maps those to the chat-style prompt/completion fields
+        # (extract_usage would silently zero them otherwise).
+        self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response(
+                "hi", input_tokens=42, output_tokens=7, with_search_call=True
+            ),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        result = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+        assert result.prompt_tokens == 42
+        assert result.completion_tokens == 7
+
+    def test_returns_error_tool_result_on_exception(self) -> None:
+        self.mocker.patch("llm.service.litellm.responses", side_effect=RuntimeError("upstream 500"))
+        result = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+        assert "Search failed" in result.content
+        result_url = self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="url"
+        )
+        assert "URL fetch failed" in result_url.content
 
 
 class TestGroundingDetection:
