@@ -589,8 +589,7 @@ class LLMDatabase:
         if recurrence_seconds is not None and recurrence_rrule is not None:
             raise ValueError("recurrence_seconds and recurrence_rrule are mutually exclusive")
         now = time.time()
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "INSERT INTO reminders "
                 "(event_name, nick, channel, message, action_prompt, account, "
@@ -612,10 +611,8 @@ class LLMDatabase:
                     int(watch_mode),
                 ),
             )
-            conn.commit()
-            return cursor.lastrowid or 0
-        finally:
-            pass
+            assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
+            return cursor.lastrowid
 
     def delete_reminder(self, event_name: str) -> bool:
         """Delete a reminder by event name.
@@ -753,32 +750,32 @@ class LLMDatabase:
         if recurrence_seconds is not None and recurrence_rrule is not None:
             raise ValueError("recurrence_seconds and recurrence_rrule are mutually exclusive")
         now = time.time()
-        conn = self._connect()
-        cursor = conn.execute(
-            "INSERT INTO scheduled_llm_tasks "
-            "(event_name, creator_nick, account, channel, network, wire_msg, "
-            "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
-            "chain_position, watch_mode, reply_target) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                event_name,
-                creator_nick,
-                account,
-                channel,
-                network,
-                wire_msg,
-                prompt,
-                fire_at,
-                now,
-                recurrence_seconds,
-                recurrence_rrule,
-                chain_position,
-                int(watch_mode),
-                reply_target,
-            ),
-        )
-        conn.commit()
-        return cursor.lastrowid or 0
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO scheduled_llm_tasks "
+                "(event_name, creator_nick, account, channel, network, wire_msg, "
+                "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
+                "chain_position, watch_mode, reply_target) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_name,
+                    creator_nick,
+                    account,
+                    channel,
+                    network,
+                    wire_msg,
+                    prompt,
+                    fire_at,
+                    now,
+                    recurrence_seconds,
+                    recurrence_rrule,
+                    chain_position,
+                    int(watch_mode),
+                    reply_target,
+                ),
+            )
+            assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
+            return cursor.lastrowid
 
     def update_scheduled_llm_task_fire_at(
         self,
@@ -945,8 +942,7 @@ class LLMDatabase:
         Returns:
             The row ID of the inserted task.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "INSERT INTO pending_tasks "
                 "(task_type, nick, reply_target, is_channel, prompt_preview, model, "
@@ -968,10 +964,8 @@ class LLMDatabase:
                     account,
                 ),
             )
-            conn.commit()
-            return cursor.lastrowid or 0
-        finally:
-            pass
+            assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
+            return cursor.lastrowid
 
     def claim_due_pending_tasks(
         self,
@@ -1708,16 +1702,13 @@ class LLMDatabase:
         Returns:
             The row ID of the inserted memory.
         """
-        conn = self._connect()
-        try:
+        with self._write_txn() as conn:
             cursor = conn.execute(
                 "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
                 (nick.lower(), fact, source_channel.lower(), time.time()),
             )
-            conn.commit()
-            return cursor.lastrowid or 0
-        finally:
-            pass
+            assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
+            return cursor.lastrowid
 
     def get_memories(self, nick: str) -> list[MemoryRow]:
         """Get all memories for a user, most recent first.
