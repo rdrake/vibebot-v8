@@ -1113,6 +1113,112 @@ class TestDrawCommand:
 
 
 # ---------------------------------------------------------------------------
+# _dispatch_assistant_reply cross-command behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchAssistantReply:
+    """Cross-command tests for the three critical behaviours in _dispatch_assistant_reply.
+
+    These tests cover ask, code, and draw together so any regression in the
+    shared helper is caught regardless of which entry point triggered it.
+    """
+
+    # ------------------------------------------------------------------
+    # grounding-icon prefix — all three commands
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("command", ["ask", "code", "draw"])
+    def test_grounding_icon_prefixed_consistently(self, command, plugin_env, mocker: MockerFixture):
+        """GIVEN grounding_used=True and a normal text reply WHEN each command is called THEN sent line starts with GROUNDING_ICON."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        # draw requires an authenticated account
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.detect_images.return_value = []
+
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="some reply",
+            grounding_used=True,
+            prompt_tokens=5,
+            completion_tokens=3,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        getattr(plugin, command)(mock_irc, mock_msg, ["hello"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("\U0001f310"), (
+            f"{command}: expected grounding icon prefix, got {reply_text!r}"
+        )
+        assert "some reply" in reply_text
+
+    # ------------------------------------------------------------------
+    # Reminder-mutation suppression (ask only)
+    # ------------------------------------------------------------------
+
+    def test_ask_suppresses_empty_followup_after_reminder_mutation(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN last_successful_tool ∈ _REMINDER_MUTATION_TOOLS and final_text_after_tools is empty WHEN ask called THEN no reply or error but usage IS recorded."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
+            grounding_used=False,
+            prompt_tokens=20,
+            completion_tokens=2,
+            cost=0.0002,
+            model="gpt-4",
+            last_successful_tool="set_reminder",
+            final_text_after_tools="",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["remind", "me", "tomorrow"])
+
+        # No reply and no error — the emoji reaction is the user-visible ack.
+        mock_irc.reply.assert_not_called()
+        mock_irc.queueMsg.assert_not_called()
+        mock_irc.error.assert_not_called()
+        # Usage must still be logged (suppression is not a free path).
+        plugin.db.log_usage.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # Action rebinding — stored response carries "* botnick text"
+    # ------------------------------------------------------------------
+
+    def test_action_response_stored_with_action_prefix(self, plugin_env, mocker: MockerFixture):
+        """GIVEN _extract_action returns a non-empty action text WHEN ask called THEN the rebound response stored in context starts with '* botnick'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="/me ponders the question",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+        mocker.patch("llm.plugin.ircmsgs.action")
+
+        plugin.ask(mock_irc, mock_msg, ["think", "about", "it"])
+
+        messages = plugin.context.get_messages("testnick", "#test")
+        assert len(messages) == 2
+        assert messages[1]["role"] == "assistant"
+        # The stored form must be the IRC action emote, not the /me prefix.
+        assert messages[1]["content"].startswith("* testbot "), (
+            f"Expected '* testbot ...', got {messages[1]['content']!r}"
+        )
+        assert "ponders the question" in messages[1]["content"]
+
+
+# ---------------------------------------------------------------------------
 # forget
 # ---------------------------------------------------------------------------
 

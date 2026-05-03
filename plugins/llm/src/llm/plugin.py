@@ -1780,6 +1780,59 @@ class LLM(callbacks.Plugin):
         msgs = [ircmsgs.privmsg(target, ircutils.safeArgument(chunk)) for chunk in chunks]
         irc.queueMultilineBatches(msgs, target, msg.nick, concat=False)
 
+    def _dispatch_assistant_reply(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        result: AssistantResult,
+        *,
+        nick: str,
+        channel: str,
+        response: str,
+        suppress_reminder_mutations: bool = False,
+    ) -> tuple[str, bool]:
+        """Send the reply for an assistant result.
+
+        Returns ``(response_for_context, should_log_and_store)``. When the
+        response is empty (and not suppressed by a successful reminder
+        mutation), the helper emits ``irc.error`` and returns
+        ``(response, False)`` so the caller skips
+        ``_store_context_and_log_usage``.
+
+        Reminder-mutation suppression (``ask`` only) is checked BEFORE the
+        empty-response error branch; that is the existing behaviour and must
+        be preserved.
+        """
+        if suppress_reminder_mutations and (
+            result.last_successful_tool in _REMINDER_MUTATION_TOOLS
+            and not result.final_text_after_tools.strip()
+        ):
+            self.log.info(
+                "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
+                result.last_successful_tool,
+                channel,
+                nick,
+            )
+            return response, True
+
+        if not response or not response.strip():
+            irc.error(_("The model returned an empty response. Please try again."))
+            return response, False
+
+        action_text = self._extract_action(irc, response)
+        if action_text:
+            if result.grounding_used:
+                action_text = f"{GROUNDING_ICON} {action_text}"
+            self.log.info("sending action to %s/%s", channel, nick)
+            target = channel if ircutils.isChannel(channel) else nick
+            irc.queueMsg(ircmsgs.action(target, action_text))
+            return f"* {irc.nick} {action_text}", True
+
+        display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+        self.log.info("replying to %s/%s", channel, nick)
+        self._send_long_reply(irc, msg, display_response, prefixNick=False)
+        return response, True
+
     def _build_request_context(
         self,
         irc: callbacks.Irc,
@@ -2521,7 +2574,6 @@ class LLM(callbacks.Plugin):
                     **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
-                # Format response with grounding icon if search was used
                 response = result.content
 
                 # Optional in-channel debug footer listing bridge tool calls.
@@ -2530,46 +2582,20 @@ class LLM(callbacks.Plugin):
                     if footer:
                         response = f"{response}\n{footer}" if response else footer
 
-                # Structured suppression: when the assistant just performed
-                # a successful reminder mutation and produced no follow-up
-                # text, the user already saw the emoji reaction (clock /
-                # thumbs-up). Skip the reply to avoid a duplicate ack.
-                # Usage + context still get recorded below.
-                if (
-                    result.last_successful_tool in _REMINDER_MUTATION_TOOLS
-                    and not result.final_text_after_tools.strip()
-                ):
-                    self.log.info(
-                        "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
-                        result.last_successful_tool,
-                        channel,
-                        nick,
-                    )
-                elif not response or not response.strip():
-                    irc.error(_("The model returned an empty response. Please try again."))
-                    return
-                else:
-                    action_text = self._extract_action(irc, response)
-                    if action_text:
-                        if result.grounding_used:
-                            action_text = f"{GROUNDING_ICON} {action_text}"
-                        self.log.info("sending action to %s/%s", channel, nick)
-                        target = channel if ircutils.isChannel(channel) else nick
-                        irc.queueMsg(ircmsgs.action(target, action_text))
-                        # Store context as "* BotNick action_text" so follow-ups
-                        # understand the bot emoted rather than said something
-                        response = f"* {irc.nick} {action_text}"
-                    else:
-                        display_response = (
-                            f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                        )
-                        # Reply first, then store context (so user gets response even if context fails)
-                        self.log.info("replying to %s/%s", channel, nick)
-                        self._send_long_reply(irc, msg, display_response, prefixNick=False)
+                response, should_log = self._dispatch_assistant_reply(
+                    irc,
+                    msg,
+                    result,
+                    nick=nick,
+                    channel=channel,
+                    response=response,
+                    suppress_reminder_mutations=True,
+                )
 
-            self._store_context_and_log_usage(
-                nick, channel, "ask", text, response, result, irc, msg
-            )
+            if should_log:
+                self._store_context_and_log_usage(
+                    nick, channel, "ask", text, response, result, irc, msg
+                )
 
     def code(
         self,
@@ -2649,29 +2675,19 @@ class LLM(callbacks.Plugin):
                     **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
-                response = result.content
-                if not response or not response.strip():
-                    irc.error(_("The model returned an empty response. Please try again."))
-                    return
+                response, should_log = self._dispatch_assistant_reply(
+                    irc,
+                    msg,
+                    result,
+                    nick=nick,
+                    channel=channel,
+                    response=result.content,
+                )
 
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    if result.grounding_used:
-                        action_text = f"{GROUNDING_ICON} {action_text}"
-                    self.log.info("sending action to %s/%s", channel, nick)
-                    target = channel if ircutils.isChannel(channel) else nick
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    response = f"* {irc.nick} {action_text}"
-                else:
-                    display_response = (
-                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                    )
-                    self.log.info("replying to %s/%s", channel, nick)
-                    self._send_long_reply(irc, msg, display_response, prefixNick=False)
-
-            self._store_context_and_log_usage(
-                nick, channel, "code", text, response, result, irc, msg
-            )
+            if should_log:
+                self._store_context_and_log_usage(
+                    nick, channel, "code", text, response, result, irc, msg
+                )
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
@@ -2738,29 +2754,19 @@ class LLM(callbacks.Plugin):
                     **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
-                response = result.content
-                if not response or not response.strip():
-                    irc.error(_("The model returned an empty response. Please try again."))
-                    return
+                response, should_log = self._dispatch_assistant_reply(
+                    irc,
+                    msg,
+                    result,
+                    nick=nick,
+                    channel=channel,
+                    response=result.content,
+                )
 
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    if result.grounding_used:
-                        action_text = f"{GROUNDING_ICON} {action_text}"
-                    self.log.info("sending action to %s/%s", channel, nick)
-                    target = channel if ircutils.isChannel(channel) else nick
-                    irc.queueMsg(ircmsgs.action(target, action_text))
-                    response = f"* {irc.nick} {action_text}"
-                else:
-                    display_response = (
-                        f"{GROUNDING_ICON} {response}" if result.grounding_used else response
-                    )
-                    self.log.info("replying to %s/%s", channel, nick)
-                    self._send_long_reply(irc, msg, display_response, prefixNick=False)
-
-            self._store_context_and_log_usage(
-                nick, channel, "draw", text, response, result, irc, msg
-            )
+            if should_log:
+                self._store_context_and_log_usage(
+                    nick, channel, "draw", text, response, result, irc, msg
+                )
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
