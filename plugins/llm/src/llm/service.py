@@ -250,6 +250,7 @@ class ExtractionResult(NamedTuple):
     """Result of memory extraction: new facts to add."""
 
     add: list[str] = []
+    error: str | None = None
 
 
 class MergeOp(NamedTuple):
@@ -2538,7 +2539,7 @@ Examples (echo → action_prompt: ""):
             )
             return response.choices[0].message.content
         except Exception as e:
-            self.log.debug("Ask completion failed: %s", self._sanitize(str(e)))
+            self.log.info("Ask completion failed: %s", self._sanitize(str(e)))
             return None
 
     def summarize(self, content: str, channel: str | None = None) -> str | None:
@@ -3076,7 +3077,7 @@ Examples (echo → action_prompt: ""):
             )
 
         except Exception as e:
-            self.log.error("assistant_completion failed: %s", self._sanitize(str(e)))
+            self.log.exception("assistant_completion failed: %s", self._sanitize(str(e)))
             return AssistantResult(
                 content="Sorry, something went wrong.",
                 error=self._sanitize(str(e)),
@@ -3836,8 +3837,10 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
             add = [f for f in parsed.get("add", []) if isinstance(f, str)]
             return ExtractionResult(add=add)
-        except Exception:
-            return ExtractionResult()
+        except Exception as e:
+            sanitized = self._sanitize(str(e))
+            self.log.exception("extract_memories failed: %s", sanitized)
+            return ExtractionResult(error=sanitized)
 
     def cleanup_memories(
         self,

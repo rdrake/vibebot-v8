@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING
 
@@ -3876,6 +3877,38 @@ class TestMemoryExtraction:
         mock_litellm.completion.side_effect = Exception("API down")
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
+
+    def test_extract_memories_logs_and_records_error_on_exception(
+        self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN extraction raises THEN error field is populated AND traceback logged."""
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_litellm.completion.side_effect = RuntimeError("boom")
+
+        with caplog.at_level(logging.ERROR, logger="LLM"):
+            result = service.extract_memories("user1", "#test", "hi", "hello", [])
+
+        assert result.add == []
+        assert result.error is not None
+        assert any("extract_memories failed" in r.message for r in caplog.records)
+        # The .exception() call records traceback info on the LogRecord
+        assert any(r.exc_info is not None for r in caplog.records)
+
+    def test_ask_completion_logs_at_info_on_failure(
+        self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN _ask_completion raises THEN logs at INFO and returns None."""
+        service, mock_plugin = make_service(assistantApiKey="sk-test")
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_litellm.completion.side_effect = RuntimeError("nope")
+
+        with caplog.at_level(logging.INFO, logger="LLM"):
+            out = service._ask_completion("sys", "user", channel=None)
+
+        assert out is None
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("Ask completion failed" in r.message for r in info_records)
 
     def test_extract_memories_empty_on_invalid_json(
         self, make_service, mocker: MockerFixture

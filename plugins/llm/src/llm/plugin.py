@@ -721,7 +721,12 @@ class LLM(callbacks.Plugin):
                     irc_conn.queueMsg(ircmsgs.privmsg(target, text))
                     delivered = True
                     break
-        except Exception:
+        except Exception as e:
+            self.log.warning(
+                "queueMsg failed for task_id=%s: %s",
+                r.task_id,
+                self.llm_service.sanitize_output(str(e)),
+            )
             delivered = False
 
         # Acknowledge or retry delivery for durable results
