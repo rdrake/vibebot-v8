@@ -710,6 +710,18 @@ class LLMDatabase:
             reply_target=row[14],
         )
 
+    @staticmethod
+    def _owner_where(*, account: str | None, nick: str) -> tuple[str, list[object]]:
+        """Return SQL fragment + params matching scheduled-task ownership.
+
+        If ``account`` is set, match by account (case-insensitive). Otherwise
+        match by ``creator_nick`` among rows with ``NULL`` account
+        (case-insensitive).
+        """
+        if account is not None:
+            return "lower(account) = lower(?)", [account]
+        return "account IS NULL AND lower(creator_nick) = lower(?)", [nick]
+
     def save_scheduled_llm_task(
         self,
         event_name: str,
@@ -836,23 +848,14 @@ class LLMDatabase:
     ) -> list[ScheduledLlmTaskRow]:
         """Active rows owned by the caller. Case-insensitive Identity semantics."""
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+        where, params = self._owner_where(account=account, nick=nick)
         conn = self._connect()
-        if account is not None:
-            rows = conn.execute(
-                f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
-                "FROM scheduled_llm_tasks "
-                "WHERE lower(account) = lower(?) AND fire_at > ? "
-                "ORDER BY fire_at",
-                (account, cutoff),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
-                "FROM scheduled_llm_tasks "
-                "WHERE account IS NULL AND lower(creator_nick) = lower(?) "
-                "AND fire_at > ? ORDER BY fire_at",
-                (nick, cutoff),
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
+            "FROM scheduled_llm_tasks "
+            f"WHERE {where} AND fire_at > ? ORDER BY fire_at",
+            (*params, cutoff),
+        ).fetchall()
         return [self._row_to_scheduled_llm_task(r) for r in rows]
 
     def count_scheduled_llm_tasks_for(self, *, account: str | None, nick: str, channel: str) -> int:
@@ -863,20 +866,16 @@ class LLMDatabase:
         match ``Identity.matches``.
         """
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
-        conn = self._connect()
-        if account is not None:
-            row = conn.execute(
+        where, params = self._owner_where(account=account, nick=nick)
+        row = (
+            self._connect()
+            .execute(
                 "SELECT COUNT(*) FROM scheduled_llm_tasks "
-                "WHERE lower(account) = lower(?) AND channel = ? AND fire_at > ?",
-                (account, channel, cutoff),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM scheduled_llm_tasks "
-                "WHERE account IS NULL AND lower(creator_nick) = lower(?) "
-                "AND channel = ? AND fire_at > ?",
-                (nick, channel, cutoff),
-            ).fetchone()
+                f"WHERE {where} AND channel = ? AND fire_at > ?",
+                (*params, channel, cutoff),
+            )
+            .fetchone()
+        )
         return int(row[0])
 
     # ------------------------------------------------------------------
