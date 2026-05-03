@@ -348,11 +348,7 @@ class ConversationContext:
             # Filter out excluded nick if specified
             if exclude_nick:
                 exclude_lower = exclude_nick.lower()
-                return [
-                    dict(msg)
-                    for msg in ctx.messages
-                    if msg.get("nick", "").lower() != exclude_lower
-                ]
+                return [dict(msg) for msg in ctx.messages if msg["nick"].lower() != exclude_lower]
 
             return [dict(msg) for msg in ctx.messages]
 
