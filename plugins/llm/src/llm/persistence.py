@@ -1277,8 +1277,9 @@ class LLMDatabase:
         new = new_nick.lower()
         if old == new:
             return 0
-        conn = self._connect()
-        try:
+        # DELETE and UPDATE share one transaction so a failure in either
+        # rolls back both rather than leaving conversations orphaned.
+        with self._write_txn() as conn:
             conn.execute(
                 "DELETE FROM conversations WHERE nick = ? AND channel IN ("
                 "  SELECT channel FROM conversations WHERE nick = ?"
@@ -1289,10 +1290,7 @@ class LLMDatabase:
                 "UPDATE conversations SET nick = ? WHERE nick = ?",
                 (new, old),
             )
-            conn.commit()
             return cursor.rowcount
-        finally:
-            pass
 
     # ------------------------------------------------------------------
     # Usage operations
