@@ -2434,7 +2434,9 @@ class TestScheduleLlmTaskFamily:
         parsed = json.loads(out.content)
         assert parsed["status"] == "ok"
         assert parsed["event_name"] == "llm_task_abc"
-        schedule_fn.assert_called_once_with(when_natural="in 60s", prompt="ping me")
+        schedule_fn.assert_called_once_with(
+            when_natural="in 60s", prompt="ping me", reply_target=None
+        )
 
     def test_tool_list_scheduled_llm_tasks_returns_summary(self, mocker: MockerFixture) -> None:
         import json

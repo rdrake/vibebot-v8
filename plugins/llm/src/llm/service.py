@@ -3948,6 +3948,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         channel: str,
         when_natural: str,
         prompt: str,
+        reply_target: str | None = None,
     ) -> ScheduleLlmTaskResult:
         """Schedule a future @ask invocation (Phase 2 Task 3).
 
@@ -3956,6 +3957,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         is ignored; ``prompt`` is the LLM's already-bare instruction and is stored
         verbatim.
 
+        ``reply_target`` (Phase 2 follow-up B) optionally redirects the fired
+        task's response to a different channel or PM nick. ``None`` or empty
+        keeps the legacy behavior of replying in the originating channel/PM.
+        Validation: a channel target requires that both the bot and the creator
+        currently sit in it AND that ``bridgeEnabled`` is true there; a nick
+        target must be the creator's own nick (case-insensitive).
+
         Refuses (without scheduling) when:
         - The caller is already inside a fired schedule
           (``msg.tagged('llm_schedule_depth')`` is truthy) — depth cap of 1.
@@ -3963,6 +3971,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
           requires an authenticated account).
         - ``bridgeScheduledTaskLimit`` is 0 (scheduling disabled in this channel)
           or the caller already has that many active tasks here.
+        - ``reply_target`` fails the validation rules above.
         - ``parse_reminder`` returns ``action='clarify'`` — surface the parser's
           question via the ``clarify`` status.
         """
@@ -4003,6 +4012,19 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 ),
             )
 
+        normalized_reply_target = (reply_target or "").strip()
+        if normalized_reply_target:
+            err = self._validate_reply_target(
+                irc=irc,
+                creator_nick=creator_nick,
+                origin_channel=channel,
+                reply_target=normalized_reply_target,
+            )
+            if err is not None:
+                return ScheduleLlmTaskResult(status="error", message=err)
+        else:
+            normalized_reply_target = ""
+
         # parse_reminder expects both time AND message in one string, so compose.
         # The structured prompt is stored verbatim; parsed.message/action_prompt
         # are discarded.
@@ -4030,6 +4052,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 recurrence_rrule=parsed.recurrence_rrule,
                 chain_position=1,
                 watch_mode=parsed.watch_mode,
+                reply_target=normalized_reply_target or None,
             )
         except sqlite3.IntegrityError:
             return ScheduleLlmTaskResult(
@@ -4056,6 +4079,31 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             or f"Scheduled for {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(fire_at))}.",
             note=parsed.note,
         )
+
+    def _validate_reply_target(
+        self,
+        *,
+        irc: Irc,
+        creator_nick: str,
+        origin_channel: str,
+        reply_target: str,
+    ) -> str | None:
+        """Return ``None`` if the override is allowed, else an error message."""
+        if reply_target.lower() == origin_channel.lower():
+            return None
+        if ircutils.isChannel(reply_target):
+            channels = getattr(getattr(irc, "state", None), "channels", None)
+            if channels is None or reply_target not in channels:
+                return f"reply_target {reply_target}: bot is not in that channel."
+            users = getattr(channels[reply_target], "users", set()) or set()
+            if not any(ircutils.nickEqual(u, creator_nick) for u in users):
+                return f"reply_target {reply_target}: you are not in that channel."
+            if not bool(self.plugin.registryValue("bridgeEnabled", reply_target)):
+                return f"reply_target {reply_target}: bridge is not enabled there."
+            return None
+        if ircutils.nickEqual(reply_target, creator_nick):
+            return None
+        return f"reply_target {reply_target}: PM delivery is only allowed to your own nick."
 
     def _make_scheduled_llm_task_callback(self, event_name: str):
         """Build the no-arg fire closure for ``schedule.addEvent``.
@@ -4109,7 +4157,37 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         now = time.time()
         rl_account = row.account if row.account else row.creator_nick
         rl_tier = "registered" if row.account else "unregistered"
-        target = row.channel if ircutils.isChannel(row.channel) else row.creator_nick
+        if row.reply_target:
+            target = row.reply_target
+        else:
+            target = row.channel if ircutils.isChannel(row.channel) else row.creator_nick
+
+        # Auto-cancel on capability revoke (Phase 2 follow-up C). The fired
+        # @ask path bypasses Limnoria's wrap-time checkCapability, so we mirror
+        # it here. A schedule whose creator no longer has llm.ask shouldn't
+        # keep firing — delete the row, log, and best-effort notify.
+        if not ircdb.checkCapability(msg.prefix, "llm.ask"):
+            self.log.info(
+                "scheduled_llm_task fire: %s creator %s lost llm.ask; auto-cancelling",
+                row.event_name,
+                row.creator_nick,
+            )
+            try:
+                irc.queueMsg(
+                    ircmsgs.privmsg(
+                        target,
+                        f"{row.creator_nick}: Scheduled task auto-cancelled — "
+                        "you no longer have permission to use @ask.",
+                    )
+                )
+            except Exception:
+                self.log.exception(
+                    "scheduled_llm_task notice queueMsg failed: %s",
+                    row.event_name,
+                )
+            self.plugin.db.delete_scheduled_llm_task(row.event_name)
+            return
+
         if plugin._check_rate_limit(
             None,
             "ask",

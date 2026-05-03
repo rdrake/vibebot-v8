@@ -3540,6 +3540,7 @@ class TestScheduledLlmTaskFns:
             channel="#t",
             when_natural="in 60s",
             prompt="ping me",
+            reply_target=None,
         )
 
         # list_fn returns id/when/channel/prompt/recurrence per row, prompt

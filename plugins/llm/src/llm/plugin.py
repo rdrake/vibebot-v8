@@ -3159,7 +3159,12 @@ class LLM(callbacks.Plugin):
     ) -> dict[str, Callable[..., object]]:
         """Build the three-callable dict for the scheduled-task tools."""
 
-        def schedule_fn(*, when_natural: str, prompt: str) -> dict[str, object]:
+        def schedule_fn(
+            *,
+            when_natural: str,
+            prompt: str,
+            reply_target: str | None = None,
+        ) -> dict[str, object]:
             result = self.llm_service.schedule_llm_task(
                 irc=irc,
                 msg=msg,
@@ -3168,6 +3173,7 @@ class LLM(callbacks.Plugin):
                 channel=channel,
                 when_natural=when_natural,
                 prompt=prompt,
+                reply_target=reply_target,
             )
             return {
                 "status": result.status,

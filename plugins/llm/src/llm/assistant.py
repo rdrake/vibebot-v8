@@ -470,6 +470,18 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                             "No 'remind me to', no time qualifier."
                         ),
                     },
+                    "reply_target": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Channel (e.g. '#foo') or your own nick "
+                            "to deliver the result to. Defaults to the channel "
+                            "or PM where this is being scheduled. Cross-target "
+                            "delivery to a channel requires that you and the "
+                            "bot are both in it and the bridge is enabled "
+                            "there; PM delivery is only allowed to your own "
+                            "nick."
+                        ),
+                    },
                 },
                 "required": ["when_natural", "prompt"],
             },
@@ -1043,7 +1055,12 @@ class AssistantToolExecutor:
             return self._err("when_natural is required.")
         if not prompt:
             return self._err("prompt is required.")
-        result = self._schedule_llm_task_fn(when_natural=when_natural, prompt=prompt)
+        reply_target = str(args.get("reply_target") or "").strip() or None
+        result = self._schedule_llm_task_fn(
+            when_natural=when_natural,
+            prompt=prompt,
+            reply_target=reply_target,
+        )
         return json.dumps(result)
 
     def _tool_list_scheduled_llm_tasks(self, _args: dict[str, Any]) -> str:

@@ -5812,6 +5812,8 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
     fake_world.getIrc.return_value = irc
     fake_world.ircs = [irc]
 
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+
     plugin = llm_service.plugin
     plugin._check_rate_limit.return_value = False
     plugin._gather_history.return_value = ([], [])
@@ -5852,3 +5854,313 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
     assert captured["nested_status"] == "error"
     msg_lower = str(captured["nested_message"]).lower()
     assert "depth" in msg_lower or "scheduled" in msg_lower
+
+
+# =============================================================================
+# Phase 2 follow-up B — schedule_llm_task reply_target override
+# =============================================================================
+
+
+class _FakeChannelState:
+    def __init__(self, users):
+        self.users = set(users)
+
+
+def _irc_with_channels(mocker: MockerFixture, channels: dict[str, list[str]]):
+    irc = _irc_mock(mocker)
+    irc.state = mocker.MagicMock()
+    irc.state.channels = {name: _FakeChannelState(users) for name, users in channels.items()}
+    return irc
+
+
+def _registry(values):
+    """Build a side_effect that returns dict-driven registryValue results."""
+
+    def _lookup(key, ch=None):
+        if key == "bridgeScheduledTaskLimit":
+            return values.get("bridgeScheduledTaskLimit", 5)
+        if key == "bridgeEnabled":
+            return values.get(("bridgeEnabled", ch), False)
+        if key == "commandPrefixes":
+            return values.get("commandPrefixes", "@")
+        return values.get(key)
+
+    return _lookup
+
+
+def _patch_parser(llm_service, mocker: MockerFixture):
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="x",
+            confirmation="ok",
+            note=None,
+            action_prompt="x",
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+
+
+def test_reply_target_channel_membership_ok_persists_override(
+    llm_service, db, mocker: MockerFixture
+):
+    """Cross-channel target where bot+creator are present and bridge is enabled
+    persists `reply_target` on the row."""
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#t": ["rdrake"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {
+            "bridgeScheduledTaskLimit": 5,
+            ("bridgeEnabled", "#deliver"): True,
+        }
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="check the build",
+        reply_target="#deliver",
+    )
+    assert res.status == "ok"
+    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == res.event_name]
+    assert row.reply_target == "#deliver"
+
+
+def test_reply_target_channel_bot_absent_refused(llm_service, mocker: MockerFixture):
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#t": ["rdrake"]})  # bot not in #other
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {
+            "bridgeScheduledTaskLimit": 5,
+        }
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="#other",
+    )
+    assert res.status == "error"
+    assert "not in that channel" in res.message
+
+
+def test_reply_target_channel_creator_absent_refused(llm_service, mocker: MockerFixture):
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#deliver": ["bot"], "#t": ["rdrake", "bot"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {
+            "bridgeScheduledTaskLimit": 5,
+            ("bridgeEnabled", "#deliver"): True,
+        }
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="#deliver",
+    )
+    assert res.status == "error"
+    assert "you are not in that channel" in res.message
+
+
+def test_reply_target_channel_bridge_disabled_refused(llm_service, mocker: MockerFixture):
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#t": ["rdrake"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {
+            "bridgeScheduledTaskLimit": 5,
+            ("bridgeEnabled", "#deliver"): False,
+        }
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="#deliver",
+    )
+    assert res.status == "error"
+    assert "bridge is not enabled" in res.message
+
+
+def test_reply_target_pm_self_ok(llm_service, db, mocker: MockerFixture):
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="rdrake",
+    )
+    assert res.status == "ok"
+    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == res.event_name]
+    assert row.reply_target == "rdrake"
+
+
+def test_reply_target_pm_other_refused(llm_service, mocker: MockerFixture):
+    mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="someone_else",
+    )
+    assert res.status == "error"
+    assert "your own nick" in res.message
+
+
+def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerFixture):
+    """At fire time the privmsg goes to row.reply_target, not row.channel."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#origin": ["rdrake", "bot"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {
+            "bridgeScheduledTaskLimit": 5,
+            ("bridgeEnabled", "#deliver"): True,
+        }
+    )
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#origin",
+        when_natural="in 60s",
+        prompt="say hi",
+        reply_target="#deliver",
+    )
+    assert res.status == "ok"
+
+    fire_callable = add_event.call_args.args[0]
+    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
+    fake_world.getIrc.return_value = irc
+    fake_world.ircs = [irc]
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+
+    plugin = llm_service.plugin
+    plugin._check_rate_limit.return_value = False
+    plugin._gather_history.return_value = ([], [])
+    plugin._get_user_memories.return_value = []
+    mocker.patch.object(plugin.db, "get_instruction", return_value="")
+    plugin._reminder_fns.return_value = {}
+    plugin._scheduled_llm_task_fns.return_value = {}
+
+    mocker.patch.object(
+        llm_service,
+        "assistant_request",
+        return_value=mocker.MagicMock(
+            content="hi from the future",
+            model="m",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            error=None,
+        ),
+    )
+
+    fire_callable()
+
+    privmsg_calls = [
+        call
+        for call in irc.queueMsg.call_args_list
+        if getattr(call.args[0], "command", None) == "PRIVMSG"
+    ]
+    assert privmsg_calls, "expected at least one PRIVMSG queued"
+    assert privmsg_calls[-1].args[0].args[0] == "#deliver"
+
+
+# =============================================================================
+# Phase 2 follow-up C — auto-cancel on capability revoke
+# =============================================================================
+
+
+def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: MockerFixture):
+    """If the creator no longer holds llm.ask at fire time the row is deleted
+    and assistant_request is never called."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        when_natural="in 60s",
+        prompt="x",
+    )
+    assert res.status == "ok"
+    event_name = res.event_name
+
+    fire_callable = add_event.call_args.args[0]
+    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
+    fake_world.getIrc.return_value = irc
+    fake_world.ircs = [irc]
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=False)
+
+    assistant = mocker.patch.object(llm_service, "assistant_request")
+
+    fire_callable()
+
+    assert assistant.call_count == 0
+    assert db.get_scheduled_llm_task(event_name) is None
+    privmsg_calls = [
+        c for c in irc.queueMsg.call_args_list if getattr(c.args[0], "command", None) == "PRIVMSG"
+    ]
+    assert privmsg_calls, "expected an auto-cancel notice to be queued"
+    body = privmsg_calls[-1].args[0].args[1]
+    assert "auto-cancelled" in body

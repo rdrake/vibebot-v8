@@ -15,7 +15,7 @@ import time
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -56,6 +56,7 @@ class ScheduledLlmTaskRow(NamedTuple):
     recurrence_rrule: str | None
     chain_position: int
     watch_mode: bool
+    reply_target: str | None = None
 
     def rehydrate_msg(self):
         """Build a fresh ``IrcMsg`` from the persisted wire string."""
@@ -415,6 +416,17 @@ class LLMDatabase:
                 """)
                 conn.commit()
 
+            if current_version < 14:
+                # Phase 2 follow-up B: optional cross-target delivery for
+                # scheduled tasks. NULL = deliver to the originating channel
+                # (legacy behavior); non-empty string = override target nick or
+                # channel.
+                conn.executescript("""
+                    ALTER TABLE scheduled_llm_tasks
+                        ADD COLUMN reply_target TEXT;
+                """)
+                conn.commit()
+
             # Stamp the schema version so future opens skip completed migrations.
             # PRAGMA statements cannot be part of executescript, so use execute.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -671,7 +683,7 @@ class LLMDatabase:
     _SCHEDULED_LLM_TASK_COLUMNS = (
         "id, event_name, creator_nick, account, channel, network, wire_msg, "
         "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
-        "chain_position, watch_mode"
+        "chain_position, watch_mode, reply_target"
     )
 
     @staticmethod
@@ -691,6 +703,7 @@ class LLMDatabase:
             recurrence_rrule=row[11],
             chain_position=row[12],
             watch_mode=bool(row[13]),
+            reply_target=row[14],
         )
 
     def save_scheduled_llm_task(
@@ -708,6 +721,7 @@ class LLMDatabase:
         recurrence_rrule: str | None = None,
         chain_position: int = 1,
         watch_mode: bool = False,
+        reply_target: str | None = None,
     ) -> int:
         """Save a scheduled LLM task row.
 
@@ -723,8 +737,8 @@ class LLMDatabase:
             "INSERT INTO scheduled_llm_tasks "
             "(event_name, creator_nick, account, channel, network, wire_msg, "
             "prompt, fire_at, created_at, recurrence_seconds, recurrence_rrule, "
-            "chain_position, watch_mode) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "chain_position, watch_mode, reply_target) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_name,
                 creator_nick,
@@ -739,6 +753,7 @@ class LLMDatabase:
                 recurrence_rrule,
                 chain_position,
                 int(watch_mode),
+                reply_target,
             ),
         )
         conn.commit()
