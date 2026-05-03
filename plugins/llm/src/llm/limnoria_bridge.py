@@ -7,7 +7,7 @@ Exposes loaded Limnoria plugin commands to the LLM as a single
 2. Operator-set ``bridgeAllowedPlugins`` (per-channel registry).
 3. Limnoria's own capability system via ``checkCommandCapability``.
 
-See docs/plans/2026-05-02-limnoria-tool-bridge-plan.md for the full design.
+See docs/plans/archive/2026-05-02-limnoria-tool-bridge-plan.md for the full design.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
 #
 # Sourcing: each entry is keyed to a method in a stock Limnoria plugin
 # under .venv/lib/python3.14/site-packages/supybot/plugins/<Plugin>/plugin.py
-# — see docs/plans/2026-05-02-limnoria-bridge-task-1-implementation-plan.md
+# — see docs/plans/archive/2026-05-02-limnoria-bridge-task-1-implementation-plan.md
 # for line-level citations.
 MUTATING_COMMANDS: frozenset[tuple[str, str]] = frozenset(
     {
