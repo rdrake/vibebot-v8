@@ -205,255 +205,252 @@ class LLMDatabase:
         table additions are guarded by version checks.
         """
         conn = self._connect()
-        try:
-            # --- v1 baseline: create core tables ---------------------------
+        # --- v1 baseline: create core tables ---------------------------
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT UNIQUE NOT NULL,
+                nick TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message TEXT NOT NULL,
+                fire_at REAL NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminders_fire_at
+                ON reminders(fire_at);
+
+            CREATE TABLE IF NOT EXISTS usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                nick TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                command TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_timestamp
+                ON usage(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_usage_nick
+                ON usage(nick);
+            CREATE INDEX IF NOT EXISTS idx_usage_channel
+                ON usage(channel);
+
+            CREATE TABLE IF NOT EXISTS pending_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL,
+                nick TEXT NOT NULL,
+                reply_target TEXT NOT NULL,
+                is_channel INTEGER NOT NULL,
+                prompt_preview TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_data TEXT NOT NULL DEFAULT '{}',
+                submitted_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                claimed_until REAL NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_tasks_expires_at
+                ON pending_tasks(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_pending_tasks_due
+                ON pending_tasks(next_attempt_at, claimed_until);
+            CREATE INDEX IF NOT EXISTS idx_pending_tasks_type
+                ON pending_tasks(task_type);
+        """)
+        conn.commit()
+
+        # --- version-gated migrations ----------------------------------
+        row = conn.execute("PRAGMA user_version").fetchone()
+        current_version = row[0] if row else 0
+
+        if current_version < 2:
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_name TEXT UNIQUE NOT NULL,
-                    nick TEXT NOT NULL,
-                    channel TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    fire_at REAL NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_reminders_fire_at
-                    ON reminders(fire_at);
+                ALTER TABLE usage ADD COLUMN prompt TEXT NOT NULL DEFAULT '';
+                ALTER TABLE usage ADD COLUMN status TEXT NOT NULL DEFAULT 'success';
+                ALTER TABLE usage ADD COLUMN error_detail TEXT NOT NULL DEFAULT '';
 
-                CREATE TABLE IF NOT EXISTS usage (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    nick TEXT NOT NULL,
-                    channel TEXT NOT NULL,
-                    command TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                    completion_tokens INTEGER NOT NULL DEFAULT 0,
-                    cost REAL NOT NULL DEFAULT 0.0
-                );
-                CREATE INDEX IF NOT EXISTS idx_usage_timestamp
-                    ON usage(timestamp);
-                CREATE INDEX IF NOT EXISTS idx_usage_nick
-                    ON usage(nick);
-                CREATE INDEX IF NOT EXISTS idx_usage_channel
-                    ON usage(channel);
+                CREATE INDEX IF NOT EXISTS idx_usage_nick_status
+                    ON usage(nick, status);
 
-                CREATE TABLE IF NOT EXISTS pending_tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_type TEXT NOT NULL,
-                    nick TEXT NOT NULL,
-                    reply_target TEXT NOT NULL,
-                    is_channel INTEGER NOT NULL,
-                    prompt_preview TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    request_data TEXT NOT NULL DEFAULT '{}',
-                    submitted_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at REAL NOT NULL,
-                    claimed_until REAL NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT ''
-                );
-                CREATE INDEX IF NOT EXISTS idx_pending_tasks_expires_at
-                    ON pending_tasks(expires_at);
-                CREATE INDEX IF NOT EXISTS idx_pending_tasks_due
-                    ON pending_tasks(next_attempt_at, claimed_until);
-                CREATE INDEX IF NOT EXISTS idx_pending_tasks_type
-                    ON pending_tasks(task_type);
             """)
             conn.commit()
 
-            # --- version-gated migrations ----------------------------------
-            row = conn.execute("PRAGMA user_version").fetchone()
-            current_version = row[0] if row else 0
+        if current_version < 3:
+            conn.executescript("""
+                ALTER TABLE pending_tasks
+                    ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending';
+                ALTER TABLE pending_tasks
+                    ADD COLUMN result_payload TEXT NOT NULL DEFAULT '';
+                ALTER TABLE pending_tasks
+                    ADD COLUMN last_delivery_error TEXT NOT NULL DEFAULT '';
+                ALTER TABLE pending_tasks
+                    ADD COLUMN delivery_attempt_count INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE pending_tasks
+                    ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT '';
 
-            if current_version < 2:
-                conn.executescript("""
-                    ALTER TABLE usage ADD COLUMN prompt TEXT NOT NULL DEFAULT '';
-                    ALTER TABLE usage ADD COLUMN status TEXT NOT NULL DEFAULT 'success';
-                    ALTER TABLE usage ADD COLUMN error_detail TEXT NOT NULL DEFAULT '';
-
-                    CREATE INDEX IF NOT EXISTS idx_usage_nick_status
-                        ON usage(nick, status);
-
-                """)
-                conn.commit()
-
-            if current_version < 3:
-                conn.executescript("""
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending';
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN result_payload TEXT NOT NULL DEFAULT '';
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN last_delivery_error TEXT NOT NULL DEFAULT '';
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN delivery_attempt_count INTEGER NOT NULL DEFAULT 0;
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT '';
-
-                    CREATE INDEX IF NOT EXISTS idx_pending_tasks_delivery_state
-                        ON pending_tasks(delivery_state);
-                """)
-                conn.commit()
-
-            if current_version < 4:
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS conversations (
-                        nick TEXT NOT NULL,
-                        channel TEXT NOT NULL,
-                        messages TEXT NOT NULL,
-                        last_activity REAL NOT NULL,
-                        PRIMARY KEY (nick, channel)
-                    );
-                """)
-                conn.commit()
-
-            if current_version < 5:
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS memories (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        nick TEXT NOT NULL,
-                        fact TEXT NOT NULL,
-                        source_channel TEXT NOT NULL,
-                        created_at REAL NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_memories_nick
-                        ON memories(nick);
-                """)
-                conn.commit()
-
-            if current_version < 6:
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS memory_cleanup_state (
-                        nick TEXT PRIMARY KEY,
-                        saves_since_cleanup INTEGER NOT NULL DEFAULT 0
-                    );
-                """)
-                conn.commit()
-
-            if current_version < 7:
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS user_instructions (
-                        nick TEXT PRIMARY KEY,
-                        instruction TEXT NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                """)
-                conn.commit()
-
-            if current_version < 8:
-                conn.executescript("""
-                    ALTER TABLE pending_tasks
-                        ADD COLUMN account TEXT;
-                """)
-                conn.commit()
-
-            if current_version < 9:
-                conn.executescript("""
-                    ALTER TABLE reminders
-                        ADD COLUMN action_prompt TEXT NOT NULL DEFAULT '';
-                    ALTER TABLE reminders
-                        ADD COLUMN account TEXT;
-                """)
-                conn.commit()
-
-            if current_version < 10:
-                # Per-chain caps: each reminder belongs to a chain (started by
-                # a chat-level set, extended by action-fire reschedules). Old
-                # rows backfill chain_id = event_name (single-fire chain),
-                # chain_position = 1, chain_started_at = created_at.
-                conn.executescript("""
-                    ALTER TABLE reminders
-                        ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';
-                    ALTER TABLE reminders
-                        ADD COLUMN chain_position INTEGER NOT NULL DEFAULT 1;
-                    ALTER TABLE reminders
-                        ADD COLUMN chain_started_at REAL NOT NULL DEFAULT 0;
-                """)
-                conn.execute("UPDATE reminders SET chain_id = event_name WHERE chain_id = ''")
-                conn.execute(
-                    "UPDATE reminders SET chain_started_at = created_at WHERE chain_started_at = 0"
-                )
-                conn.commit()
-
-            if current_version < 11:
-                # chain_id was stored on every row but never used as a lookup
-                # key — chain_position and chain_started_at carry the cap and
-                # TTL semantics. Drop the unused column.
-                conn.executescript("""
-                    ALTER TABLE reminders DROP COLUMN chain_id;
-                """)
-                conn.commit()
-
-            if current_version < 12:
-                # B0.5 strategy: graceful degradation. Existing rows have NULL
-                # recurrence_seconds/recurrence_rrule and watch_mode=0; the
-                # legacy LLM-tool reschedule path keeps them firing via
-                # parenthetical parsing in action_prompt until they exhaust
-                # naturally. New rows populate the structured columns directly
-                # (B2 parser, B4 mechanical reschedule). The 30-day chain TTL
-                # is also retired here — the 50-fire chain_position cap remains
-                # the sole runaway guard.
-                conn.executescript("""
-                    ALTER TABLE reminders DROP COLUMN chain_started_at;
-                    ALTER TABLE reminders ADD COLUMN recurrence_seconds INTEGER;
-                    ALTER TABLE reminders ADD COLUMN recurrence_rrule TEXT;
-                    ALTER TABLE reminders ADD COLUMN watch_mode INTEGER NOT NULL DEFAULT 0;
-                """)
-                conn.commit()
-
-            if current_version < 13:
-                # Task 3 (Limnoria bridge Phase 2): native LLM tool
-                # ``schedule_llm_task`` and friends. One row per active
-                # schedule. Persists wire-format msg so the fire closure can
-                # rebuild a fresh IrcMsg without relying on pickle (msg.tags
-                # would be lost over IrcMsg.__reduce__).
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS scheduled_llm_tasks (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        event_name TEXT UNIQUE NOT NULL,
-                        creator_nick TEXT NOT NULL,
-                        account TEXT,
-                        channel TEXT NOT NULL,
-                        network TEXT NOT NULL,
-                        wire_msg TEXT NOT NULL,
-                        prompt TEXT NOT NULL,
-                        fire_at REAL NOT NULL,
-                        created_at REAL NOT NULL,
-                        recurrence_seconds INTEGER,
-                        recurrence_rrule TEXT,
-                        chain_position INTEGER NOT NULL DEFAULT 1,
-                        watch_mode INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_fire_at
-                        ON scheduled_llm_tasks(fire_at);
-                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_account
-                        ON scheduled_llm_tasks(account);
-                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_creator_nick
-                        ON scheduled_llm_tasks(creator_nick);
-                    CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_owner_channel
-                        ON scheduled_llm_tasks(account, creator_nick, channel);
-                """)
-                conn.commit()
-
-            if current_version < 14:
-                # Phase 2 follow-up B: optional cross-target delivery for
-                # scheduled tasks. NULL = deliver to the originating channel
-                # (legacy behavior); non-empty string = override target nick or
-                # channel.
-                conn.executescript("""
-                    ALTER TABLE scheduled_llm_tasks
-                        ADD COLUMN reply_target TEXT;
-                """)
-                conn.commit()
-
-            # Stamp the schema version so future opens skip completed migrations.
-            # PRAGMA statements cannot be part of executescript, so use execute.
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                CREATE INDEX IF NOT EXISTS idx_pending_tasks_delivery_state
+                    ON pending_tasks(delivery_state);
+            """)
             conn.commit()
-        finally:
-            pass
+
+        if current_version < 4:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    nick TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    messages TEXT NOT NULL,
+                    last_activity REAL NOT NULL,
+                    PRIMARY KEY (nick, channel)
+                );
+            """)
+            conn.commit()
+
+        if current_version < 5:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nick TEXT NOT NULL,
+                    fact TEXT NOT NULL,
+                    source_channel TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memories_nick
+                    ON memories(nick);
+            """)
+            conn.commit()
+
+        if current_version < 6:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS memory_cleanup_state (
+                    nick TEXT PRIMARY KEY,
+                    saves_since_cleanup INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.commit()
+
+        if current_version < 7:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_instructions (
+                    nick TEXT PRIMARY KEY,
+                    instruction TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+            """)
+            conn.commit()
+
+        if current_version < 8:
+            conn.executescript("""
+                ALTER TABLE pending_tasks
+                    ADD COLUMN account TEXT;
+            """)
+            conn.commit()
+
+        if current_version < 9:
+            conn.executescript("""
+                ALTER TABLE reminders
+                    ADD COLUMN action_prompt TEXT NOT NULL DEFAULT '';
+                ALTER TABLE reminders
+                    ADD COLUMN account TEXT;
+            """)
+            conn.commit()
+
+        if current_version < 10:
+            # Per-chain caps: each reminder belongs to a chain (started by
+            # a chat-level set, extended by action-fire reschedules). Old
+            # rows backfill chain_id = event_name (single-fire chain),
+            # chain_position = 1, chain_started_at = created_at.
+            conn.executescript("""
+                ALTER TABLE reminders
+                    ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';
+                ALTER TABLE reminders
+                    ADD COLUMN chain_position INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE reminders
+                    ADD COLUMN chain_started_at REAL NOT NULL DEFAULT 0;
+            """)
+            conn.execute("UPDATE reminders SET chain_id = event_name WHERE chain_id = ''")
+            conn.execute(
+                "UPDATE reminders SET chain_started_at = created_at WHERE chain_started_at = 0"
+            )
+            conn.commit()
+
+        if current_version < 11:
+            # chain_id was stored on every row but never used as a lookup
+            # key — chain_position and chain_started_at carry the cap and
+            # TTL semantics. Drop the unused column.
+            conn.executescript("""
+                ALTER TABLE reminders DROP COLUMN chain_id;
+            """)
+            conn.commit()
+
+        if current_version < 12:
+            # B0.5 strategy: graceful degradation. Existing rows have NULL
+            # recurrence_seconds/recurrence_rrule and watch_mode=0; the
+            # legacy LLM-tool reschedule path keeps them firing via
+            # parenthetical parsing in action_prompt until they exhaust
+            # naturally. New rows populate the structured columns directly
+            # (B2 parser, B4 mechanical reschedule). The 30-day chain TTL
+            # is also retired here — the 50-fire chain_position cap remains
+            # the sole runaway guard.
+            conn.executescript("""
+                ALTER TABLE reminders DROP COLUMN chain_started_at;
+                ALTER TABLE reminders ADD COLUMN recurrence_seconds INTEGER;
+                ALTER TABLE reminders ADD COLUMN recurrence_rrule TEXT;
+                ALTER TABLE reminders ADD COLUMN watch_mode INTEGER NOT NULL DEFAULT 0;
+            """)
+            conn.commit()
+
+        if current_version < 13:
+            # Task 3 (Limnoria bridge Phase 2): native LLM tool
+            # ``schedule_llm_task`` and friends. One row per active
+            # schedule. Persists wire-format msg so the fire closure can
+            # rebuild a fresh IrcMsg without relying on pickle (msg.tags
+            # would be lost over IrcMsg.__reduce__).
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS scheduled_llm_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_name TEXT UNIQUE NOT NULL,
+                    creator_nick TEXT NOT NULL,
+                    account TEXT,
+                    channel TEXT NOT NULL,
+                    network TEXT NOT NULL,
+                    wire_msg TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    fire_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    recurrence_seconds INTEGER,
+                    recurrence_rrule TEXT,
+                    chain_position INTEGER NOT NULL DEFAULT 1,
+                    watch_mode INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_fire_at
+                    ON scheduled_llm_tasks(fire_at);
+                CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_account
+                    ON scheduled_llm_tasks(account);
+                CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_creator_nick
+                    ON scheduled_llm_tasks(creator_nick);
+                CREATE INDEX IF NOT EXISTS idx_scheduled_llm_tasks_owner_channel
+                    ON scheduled_llm_tasks(account, creator_nick, channel);
+            """)
+            conn.commit()
+
+        if current_version < 14:
+            # Phase 2 follow-up B: optional cross-target delivery for
+            # scheduled tasks. NULL = deliver to the originating channel
+            # (legacy behavior); non-empty string = override target nick or
+            # channel.
+            conn.executescript("""
+                ALTER TABLE scheduled_llm_tasks
+                    ADD COLUMN reply_target TEXT;
+            """)
+            conn.commit()
+
+        # Stamp the schema version so future opens skip completed migrations.
+        # PRAGMA statements cannot be part of executescript, so use execute.
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
 
     def close(self) -> None:
         """Close the current thread's connection if open."""
@@ -642,35 +639,32 @@ class LLMDatabase:
         """
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
         conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT id, event_name, nick, channel, message, action_prompt, account, "
-                "fire_at, created_at, chain_position, "
-                "recurrence_seconds, recurrence_rrule, watch_mode "
-                "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
-                (cutoff,),
-            ).fetchall()
-            # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
-            return [
-                ReminderRow(
-                    id=row[0],
-                    event_name=row[1],
-                    nick=row[2],
-                    channel=row[3],
-                    message=row[4],
-                    action_prompt=row[5],
-                    account=row[6],
-                    fire_at=row[7],
-                    created_at=row[8],
-                    chain_position=row[9],
-                    recurrence_seconds=row[10],
-                    recurrence_rrule=row[11],
-                    watch_mode=bool(row[12]),
-                )
-                for row in rows
-            ]
-        finally:
-            pass
+        rows = conn.execute(
+            "SELECT id, event_name, nick, channel, message, action_prompt, account, "
+            "fire_at, created_at, chain_position, "
+            "recurrence_seconds, recurrence_rrule, watch_mode "
+            "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
+            (cutoff,),
+        ).fetchall()
+        # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
+        return [
+            ReminderRow(
+                id=row[0],
+                event_name=row[1],
+                nick=row[2],
+                channel=row[3],
+                message=row[4],
+                action_prompt=row[5],
+                account=row[6],
+                fire_at=row[7],
+                created_at=row[8],
+                chain_position=row[9],
+                recurrence_seconds=row[10],
+                recurrence_rrule=row[11],
+                watch_mode=bool(row[12]),
+            )
+            for row in rows
+        ]
 
     def delete_expired_reminders(self) -> int:
         """Delete reminders that are more than 24 hours overdue.
@@ -823,7 +817,7 @@ class LLMDatabase:
         """Active rows whose creator_nick OR account matches ``target``.
 
         Owner-only callers identify another user by either the nick that
-        scheduled the task or the NickServ account it was stored under,
+        scheduled the task or the account it was stored under,
         case-insensitively.
         """
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
@@ -1028,8 +1022,6 @@ class LLMDatabase:
         except Exception:
             conn.rollback()
             raise
-        finally:
-            pass
 
     def release_pending_task(
         self,
@@ -1183,19 +1175,16 @@ class LLMDatabase:
             Earliest next_attempt_at timestamp, or None if the queue is empty.
         """
         conn = self._connect()
-        try:
-            now = time.time()
-            row = conn.execute(
-                "SELECT MIN(next_attempt_at) FROM pending_tasks "
-                "WHERE claimed_until <= ? "
-                "AND delivery_state IN ('pending', 'ready', 'retrying')",
-                (now,),
-            ).fetchone()
-            if row is None or row[0] is None:
-                return None
-            return row[0]
-        finally:
-            pass
+        now = time.time()
+        row = conn.execute(
+            "SELECT MIN(next_attempt_at) FROM pending_tasks "
+            "WHERE claimed_until <= ? "
+            "AND delivery_state IN ('pending', 'ready', 'retrying')",
+            (now,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return row[0]
 
     def load_pending_tasks(self, task_type: str | None = None) -> list[PendingTaskRow]:
         """Load pending tasks, optionally filtered by type.
@@ -1209,20 +1198,17 @@ class LLMDatabase:
             List of PendingTaskRow ordered by submitted_at ascending.
         """
         conn = self._connect()
-        try:
-            if task_type is not None:
-                rows = conn.execute(
-                    f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
-                    "WHERE task_type = ? ORDER BY submitted_at",
-                    (task_type,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks ORDER BY submitted_at",
-                ).fetchall()
-            return [PendingTaskRow(*row) for row in rows]
-        finally:
-            pass
+        if task_type is not None:
+            rows = conn.execute(
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
+                "WHERE task_type = ? ORDER BY submitted_at",
+                (task_type,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks ORDER BY submitted_at",
+            ).fetchall()
+        return [PendingTaskRow(*row) for row in rows]
 
     # ------------------------------------------------------------------
     # Usage migration
@@ -1233,7 +1219,7 @@ class LLMDatabase:
 
         Used when switching from nick-based to account-based tracking:
         rows logged under the raw IRC nick are re-attributed to the
-        NickServ account name so ``%usage`` queries return complete data.
+        account name so ``%usage`` queries return complete data.
 
         The match is case-insensitive (IRC nicks are case-insensitive).
         Rows that already carry *new_nick* are left untouched.
@@ -1268,7 +1254,7 @@ class LLMDatabase:
 
         Args:
             old_nick: Previous nick value.
-            new_nick: New identity value (typically a NickServ account).
+            new_nick: New identity value (typically an account).
 
         Returns:
             Number of rows updated (renamed only; conflicts dropped don't count).
@@ -1357,35 +1343,32 @@ class LLMDatabase:
             UsageSummary with totals for requests, tokens, and cost.
         """
         conn = self._connect()
-        try:
-            if since is not None:
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    "FROM usage WHERE timestamp >= ?",
-                    (since,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    "FROM usage",
-                ).fetchone()
-            if row is None:
-                return UsageSummary(
-                    total_requests=0,
-                    total_prompt_tokens=0,
-                    total_completion_tokens=0,
-                    total_cost=0.0,
-                )
+        if since is not None:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                "FROM usage WHERE timestamp >= ?",
+                (since,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                "FROM usage",
+            ).fetchone()
+        if row is None:
             return UsageSummary(
-                total_requests=row[0],
-                total_prompt_tokens=row[1],
-                total_completion_tokens=row[2],
-                total_cost=row[3],
+                total_requests=0,
+                total_prompt_tokens=0,
+                total_completion_tokens=0,
+                total_cost=0.0,
             )
-        finally:
-            pass
+        return UsageSummary(
+            total_requests=row[0],
+            total_prompt_tokens=row[1],
+            total_completion_tokens=row[2],
+            total_cost=row[3],
+        )
 
     def get_usage_by_nick(self, since: float | None = None, limit: int = 5) -> list[UsageBreakdown]:
         """Get usage statistics grouped by nick, sorted by cost descending.
@@ -1430,35 +1413,32 @@ class LLMDatabase:
         # dimension is always a hardcoded column name from our own code,
         # never user input, so string interpolation is safe here.
         conn = self._connect()
-        try:
-            if since is not None:
-                rows = conn.execute(
-                    f"SELECT {dimension}, COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    f"COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    f"FROM usage WHERE timestamp >= ? "
-                    f"GROUP BY {dimension} ORDER BY SUM(cost) DESC LIMIT ?",
-                    (since, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"SELECT {dimension}, COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    f"COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    f"FROM usage "
-                    f"GROUP BY {dimension} ORDER BY SUM(cost) DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
-            return [
-                UsageBreakdown(
-                    name=row[0],
-                    total_requests=row[1],
-                    total_prompt_tokens=row[2],
-                    total_completion_tokens=row[3],
-                    total_cost=row[4],
-                )
-                for row in rows
-            ]
-        finally:
-            pass
+        if since is not None:
+            rows = conn.execute(
+                f"SELECT {dimension}, COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                f"COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                f"FROM usage WHERE timestamp >= ? "
+                f"GROUP BY {dimension} ORDER BY SUM(cost) DESC LIMIT ?",
+                (since, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {dimension}, COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                f"COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                f"FROM usage "
+                f"GROUP BY {dimension} ORDER BY SUM(cost) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            UsageBreakdown(
+                name=row[0],
+                total_requests=row[1],
+                total_prompt_tokens=row[2],
+                total_completion_tokens=row[3],
+                total_cost=row[4],
+            )
+            for row in rows
+        ]
 
     def get_usage_summary_for_channel(
         self, channel: str, since: float | None = None
@@ -1473,31 +1453,28 @@ class LLMDatabase:
             UsageSummary with totals for the given channel.
         """
         conn = self._connect()
-        try:
-            if since is not None:
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    "FROM usage WHERE channel = ? AND timestamp >= ?",
-                    (channel, since),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                    "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                    "FROM usage WHERE channel = ?",
-                    (channel,),
-                ).fetchone()
-            if row is None:
-                return UsageSummary(0, 0, 0, 0.0)
-            return UsageSummary(
-                total_requests=row[0],
-                total_prompt_tokens=row[1],
-                total_completion_tokens=row[2],
-                total_cost=row[3],
-            )
-        finally:
-            pass
+        if since is not None:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                "FROM usage WHERE channel = ? AND timestamp >= ?",
+                (channel, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+                "FROM usage WHERE channel = ?",
+                (channel,),
+            ).fetchone()
+        if row is None:
+            return UsageSummary(0, 0, 0, 0.0)
+        return UsageSummary(
+            total_requests=row[0],
+            total_prompt_tokens=row[1],
+            total_completion_tokens=row[2],
+            total_cost=row[3],
+        )
 
     def get_usage_summary_for_nick(
         self, nick: str, since: float | None = None, channel: str | None = None
@@ -1513,32 +1490,29 @@ class LLMDatabase:
             UsageSummary with totals for the given nick (optionally in a channel).
         """
         conn = self._connect()
-        try:
-            conditions = ["nick = ?"]
-            params: list[object] = [nick]
-            if channel is not None:
-                conditions.append("channel = ?")
-                params.append(channel)
-            if since is not None:
-                conditions.append("timestamp >= ?")
-                params.append(since)
-            where = " AND ".join(conditions)
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                f"FROM usage WHERE {where}",
-                tuple(params),
-            ).fetchone()
-            if row is None:
-                return UsageSummary(0, 0, 0, 0.0)
-            return UsageSummary(
-                total_requests=row[0],
-                total_prompt_tokens=row[1],
-                total_completion_tokens=row[2],
-                total_cost=row[3],
-            )
-        finally:
-            pass
+        conditions = ["nick = ?"]
+        params: list[object] = [nick]
+        if channel is not None:
+            conditions.append("channel = ?")
+            params.append(channel)
+        if since is not None:
+            conditions.append("timestamp >= ?")
+            params.append(since)
+        where = " AND ".join(conditions)
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+            "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
+            f"FROM usage WHERE {where}",
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return UsageSummary(0, 0, 0, 0.0)
+        return UsageSummary(
+            total_requests=row[0],
+            total_prompt_tokens=row[1],
+            total_completion_tokens=row[2],
+            total_cost=row[3],
+        )
 
     def get_channel_rank(self, channel: str, since: float | None = None) -> UsageRank:
         """Get the cost rank of a channel among all channels.
@@ -1591,61 +1565,58 @@ class LLMDatabase:
         """
         assert dimension in ("nick", "channel"), f"Invalid dimension: {dimension}"
         conn = self._connect()
-        try:
-            # Build WHERE clause fragments
-            time_filter = "timestamp >= ?" if since is not None else None
-            channel_filter = "channel = ?" if scope_channel is not None else None
+        # Build WHERE clause fragments
+        time_filter = "timestamp >= ?" if since is not None else None
+        channel_filter = "channel = ?" if scope_channel is not None else None
 
-            base_conditions = [c for c in (time_filter, channel_filter) if c]
-            base_where = (" WHERE " + " AND ".join(base_conditions)) if base_conditions else ""
-            base_params: list[object] = []
-            if since is not None:
-                base_params.append(since)
-            if scope_channel is not None:
-                base_params.append(scope_channel)
+        base_conditions = [c for c in (time_filter, channel_filter) if c]
+        base_where = (" WHERE " + " AND ".join(base_conditions)) if base_conditions else ""
+        base_params: list[object] = []
+        if since is not None:
+            base_params.append(since)
+        if scope_channel is not None:
+            base_params.append(scope_channel)
 
-            # Total distinct entries
-            total_row = conn.execute(
-                f"SELECT COUNT(DISTINCT {dimension}) FROM usage{base_where}",
-                tuple(base_params),
-            ).fetchone()
-            total = total_row[0] if total_row else 0
+        # Total distinct entries
+        total_row = conn.execute(
+            f"SELECT COUNT(DISTINCT {dimension}) FROM usage{base_where}",
+            tuple(base_params),
+        ).fetchone()
+        total = total_row[0] if total_row else 0
 
-            # Get the value's total cost
-            value_conditions = [f"{dimension} = ?"] + list(base_conditions)
-            value_where = " AND ".join(value_conditions)
-            value_params: list[object] = [value, *base_params]
+        # Get the value's total cost
+        value_conditions = [f"{dimension} = ?"] + list(base_conditions)
+        value_where = " AND ".join(value_conditions)
+        value_params: list[object] = [value, *base_params]
 
-            cost_row = conn.execute(
-                f"SELECT COALESCE(SUM(cost), 0.0) FROM usage WHERE {value_where}",
+        cost_row = conn.execute(
+            f"SELECT COALESCE(SUM(cost), 0.0) FROM usage WHERE {value_where}",
+            tuple(value_params),
+        ).fetchone()
+        value_cost = cost_row[0] if cost_row else 0.0
+
+        if value_cost == 0.0:
+            # Check if there's actually any usage for this value
+            count_row = conn.execute(
+                f"SELECT COUNT(*) FROM usage WHERE {value_where}",
                 tuple(value_params),
             ).fetchone()
-            value_cost = cost_row[0] if cost_row else 0.0
+            if count_row is None or count_row[0] == 0:
+                return UsageRank(rank=0, total=total)
 
-            if value_cost == 0.0:
-                # Check if there's actually any usage for this value
-                count_row = conn.execute(
-                    f"SELECT COUNT(*) FROM usage WHERE {value_where}",
-                    tuple(value_params),
-                ).fetchone()
-                if count_row is None or count_row[0] == 0:
-                    return UsageRank(rank=0, total=total)
+        # Count entries with strictly higher cost
+        rank_sql = (
+            f"SELECT COUNT(*) FROM "
+            f"(SELECT {dimension}, SUM(cost) AS total_cost "
+            f"FROM usage{base_where} "
+            f"GROUP BY {dimension}) sub "
+            f"WHERE sub.total_cost > ?"
+        )
+        rank_params: list[object] = [*base_params, value_cost]
+        rank_row = conn.execute(rank_sql, tuple(rank_params)).fetchone()
+        rank = (rank_row[0] + 1) if rank_row else 1
 
-            # Count entries with strictly higher cost
-            rank_sql = (
-                f"SELECT COUNT(*) FROM "
-                f"(SELECT {dimension}, SUM(cost) AS total_cost "
-                f"FROM usage{base_where} "
-                f"GROUP BY {dimension}) sub "
-                f"WHERE sub.total_cost > ?"
-            )
-            rank_params: list[object] = [*base_params, value_cost]
-            rank_row = conn.execute(rank_sql, tuple(rank_params)).fetchone()
-            rank = (rank_row[0] + 1) if rank_row else 1
-
-            return UsageRank(rank=rank, total=total)
-        finally:
-            pass
+        return UsageRank(rank=rank, total=total)
 
     # ------------------------------------------------------------------
     # Memory operations
@@ -1680,15 +1651,12 @@ class LLMDatabase:
             List of MemoryRow ordered by created_at descending (newest first).
         """
         conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT id, nick, fact, source_channel, created_at FROM memories "
-                "WHERE nick = ? ORDER BY created_at DESC",
-                (nick.lower(),),
-            ).fetchall()
-            return [MemoryRow(*row) for row in rows]
-        finally:
-            pass
+        rows = conn.execute(
+            "SELECT id, nick, fact, source_channel, created_at FROM memories "
+            "WHERE nick = ? ORDER BY created_at DESC",
+            (nick.lower(),),
+        ).fetchall()
+        return [MemoryRow(*row) for row in rows]
 
     def delete_memory(self, nick: str, memory_id: int) -> bool:
         """Delete a specific memory by ID and nick.
@@ -1787,14 +1755,11 @@ class LLMDatabase:
             Current counter value, or 0 if no record exists.
         """
         conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
-                (nick.lower(),),
-            ).fetchone()
-            return row[0] if row else 0
-        finally:
-            pass
+        row = conn.execute(
+            "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
+            (nick.lower(),),
+        ).fetchone()
+        return row[0] if row else 0
 
     # ------------------------------------------------------------------
     # User instruction operations
