@@ -1332,6 +1332,33 @@ class LLMDatabase:
                 ),
             )
 
+    _USAGE_SELECT = (
+        "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
+        "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) FROM usage"
+    )
+
+    def _query_usage_summary(self, conditions: list[str], params: list[object]) -> UsageSummary:
+        """Run the usage aggregation SELECT with optional AND-joined conditions.
+
+        Conditions are conjunctive only. ``COUNT(*) + COALESCE`` guarantees a
+        row, so no ``None``-row guard is needed.
+        """
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        row = (
+            self._connect()
+            .execute(
+                f"{self._USAGE_SELECT}{where}",
+                tuple(params),
+            )
+            .fetchone()
+        )
+        return UsageSummary(
+            total_requests=row[0],
+            total_prompt_tokens=row[1],
+            total_completion_tokens=row[2],
+            total_cost=row[3],
+        )
+
     def get_usage_summary(self, since: float | None = None) -> UsageSummary:
         """Get aggregated usage statistics.
 
@@ -1342,33 +1369,12 @@ class LLMDatabase:
         Returns:
             UsageSummary with totals for requests, tokens, and cost.
         """
-        conn = self._connect()
+        conds: list[str] = []
+        params: list[object] = []
         if since is not None:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                "FROM usage WHERE timestamp >= ?",
-                (since,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                "FROM usage",
-            ).fetchone()
-        if row is None:
-            return UsageSummary(
-                total_requests=0,
-                total_prompt_tokens=0,
-                total_completion_tokens=0,
-                total_cost=0.0,
-            )
-        return UsageSummary(
-            total_requests=row[0],
-            total_prompt_tokens=row[1],
-            total_completion_tokens=row[2],
-            total_cost=row[3],
-        )
+            conds.append("timestamp >= ?")
+            params.append(since)
+        return self._query_usage_summary(conds, params)
 
     def get_usage_by_nick(self, since: float | None = None, limit: int = 5) -> list[UsageBreakdown]:
         """Get usage statistics grouped by nick, sorted by cost descending.
@@ -1452,29 +1458,12 @@ class LLMDatabase:
         Returns:
             UsageSummary with totals for the given channel.
         """
-        conn = self._connect()
+        conds: list[str] = ["channel = ?"]
+        params: list[object] = [channel]
         if since is not None:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                "FROM usage WHERE channel = ? AND timestamp >= ?",
-                (channel, since),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-                "FROM usage WHERE channel = ?",
-                (channel,),
-            ).fetchone()
-        if row is None:
-            return UsageSummary(0, 0, 0, 0.0)
-        return UsageSummary(
-            total_requests=row[0],
-            total_prompt_tokens=row[1],
-            total_completion_tokens=row[2],
-            total_cost=row[3],
-        )
+            conds.append("timestamp >= ?")
+            params.append(since)
+        return self._query_usage_summary(conds, params)
 
     def get_usage_summary_for_nick(
         self, nick: str, since: float | None = None, channel: str | None = None
@@ -1489,30 +1478,15 @@ class LLMDatabase:
         Returns:
             UsageSummary with totals for the given nick (optionally in a channel).
         """
-        conn = self._connect()
-        conditions = ["nick = ?"]
+        conds: list[str] = ["nick = ?"]
         params: list[object] = [nick]
         if channel is not None:
-            conditions.append("channel = ?")
+            conds.append("channel = ?")
             params.append(channel)
         if since is not None:
-            conditions.append("timestamp >= ?")
+            conds.append("timestamp >= ?")
             params.append(since)
-        where = " AND ".join(conditions)
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
-            "COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0.0) "
-            f"FROM usage WHERE {where}",
-            tuple(params),
-        ).fetchone()
-        if row is None:
-            return UsageSummary(0, 0, 0, 0.0)
-        return UsageSummary(
-            total_requests=row[0],
-            total_prompt_tokens=row[1],
-            total_completion_tokens=row[2],
-            total_cost=row[3],
-        )
+        return self._query_usage_summary(conds, params)
 
     def get_channel_rank(self, channel: str, since: float | None = None) -> UsageRank:
         """Get the cost rank of a channel among all channels.
