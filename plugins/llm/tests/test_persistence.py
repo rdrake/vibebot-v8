@@ -2223,3 +2223,31 @@ def test_load_scheduled_llm_tasks_for_owner(tmp_path: Path) -> None:
     assert {r.event_name for r in rows} == {"ev_acct"}
     rows = db.load_scheduled_llm_tasks_for(account=None, nick="ANON")
     assert {r.event_name for r in rows} == {"ev_nick"}
+
+
+def test_write_txn_rolls_back_on_error(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "t.db"))
+    db.save_memory("alice", "fact-1", "#chan")
+
+    # Trigger an IntegrityError mid-block by violating a UNIQUE/PK constraint.
+    with pytest.raises(sqlite3.IntegrityError), db._write_txn() as conn:
+        conn.execute(
+            "INSERT INTO memories (id, nick, fact, source_channel, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (1, "bob", "x", "#c", 0.0),
+        )
+
+    # Existing row still present; bob's row never committed.
+    rows = db.get_memories("alice")
+    assert len(rows) == 1
+    assert db.get_memories("bob") == []
+
+
+def test_write_txn_commits_on_success(tmp_path: Path) -> None:
+    db = LLMDatabase(str(tmp_path / "t.db"))
+    with db._write_txn() as conn:
+        conn.execute(
+            "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
+            ("alice", "fact-x", "#c", 0.0),
+        )
+    assert any(r.fact == "fact-x" for r in db.get_memories("alice"))

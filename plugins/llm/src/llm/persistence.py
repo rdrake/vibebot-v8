@@ -12,6 +12,8 @@ import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
@@ -174,6 +176,25 @@ class LLMDatabase:
         conn.execute("PRAGMA journal_mode=WAL")
         self._local.conn = conn
         return conn
+
+    @contextmanager
+    def _write_txn(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection, commit on clean exit, rollback+raise on exception.
+
+        Use for any write that relies on sqlite3's implicit transaction. Callers
+        that issue their own ``BEGIN IMMEDIATE`` (e.g. ``claim_due_pending_tasks``)
+        must NOT use this helper -- they manage commit/rollback themselves.
+
+        Reads should not use this helper; it adds a commit on every successful
+        SELECT, which is harmless but obscures intent.
+        """
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def _migrate(self) -> None:
         """Run schema migration to create tables and indexes.
