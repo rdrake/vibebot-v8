@@ -138,11 +138,11 @@ Three independent layers limit what the bridge can reach:
 
 ### Plugin name format
 
-Names in `bridgeAllowedPlugins` must match Limnoria's CamelCase form exactly — `Misc`, `Time`, `Math`. Lowercase or mismatched names are ignored silently.
+Names in `bridgeAllowedPlugins` must match Limnoria's camel-case form exactly — `Misc`, `Time`, `Math`. Lowercase or mismatched names are ignored silently.
 
 ### Write-command gate (`bridgeAllowMutating`)
 
-Commands that modify persistent state — sending offline notes, registering RSS feeds, mutating karma, queueing PMs to other users — are hidden from the LLM by default, even when their host plugin is allowlisted. The bridge tool description omits them, and any hallucinated dispatch returns `denied: write commands disabled` as defense in depth.
+Commands that modify persistent state — sending offline notes, registering RSS feeds, mutating karma, queueing PMs to other users — are hidden from the LLM by default, even when their host plugin is allowlisted. The bridge tool description omits them, and any hallucinated dispatch returns `denied: write commands disabled` as a layered defense.
 
 To expose write commands per channel:
 
@@ -160,8 +160,8 @@ When the gate is closed and an allowlisted plugin has at least one hidden write,
 
 The `schedule_llm_task` tool schedules a future `@ask` invocation — at fire time the bot replays the user's IRC identity and runs the prompt through the assistant loop with full tool access (search, fetch, draw, code, the bridge). It is distinct from `set_reminder`:
 
-- `set_reminder` delivers fixed text at fire time. Use it for "remind me to switch laundry over at 6pm".
-- `schedule_llm_task` runs an LLM turn at fire time. Use it for "every Monday at 9am check my open PRs and tell me which are stale" — anything that needs *tools* when it fires.
+- `set_reminder` delivers fixed text at fire time. Use it for "remind me to switch laundry over at 6 p.m.".
+- `schedule_llm_task` runs an LLM turn at fire time. Use it for "every Monday at 9 a.m. check my open PRs and tell me which are stale" — anything that needs *tools* when it fires.
 
 Both tools coexist; the LLM is taught to pick between them based on whether tool use is required at fire time.
 

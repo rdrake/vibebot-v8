@@ -28,7 +28,7 @@ Use the following commands when you want direct, predictable behavior.
 | `@forget` | `[channel]` | Clear conversation context |
 | `@memories` | `[del <id> \| edit <id> <text> \| clear \| cleanup]` | Manage stored facts |
 | `@instruct` | `[<instruction> \| clear]` | Set persistent instructions |
-| `@remind` | `[<text> \| list \| del <id> \| clear]` | Set and manage reminders |
+| `@remind` | `[<text> \| list \| del <id> \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Set and manage reminders (admin subcommand is owner-only) |
 | `@usage` | `[nick \| #channel]` | Show API usage stats |
 
 ## Command details
@@ -106,7 +106,7 @@ See [Memory -- Custom instructions](../user/memory.md#custom-instructions) for f
 
 ### remind
 
-Set and manage reminders using natural language. Reminders that ask the bot to *do* something (look up, check, fetch, summarize) run as an LLM query at fire time and are marked `[auto]` in `list`.
+Set and manage reminders using natural language. Reminders that ask the bot to *do* something (look up, check, fetch, summarize) run as an LLM query at fire time and are marked `[auto]` in `list`. Recurring action work — "every weekday at 9 a.m. …" — becomes a scheduled task; ask the bot in plain language to set, list, or cancel scheduled tasks.
 
 ```
 @remind in 30 minutes check the build
@@ -114,9 +114,12 @@ Set and manage reminders using natural language. Reminders that ask the bot to *
 @remind list
 @remind delete abc1
 @remind clear
+@remind admin list someone        # owner only
+@remind admin del someone abc1    # owner only
+@remind admin clear someone       # owner only
 ```
 
-See [Reminders & Usage -- remind](../user/reminders-usage.md#remind) for full details, including caveats (single-fire only, counts against `@ask` limit, no elevated capabilities at fire time).
+See [Reminders & Usage -- remind](../user/reminders-usage.md#remind) for full details, including caveats (counts against `@ask` rate limit, no elevated capabilities at fire time, recurring chains capped at 50 fires).
 
 ### usage
 

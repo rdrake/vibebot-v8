@@ -23,9 +23,10 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 - **Vision** -- Drop an image URL into `@ask` and the bot will describe or reason about it.
 - **Code generation** -- `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
 - **Image generation** -- `@draw` creates images from text descriptions via Vertex AI Imagen.
+- **Reminders and scheduled tasks** -- One-shot or recurring. Plain echoes ("remind me to…") or full LLM tasks at fire time, with search, fetch, and code available.
 - **Stored facts** -- Save things about yourself with `@memories` that persist across sessions.
 - **Custom instructions** -- Shape how the bot responds to you with `@instruct`.
-- **Multi-provider AI** -- Supports OpenAI, Anthropic, and Google Gemini through [LiteLLM](https://github.com/BerriAI/litellm).
+- **Multi-provider AI** -- Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).
 
 ## Documentation
 

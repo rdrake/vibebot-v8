@@ -37,32 +37,54 @@ The bot parses times like "in 30 minutes", "at 5 p.m.", "tomorrow at 9 a.m.", an
 
 ### Action reminders (LLM at fire time)
 
-If your reminder asks the bot to *perform a task* — look something up, check a status, fetch a URL, summarize something — it will run the task as an LLM query when the timer fires, with the bot's full tool surface (web search, URL fetch, code, drawing, memory, nested reminders).
+If your reminder asks the bot to *perform a task* — look something up, check a status, fetch a URL, summarize something — it runs the task as an LLM query when the timer fires, with the bot's full tool surface (web search, URL fetch, code, drawing, memory, nested reminders).
 
 ```
 @remind in 2 hours check the status of CVE-2026-31431 in Debian 12 and 13
 @remind in 30 minutes check if https://example.com/build is green
-@remind tomorrow at 9am summarize the top 3 HN headlines about Rust
+@remind tomorrow at 9 a.m. summarize the top 3 HN headlines about Rust
 ```
 
 Action reminders are marked **`[auto]`** in `@remind list` so you can tell them apart from passive echo reminders.
 
-**What stays passive:** "remind me to ..." phrasing where *you* are doing the thing.
+**What stays passive:** "remind me to …" phrasing where *you* are doing the thing.
 
 ```
 @remind in 5 minutes remind me to check the build   # echo only
-@remind tomorrow at 3pm call Bob                    # echo only
+@remind tomorrow at 3 p.m. call Bob                  # echo only
 ```
 
 When in doubt, the bot prefers echo. If it misclassifies, just rephrase.
 
+### Recurring reminders and scheduled tasks
+
+For repeating work, ask in plain English:
+
+```
+VibeBot, every 2 hours check the status of #1234 and ping me if it changed
+VibeBot, every weekday at 9 a.m. summarize the overnight CVE feed
+```
+
+Anything that needs *tools at fire time* (search, fetch, code, draw) becomes a **scheduled task**. Plain echo reminders also recur — `@remind every Friday at 5 p.m. switch laundry over` schedules a chain of one-shot reminders that re-arm themselves up to 50 times before you have to set them again.
+
+Scheduled tasks and reminders share one list and one cancel path. Just ask:
+
+```
+VibeBot, what do I have scheduled?
+VibeBot, cancel the laundry reminder
+VibeBot, cancel everything
+```
+
+`@remind list`, `@remind delete <id>`, and `@remind clear` cover plain reminders; the natural-language path covers both.
+
 **Caveats:**
 
-- **Single fire only.** "Every 2 hours check X" sets a one-shot 2-hour reminder; recurrence is not supported yet.
-- **Counts against your `@ask` daily limit.** If you're over the limit when an action reminder fires, the bot delivers the original text as a plain reminder with a note (no API call is made).
-- **No elevated capabilities.** Even if you scheduled the reminder as an owner/admin, the action runs without those rights — owner-only tools are unavailable at fire time.
-- **One nested reminder per fire.** An action reminder may schedule at most one follow-up reminder during its run, to prevent fan-out.
-- **Existing reminders don't upgrade.** Reminders set before this feature shipped stay as plain echoes; delete and re-set them to get action behavior.
+- **Counts against your `@ask` rate limit.** If you're over the limit when an action or scheduled task fires, the bot delivers the original text as a plain reminder with a note (no API call is made).
+- **No elevated capabilities at fire time.** Even if you scheduled the action as an owner or admin, it runs without those rights — owner-only tools are unavailable.
+- **One nested reminder per fire.** An action reminder schedules at most one follow-up reminder during its run, to prevent fan-out. Scheduled tasks cannot schedule further scheduled tasks (depth cap of 1).
+- **Recurring chains cap at 50 fires.** After that you have to re-arm.
+- **Existing reminders don't upgrade.** Reminders set before action behavior shipped stay as plain echoes; delete and re-set them to get action behavior.
+- **Scheduled tasks need an authenticated account.** The natural-language scheduler refuses anonymous callers — log in to your network account first.
 
 ### Listing reminders
 
@@ -70,7 +92,7 @@ When in doubt, the bot prefers echo. If it misclassifies, just rephrase.
 @remind list
 ```
 
-Shows your active reminders with their IDs. LLM-action reminders are marked `[auto]`.
+Shows your active reminders with their IDs. LLM-action reminders are marked `[auto]`. To see scheduled tasks alongside reminders, ask the bot in plain language ("what do I have scheduled?").
 
 ### Canceling reminders
 
@@ -86,6 +108,20 @@ Shows your active reminders with their IDs. LLM-action reminders are marked `[au
 ```
 @remind clear
 ```
+
+`@remind clear` only clears plain reminders. To cancel scheduled tasks too, ask the bot ("VibeBot, cancel everything").
+
+### Owner-only admin
+
+Bot owners can list, delete, and clear reminders and scheduled tasks belonging to other users:
+
+```
+@remind admin list someone
+@remind admin del someone abc1
+@remind admin clear someone
+```
+
+Non-owners receive a permission error.
 
 ### Delivery
 

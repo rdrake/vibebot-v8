@@ -85,6 +85,7 @@ Most settings support per-channel overrides: API keys, model selection, system p
 | `timeout` | `30` | Timeout for LLM API calls (seconds) |
 | `drawTimeout` | `120` | Timeout for image generation (seconds). Set to `0` to use the global timeout |
 | `drawAutoRewriteMax` | `3` | Max automatic prompt rewrites when blocked by safety filters. Set to `0` to disable |
+| `drawContextMaxAgeSeconds` | `60` | Pass conversation context to draw requests only when the last activity is within this many seconds. `0` to always start fresh |
 | `maxPromptLength` | `10000` | Maximum user prompt length (characters) |
 | `commandPrefixes` | `.` | Space-separated prefixes to sanitize in output (prevents IRC command injection) |
 | `databasePath` | (empty) | Path to SQLite database. If empty, uses `data/LLM.db` |

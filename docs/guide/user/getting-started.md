@@ -13,15 +13,20 @@ The easiest way to interact with the bot is to mention it by name in a channel o
           Puncak Jaya (Oceania).
 ```
 
-The bot understands natural language for most things -- questions, reminders, memory management, and more:
+The bot understands natural language for most things -- questions, reminders, memory management, scheduled tasks, and more:
 
 ```
 <you>     VibeBot, remind me in 2 hours to check the build
 <VibeBot> Reminder set: check the build (in 2 hours).
 
+<you>     VibeBot, every weekday at 9 a.m. summarize the overnight CVE feed
+<VibeBot> ⏰
+
 <you>     VibeBot, what's my usage this month?
 <VibeBot> You've made 47 requests this month, costing $0.12.
 ```
+
+Anything that needs *tools at fire time* (search, fetch, code, image) becomes a recurring scheduled task. Plain echoes work the same way -- just ask. See [Reminders & Usage](reminders-usage.md) for the full picture.
 
 You can also send a PM for the same behavior.
 
