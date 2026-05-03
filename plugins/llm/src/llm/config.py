@@ -564,182 +564,60 @@ conf.registerGlobalValue(
     ),
 )
 
+
+def _register_rate_limit_block(
+    command: str,
+    *,
+    counts: tuple[int, int, int],  # (registered, trusted, unreg)
+    windows: tuple[int, int, int],  # (registered, trusted, unreg)
+) -> None:
+    tiers: tuple[tuple[str, str], ...] = (
+        ("", "registered tier"),
+        ("Trusted", "trusted tier"),
+        ("Unreg", "unregistered tier"),
+    )
+    for (tier, label), count, window in zip(tiers, counts, windows, strict=True):
+        conf.registerGlobalValue(
+            LLM,
+            f"{command}{tier}RateLimitCount",
+            registry.NonNegativeInteger(
+                count,
+                _(
+                    f"Max {command} requests per {label} within "
+                    f"{command}{tier}RateLimitWindow seconds. "
+                    "Set to 0 to disable rate limiting for this tier."
+                ),
+            ),
+        )
+        conf.registerGlobalValue(
+            LLM,
+            f"{command}{tier}RateLimitWindow",
+            registry.PositiveInteger(
+                window,
+                _(f"Time window in seconds for counting {command} requests ({label})."),
+            ),
+        )
+
+
 # --- ask (cheapest) ---
-
-conf.registerGlobalValue(
-    LLM,
-    "askRateLimitCount",
-    registry.NonNegativeInteger(
-        15,
-        _("""Max ask requests per registered user within askRateLimitWindow seconds.
-        Set to 0 to disable rate limiting for this tier."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "askRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting ask requests (registered tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "askTrustedRateLimitCount",
-    registry.NonNegativeInteger(
-        15,
-        _("""Max ask requests per trusted user within askTrustedRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "askTrustedRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting ask requests (trusted tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "askUnregRateLimitCount",
-    registry.NonNegativeInteger(
-        15,
-        _("""Max ask requests per unregistered user within askUnregRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "askUnregRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting ask requests (unregistered tier)."""),
-    ),
+_register_rate_limit_block(
+    "ask",
+    counts=(15, 15, 15),
+    windows=(60, 60, 60),
 )
 
 # --- code ---
-
-conf.registerGlobalValue(
-    LLM,
-    "codeRateLimitCount",
-    registry.NonNegativeInteger(
-        10,
-        _("""Max code requests per registered user within codeRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "codeRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting code requests (registered tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "codeTrustedRateLimitCount",
-    registry.NonNegativeInteger(
-        0,
-        _("""Max code requests per trusted user within codeTrustedRateLimitWindow seconds.
-        Set to 0 to disable (trusted users unlimited for code)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "codeTrustedRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting code requests (trusted tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "codeUnregRateLimitCount",
-    registry.NonNegativeInteger(
-        2,
-        _("""Max code requests per unregistered user within codeUnregRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "codeUnregRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting code requests (unregistered tier)."""),
-    ),
+_register_rate_limit_block(
+    "code",
+    counts=(10, 0, 2),
+    windows=(60, 60, 60),
 )
 
 # --- draw (expensive) ---
-
-conf.registerGlobalValue(
-    LLM,
-    "drawRateLimitCount",
-    registry.NonNegativeInteger(
-        2,
-        _("""Max draw requests per registered user within drawRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawRateLimitWindow",
-    registry.PositiveInteger(
-        300,
-        _("""Time window in seconds for counting draw requests (registered tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawTrustedRateLimitCount",
-    registry.NonNegativeInteger(
-        5,
-        _("""Max draw requests per trusted user within drawTrustedRateLimitWindow seconds.
-        Set to 0 to disable."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawTrustedRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting draw requests (trusted tier)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawUnregRateLimitCount",
-    registry.NonNegativeInteger(
-        0,
-        _("""Max draw requests per unregistered user within drawUnregRateLimitWindow seconds.
-        Set to 0 to disable. Note: draw already requires NickServ, so unreg users
-        are blocked before this check."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawUnregRateLimitWindow",
-    registry.PositiveInteger(
-        60,
-        _("""Time window in seconds for counting draw requests (unregistered tier)."""),
-    ),
+_register_rate_limit_block(
+    "draw",
+    counts=(2, 5, 0),
+    windows=(300, 60, 60),
 )
 
 # ============================================================================

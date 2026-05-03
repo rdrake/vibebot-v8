@@ -232,6 +232,41 @@ class TestConfigValues:
         assert conf.supybot.plugins.LLM.bridgeScheduledTaskLimit() == 5
 
 
+class TestRateLimitDefaults:
+    """Pin the 18 rate-limit (key, default) pairs produced by _register_rate_limit_block."""
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("askRateLimitCount", 15),
+            ("askRateLimitWindow", 60),
+            ("askTrustedRateLimitCount", 15),
+            ("askTrustedRateLimitWindow", 60),
+            ("askUnregRateLimitCount", 15),
+            ("askUnregRateLimitWindow", 60),
+            ("codeRateLimitCount", 10),
+            ("codeRateLimitWindow", 60),
+            ("codeTrustedRateLimitCount", 0),
+            ("codeTrustedRateLimitWindow", 60),
+            ("codeUnregRateLimitCount", 2),
+            ("codeUnregRateLimitWindow", 60),
+            ("drawRateLimitCount", 2),
+            ("drawRateLimitWindow", 300),
+            ("drawTrustedRateLimitCount", 5),
+            ("drawTrustedRateLimitWindow", 60),
+            ("drawUnregRateLimitCount", 0),
+            ("drawUnregRateLimitWindow", 60),
+        ],
+    )
+    def test_rate_limit_defaults(self, key: str, expected: int) -> None:
+        """GIVEN rate-limit registry defaults WHEN read THEN match expected values."""
+        import llm.config  # noqa: F401 — import side effect registers the values
+        import supybot.conf as conf
+
+        value = getattr(conf.supybot.plugins.LLM, key)()
+        assert value == expected
+
+
 class TestValidatedModelNameThreadSafety:
     """Test thread safety of ValidatedModelName._warned set."""
 
