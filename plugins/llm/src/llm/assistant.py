@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -596,6 +596,17 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+class ToolCallbackResult(NamedTuple):
+    """Structured result from plugin-side callbacks invoked by tool handlers.
+
+    ``ok=False`` means the operation failed; ``message`` is human-readable
+    text safe to surface to the LLM (no secrets, no internal tracebacks).
+    """
+
+    ok: bool
+    message: str
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """Structured result from a tool handler, carrying cost and metadata."""
@@ -726,12 +737,12 @@ class AssistantToolExecutor:
         route_profile: str = "chat",
         capabilities: frozenset[str] = frozenset({"llm.ask"}),
         account: str | None = None,
-        cleanup_fn: Callable[[str], str] | None = None,
-        set_reminder_fn: Callable[[str], str] | None = None,
+        cleanup_fn: Callable[[str], ToolCallbackResult] | None = None,
+        set_reminder_fn: Callable[[str], ToolCallbackResult] | None = None,
         list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
-        draw_fn: Callable[[str], str] | None = None,
+        draw_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
         code_fn: Callable[[str], ToolResult] | None = None,
@@ -977,9 +988,9 @@ class AssistantToolExecutor:
         if self._cleanup_fn is None:
             return self._err("Memory cleanup is not available.")
         result = self._cleanup_fn(target)
-        if "failed" in result.lower() or "error" in result.lower():
-            return self._err(result)
-        return self._ok(result)
+        if not result.ok:
+            return self._err(result.message)
+        return self._ok(result.message)
 
     def _tool_list_pending_tasks(self, _args: dict[str, Any]) -> str:
         if self._list_pending_tasks_fn is None:
@@ -994,9 +1005,9 @@ class AssistantToolExecutor:
             return self._err("Reminders are not available.")
         text = args["text"]
         result = self._set_reminder_fn(text)
-        if "failed" in result.lower() or "could not" in result.lower():
-            return self._err(result)
-        return self._ok(result)
+        if not result.ok:
+            return self._err(result.message)
+        return self._ok(result.message)
 
     def _tool_cancel_pending_task(self, args: dict[str, Any]) -> str:
         if self._cancel_pending_task_fn is None:
@@ -1038,9 +1049,9 @@ class AssistantToolExecutor:
         if not prompt.strip():
             return self._err("A prompt is required.")
         result = self._draw_fn(prompt)
-        if result.startswith("Error"):
-            return self._err(result)
-        return self._ok(result)
+        if not result.ok:
+            return self._err(result.message)
+        return self._ok(result.message)
 
     def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:
         if not self._search_fn:

@@ -49,7 +49,7 @@ from .tracing import TraceFilter, generate_request_id, request_id
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
-    from .assistant import ToolResult
+    from .assistant import ToolCallbackResult, ToolResult
     from .service import PendingTaskResult
 
 _ = PluginInternationalization("LLM")
@@ -1861,15 +1861,19 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
-    def _draw_for_assistant(self, irc: callbacks.Irc, msg: IrcMsg, prompt: str) -> str:
+    def _draw_for_assistant(
+        self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
+    ) -> ToolCallbackResult:
         """Generate an image for the generate_image tool.
 
         Usage logging is handled by the outer command wrapper via
         ``_store_context_and_log_usage``; leaf tool handlers do not log
         independently.
         """
+        from .assistant import ToolCallbackResult as _ToolCallbackResult
+
         result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
-        return result.content
+        return _ToolCallbackResult(not bool(result.error), result.content)
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
         """Generate code and save to HTTP for the generate_code tool."""
@@ -2352,11 +2356,13 @@ class LLM(callbacks.Plugin):
         except Exception:
             log.exception("Memory extraction scheduling failed for %s", nick)
 
-    def _run_memory_cleanup(self, nick: str, channel: str) -> str:
-        """Run memory cleanup for a user. Returns a summary string."""
+    def _run_memory_cleanup(self, nick: str, channel: str) -> ToolCallbackResult:
+        """Run memory cleanup for a user. Returns a ToolCallbackResult."""
+        from .assistant import ToolCallbackResult as _ToolCallbackResult
+
         snapshot = self.db.get_memories(nick)
         if len(snapshot) < 2:
-            return "Not enough memories to clean up."
+            return _ToolCallbackResult(True, "Not enough memories to clean up.")
 
         before_count = len(snapshot)
         result = self.llm_service.cleanup_memories(nick, channel, snapshot)
@@ -2364,7 +2370,7 @@ class LLM(callbacks.Plugin):
         if result.error:
             log.warning("Memory cleanup failed for %s: %s", nick, result.error)
             short = result.error.split(":")[0] if ":" in result.error else result.error
-            return f"Cleanup failed ({short}). Try again later."
+            return _ToolCallbackResult(False, f"Cleanup failed ({short}). Try again later.")
 
         # Abort if memory rows changed during LLM call (race protection).
         # Compare row IDs — a delete+insert preserving count would otherwise
@@ -2373,7 +2379,7 @@ class LLM(callbacks.Plugin):
         snapshot_ids = tuple(r.id for r in snapshot)
         current_ids = tuple(r.id for r in current)
         if current_ids != snapshot_ids:
-            return "Cleanup skipped — memories changed while processing."
+            return _ToolCallbackResult(True, "Cleanup skipped — memories changed while processing.")
 
         # Apply drops
         dropped = 0
@@ -2403,7 +2409,7 @@ class LLM(callbacks.Plugin):
         if merged:
             parts.append(f"merged: {merged_sources} → {merged}")
         parts.append(f"after: {after_count}")
-        return " | ".join(parts)
+        return _ToolCallbackResult(True, " | ".join(parts))
 
     def _store_context_and_log_usage(
         self,
@@ -2864,7 +2870,7 @@ class LLM(callbacks.Plugin):
                 target = caller.key
             channel = msg.channel or msg.args[0] if msg.args else "#unknown"
             summary = self._run_memory_cleanup(target, channel)
-            irc.reply(summary, prefixNick=False)
+            irc.reply(summary.message, prefixNick=False)
 
         elif len(parts) == 1:
             # Owner viewing another user's memories
@@ -3121,7 +3127,7 @@ class LLM(callbacks.Plugin):
         react_irc = irc if pass_irc_msg_to_callbacks else None
         react_msg = msg if pass_irc_msg_to_callbacks else None
 
-        def set_reminder_fn(text: str) -> str:
+        def set_reminder_fn(text: str) -> ToolCallbackResult:
             return self._remind_set_for_assistant(irc, msg, caller, text)
 
         def schedule_fn(
@@ -3194,15 +3200,14 @@ class LLM(callbacks.Plugin):
                     "id": result.event_name,
                     "message": result.message,
                 }
-            message = self._remind_delete_for_assistant(
+            result = self._remind_delete_for_assistant(
                 caller, task_id, irc=react_irc, msg=react_msg
             )
-            status = "ok" if "not found" not in message.lower() else "error"
             return {
-                "status": status,
+                "status": "ok" if result.ok else "error",
                 "kind": "reminder",
                 "id": task_id,
-                "message": message,
+                "message": result.message,
             }
 
         def cancel_all_pending_tasks_fn() -> dict[str, object]:
@@ -3681,8 +3686,8 @@ class LLM(callbacks.Plugin):
         text: str,
         *,
         parent_chain: int | None = None,
-    ) -> str:
-        """Parse and schedule a reminder, returning a result string for meta.
+    ) -> ToolCallbackResult:
+        """Parse and schedule a reminder, returning a ToolCallbackResult for meta.
 
         ``parent_chain`` is provided when the call originates from an
         action-fire LLM rescheduling a recurring chain — see
@@ -3693,9 +3698,11 @@ class LLM(callbacks.Plugin):
         speaks. The chat reply path suppresses an empty post-tool reply
         via the structured ``last_successful_tool`` signal.
         """
+        from .assistant import ToolCallbackResult as _ToolCallbackResult
+
         result = self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain)
         self._react(irc, msg, "⏰" if result.ok else "❌")
-        return result.message
+        return _ToolCallbackResult(result.ok, result.message)
 
     def _remind_delete_for_assistant(
         self,
@@ -3704,23 +3711,25 @@ class LLM(callbacks.Plugin):
         *,
         irc: callbacks.Irc | None = None,
         msg: IrcMsg | None = None,
-    ) -> str:
+    ) -> ToolCallbackResult:
         """Delete a reminder by ID, scoped to the caller's identity.
 
         When ``irc``/``msg`` are provided, reacts 👍 on success and ❌
         when no matching reminder exists (so the chat path can suppress
         the empty post-tool reply without leaving the user wondering).
         """
+        from .assistant import ToolCallbackResult as _ToolCallbackResult
+
         target = self._find_user_reminder(caller, reminder_id)
         if target is None:
             if irc is not None and msg is not None:
                 self._react(irc, msg, "❌")
-            return f"Reminder {reminder_id} not found."
+            return _ToolCallbackResult(False, f"Reminder {reminder_id} not found.")
 
         self._cancel_reminder(target)
         if irc is not None and msg is not None:
             self._react(irc, msg, "👍")
-        return f"Deleted reminder {reminder_id}."
+        return _ToolCallbackResult(True, f"Deleted reminder {reminder_id}.")
 
     def _remind_clear_for_assistant(
         self,

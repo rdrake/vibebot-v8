@@ -351,7 +351,7 @@ if TYPE_CHECKING:
     from supybot.callbacks import Irc
     from supybot.ircmsgs import IrcMsg
 
-    from .assistant import ToolResult
+    from .assistant import ToolCallbackResult, ToolResult
     from .context import ConversationContext
     from .persistence import LLMDatabase, MemoryRow
     from .plugin import LLM
@@ -2229,12 +2229,12 @@ class LLMService:
         memories: list[str] | None = None,
         api_key: str | None = None,
         model_override: str | None = None,
-        cleanup_fn: Callable[[str], str] | None = None,
-        set_reminder_fn: Callable[[str], str] | None = None,
+        cleanup_fn: Callable[[str], ToolCallbackResult] | None = None,
+        set_reminder_fn: Callable[[str], ToolCallbackResult] | None = None,
         list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
-        draw_fn: Callable[[str], str] | None = None,
+        draw_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
@@ -2769,12 +2769,12 @@ Examples (echo → action_prompt: ""):
         memories: list[str] | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
-        cleanup_fn: Callable[[str], str] | None = None,
-        set_reminder_fn: Callable[[str], str] | None = None,
+        cleanup_fn: Callable[[str], ToolCallbackResult] | None = None,
+        set_reminder_fn: Callable[[str], ToolCallbackResult] | None = None,
         list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
-        draw_fn: Callable[[str], str] | None = None,
+        draw_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,

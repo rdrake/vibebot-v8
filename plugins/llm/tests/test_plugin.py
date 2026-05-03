@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.assistant import ToolCallbackResult
 from llm.service import AssistantResult
 
 from .conftest import make_registry_side_effect, make_reminder_row
@@ -3524,8 +3525,12 @@ class TestPendingTaskFns:
         stand_in._get_user_reminders.return_value = [
             ("llm_remind_rdrake_abc123", ("rdrake", "#t", "check build")),
         ]
-        stand_in._remind_set_for_assistant.return_value = "I'll remind you."
-        stand_in._remind_delete_for_assistant.return_value = "Deleted reminder abc123."
+        stand_in._remind_set_for_assistant.return_value = ToolCallbackResult(
+            True, "I'll remind you."
+        )
+        stand_in._remind_delete_for_assistant.return_value = ToolCallbackResult(
+            True, "Deleted reminder abc123."
+        )
         stand_in._remind_clear_for_assistant.return_value = "Cancelled 1 reminder."
 
         helper = LLM._pending_task_fns.__get__(stand_in, LLM)

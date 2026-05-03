@@ -13,6 +13,7 @@ from llm.assistant import (
     DRAW_SYSTEM_PROMPT,
     REMIND_ACTION_SYSTEM_PROMPT,
     AssistantToolExecutor,
+    ToolCallbackResult,
     ToolResult,
     get_tools_for_profile,
 )
@@ -73,7 +74,9 @@ class TestAssistantToolExecutor:
     @pytest.fixture
     def mock_cleanup_fn(self, mocker: MockerFixture) -> MagicMock:
         fn = mocker.MagicMock()
-        fn.return_value = "Before: 8 | dropped: 2, merged: 4 \u2192 2 | after: 4"
+        fn.return_value = ToolCallbackResult(
+            True, "Before: 8 | dropped: 2, merged: 4 \u2192 2 | after: 4"
+        )
         return fn
 
     @pytest.fixture
@@ -98,7 +101,7 @@ class TestAssistantToolExecutor:
     @pytest.fixture
     def mock_set_reminder_fn(self, mocker: MockerFixture) -> MagicMock:
         fn = mocker.MagicMock()
-        fn.return_value = "I'll remind you in 1 hour"
+        fn.return_value = ToolCallbackResult(True, "I'll remind you in 1 hour")
         return fn
 
     @pytest.fixture
@@ -1496,7 +1499,8 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "check the build in 1 hour"
         )
 
-        assert "remind" in result.lower() or "hour" in result.lower()
+        assert result.ok is True
+        assert "remind" in result.message.lower() or "hour" in result.message.lower()
         assert plugin.db.save_reminder.called
 
     def test_remind_set_for_assistant_with_note(
@@ -1521,7 +1525,7 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "deploy in 1 hour"
         )
 
-        assert "Eastern" in result
+        assert "Eastern" in result.message
 
     def test_remind_set_for_assistant_parse_failure(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -1541,7 +1545,8 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "maybe sometime"
         )
 
-        assert "could not" in result.lower()
+        assert result.ok is False
+        assert "could not" in result.message.lower()
 
     def test_remind_set_for_assistant_too_short(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -1563,7 +1568,8 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me now"
         )
 
-        assert "10 second" in result.lower() or "at least" in result.lower()
+        assert result.ok is False
+        assert "10 second" in result.message.lower() or "at least" in result.message.lower()
 
     def test_remind_set_for_assistant_too_long(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -1585,7 +1591,8 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me in 2 weeks"
         )
 
-        assert "7 day" in result.lower()
+        assert result.ok is False
+        assert "7 day" in result.message.lower()
 
     def test_remind_set_for_assistant_clarify(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -1605,7 +1612,7 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me"
         )
 
-        assert "when" in result.lower()
+        assert "when" in result.message.lower()
 
     def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
@@ -1624,7 +1631,8 @@ class TestReminderMetaHelpers:
             Identity(raw_nick="testuser", account=None), "abc123def456"
         )
 
-        assert "delete" in result.lower() or "cancel" in result.lower()
+        assert result.ok is True
+        assert "delete" in result.message.lower() or "cancel" in result.message.lower()
         assert event_name not in plugin._reminders
 
     def test_remind_delete_for_assistant_not_found(self, plugin) -> None:
@@ -1635,7 +1643,8 @@ class TestReminderMetaHelpers:
             Identity(raw_nick="testuser", account=None), "nonexistent"
         )
 
-        assert "not found" in result.lower()
+        assert result.ok is False
+        assert "not found" in result.message.lower()
 
 
 class TestDrawForMeta:
@@ -1678,7 +1687,8 @@ class TestDrawForMeta:
 
         result = plugin._draw_for_assistant(mock_irc, msg, "a cat")
 
-        assert result == "https://img.example/cat.png"
+        assert result.ok is True
+        assert result.message == "https://img.example/cat.png"
         plugin.db.log_usage.assert_not_called()
 
     def test_draw_for_assistant_returns_content(
@@ -1701,7 +1711,8 @@ class TestDrawForMeta:
 
         result = plugin._draw_for_assistant(mock_irc, msg, "a sunset")
 
-        assert result == "https://img.example/sunset.png"
+        assert result.ok is True
+        assert result.message == "https://img.example/sunset.png"
         plugin.llm_service.image_generation.assert_called_once_with(
             "a sunset", irc=mock_irc, msg=msg
         )
@@ -2618,8 +2629,10 @@ class TestExecutorCoverageGaps:
         assert "No context to clear" in result.content
 
     def test_cleanup_memories_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
-        """cleanup_fn returning a string with 'failed'/'error' produces an error envelope."""
-        cleanup_fn = mocker.MagicMock(return_value="Cleanup failed: db error")
+        """cleanup_fn returning ok=False produces an error envelope."""
+        cleanup_fn = mocker.MagicMock(
+            return_value=ToolCallbackResult(False, "Cleanup failed: db error")
+        )
         ex = AssistantToolExecutor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
@@ -2630,6 +2643,27 @@ class TestExecutorCoverageGaps:
         result = ex.execute("cleanup_memories", {})
         assert '"error"' in result.content
         assert "Cleanup failed" in result.content
+
+    def test_cleanup_memories_success_with_error_word_in_message_is_ok(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A success message containing the word 'errors' is NOT misclassified.
+
+        Pinning the new behavior: classification comes from ``ok``, not
+        from substring-sniffing the message.
+        """
+        cleanup_fn = mocker.MagicMock(
+            return_value=ToolCallbackResult(True, "Removed 3 errors from your memories")
+        )
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            cleanup_fn=cleanup_fn,
+        )
+        result = ex.execute("cleanup_memories", {})
+        assert '"ok"' in result.content
 
     @pytest.mark.parametrize(
         "tool_name,args",
@@ -2654,8 +2688,8 @@ class TestExecutorCoverageGaps:
         assert "not available" in result.content.lower()
 
     def test_set_reminder_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
-        """set_reminder_fn returning 'Could not parse...' becomes an error envelope."""
-        set_fn = mocker.MagicMock(return_value="Could not parse time.")
+        """set_reminder_fn returning ok=False becomes an error envelope."""
+        set_fn = mocker.MagicMock(return_value=ToolCallbackResult(False, "Could not parse time."))
         ex = AssistantToolExecutor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
@@ -2666,6 +2700,25 @@ class TestExecutorCoverageGaps:
         result = ex.execute("set_reminder", {"text": "garbage"})
         assert '"error"' in result.content
         assert "Could not parse" in result.content
+
+    def test_set_reminder_success_with_failure_word_is_ok(self, mocker: MockerFixture) -> None:
+        """A success message containing 'failed' is NOT misclassified.
+
+        Pinning the new behavior: classification comes from ``ok``, not
+        from substring-sniffing the message.
+        """
+        set_fn = mocker.MagicMock(
+            return_value=ToolCallbackResult(True, "Reminder set; previous failed reminders cleared")
+        )
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            set_reminder_fn=set_fn,
+        )
+        result = ex.execute("set_reminder", {"text": "in 1h ping"})
+        assert '"ok"' in result.content
 
     def test_schedule_llm_task_unconfigured(self, mocker: MockerFixture) -> None:
         """schedule_llm_task without a callback returns 'not configured'."""
@@ -2756,8 +2809,8 @@ class TestExecutorCoverageGaps:
         draw_fn.assert_not_called()
 
     def test_generate_image_propagates_draw_fn_error(self, mocker: MockerFixture) -> None:
-        """draw_fn returning 'Error...' is mapped to an error envelope."""
-        draw_fn = mocker.MagicMock(return_value="Error: quota exceeded")
+        """draw_fn returning ok=False is mapped to an error envelope."""
+        draw_fn = mocker.MagicMock(return_value=ToolCallbackResult(False, "Error: quota exceeded"))
         ex = AssistantToolExecutor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
@@ -2772,8 +2825,10 @@ class TestExecutorCoverageGaps:
         assert "quota exceeded" in result.content
 
     def test_generate_image_success(self, mocker: MockerFixture) -> None:
-        """draw_fn returning a normal URL produces an ok envelope."""
-        draw_fn = mocker.MagicMock(return_value="https://example.com/cat.png")
+        """draw_fn returning ok=True produces an ok envelope."""
+        draw_fn = mocker.MagicMock(
+            return_value=ToolCallbackResult(True, "https://example.com/cat.png")
+        )
         ex = AssistantToolExecutor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
@@ -2786,3 +2841,26 @@ class TestExecutorCoverageGaps:
         result = ex.execute("generate_image", {"prompt": "a cat"})
         assert '"ok"' in result.content
         assert "example.com/cat.png" in result.content
+
+    def test_generate_image_does_not_misclassify_ok_message_with_error_word(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A success message containing 'Error' is NOT mapped to error.
+
+        Pinning the new behavior: classification comes from ``ok``, not
+        from sniffing the message string for ``Error``.
+        """
+        draw_fn = mocker.MagicMock(
+            return_value=ToolCallbackResult(True, "Error-free image at https://x/y.png")
+        )
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        result = ex.execute("generate_image", {"prompt": "a cat"})
+        assert '"ok"' in result.content

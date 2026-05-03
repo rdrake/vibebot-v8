@@ -998,7 +998,8 @@ class TestMemoryCleanup:
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 2
-        assert "Cleanup failed" in summary
+        assert summary.ok is False
+        assert "Cleanup failed" in summary.message
 
     def test_cleanup_aborts_on_snapshot_mismatch(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -1021,7 +1022,7 @@ class TestMemoryCleanup:
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 3
-        assert "skipped" in summary.lower()
+        assert "skipped" in summary.message.lower()
 
     def test_cleanup_aborts_on_count_preserving_mutation(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -1063,7 +1064,7 @@ class TestMemoryCleanup:
         # should still be present; count stays at 2 (one mutation + abort).
         assert target_fact in facts
         assert len(rows) == 2
-        assert "skipped" in summary.lower()
+        assert "skipped" in summary.message.lower()
 
     def test_cleanup_returns_summary(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -1082,6 +1083,7 @@ class TestMemoryCleanup:
         )
 
         summary = plugin._run_memory_cleanup("testuser", "#test")
-        assert "Before: 3" in summary
-        assert "dropped: 1" in summary
-        assert "after: 2" in summary
+        assert summary.ok is True
+        assert "Before: 3" in summary.message
+        assert "dropped: 1" in summary.message
+        assert "after: 2" in summary.message
