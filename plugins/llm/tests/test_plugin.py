@@ -3468,19 +3468,23 @@ class TestExtractActionFloodSafety:
         assert extract(irc, "Just a regular reply.") is None
 
 
-class TestScheduledLlmTaskFns:
-    """Phase 2 Task 3 / D2 — _scheduled_llm_task_fns helper wiring."""
+class TestPendingTaskFns:
+    """Phase 2 follow-up — unified `_pending_task_fns` helper wiring.
 
-    def test_helper_returns_three_callables_with_owner_identity_bound(
+    Replaces the older split between `_reminder_fns` and
+    `_scheduled_llm_task_fns`; the LLM-facing list/cancel surface now spans
+    both reminders and scheduled tasks via a single helper.
+    """
+
+    def test_helper_returns_unified_callables_with_owner_identity_bound(
         self, mocker: MockerFixture
     ) -> None:
         """The helper closes over caller/irc/msg/channel and dispatches to the
-        service layer with the correct identity."""
+        right backend by id prefix."""
         from llm.persistence import ScheduledLlmTaskRow
         from llm.plugin import LLM, Identity
         from llm.service import ScheduleLlmTaskResult
 
-        # Bind the unbound method to a mock self that exposes llm_service.
         stand_in = mocker.MagicMock()
         stand_in.llm_service = mocker.MagicMock()
         stand_in.llm_service.schedule_llm_task.return_value = ScheduleLlmTaskResult(
@@ -3493,7 +3497,7 @@ class TestScheduledLlmTaskFns:
         stand_in.llm_service.list_scheduled_llm_tasks.return_value = [
             ScheduledLlmTaskRow(
                 id=1,
-                event_name="ev1",
+                event_name="llm_task_ev1",
                 creator_nick="rdrake",
                 account="rdrake_a",
                 channel="#t",
@@ -3510,22 +3514,32 @@ class TestScheduledLlmTaskFns:
         ]
         stand_in.llm_service.cancel_scheduled_llm_task.return_value = ScheduleLlmTaskResult(
             status="ok",
-            event_name="ev1",
+            event_name="llm_task_ev1",
             fire_at=0.0,
             message="Cancelled.",
             note=None,
         )
+        # Reminder side: stub _get_user_reminders + the per-id helpers used
+        # internally by cancel_pending_task_fn.
+        stand_in._get_user_reminders.return_value = [
+            ("llm_remind_rdrake_abc123", ("rdrake", "#t", "check build")),
+        ]
+        stand_in._remind_set_for_assistant.return_value = "I'll remind you."
+        stand_in._remind_delete_for_assistant.return_value = "Deleted reminder abc123."
+        stand_in._remind_clear_for_assistant.return_value = "Cancelled 1 reminder."
 
-        helper = LLM._scheduled_llm_task_fns.__get__(stand_in, LLM)
+        helper = LLM._pending_task_fns.__get__(stand_in, LLM)
         caller = Identity(raw_nick="rdrake", account="rdrake_a")
         irc = mocker.MagicMock()
         msg = mocker.MagicMock()
         fns = helper(caller=caller, irc=irc, msg=msg, channel="#t")
 
         assert set(fns.keys()) == {
+            "set_reminder_fn",
             "schedule_llm_task_fn",
-            "list_scheduled_llm_tasks_fn",
-            "cancel_scheduled_llm_task_fn",
+            "list_pending_tasks_fn",
+            "cancel_pending_task_fn",
+            "cancel_all_pending_tasks_fn",
         }
 
         # schedule_fn forwards keyword args and binds caller identity.
@@ -3543,22 +3557,179 @@ class TestScheduledLlmTaskFns:
             reply_target=None,
         )
 
-        # list_fn returns id/when/channel/prompt/recurrence per row, prompt
-        # truncated to 80 chars.
-        listed = fns["list_scheduled_llm_tasks_fn"]()
-        assert len(listed) == 1
-        row = listed[0]
-        assert row["id"] == "ev1"
-        assert row["channel"] == "#t"
-        assert len(row["prompt"]) <= 80
-        assert row["recurrence"] == "every 300s"
+        # list_pending_tasks_fn merges reminders + scheduled tasks with
+        # `kind` discriminators.
+        listed = fns["list_pending_tasks_fn"]()
+        assert {row["kind"] for row in listed} == {"reminder", "scheduled_task"}
+        scheduled = next(r for r in listed if r["kind"] == "scheduled_task")
+        assert scheduled["id"] == "llm_task_ev1"
+        assert len(scheduled["description"]) <= 80
+        assert scheduled["recurrence"] == "every 300s"
+        reminder = next(r for r in listed if r["kind"] == "reminder")
+        assert reminder["id"] == "abc123"
+        assert reminder["description"] == "check build"
 
-        # cancel_fn forwards event_name and binds caller identity.
-        cancelled = fns["cancel_scheduled_llm_task_fn"](event_name="ev1")
+        # cancel_pending_task_fn routes by id prefix to the right backend.
+        cancelled = fns["cancel_pending_task_fn"]("llm_task_ev1")
         assert cancelled["status"] == "ok"
-        assert cancelled["event_name"] == "ev1"
+        assert cancelled["kind"] == "scheduled_task"
         stand_in.llm_service.cancel_scheduled_llm_task.assert_called_once_with(
-            event_name="ev1",
+            event_name="llm_task_ev1",
             creator_nick="rdrake",
             account="rdrake_a",
         )
+
+        cancelled_reminder = fns["cancel_pending_task_fn"]("abc123")
+        assert cancelled_reminder["kind"] == "reminder"
+        stand_in._remind_delete_for_assistant.assert_called_once()
+
+
+class TestMemoryExtractionBackground:
+    """Coverage for _schedule_memory_extraction's inner _extract_memories_bg."""
+
+    @pytest.fixture
+    def plugin_and_callback(self, mock_irc, mocker: MockerFixture):
+        """Set up a plugin, schedule extraction, and capture the inner callback."""
+        from llm.plugin import LLM
+
+        from .conftest import plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        return plugin, add_event
+
+    def _existing_rows(self, mocker: MockerFixture, n: int):
+        return [mocker.MagicMock(id=i + 1, fact=f"fact{i + 1}") for i in range(n)]
+
+    def test_race_abort_when_rows_changed(self, plugin_and_callback, mocker: MockerFixture) -> None:
+        """If memory rows changed during extraction, no new memories are saved."""
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 2)
+        # Second get_memories call (after extraction) returns a *different* row set.
+        plugin.db.get_memories.side_effect = [
+            snapshot,
+            [mocker.MagicMock(id=99, fact="injected")],
+        ]
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(add=["new fact"])
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        bg_callback = add_event.call_args.args[0]
+        bg_callback()
+
+        plugin.db.save_memory.assert_not_called()
+
+    def test_cap_stops_loop_before_saving_all_facts(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """The save loop respects memoryMaxPerUser; extra facts are dropped."""
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        # Existing rows + max are wired so only ONE additional fact fits.
+        snapshot = self._existing_rows(mocker, 9)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        # max_memories defaults via make_registry_side_effect; override it.
+        plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect(
+                {"memoryMaxPerUser": 10, "memoryEnabled": True, "memoryCleanupInterval": 0}
+            )
+        )
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(
+            add=["one", "two", "three"]
+        )
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        bg_callback = add_event.call_args.args[0]
+        bg_callback()
+
+        # Only one fact should fit before the cap is hit.
+        assert plugin.db.save_memory.call_count == 1
+
+    def test_cleanup_triggers_when_save_counter_reaches_interval(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """When increment_memory_saves crosses cleanup_interval, _run_memory_cleanup runs."""
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 2)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect(
+                {"memoryMaxPerUser": 50, "memoryEnabled": True, "memoryCleanupInterval": 3}
+            )
+        )
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(add=["a fresh fact"])
+        plugin.db.increment_memory_saves.return_value = 3  # Reached interval.
+        cleanup_spy = mocker.patch.object(plugin, "_run_memory_cleanup")
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        bg_callback = add_event.call_args.args[0]
+        bg_callback()
+
+        plugin.db.reset_memory_saves.assert_called_once_with("alice")
+        cleanup_spy.assert_called_once_with("alice", "#test")
+
+
+class TestMechanicalRescheduleEdgeCases:
+    """Coverage for invalid/exhausted-rrule and missing-recurrence guards."""
+
+    @pytest.fixture
+    def plugin(self, mock_irc, mocker: MockerFixture):
+        from llm.plugin import LLM
+
+        from .conftest import plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        return LLM(mock_irc)
+
+    def test_invalid_rrule_aborts_without_scheduling(self, plugin, mocker: MockerFixture) -> None:
+        """An rrule that yields no future fire returns without registering an event."""
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        mocker.patch.object(plugin, "_next_rrule_fire", return_value=None)
+
+        plugin._mechanical_reschedule(
+            nick="alice",
+            channel="#t",
+            message="m",
+            event_name="llm_remind_x",
+            action_prompt="p",
+            account=None,
+            chain_position=1,
+            recurrence_seconds=None,
+            recurrence_rrule="FREQ=DAILY;UNTIL=19990101T000000Z",
+            watch_mode=False,
+            now=time.time(),
+        )
+
+        add_event.assert_not_called()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_no_recurrence_set_returns_without_scheduling(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """When neither recurrence_seconds nor recurrence_rrule is set, the helper exits cleanly."""
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._mechanical_reschedule(
+            nick="alice",
+            channel="#t",
+            message="m",
+            event_name="llm_remind_x",
+            action_prompt="p",
+            account=None,
+            chain_position=1,
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            watch_mode=False,
+            now=time.time(),
+        )
+
+        add_event.assert_not_called()
+        plugin.db.save_reminder.assert_not_called()

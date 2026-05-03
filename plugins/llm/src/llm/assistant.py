@@ -54,18 +54,23 @@ CHAT_SYSTEM_PROMPT = (
     "set_reminder text='in 1 minute draw a cat (2 left, recurring: "
     "every minute)'. The reminder fires later, the model that handles "
     "the fire decides whether to reschedule the next occurrence.\n"
-    "- When the user asks to cancel/clear/stop ALL reminders, call "
-    "cancel_all_reminders ONCE — do not list_reminders then "
-    "delete_reminder per ID. The bulk call is atomic and prevents a "
-    "recurring reminder from firing one more time during cancellation.\n"
-    "- After a successful set_reminder, delete_reminder, or "
-    "cancel_all_reminders, the user has already been acknowledged "
-    "with an emoji reaction (clock for set, thumbs-up for "
-    "cancel/delete). You can stay quiet — your reply would just "
-    "duplicate the reaction. If the tool returned an error or "
-    "refusal (cap reached, not found, parse failed), DO speak: "
-    "surface the reason in one short sentence so the user knows "
-    "what went wrong."
+    "- 'Reminders' and 'scheduled tasks' are both pending future work. "
+    "If the user asks to list, find, or cancel something they don't "
+    "remember the kind of, ALWAYS use list_pending_tasks (which spans "
+    "both) before answering — never assume there are no scheduled "
+    "tasks just because there are no reminders, or vice-versa.\n"
+    "- When the user asks to cancel/clear/stop EVERYTHING (all reminders, "
+    "all scheduled tasks, all of it), call cancel_all_pending_tasks "
+    "ONCE — do not list and then cancel each one. The bulk call is "
+    "atomic and prevents a recurring task from firing one more time "
+    "during cancellation.\n"
+    "- After a successful set_reminder, schedule_llm_task, "
+    "cancel_pending_task, or cancel_all_pending_tasks, the user has "
+    "already been acknowledged with an emoji reaction (clock for set, "
+    "thumbs-up for cancel). You can stay quiet — your reply would just "
+    "duplicate the reaction. If the tool returned an error or refusal "
+    "(cap reached, not found, parse failed), DO speak: surface the "
+    "reason in one short sentence so the user knows what went wrong."
 )
 
 CODE_SYSTEM_PROMPT = (
@@ -370,8 +375,17 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "list_reminders",
-            "description": "List the user's pending reminders with IDs and messages.",
+            "name": "list_pending_tasks",
+            "description": (
+                "List the user's pending future work — both plain reminders "
+                "(set_reminder) and scheduled LLM tasks (schedule_llm_task). "
+                "Returns a unified list; each entry includes a `kind` field "
+                '("reminder" or "scheduled_task"), an `id`, and a '
+                "`description` suitable for paraphrasing to the user. "
+                "ALWAYS call this — never list_just-one-kind — when the user "
+                "asks what they have scheduled, what reminders they have, or "
+                "before cancelling something specific."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -402,14 +416,22 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "delete_reminder",
-            "description": "Delete a reminder by its short hex ID.",
+            "name": "cancel_pending_task",
+            "description": (
+                "Cancel a single pending task by id. Works for both reminders "
+                "and scheduled LLM tasks — the id format tells the bot which. "
+                "Find the id by calling list_pending_tasks first; do not guess."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": ("The reminder's hex ID (e.g. 'abc123def456')."),
+                        "description": (
+                            "The task id from list_pending_tasks (a short hex "
+                            "for reminders, or 'llm_task_<hex>' for scheduled "
+                            "tasks)."
+                        ),
                     },
                 },
                 "required": ["id"],
@@ -419,13 +441,13 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "cancel_all_reminders",
+            "name": "cancel_all_pending_tasks",
             "description": (
-                "Cancel ALL of the user's pending reminders in one call. "
-                "Use this when the user asks to cancel/clear/stop all reminders, "
-                "especially recurring ones — calling delete_reminder repeatedly is "
-                "slower and lets a recurring reminder fire one more time before it "
-                "finishes. Returns the number cancelled."
+                "Cancel ALL of the user's pending tasks (reminders and "
+                "scheduled LLM tasks) in one call. Use when the user asks to "
+                "cancel/clear/stop everything; this is atomic and prevents a "
+                "recurring task from firing one more time during cancellation. "
+                "Returns the number cancelled per kind."
             ),
             "parameters": {
                 "type": "object",
@@ -484,47 +506,6 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["when_natural", "prompt"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_scheduled_llm_tasks",
-            "description": (
-                "List your scheduled LLM tasks. Returns id, when, channel, "
-                "and prompt for each. Use before cancel_scheduled_llm_task. "
-                "When summarizing to the user, describe each task in plain "
-                "English (when it fires + what it does); do NOT print the "
-                "raw id or tell the user to invoke any tool by name."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cancel_scheduled_llm_task",
-            "description": (
-                "Cancel one of your scheduled LLM tasks by id. To find the "
-                "id, call list_scheduled_llm_tasks first and match by the "
-                "task description the user referred to. Confirm cancellation "
-                "to the user in plain English; do NOT expose the id or any "
-                "tool name."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "The scheduled-task id (e.g. 'llm_task_abc123').",
-                    },
-                },
-                "required": ["id"],
             },
         },
     },
@@ -746,17 +727,15 @@ class AssistantToolExecutor:
         capabilities: frozenset[str] = frozenset({"llm.ask"}),
         account: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
-        list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
-        delete_reminder_fn: Callable[[str], str] | None = None,
-        cancel_all_reminders_fn: Callable[[], str] | None = None,
+        list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
+        cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
         code_fn: Callable[[str], ToolResult] | None = None,
         schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
-        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
-        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.db = db
         self.context = context
@@ -767,17 +746,15 @@ class AssistantToolExecutor:
         self.capabilities = capabilities
         self.account = account
         self._cleanup_fn = cleanup_fn
-        self._list_reminders_fn = list_reminders_fn
         self._set_reminder_fn = set_reminder_fn
-        self._delete_reminder_fn = delete_reminder_fn
-        self._cancel_all_reminders_fn = cancel_all_reminders_fn
+        self._list_pending_tasks_fn = list_pending_tasks_fn
+        self._cancel_pending_task_fn = cancel_pending_task_fn
+        self._cancel_all_pending_tasks_fn = cancel_all_pending_tasks_fn
         self._draw_fn = draw_fn
         self._search_fn = search_fn
         self._fetch_fn = fetch_fn
         self._code_fn = code_fn
         self._schedule_llm_task_fn = schedule_llm_task_fn
-        self._list_scheduled_llm_tasks_fn = list_scheduled_llm_tasks_fn
-        self._cancel_scheduled_llm_task_fn = cancel_scheduled_llm_task_fn
 
         # Accumulator fields for structured returns
         self.grounding_used: bool = False
@@ -1004,24 +981,13 @@ class AssistantToolExecutor:
             return self._err(result)
         return self._ok(result)
 
-    def _tool_list_reminders(self, _args: dict[str, Any]) -> str:
-        if self._list_reminders_fn is None:
-            return self._err("Reminders are not available.")
-        reminders = self._list_reminders_fn()
-        if not reminders:
-            return json.dumps({"reminders": [], "message": "No pending reminders."})
-        return json.dumps(
-            {
-                "reminders": [
-                    {
-                        "id": name.split("_")[-1],
-                        "message": data[2],
-                        "channel": data[1],
-                    }
-                    for name, data in reminders
-                ],
-            }
-        )
+    def _tool_list_pending_tasks(self, _args: dict[str, Any]) -> str:
+        if self._list_pending_tasks_fn is None:
+            return self._err("Pending tasks are not available.")
+        tasks = self._list_pending_tasks_fn()
+        if not tasks:
+            return json.dumps({"tasks": [], "message": "No pending tasks."})
+        return json.dumps({"tasks": tasks})
 
     def _tool_set_reminder(self, args: dict[str, Any]) -> str:
         if self._set_reminder_fn is None:
@@ -1032,19 +998,21 @@ class AssistantToolExecutor:
             return self._err(result)
         return self._ok(result)
 
-    def _tool_delete_reminder(self, args: dict[str, Any]) -> str:
-        if self._delete_reminder_fn is None:
-            return self._err("Reminders are not available.")
-        reminder_id = args["id"]
-        result = self._delete_reminder_fn(reminder_id)
-        if "not found" in result.lower():
-            return self._err(result)
-        return self._ok(result)
+    def _tool_cancel_pending_task(self, args: dict[str, Any]) -> str:
+        if self._cancel_pending_task_fn is None:
+            return self._err("Pending tasks are not available.")
+        task_id = str(args.get("id") or "").strip()
+        if not task_id:
+            return self._err("id is required.")
+        result = self._cancel_pending_task_fn(task_id)
+        if result.get("status") == "ok":
+            return self._ok(result.get("message") or "Cancelled.")
+        return self._err(result.get("message") or "Cancel failed.")
 
-    def _tool_cancel_all_reminders(self, _args: dict[str, Any]) -> str:
-        if self._cancel_all_reminders_fn is None:
-            return self._err("Reminders are not available.")
-        return self._ok(self._cancel_all_reminders_fn())
+    def _tool_cancel_all_pending_tasks(self, _args: dict[str, Any]) -> str:
+        if self._cancel_all_pending_tasks_fn is None:
+            return self._err("Pending tasks are not available.")
+        return json.dumps({"status": "ok", **self._cancel_all_pending_tasks_fn()})
 
     def _tool_schedule_llm_task(self, args: dict[str, Any]) -> str:
         if self._schedule_llm_task_fn is None:
@@ -1061,21 +1029,6 @@ class AssistantToolExecutor:
             prompt=prompt,
             reply_target=reply_target,
         )
-        return json.dumps(result)
-
-    def _tool_list_scheduled_llm_tasks(self, _args: dict[str, Any]) -> str:
-        if self._list_scheduled_llm_tasks_fn is None:
-            return self._err("Scheduling is not configured on this bot.")
-        tasks = self._list_scheduled_llm_tasks_fn()
-        return json.dumps({"status": "ok", "tasks": tasks})
-
-    def _tool_cancel_scheduled_llm_task(self, args: dict[str, Any]) -> str:
-        if self._cancel_scheduled_llm_task_fn is None:
-            return self._err("Scheduling is not configured on this bot.")
-        event_name = str(args.get("id") or "").strip()
-        if not event_name:
-            return self._err("id is required.")
-        result = self._cancel_scheduled_llm_task_fn(event_name=event_name)
         return json.dumps(result)
 
     def _tool_generate_image(self, args: dict[str, Any]) -> str:

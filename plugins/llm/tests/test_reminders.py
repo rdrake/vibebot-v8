@@ -1437,9 +1437,10 @@ class TestReminderActionDelivery:
         assert callable(kwargs["code_fn"])
         assert callable(kwargs["draw_fn"])
         assert callable(kwargs["cleanup_fn"])
-        assert callable(kwargs["list_reminders_fn"])
+        assert callable(kwargs["list_pending_tasks_fn"])
         assert callable(kwargs["set_reminder_fn"])
-        assert callable(kwargs["delete_reminder_fn"])
+        assert callable(kwargs["cancel_pending_task_fn"])
+        assert callable(kwargs["cancel_all_pending_tasks_fn"])
 
         sent = active_irc.queueMsg.call_args[0][0]
         assert sent.args[0] == "#ops"

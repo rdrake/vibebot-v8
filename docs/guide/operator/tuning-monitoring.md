@@ -179,7 +179,7 @@ Default is `5`. Each creator's active scheduled tasks (in this channel) are capp
 
 **Inspection:**
 
-- The LLM lists/cancels schedules through the `list_scheduled_llm_tasks` and `cancel_scheduled_llm_task` tools — drive these by asking the bot in chat. `@scheduler list` will *not* show these tasks because they live in the LLM's own DB-backed schedule, not in Limnoria's Scheduler plugin events.
+- The LLM lists/cancels schedules through the unified `list_pending_tasks` and `cancel_pending_task` tools (the same surface that handles reminders) — drive these by asking the bot in chat. `@scheduler list` will *not* show these tasks because they live in the LLM's own DB-backed schedule, not in Limnoria's Scheduler plugin events.
 - Enable `bridgeDebugInChannel` to see fire-time bridge calls inline.
 - Phase 2 Task 1's read/write gate (`bridgeAllowMutating` + `MUTATING_COMMANDS`) applies to bridge calls made *during* a fired task's @ask turn — write commands are hidden unless the channel has the gate open.
 

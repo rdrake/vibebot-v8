@@ -69,12 +69,14 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {"llm.ask", "llm.code", "llm.draw", "owner", "admin", "trusted"}
 )
 
-# Reminder-mutation tools whose successful execution already produced a
-# user-visible emoji reaction. When the assistant loop ends with one of
+# Pending-task mutation tools whose successful execution already produced
+# a user-visible emoji reaction. When the assistant loop ends with one of
 # these as the last successful tool AND no follow-up text, the chat
 # reply is suppressed to avoid a duplicate ack. See Task B5 of the
 # 2026-04-30 reminder simplification plan.
-_REMINDER_MUTATION_TOOLS = frozenset({"set_reminder", "delete_reminder", "cancel_all_reminders"})
+_REMINDER_MUTATION_TOOLS = frozenset(
+    {"set_reminder", "cancel_pending_task", "cancel_all_pending_tasks"}
+)
 
 _FULL_ANSWER_LABEL = "Full answer"
 
@@ -1204,17 +1206,12 @@ class LLM(callbacks.Plugin):
                             ),
                             cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                             exclude_tools=exclude_tools,
-                            **self._reminder_fns(
-                                caller=caller,
-                                irc=active_irc,
-                                msg=synthetic_msg,
-                                pass_irc_msg_to_callbacks=False,
-                            ),
-                            **self._scheduled_llm_task_fns(
+                            **self._pending_task_fns(
                                 caller=caller,
                                 irc=active_irc,
                                 msg=synthetic_msg,
                                 channel=channel,
+                                pass_irc_msg_to_callbacks=False,
                             ),
                         )
                         response = result.content.strip() if result.content else ""
@@ -2521,10 +2518,7 @@ class LLM(callbacks.Plugin):
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
                     extra_handlers=bridge_handlers,
-                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
-                    **self._scheduled_llm_task_fns(
-                        caller=caller, irc=irc, msg=msg, channel=channel
-                    ),
+                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
                 # Format response with grounding icon if search was used
@@ -2652,10 +2646,7 @@ class LLM(callbacks.Plugin):
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
-                    **self._scheduled_llm_task_fns(
-                        caller=caller, irc=irc, msg=msg, channel=channel
-                    ),
+                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
                 response = result.content
@@ -2744,10 +2735,7 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=[],
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    **self._reminder_fns(caller=caller, irc=irc, msg=msg),
-                    **self._scheduled_llm_task_fns(
-                        caller=caller, irc=irc, msg=msg, channel=channel
-                    ),
+                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
                 response = result.content
@@ -3101,63 +3089,34 @@ class LLM(callbacks.Plugin):
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
 
-    def _reminder_fns(
-        self,
-        *,
-        caller: Identity,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        pass_irc_msg_to_callbacks: bool = True,
-    ) -> dict[str, Callable[..., object]]:
-        """Build the four-lambda reminder-tool dict for assistant calls.
-
-        ``pass_irc_msg_to_callbacks`` is False on the action-fire path: its
-        ``synthetic_msg`` has no msgid, so passing ``irc``/``msg`` through would
-        just invoke ``_react`` only to have its msgid check fail.
-        """
-        if pass_irc_msg_to_callbacks:
-
-            def delete_fn(r: str) -> str:
-                return self._remind_delete_for_assistant(
-                    caller,
-                    r,
-                    irc=irc,
-                    msg=msg,
-                )
-
-            def clear_fn() -> str:
-                return self._remind_clear_for_assistant(
-                    caller,
-                    irc=irc,
-                    msg=msg,
-                )
-        else:
-
-            def delete_fn(r: str) -> str:
-                return self._remind_delete_for_assistant(caller, r)
-
-            def clear_fn() -> str:
-                return self._remind_clear_for_assistant(caller)
-
-        def set_fn(t: str) -> str:
-            return self._remind_set_for_assistant(irc, msg, caller, t)
-
-        return {
-            "list_reminders_fn": lambda: self._get_user_reminders(caller),
-            "set_reminder_fn": set_fn,
-            "delete_reminder_fn": delete_fn,
-            "cancel_all_reminders_fn": clear_fn,
-        }
-
-    def _scheduled_llm_task_fns(
+    def _pending_task_fns(
         self,
         *,
         caller: Identity,
         irc: callbacks.Irc,
         msg: IrcMsg,
         channel: str,
+        pass_irc_msg_to_callbacks: bool = True,
     ) -> dict[str, Callable[..., object]]:
-        """Build the three-callable dict for the scheduled-task tools."""
+        """Build the unified pending-task tool dict for assistant calls.
+
+        Returns callables for the consolidated ``list_pending_tasks`` /
+        ``cancel_pending_task`` / ``cancel_all_pending_tasks`` /
+        ``set_reminder`` / ``schedule_llm_task`` tool surface. The list and
+        cancel paths span both reminders (``set_reminder``) and scheduled
+        LLM tasks (``schedule_llm_task``) so the model can never look at
+        only one kind when the user asks "what do I have scheduled?" or
+        "cancel my X".
+
+        ``pass_irc_msg_to_callbacks`` is False on the action-fire path: its
+        ``synthetic_msg`` has no msgid, so passing ``irc``/``msg`` through
+        would just invoke ``_react`` only to have its msgid check fail.
+        """
+        react_irc = irc if pass_irc_msg_to_callbacks else None
+        react_msg = msg if pass_irc_msg_to_callbacks else None
+
+        def set_reminder_fn(text: str) -> str:
+            return self._remind_set_for_assistant(irc, msg, caller, text)
 
         def schedule_fn(
             *,
@@ -3183,41 +3142,88 @@ class LLM(callbacks.Plugin):
                 "note": result.note,
             }
 
-        def list_fn() -> list[dict[str, object]]:
-            rows = self.llm_service.list_scheduled_llm_tasks(
+        def list_pending_tasks_fn() -> list[dict[str, object]]:
+            tasks: list[dict[str, object]] = []
+            for name, data in self._get_user_reminders(caller):
+                # event-name format: "llm_reminder_<owner>_<id>"; the LLM
+                # only needs the trailing id (matches existing UX).
+                rid = name.split("_")[-1]
+                tasks.append(
+                    {
+                        "kind": "reminder",
+                        "id": rid,
+                        "channel": data[1],
+                        "description": data[2],
+                    }
+                )
+            for row in self.llm_service.list_scheduled_llm_tasks(
+                creator_nick=caller.raw_nick, account=caller.account
+            ):
+                tasks.append(
+                    {
+                        "kind": "scheduled_task",
+                        "id": row.event_name,
+                        "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row.fire_at)),
+                        "channel": row.channel,
+                        "description": row.prompt[:80],
+                        "recurrence": (
+                            f"every {row.recurrence_seconds}s"
+                            if row.recurrence_seconds is not None
+                            else row.recurrence_rrule
+                        ),
+                    }
+                )
+            return tasks
+
+        def cancel_pending_task_fn(task_id: str) -> dict[str, object]:
+            if task_id.startswith("llm_task_"):
+                result = self.llm_service.cancel_scheduled_llm_task(
+                    event_name=task_id,
+                    creator_nick=caller.raw_nick,
+                    account=caller.account,
+                )
+                return {
+                    "status": result.status,
+                    "kind": "scheduled_task",
+                    "id": result.event_name,
+                    "message": result.message,
+                }
+            message = self._remind_delete_for_assistant(
+                caller, task_id, irc=react_irc, msg=react_msg
+            )
+            status = "ok" if "not found" not in message.lower() else "error"
+            return {
+                "status": status,
+                "kind": "reminder",
+                "id": task_id,
+                "message": message,
+            }
+
+        def cancel_all_pending_tasks_fn() -> dict[str, object]:
+            reminder_msg = self._remind_clear_for_assistant(caller, irc=react_irc, msg=react_msg)
+            scheduled_rows = self.llm_service.list_scheduled_llm_tasks(
                 creator_nick=caller.raw_nick, account=caller.account
             )
-            return [
-                {
-                    "id": row.event_name,
-                    "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row.fire_at)),
-                    "channel": row.channel,
-                    "prompt": row.prompt[:80],
-                    "recurrence": (
-                        f"every {row.recurrence_seconds}s"
-                        if row.recurrence_seconds is not None
-                        else row.recurrence_rrule
-                    ),
-                }
-                for row in rows
-            ]
-
-        def cancel_fn(*, event_name: str) -> dict[str, object]:
-            result = self.llm_service.cancel_scheduled_llm_task(
-                event_name=event_name,
-                creator_nick=caller.raw_nick,
-                account=caller.account,
-            )
+            scheduled_cancelled = 0
+            for row in scheduled_rows:
+                result = self.llm_service.cancel_scheduled_llm_task(
+                    event_name=row.event_name,
+                    creator_nick=caller.raw_nick,
+                    account=caller.account,
+                )
+                if result.status == "ok":
+                    scheduled_cancelled += 1
             return {
-                "status": result.status,
-                "event_name": result.event_name,
-                "message": result.message,
+                "reminders_message": reminder_msg,
+                "scheduled_tasks_cancelled": scheduled_cancelled,
             }
 
         return {
+            "set_reminder_fn": set_reminder_fn,
             "schedule_llm_task_fn": schedule_fn,
-            "list_scheduled_llm_tasks_fn": list_fn,
-            "cancel_scheduled_llm_task_fn": cancel_fn,
+            "list_pending_tasks_fn": list_pending_tasks_fn,
+            "cancel_pending_task_fn": cancel_pending_task_fn,
+            "cancel_all_pending_tasks_fn": cancel_all_pending_tasks_fn,
         }
 
     def _get_user_reminders(self, caller: Identity) -> list[tuple[str, ReminderRow]]:

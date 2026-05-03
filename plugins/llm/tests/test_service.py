@@ -404,19 +404,20 @@ class TestResolveGroundingKwargs:
         self.service, _ = make_service()
 
     @pytest.mark.parametrize(
-        ("model", "kind", "expected_tool"),
+        ("model", "kind"),
         [
-            ("gemini/gemini-2.5-flash", "search", "googleSearch"),
-            ("gemini/gemini-2.5-flash", "url", "urlContext"),
-            ("vertex_ai/gemini-2.5-pro", "search", "googleSearch"),
-            ("vertex_ai_beta/gemini-2.5-pro", "url", "urlContext"),
+            ("gemini/gemini-2.5-flash", "search"),
+            ("gemini/gemini-2.5-flash", "url"),
+            ("vertex_ai/gemini-2.5-pro", "search"),
+            ("vertex_ai_beta/gemini-2.5-pro", "url"),
         ],
     )
-    def test_gemini_provider_uses_native_grounding_tool(
-        self, model: str, kind: str, expected_tool: str
-    ) -> None:
+    def test_gemini_provider_registers_both_grounding_tools(self, model: str, kind: str) -> None:
+        # Gemini supports both googleSearch and urlContext on the same
+        # request; registering both lets the model pivot between
+        # searching the web and fetching a specific URL within one turn.
         kwargs = self.service._resolve_grounding_kwargs(model, kind)
-        assert kwargs == {"tools": [{expected_tool: {}}]}
+        assert kwargs == {"tools": [{"googleSearch": {}}, {"urlContext": {}}]}
 
     @pytest.mark.parametrize("kind", ["search", "url"])
     def test_xai_provider_drops_tools_chat_completions_path(self, kind: str) -> None:
@@ -471,7 +472,9 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.search_completion("hi", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [{"googleSearch": {}}]
+        # Both grounding tools ride together so Gemini can pivot from
+        # searching to fetching a referenced URL within one turn.
+        assert kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
 
     def test_xai_search_skips_chat_completions(self, mocker: MockerFixture) -> None:
         # xAI must not hit the Chat Completions path at all — search goes
@@ -509,7 +512,9 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.url_completion("https://example.com", channel="#t")
         kwargs = self._captured_kwargs()
-        assert kwargs["tools"] == [{"urlContext": {}}]
+        # Both grounding tools ride together so Gemini can pivot from
+        # fetching the URL to searching for related context within one turn.
+        assert kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
 
     def test_xai_url_skips_chat_completions(self, mocker: MockerFixture) -> None:
         # Same dispatch story for URL fetch — xAI uses Responses API
@@ -4925,7 +4930,11 @@ class TestSearchCompletion:
         assert call_kwargs.kwargs["model"] == "gemini/gemini-2.5-flash"
 
     def test_passes_google_search_tool(self, service: LLMService, mocker: MockerFixture) -> None:
-        """search_completion passes googleSearch tool to completion call."""
+        """search_completion passes both googleSearch and urlContext to Gemini.
+
+        Both grounding tools ride on the same call so the model can pivot
+        from a web search to fetching a specific URL within one turn.
+        """
         resp = _make_litellm_response(mocker)
         mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -4933,10 +4942,9 @@ class TestSearchCompletion:
         service.search_completion("test query", channel="#test")
 
         call_kwargs = mock_completion.call_args
-        # tools should be in the call (may be in kwargs or unpacked from optional_kwargs)
         all_kwargs = call_kwargs.kwargs
         assert "tools" in all_kwargs
-        assert all_kwargs["tools"] == [{"googleSearch": {}}]
+        assert all_kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
 
     def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """search_completion returns error ToolResult on failure."""
@@ -4999,7 +5007,11 @@ class TestUrlCompletion:
         assert "not allowed" in parsed["error"].lower()
 
     def test_passes_url_context_tool(self, service: LLMService, mocker: MockerFixture) -> None:
-        """url_completion passes urlContext tool to completion call."""
+        """url_completion passes both urlContext and googleSearch to Gemini.
+
+        Both grounding tools ride on the same call so the model can pivot
+        from fetching a URL to searching the web within one turn.
+        """
         resp = _make_litellm_response(mocker)
         mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -5009,7 +5021,7 @@ class TestUrlCompletion:
         call_kwargs = mock_completion.call_args
         all_kwargs = call_kwargs.kwargs
         assert "tools" in all_kwargs
-        assert all_kwargs["tools"] == [{"urlContext": {}}]
+        assert all_kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
 
     def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """url_completion returns error ToolResult on failure."""
@@ -5819,8 +5831,7 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
     plugin._gather_history.return_value = ([], [])
     plugin._get_user_memories.return_value = []
     mocker.patch.object(plugin.db, "get_instruction", return_value="")
-    plugin._reminder_fns.return_value = {}
-    plugin._scheduled_llm_task_fns.return_value = {}
+    plugin._pending_task_fns.return_value = {}
 
     captured: dict[str, object] = {}
 
@@ -6093,8 +6104,7 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
     plugin._gather_history.return_value = ([], [])
     plugin._get_user_memories.return_value = []
     mocker.patch.object(plugin.db, "get_instruction", return_value="")
-    plugin._reminder_fns.return_value = {}
-    plugin._scheduled_llm_task_fns.return_value = {}
+    plugin._pending_task_fns.return_value = {}
 
     mocker.patch.object(
         llm_service,

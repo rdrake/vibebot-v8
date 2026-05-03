@@ -1115,8 +1115,11 @@ class LLMService:
         context fetching). Returns a dict to ``update()`` into the
         ``optional_kwargs`` passed to LiteLLM.
 
-        - Gemini / Vertex AI: native grounding tools
-          (``googleSearch`` / ``urlContext``).
+        - Gemini / Vertex AI: register both native grounding tools
+          (``googleSearch`` + ``urlContext``) regardless of ``kind``.
+          Gemini decides at runtime which to invoke, so a request that
+          starts as "search" can pivot to "fetch this URL the search
+          surfaced" without a second tool round-trip — and vice versa.
         - xAI (Grok): returns ``{"tools": []}``. xAI Live Search on
           ``/v1/chat/completions`` is deprecated; web search is only
           available on ``/v1/responses`` via ``{"type": "web_search"}``.
@@ -1136,8 +1139,7 @@ class LLMService:
             provider = model.split("/", 1)[0].lower()
 
         if provider in ("gemini", "vertex_ai", "vertex_ai_beta"):
-            tool_name = "googleSearch" if kind == "search" else "urlContext"
-            return {"tools": [{tool_name: {}}]}
+            return {"tools": [{"googleSearch": {}}, {"urlContext": {}}]}
 
         # xAI and any other provider: no chat-completions grounding.
         # xAI search/URL routes through the Responses API (see
@@ -2223,17 +2225,15 @@ class LLMService:
         api_key: str | None = None,
         model_override: str | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
-        list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
-        delete_reminder_fn: Callable[[str], str] | None = None,
-        cancel_all_reminders_fn: Callable[[], str] | None = None,
+        list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
+        cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
         schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
-        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
-        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
@@ -2291,17 +2291,15 @@ class LLMService:
             irc=irc,
             msg=msg,
             cleanup_fn=cleanup_fn,
-            list_reminders_fn=list_reminders_fn,
             set_reminder_fn=set_reminder_fn,
-            delete_reminder_fn=delete_reminder_fn,
-            cancel_all_reminders_fn=cancel_all_reminders_fn,
+            list_pending_tasks_fn=list_pending_tasks_fn,
+            cancel_pending_task_fn=cancel_pending_task_fn,
+            cancel_all_pending_tasks_fn=cancel_all_pending_tasks_fn,
             draw_fn=draw_fn,
             search_fn=search_fn,
             fetch_fn=fetch_fn,
             code_fn=code_fn,
             schedule_llm_task_fn=schedule_llm_task_fn,
-            list_scheduled_llm_tasks_fn=list_scheduled_llm_tasks_fn,
-            cancel_scheduled_llm_task_fn=cancel_scheduled_llm_task_fn,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
             exclude_tools=exclude_tools,
@@ -2767,17 +2765,15 @@ Examples (echo → action_prompt: ""):
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
         cleanup_fn: Callable[[str], str] | None = None,
-        list_reminders_fn: Callable[[], list] | None = None,
         set_reminder_fn: Callable[[str], str] | None = None,
-        delete_reminder_fn: Callable[[str], str] | None = None,
-        cancel_all_reminders_fn: Callable[[], str] | None = None,
+        list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
+        cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
         draw_fn: Callable[[str], str] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
         schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
-        list_scheduled_llm_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
-        cancel_scheduled_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
@@ -2800,9 +2796,13 @@ Examples (echo → action_prompt: ""):
             api_key: Optional API key override
             model_override: Optional model override
             cleanup_fn: Optional callable that runs memory cleanup
-            list_reminders_fn: Optional callable that lists user reminders
             set_reminder_fn: Optional callable that sets a reminder
-            delete_reminder_fn: Optional callable that deletes a reminder
+            list_pending_tasks_fn: Optional callable returning a unified list of
+                reminders + scheduled LLM tasks (each tagged with kind/id).
+            cancel_pending_task_fn: Optional callable that cancels one pending
+                task by id (auto-routes to reminder or scheduled-task backend).
+            cancel_all_pending_tasks_fn: Optional callable that cancels every
+                pending task atomically.
 
         Returns:
             AssistantResult with the final text, is_meta flag, and usage stats
@@ -2863,17 +2863,15 @@ Examples (echo → action_prompt: ""):
                 capabilities=capabilities or frozenset({"llm.ask"}),
                 account=account,
                 cleanup_fn=cleanup_fn,
-                list_reminders_fn=list_reminders_fn,
                 set_reminder_fn=set_reminder_fn,
-                delete_reminder_fn=delete_reminder_fn,
-                cancel_all_reminders_fn=cancel_all_reminders_fn,
+                list_pending_tasks_fn=list_pending_tasks_fn,
+                cancel_pending_task_fn=cancel_pending_task_fn,
+                cancel_all_pending_tasks_fn=cancel_all_pending_tasks_fn,
                 draw_fn=draw_fn,
                 search_fn=search_fn,
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
                 schedule_llm_task_fn=schedule_llm_task_fn,
-                list_scheduled_llm_tasks_fn=list_scheduled_llm_tasks_fn,
-                cancel_scheduled_llm_task_fn=cancel_scheduled_llm_task_fn,
             )
 
             profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
@@ -4230,17 +4228,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
 
         # The depth tag on ``msg`` keeps schedule_llm_task itself off the tool
         # surface for this turn (the tool refuses on depth>=1).
-        reminder_fns: dict[str, Any] = plugin._reminder_fns(
-            caller=caller,
-            irc=irc,
-            msg=msg,
-            pass_irc_msg_to_callbacks=False,
-        )
-        scheduled_task_fns: dict[str, Any] = plugin._scheduled_llm_task_fns(
+        pending_task_fns: dict[str, Any] = plugin._pending_task_fns(
             caller=caller,
             irc=irc,
             msg=msg,
             channel=row.channel,
+            pass_irc_msg_to_callbacks=False,
         )
 
         result = self.assistant_request(
@@ -4260,8 +4253,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             code_fn=lambda p: plugin._code_for_assistant(p, row.channel),
             draw_fn=lambda p, _i=irc, _m=msg: plugin._draw_for_assistant(_i, _m, p),
             cleanup_fn=lambda n: plugin._run_memory_cleanup(n, row.channel),
-            **reminder_fns,
-            **scheduled_task_fns,
+            **pending_task_fns,
         )
 
         response = (result.content or "").strip()

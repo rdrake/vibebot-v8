@@ -32,7 +32,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 23
+        assert len(ASSISTANT_TOOLS) == 21
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -77,11 +77,21 @@ class TestAssistantToolExecutor:
         return fn
 
     @pytest.fixture
-    def mock_list_reminders_fn(self, mocker: MockerFixture) -> MagicMock:
+    def mock_list_pending_tasks_fn(self, mocker: MockerFixture) -> MagicMock:
         fn = mocker.MagicMock()
         fn.return_value = [
-            ("llm_remind_abc123", ("testuser", "#test", "check build")),
-            ("llm_remind_def456", ("testuser", "#test", "deploy app")),
+            {
+                "kind": "reminder",
+                "id": "abc123",
+                "channel": "#test",
+                "description": "check build",
+            },
+            {
+                "kind": "reminder",
+                "id": "def456",
+                "channel": "#test",
+                "description": "deploy app",
+            },
         ]
         return fn
 
@@ -92,15 +102,23 @@ class TestAssistantToolExecutor:
         return fn
 
     @pytest.fixture
-    def mock_delete_reminder_fn(self, mocker: MockerFixture) -> MagicMock:
+    def mock_cancel_pending_task_fn(self, mocker: MockerFixture) -> MagicMock:
         fn = mocker.MagicMock()
-        fn.return_value = "Deleted reminder abc123."
+        fn.return_value = {
+            "status": "ok",
+            "kind": "reminder",
+            "id": "abc123",
+            "message": "Deleted reminder abc123.",
+        }
         return fn
 
     @pytest.fixture
-    def mock_cancel_all_reminders_fn(self, mocker: MockerFixture) -> MagicMock:
+    def mock_cancel_all_pending_tasks_fn(self, mocker: MockerFixture) -> MagicMock:
         fn = mocker.MagicMock()
-        fn.return_value = "Cancelled 2 reminders."
+        fn.return_value = {
+            "reminders_message": "Cancelled 2 reminders.",
+            "scheduled_tasks_cancelled": 0,
+        }
         return fn
 
     @pytest.fixture
@@ -109,10 +127,10 @@ class TestAssistantToolExecutor:
         mock_db: MagicMock,
         mock_context: MagicMock,
         mock_cleanup_fn: MagicMock,
-        mock_list_reminders_fn: MagicMock,
+        mock_list_pending_tasks_fn: MagicMock,
         mock_set_reminder_fn: MagicMock,
-        mock_delete_reminder_fn: MagicMock,
-        mock_cancel_all_reminders_fn: MagicMock,
+        mock_cancel_pending_task_fn: MagicMock,
+        mock_cancel_all_pending_tasks_fn: MagicMock,
     ) -> AssistantToolExecutor:
         return AssistantToolExecutor(
             db=mock_db,
@@ -120,10 +138,10 @@ class TestAssistantToolExecutor:
             nick="testuser",
             channel="#test",
             cleanup_fn=mock_cleanup_fn,
-            list_reminders_fn=mock_list_reminders_fn,
+            list_pending_tasks_fn=mock_list_pending_tasks_fn,
             set_reminder_fn=mock_set_reminder_fn,
-            delete_reminder_fn=mock_delete_reminder_fn,
-            cancel_all_reminders_fn=mock_cancel_all_reminders_fn,
+            cancel_pending_task_fn=mock_cancel_pending_task_fn,
+            cancel_all_pending_tasks_fn=mock_cancel_all_pending_tasks_fn,
         )
 
     def test_get_instruction(self, executor: AssistantToolExecutor) -> None:
@@ -205,9 +223,9 @@ class TestAssistantToolExecutor:
         mock_db: MagicMock,
         mock_context: MagicMock,
         mock_cleanup_fn: MagicMock,
-        mock_list_reminders_fn: MagicMock,
+        mock_list_pending_tasks_fn: MagicMock,
         mock_set_reminder_fn: MagicMock,
-        mock_delete_reminder_fn: MagicMock,
+        mock_cancel_pending_task_fn: MagicMock,
     ) -> None:
         """GIVEN missing tool capability WHEN executed THEN dispatch denies it server-side."""
         executor = AssistantToolExecutor(
@@ -217,9 +235,9 @@ class TestAssistantToolExecutor:
             channel="#test",
             capabilities=frozenset(),
             cleanup_fn=mock_cleanup_fn,
-            list_reminders_fn=mock_list_reminders_fn,
+            list_pending_tasks_fn=mock_list_pending_tasks_fn,
             set_reminder_fn=mock_set_reminder_fn,
-            delete_reminder_fn=mock_delete_reminder_fn,
+            cancel_pending_task_fn=mock_cancel_pending_task_fn,
         )
 
         result = executor.execute("list_memories", {})
@@ -232,9 +250,9 @@ class TestAssistantToolExecutor:
         mock_db: MagicMock,
         mock_context: MagicMock,
         mock_cleanup_fn: MagicMock,
-        mock_list_reminders_fn: MagicMock,
+        mock_list_pending_tasks_fn: MagicMock,
         mock_set_reminder_fn: MagicMock,
-        mock_delete_reminder_fn: MagicMock,
+        mock_cancel_pending_task_fn: MagicMock,
     ) -> None:
         """GIVEN a hidden route profile WHEN executed THEN dispatch denies it server-side."""
         executor = AssistantToolExecutor(
@@ -244,9 +262,9 @@ class TestAssistantToolExecutor:
             channel="#test",
             route_profile="draw",
             cleanup_fn=mock_cleanup_fn,
-            list_reminders_fn=mock_list_reminders_fn,
+            list_pending_tasks_fn=mock_list_pending_tasks_fn,
             set_reminder_fn=mock_set_reminder_fn,
-            delete_reminder_fn=mock_delete_reminder_fn,
+            cancel_pending_task_fn=mock_cancel_pending_task_fn,
         )
 
         result = executor.execute("list_memories", {})
@@ -375,22 +393,22 @@ class TestAssistantToolExecutor:
         executor.execute("cleanup_memories", {"nick": "someone"})
         mock_cleanup_fn.assert_called_once_with("someone")
 
-    def test_list_reminders(
-        self, executor: AssistantToolExecutor, mock_list_reminders_fn: MagicMock
+    def test_list_pending_tasks(
+        self, executor: AssistantToolExecutor, mock_list_pending_tasks_fn: MagicMock
     ) -> None:
-        """GIVEN list_reminders tool WHEN called THEN returns formatted reminders."""
-        result = executor.execute("list_reminders", {})
-        mock_list_reminders_fn.assert_called_once()
+        """GIVEN list_pending_tasks tool WHEN called THEN returns merged list."""
+        result = executor.execute("list_pending_tasks", {})
+        mock_list_pending_tasks_fn.assert_called_once()
         assert "check build" in result.content
         assert "deploy app" in result.content
         assert "abc123" in result.content
 
-    def test_list_reminders_empty(
-        self, executor: AssistantToolExecutor, mock_list_reminders_fn: MagicMock
+    def test_list_pending_tasks_empty(
+        self, executor: AssistantToolExecutor, mock_list_pending_tasks_fn: MagicMock
     ) -> None:
-        """GIVEN no reminders WHEN list_reminders THEN returns empty message."""
-        mock_list_reminders_fn.return_value = []
-        result = executor.execute("list_reminders", {})
+        """GIVEN no tasks WHEN list_pending_tasks THEN returns empty message."""
+        mock_list_pending_tasks_fn.return_value = []
+        result = executor.execute("list_pending_tasks", {})
         assert "no" in result.content.lower() or "[]" in result.content
 
     def test_set_reminder(
@@ -401,46 +419,53 @@ class TestAssistantToolExecutor:
         mock_set_reminder_fn.assert_called_once_with("check build in 1 hour")
         assert "remind" in result.content.lower() or "hour" in result.content.lower()
 
-    def test_delete_reminder(
-        self, executor: AssistantToolExecutor, mock_delete_reminder_fn: MagicMock
+    def test_cancel_pending_task(
+        self, executor: AssistantToolExecutor, mock_cancel_pending_task_fn: MagicMock
     ) -> None:
-        """GIVEN delete_reminder tool WHEN called THEN deletes via callable."""
-        result = executor.execute("delete_reminder", {"id": "abc123"})
-        mock_delete_reminder_fn.assert_called_once_with("abc123")
+        """GIVEN cancel_pending_task tool WHEN called THEN dispatches via callable."""
+        result = executor.execute("cancel_pending_task", {"id": "abc123"})
+        mock_cancel_pending_task_fn.assert_called_once_with("abc123")
         assert "delete" in result.content.lower()
 
-    def test_delete_reminder_not_found(
-        self, executor: AssistantToolExecutor, mock_delete_reminder_fn: MagicMock
-    ) -> None:
-        """GIVEN nonexistent reminder WHEN delete_reminder THEN returns error."""
-        mock_delete_reminder_fn.return_value = "Reminder xyz not found."
-        result = executor.execute("delete_reminder", {"id": "xyz"})
-        assert "not found" in result.content.lower()
-
-    def test_cancel_all_reminders(
+    def test_cancel_pending_task_not_found(
         self,
         executor: AssistantToolExecutor,
-        mock_cancel_all_reminders_fn: MagicMock,
+        mock_cancel_pending_task_fn: MagicMock,
     ) -> None:
-        """GIVEN cancel_all_reminders tool WHEN called THEN dispatches to callable."""
-        result = executor.execute("cancel_all_reminders", {})
-        mock_cancel_all_reminders_fn.assert_called_once_with()
+        """GIVEN nonexistent task WHEN cancel_pending_task THEN returns error."""
+        mock_cancel_pending_task_fn.return_value = {
+            "status": "error",
+            "kind": "reminder",
+            "id": "xyz",
+            "message": "Reminder xyz not found.",
+        }
+        result = executor.execute("cancel_pending_task", {"id": "xyz"})
+        assert "not found" in result.content.lower()
+
+    def test_cancel_all_pending_tasks(
+        self,
+        executor: AssistantToolExecutor,
+        mock_cancel_all_pending_tasks_fn: MagicMock,
+    ) -> None:
+        """GIVEN cancel_all_pending_tasks tool WHEN called THEN dispatches to callable."""
+        result = executor.execute("cancel_all_pending_tasks", {})
+        mock_cancel_all_pending_tasks_fn.assert_called_once_with()
         assert "2" in result.content
         assert "ok" in result.content.lower()
 
-    def test_cancel_all_reminders_unavailable(
+    def test_cancel_all_pending_tasks_unavailable(
         self,
         mock_db: MagicMock,
         mock_context: MagicMock,
     ) -> None:
-        """GIVEN no callable WHEN cancel_all_reminders THEN returns error."""
+        """GIVEN no callable WHEN cancel_all_pending_tasks THEN returns error."""
         executor = AssistantToolExecutor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
             channel="#test",
         )
-        result = executor.execute("cancel_all_reminders", {})
+        result = executor.execute("cancel_all_pending_tasks", {})
         assert "not available" in result.content.lower()
 
     # -- Task 6: Structured returns and new callables ----------------------
@@ -2287,7 +2312,7 @@ class TestToolSpecVisibility:
         for required in ("search_web", "fetch_url", "generate_code", "generate_image"):
             assert required in names, f"{required} missing from remind_action profile"
         # Sanity: also includes ordinary chat tools (defaults to chat+remind_action)
-        assert "list_reminders" in names
+        assert "list_pending_tasks" in names
         assert "set_reminder" in names
 
     def test_profile_tools_chat_includes_search(self) -> None:
@@ -2328,14 +2353,24 @@ class TestToolSpecVisibility:
         """@draw is immediate-execution; deferred draws go via @remind (chat profile)."""
         tools = get_tools_for_profile("draw")
         names = {t["function"]["name"] for t in tools}
-        for tool in ("set_reminder", "list_reminders", "delete_reminder", "cancel_all_reminders"):
+        for tool in (
+            "set_reminder",
+            "list_pending_tasks",
+            "cancel_pending_task",
+            "cancel_all_pending_tasks",
+        ):
             assert tool not in names, f"{tool} should not be visible in draw profile"
 
     def test_reminder_tools_not_visible_in_code_profile(self) -> None:
         """@code is immediate-execution; deferred code generation goes via @remind."""
         tools = get_tools_for_profile("code")
         names = {t["function"]["name"] for t in tools}
-        for tool in ("set_reminder", "list_reminders", "delete_reminder", "cancel_all_reminders"):
+        for tool in (
+            "set_reminder",
+            "list_pending_tasks",
+            "cancel_pending_task",
+            "cancel_all_pending_tasks",
+        ):
             assert tool not in names, f"{tool} should not be visible in code profile"
 
 
@@ -2345,8 +2380,11 @@ class TestScheduleLlmTaskFamily:
     def test_assistant_tools_includes_schedule_llm_task_family(self) -> None:
         names = {t["function"]["name"] for t in ASSISTANT_TOOLS}
         assert "schedule_llm_task" in names
-        assert "list_scheduled_llm_tasks" in names
-        assert "cancel_scheduled_llm_task" in names
+        # Listing/cancelling for both reminders and scheduled tasks now
+        # goes through the unified pending-task tool surface.
+        assert "list_pending_tasks" in names
+        assert "cancel_pending_task" in names
+        assert "cancel_all_pending_tasks" in names
 
         by_name = {t["function"]["name"]: t for t in ASSISTANT_TOOLS}
         sch = by_name["schedule_llm_task"]
@@ -2372,21 +2410,22 @@ class TestScheduleLlmTaskFamily:
         assert sch.require_account is True
         assert sch.visible_in == frozenset({"chat", "remind_action"})
 
-        lst = ASSISTANT_TOOL_REGISTRY["list_scheduled_llm_tasks"]
+        lst = ASSISTANT_TOOL_REGISTRY["list_pending_tasks"]
         assert lst.capability == "llm.ask"
         assert lst.require_account is False
         assert lst.visible_in == frozenset({"chat", "remind_action"})
 
-        can = ASSISTANT_TOOL_REGISTRY["cancel_scheduled_llm_task"]
+        can = ASSISTANT_TOOL_REGISTRY["cancel_pending_task"]
         assert can.capability == "llm.ask"
         assert can.require_account is False
         assert can.visible_in == frozenset({"chat", "remind_action"})
 
-    def test_executor_accepts_scheduled_task_fns(self, mocker: MockerFixture) -> None:
-        """C3: AssistantToolExecutor accepts the three new fn kwargs."""
+    def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
+        """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""
         schedule_fn = mocker.MagicMock()
         list_fn = mocker.MagicMock()
         cancel_fn = mocker.MagicMock()
+        cancel_all_fn = mocker.MagicMock()
 
         ex = AssistantToolExecutor(
             db=mocker.MagicMock(),
@@ -2396,12 +2435,14 @@ class TestScheduleLlmTaskFamily:
             capabilities=frozenset({"llm.ask"}),
             account="acct",
             schedule_llm_task_fn=schedule_fn,
-            list_scheduled_llm_tasks_fn=list_fn,
-            cancel_scheduled_llm_task_fn=cancel_fn,
+            list_pending_tasks_fn=list_fn,
+            cancel_pending_task_fn=cancel_fn,
+            cancel_all_pending_tasks_fn=cancel_all_fn,
         )
         assert ex._schedule_llm_task_fn is schedule_fn
-        assert ex._list_scheduled_llm_tasks_fn is list_fn
-        assert ex._cancel_scheduled_llm_task_fn is cancel_fn
+        assert ex._list_pending_tasks_fn is list_fn
+        assert ex._cancel_pending_task_fn is cancel_fn
+        assert ex._cancel_all_pending_tasks_fn is cancel_all_fn
 
     def test_tool_schedule_llm_task_calls_callback_and_returns_json(
         self, mocker: MockerFixture
@@ -2438,23 +2479,23 @@ class TestScheduleLlmTaskFamily:
             when_natural="in 60s", prompt="ping me", reply_target=None
         )
 
-    def test_tool_list_scheduled_llm_tasks_returns_summary(self, mocker: MockerFixture) -> None:
+    def test_tool_list_pending_tasks_returns_merged(self, mocker: MockerFixture) -> None:
         import json
 
         list_fn = mocker.MagicMock(
             return_value=[
                 {
-                    "id": "ev1",
-                    "when": "2026-05-02T13:00:00Z",
+                    "kind": "reminder",
+                    "id": "abc123",
                     "channel": "#t",
-                    "prompt": "check build",
-                    "recurrence": None,
+                    "description": "check build",
                 },
                 {
-                    "id": "ev2",
+                    "kind": "scheduled_task",
+                    "id": "llm_task_ev2",
                     "when": "2026-05-09T13:00:00Z",
                     "channel": "#t",
-                    "prompt": "weekly digest",
+                    "description": "weekly digest",
                     "recurrence": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",
                 },
             ]
@@ -2466,20 +2507,20 @@ class TestScheduleLlmTaskFamily:
             channel="#t",
             capabilities=frozenset({"llm.ask"}),
             account="acct",
-            list_scheduled_llm_tasks_fn=list_fn,
+            list_pending_tasks_fn=list_fn,
         )
-        out = ex.execute("list_scheduled_llm_tasks", {})
+        out = ex.execute("list_pending_tasks", {})
         parsed = json.loads(out.content)
-        assert parsed["status"] == "ok"
         assert len(parsed["tasks"]) == 2
+        kinds = {t["kind"] for t in parsed["tasks"]}
+        assert kinds == {"reminder", "scheduled_task"}
 
-    def test_tool_cancel_scheduled_llm_task_passes_id(self, mocker: MockerFixture) -> None:
-        import json
-
+    def test_tool_cancel_pending_task_passes_id(self, mocker: MockerFixture) -> None:
         cancel_fn = mocker.MagicMock(
             return_value={
                 "status": "ok",
-                "event_name": "llm_task_abc",
+                "kind": "scheduled_task",
+                "id": "llm_task_abc",
                 "message": "Cancelled.",
             }
         )
@@ -2490,9 +2531,258 @@ class TestScheduleLlmTaskFamily:
             channel="#t",
             capabilities=frozenset({"llm.ask"}),
             account="acct",
-            cancel_scheduled_llm_task_fn=cancel_fn,
+            cancel_pending_task_fn=cancel_fn,
         )
-        out = ex.execute("cancel_scheduled_llm_task", {"id": "llm_task_abc"})
-        parsed = json.loads(out.content)
-        assert parsed["status"] == "ok"
-        cancel_fn.assert_called_once_with(event_name="llm_task_abc")
+        out = ex.execute("cancel_pending_task", {"id": "llm_task_abc"})
+        assert "ok" in out.content.lower()
+        cancel_fn.assert_called_once_with("llm_task_abc")
+
+
+class TestExecutorCoverageGaps:
+    """Targeted tests for branches not exercised by the main suite."""
+
+    def test_denial_reason_require_account_without_account(self) -> None:
+        """ToolSpec.denial_reason rejects when require_account=True and account is None."""
+        from llm.assistant import ASSISTANT_TOOL_REGISTRY
+
+        spec = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
+        reason = spec.denial_reason(
+            route_profile="chat",
+            capabilities=frozenset({"llm.ask"}),
+            account=None,
+        )
+        assert reason is not None
+        assert "authenticated account" in reason
+
+    def test_execute_missing_handler_returns_error(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """execute() falls through to the missing-handler branch when handler_name is bogus."""
+        from llm.assistant import ASSISTANT_TOOL_REGISTRY, ToolSpec
+
+        bogus = ToolSpec(
+            name="bogus_handler_tool",
+            schema={"name": "bogus_handler_tool", "description": "x", "parameters": {}},
+            handler_name="_tool_does_not_exist",
+            capability="llm.ask",
+        )
+        monkeypatch.setitem(ASSISTANT_TOOL_REGISTRY, "bogus_handler_tool", bogus)
+
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+        )
+        result = ex.execute("bogus_handler_tool", {})
+        assert "Unknown tool implementation" in result.content
+
+    @pytest.mark.parametrize(
+        "tool_name,args",
+        [
+            ("get_instruction", {"nick": "someone"}),
+            ("set_instruction", {"nick": "someone", "text": "x"}),
+            ("clear_instruction", {"nick": "someone"}),
+            ("save_memory", {"nick": "someone", "text": "x"}),
+            ("delete_memory", {"nick": "someone", "id": 1}),
+            ("update_memory", {"nick": "someone", "id": 1, "text": "x"}),
+        ],
+    )
+    def test_per_tool_owner_only_denials(
+        self,
+        mocker: MockerFixture,
+        tool_name: str,
+        args: dict,
+    ) -> None:
+        """Non-owner targeting another nick is denied for owner-gated tools."""
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="regular",
+            channel="#t",
+        )
+        result = ex.execute(tool_name, args)
+        assert "owner" in result.content.lower()
+
+    def test_forget_context_when_nothing_to_clear(self, mocker: MockerFixture) -> None:
+        """forget_context returns the no-op message when context.clear() returns False."""
+        ctx = mocker.MagicMock()
+        ctx.clear.return_value = False
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=ctx,
+            nick="n",
+            channel="#t",
+        )
+        result = ex.execute("forget_context", {})
+        assert "No context to clear" in result.content
+
+    def test_cleanup_memories_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
+        """cleanup_fn returning a string with 'failed'/'error' produces an error envelope."""
+        cleanup_fn = mocker.MagicMock(return_value="Cleanup failed: db error")
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            cleanup_fn=cleanup_fn,
+        )
+        result = ex.execute("cleanup_memories", {})
+        assert '"error"' in result.content
+        assert "Cleanup failed" in result.content
+
+    @pytest.mark.parametrize(
+        "tool_name,args",
+        [
+            ("list_pending_tasks", {}),
+            ("set_reminder", {"text": "in 1h ping"}),
+            ("cancel_pending_task", {"id": "abc"}),
+            ("cancel_all_pending_tasks", {}),
+        ],
+    )
+    def test_pending_task_tools_unavailable_when_no_fn(
+        self, mocker: MockerFixture, tool_name: str, args: dict
+    ) -> None:
+        """Pending-task tools return 'not available' when their callback is None."""
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+        )
+        result = ex.execute(tool_name, args)
+        assert "not available" in result.content.lower()
+
+    def test_set_reminder_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
+        """set_reminder_fn returning 'Could not parse...' becomes an error envelope."""
+        set_fn = mocker.MagicMock(return_value="Could not parse time.")
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            set_reminder_fn=set_fn,
+        )
+        result = ex.execute("set_reminder", {"text": "garbage"})
+        assert '"error"' in result.content
+        assert "Could not parse" in result.content
+
+    def test_schedule_llm_task_unconfigured(self, mocker: MockerFixture) -> None:
+        """schedule_llm_task without a callback returns 'not configured'."""
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+        )
+        result = ex.execute(
+            "schedule_llm_task",
+            {"when_natural": "in 1h", "prompt": "ping"},
+        )
+        assert "not configured" in result.content.lower()
+
+    @pytest.mark.parametrize(
+        "args,expected_substring",
+        [
+            ({"when_natural": "", "prompt": "ping"}, "when_natural is required"),
+            ({"when_natural": "in 1h", "prompt": ""}, "prompt is required"),
+        ],
+    )
+    def test_schedule_llm_task_validates_required_args(
+        self,
+        mocker: MockerFixture,
+        args: dict,
+        expected_substring: str,
+    ) -> None:
+        """schedule_llm_task rejects empty when_natural / prompt before calling fn."""
+        schedule_fn = mocker.MagicMock()
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            account="acct",
+            schedule_llm_task_fn=schedule_fn,
+        )
+        result = ex.execute("schedule_llm_task", args)
+        assert expected_substring in result.content
+        schedule_fn.assert_not_called()
+
+    def test_cancel_pending_task_requires_id(self, mocker: MockerFixture) -> None:
+        """cancel_pending_task rejects empty id before calling fn."""
+        cancel_fn = mocker.MagicMock()
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask"}),
+            cancel_pending_task_fn=cancel_fn,
+        )
+        result = ex.execute("cancel_pending_task", {"id": ""})
+        assert "id is required" in result.content
+        cancel_fn.assert_not_called()
+
+    def test_generate_image_unavailable_when_no_draw_fn(self, mocker: MockerFixture) -> None:
+        """generate_image without a draw_fn returns 'not available'."""
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+        )
+        result = ex.execute("generate_image", {"prompt": "a cat"})
+        assert "not available" in result.content.lower()
+
+    def test_generate_image_rejects_empty_prompt(self, mocker: MockerFixture) -> None:
+        """generate_image rejects whitespace-only prompts before calling draw_fn."""
+        draw_fn = mocker.MagicMock()
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        result = ex.execute("generate_image", {"prompt": "   "})
+        assert "prompt is required" in result.content.lower()
+        draw_fn.assert_not_called()
+
+    def test_generate_image_propagates_draw_fn_error(self, mocker: MockerFixture) -> None:
+        """draw_fn returning 'Error...' is mapped to an error envelope."""
+        draw_fn = mocker.MagicMock(return_value="Error: quota exceeded")
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        result = ex.execute("generate_image", {"prompt": "a cat"})
+        assert '"error"' in result.content
+        assert "quota exceeded" in result.content
+
+    def test_generate_image_success(self, mocker: MockerFixture) -> None:
+        """draw_fn returning a normal URL produces an ok envelope."""
+        draw_fn = mocker.MagicMock(return_value="https://example.com/cat.png")
+        ex = AssistantToolExecutor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        result = ex.execute("generate_image", {"prompt": "a cat"})
+        assert '"ok"' in result.content
+        assert "example.com/cat.png" in result.content
