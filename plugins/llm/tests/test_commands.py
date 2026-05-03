@@ -507,6 +507,20 @@ class TestCodeCommand:
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310")
 
+    def test_code_action_with_grounding_icon(self, plugin_env, mocker: MockerFixture):
+        """GIVEN /me-style code response with grounding WHEN code called THEN action carries globe icon."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+            content="/me runs the unit tests",
+            grounding_used=True,
+        )
+
+        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
+        plugin.code(mock_irc, mock_msg, ["run", "tests"])
+
+        mock_action.assert_called_once_with("#test", "\U0001f310 runs the unit tests")
+
     def test_code_preserves_preflight(self, plugin_env, mocker: MockerFixture):
         """GIVEN code WHEN executed THEN preflight checks still run."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -1067,6 +1081,21 @@ class TestDrawCommand:
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310")
+
+    def test_draw_action_with_grounding_icon(self, plugin_env, mocker: MockerFixture):
+        """GIVEN /me-style draw response with grounding WHEN draw called THEN action carries globe icon."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+            content="/me sketches a sunset",
+            grounding_used=True,
+        )
+
+        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
+        plugin.draw(mock_irc, mock_msg, ["sunset"])
+
+        mock_action.assert_called_once_with("#test", "\U0001f310 sketches a sunset")
 
     def test_draw_preserves_preflight(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw WHEN preflight blocks THEN assistant_request is not called."""

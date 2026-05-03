@@ -16,10 +16,10 @@ run:
 	uv run limnoria bot.conf
 
 test:
-	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ plugins/rpg/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=80
+	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ plugins/rpg/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=93
 
 test-all:
-	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ plugins/rpg/tests/ -v --cov --cov-report=term-missing --cov-fail-under=80
+	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ plugins/rpg/tests/ -v --cov --cov-report=term-missing --cov-fail-under=93
 
 lint:
 	uv run ruff check .

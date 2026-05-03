@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import supybot.ircmsgs as ircmsgs
+from nickinmiddle.config import configure
 from nickinmiddle.plugin import NickInMiddle
+
+
+def test_configure_runs() -> None:
+    """`configure()` should register the plugin without raising."""
+    configure(advanced=False)
+    configure(advanced=True)
 
 
 class FakeIrc:

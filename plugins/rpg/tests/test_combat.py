@@ -100,6 +100,55 @@ class TestAttack:
         cleared = db.get_room_cleared_at("#test", "/forest/clearing")
         assert cleared is not None
 
+    def test_attack_in_unknown_room_returns_error(self, combat: CombatManager, db: RPGDatabase):
+        """GIVEN player in a non-existent room WHEN rm THEN no-such-file error."""
+        db.create_character("alice", "#test")
+        db.update_character("alice", "#test", location="/bogus/room")
+        result = combat.attack("alice", "#test", "rat")
+        assert result.error is not None
+        assert "No such file or directory" in result.error
+
+    def test_attack_when_all_instances_dead_returns_already_dead(
+        self, combat: CombatManager, db: RPGDatabase
+    ):
+        """GIVEN all rats killed WHEN attacking again THEN already-dead error."""
+        db.create_character("alice", "#test")
+        db.update_character("alice", "#test", location="/forest/clearing", attack=50)
+        with patch("rpg.combat.dice.roll") as mock_roll:
+            mock_roll.return_value.total = 20
+            combat.attack("alice", "#test", "rat")
+            combat.attack("alice", "#test", "rat")
+            result = combat.attack("alice", "#test", "rat")
+        assert result.error is not None
+        assert "already dead" in result.error
+
+    def test_player_death_clamps_xp_to_level_floor(self, combat: CombatManager, db: RPGDatabase):
+        """GIVEN player at level 2 with XP just above floor WHEN dying THEN xp clamped to floor."""
+        db.create_character("alice", "#test")
+        # Level 2 floor is 100; sit at 105 so 10% (10) would drop us to 95 — clamp to 100.
+        db.update_character(
+            "alice",
+            "#test",
+            location="/dungeon/level3",
+            hp=1,
+            level=2,
+            xp=105,
+        )
+        # Player rolls 1 (miss); enemy rolls 20 (hit); enemy damage roll 6.
+        rolls = [
+            type("R", (), {"total": 1})(),  # player attack roll → miss
+            type("R", (), {"total": 20})(),  # enemy attack roll → hit
+            type("R", (), {"total": 6})(),  # enemy damage roll
+        ]
+        with patch("rpg.combat.dice.roll", side_effect=rolls):
+            result = combat.attack("alice", "#test", "dark_knight")
+        assert result.player_died is True
+        assert result.counterattack_damage > 0
+        char = db.get_character("alice", "#test")
+        assert char is not None
+        assert char.location == "/town/tavern"
+        assert char.xp == 100  # Floor for level 2
+
 
 class TestLevelUp:
     """XP and leveling."""
@@ -119,6 +168,23 @@ class TestLevelUp:
                 assert char.level >= 2
                 assert result.leveled_up is True
 
+    def test_no_level_up_at_max_level(self, combat: CombatManager, db: RPGDatabase):
+        """GIVEN character at MAX_LEVEL WHEN gaining XP THEN no further level-up."""
+        db.create_character("alice", "#test")
+        db.update_character(
+            "alice",
+            "#test",
+            location="/forest/clearing",
+            level=10,
+            xp=99999,
+            attack=50,
+        )
+        with patch("rpg.combat.dice.roll") as mock_roll:
+            mock_roll.return_value.total = 20
+            result = combat.attack("alice", "#test", "rat")
+        assert result.leveled_up is False
+        assert result.new_level == 10
+
 
 class TestInventoryPickup:
     """mv command — picking up items."""
@@ -137,6 +203,13 @@ class TestInventoryPickup:
         db.create_character("alice", "#test")
         result = combat.pickup_item("alice", "#test", "nonexistent")
         assert result.error is not None
+
+    def test_pickup_in_unknown_room_returns_error(self, combat: CombatManager, db: RPGDatabase):
+        """GIVEN player in a non-existent room WHEN mv THEN room-not-found error."""
+        db.create_character("alice", "#test")
+        db.update_character("alice", "#test", location="/bogus/room")
+        result = combat.pickup_item("alice", "#test", "rusty_sword.txt")
+        assert result.error == "mv: room not found"
 
 
 class TestDiceRoller:

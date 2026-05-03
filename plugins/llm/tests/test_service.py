@@ -6174,3 +6174,317 @@ def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: Mo
     assert privmsg_calls, "expected an auto-cancel notice to be queued"
     body = privmsg_calls[-1].args[0].args[1]
     assert "auto-cancelled" in body
+
+
+# =============================================================================
+# Coverage-fill tests for service.py uncovered branches
+# =============================================================================
+
+
+class TestRetryCompletion:
+    """Tests for _retry_completion api-key selection and validation."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def _make_task(self, *, task_type: str = "ask"):
+        from llm.persistence import PendingTaskRow
+
+        return PendingTaskRow(
+            id=1,
+            task_type=task_type,
+            nick="alice",
+            reply_target="#test",
+            is_channel=1,
+            prompt_preview="hi",
+            model="m",
+            request_data='{"messages": [{"role": "user", "content": "hi"}]}',
+            submitted_at=100.0,
+            expires_at=200.0,
+            attempt_count=0,
+            next_attempt_at=100.0,
+            claimed_until=0,
+            last_error="",
+            delivery_state="pending",
+            result_payload="",
+            last_delivery_error="",
+            delivery_attempt_count=0,
+            origin_request_id="",
+            account=None,
+        )
+
+    def test_retry_completion_malformed_messages(self) -> None:
+        """request_data without a list 'messages' returns failed_terminal."""
+        task = self._make_task()
+        result = self.service._retry_completion(task, {"messages": "oops"})
+        assert result.status == "failed_terminal"
+        assert "Malformed" in result.reason
+
+    def test_retry_completion_code_task_uses_code_api_key(self, mocker: MockerFixture) -> None:
+        """A 'code' task looks up codeApiKey; missing key returns failed_terminal."""
+        from .conftest import make_registry_side_effect
+
+        self.mock_plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect({"codeApiKey": ""})
+        )
+        task = self._make_task(task_type="code")
+        result = self.service._retry_completion(task, {"messages": [{"role": "u", "content": "x"}]})
+        assert result.status == "failed_terminal"
+        assert "API key" in result.reason
+
+
+class TestResponsesApiTextAndUsage:
+    """Coverage for _responses_text fallback walk and _extract_responses_usage paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, _ = make_service()
+
+    def test_responses_text_walks_output_when_output_text_missing(self) -> None:
+        """Falls back to walking output items when response.output_text is empty."""
+        response = self.mocker.MagicMock()
+        response.output_text = ""
+        response.output = [
+            {"type": "web_search_call", "id": "x"},  # non-message item is skipped
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "hello "},
+                    {"type": "output_text", "text": "world"},
+                    {"type": "ignored", "text": "nope"},
+                ],
+            },
+        ]
+        text = self.service._responses_text(response)
+        assert text == "hello world"
+
+    def test_responses_text_walks_output_with_object_parts(self) -> None:
+        """Object-shaped output parts (non-dict) are also extracted."""
+
+        class _Part:
+            def __init__(self, type_: str, text: str) -> None:
+                self.type = type_
+                self.text = text
+
+        class _Item:
+            def __init__(self, type_: str, content: list) -> None:
+                self.type = type_
+                self.content = content
+
+        response = self.mocker.MagicMock()
+        response.output_text = None
+        response.output = [
+            _Item("message", [_Part("output_text", "obj-form")]),
+        ]
+        assert self.service._responses_text(response) == "obj-form"
+
+    def test_responses_grounding_skips_non_message_non_search_items(self) -> None:
+        """An item type that is neither 'search' nor 'message' is skipped."""
+        response = self.mocker.MagicMock()
+        response.output = [
+            {"type": "reasoning", "id": "r1"},  # neither search nor message
+        ]
+        assert self.service._check_responses_grounding(response) is False
+
+    def test_responses_grounding_handles_attribute_error(self) -> None:
+        """An output access that raises AttributeError returns False, not raise."""
+
+        class _Bad:
+            @property
+            def output(self):
+                raise AttributeError("no output")
+
+        assert self.service._check_responses_grounding(_Bad()) is False
+
+    def test_extract_responses_usage_uses_usage_cost_when_present(self) -> None:
+        """When usage.cost is truthy, the helper avoids calling completion_cost."""
+        response = self.mocker.MagicMock()
+        response.usage = self.mocker.Mock(input_tokens=10, output_tokens=5, cost=0.05)
+        completion_cost = self.mocker.patch("llm.service.litellm.completion_cost")
+        prompt_tokens, completion_tokens, cost = self.service._extract_responses_usage(
+            response, "xai/grok-4.3"
+        )
+        assert (prompt_tokens, completion_tokens) == (10, 5)
+        assert cost == pytest.approx(0.05)
+        completion_cost.assert_not_called()
+
+    def test_extract_responses_usage_swallows_completion_cost_failure(self) -> None:
+        """A litellm.completion_cost exception is swallowed; cost defaults to 0.0."""
+        response = self.mocker.MagicMock()
+        response.usage = self.mocker.Mock(input_tokens=3, output_tokens=2, cost=None)
+        self.mocker.patch("llm.service.litellm.completion_cost", side_effect=RuntimeError("boom"))
+        prompt_tokens, completion_tokens, cost = self.service._extract_responses_usage(
+            response, "xai/grok-4.3"
+        )
+        assert (prompt_tokens, completion_tokens) == (3, 2)
+        assert cost == 0.0
+
+
+class TestScheduleLlmTaskFailurePaths:
+    """Coverage for IntegrityError + addEvent failure cleanup."""
+
+    def test_schedule_llm_task_add_event_failure_deletes_db_row(
+        self, llm_service, db, mocker: MockerFixture
+    ) -> None:
+        """If schedule.addEvent raises, the inserted DB row is rolled back."""
+        mocker.patch("llm.service.schedule.addEvent", side_effect=RuntimeError("scheduler down"))
+        msg = _msg_mock(mocker)
+        irc = _irc_mock(mocker)
+        mocker.patch.object(
+            llm_service,
+            "parse_reminder",
+            return_value=ReminderParseResult(
+                action="schedule",
+                seconds=60,
+                message="x",
+                confirmation="ok",
+                note=None,
+                action_prompt="x",
+                recurrence_seconds=None,
+                recurrence_rrule=None,
+                watch_mode=False,
+            ),
+        )
+        llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+            5 if k == "bridgeScheduledTaskLimit" else None
+        )
+
+        result = llm_service.schedule_llm_task(
+            irc=irc,
+            msg=msg,
+            creator_nick="rdrake",
+            account="rdrake_a",
+            channel="#test",
+            when_natural="in 60s",
+            prompt="x",
+        )
+        assert result.status == "error"
+        assert "register" in result.message.lower()
+        # No orphan rows.
+        assert db.load_active_scheduled_llm_tasks() == []
+
+    def test_schedule_llm_task_integrity_error_returns_collision_message(
+        self, llm_service, mocker: MockerFixture
+    ) -> None:
+        """sqlite IntegrityError on save returns a collision error result."""
+        import sqlite3
+
+        msg = _msg_mock(mocker)
+        irc = _irc_mock(mocker)
+        mocker.patch.object(
+            llm_service,
+            "parse_reminder",
+            return_value=ReminderParseResult(
+                action="schedule",
+                seconds=60,
+                message="x",
+                confirmation="ok",
+                note=None,
+                action_prompt="x",
+                recurrence_seconds=None,
+                recurrence_rrule=None,
+                watch_mode=False,
+            ),
+        )
+        llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
+            5 if k == "bridgeScheduledTaskLimit" else None
+        )
+        # Replace the db with one that raises IntegrityError on insert.
+        bad_db = mocker.MagicMock()
+        bad_db.load_scheduled_llm_tasks_for.return_value = []
+        bad_db.count_scheduled_llm_tasks_for.return_value = 0
+        bad_db.save_scheduled_llm_task.side_effect = sqlite3.IntegrityError("UNIQUE")
+        llm_service.plugin.db = bad_db
+
+        result = llm_service.schedule_llm_task(
+            irc=irc,
+            msg=msg,
+            creator_nick="rdrake",
+            account="rdrake_a",
+            channel="#test",
+            when_natural="in 60s",
+            prompt="x",
+        )
+        assert result.status == "error"
+        assert "collision" in result.message
+
+
+class TestMaybeRescheduleOrClean:
+    """Coverage for _maybe_reschedule_or_clean cancel-mid-fire and exhausted-rrule."""
+
+    def _make_row(self, **overrides):
+        from llm.persistence import ScheduledLlmTaskRow
+
+        defaults = {
+            "id": 1,
+            "event_name": "ev1",
+            "creator_nick": "n",
+            "account": None,
+            "channel": "#t",
+            "network": "afternet",
+            "wire_msg": ":n!u@h PRIVMSG #t :@ask hi",
+            "prompt": "p",
+            "fire_at": 1.0,
+            "created_at": 0.0,
+            "recurrence_seconds": 300,
+            "recurrence_rrule": None,
+            "chain_position": 1,
+            "watch_mode": False,
+            "reply_target": None,
+        }
+        defaults.update(overrides)
+        return ScheduledLlmTaskRow(**defaults)
+
+    def test_one_shot_row_is_deleted_after_fire(self, llm_service, mocker: MockerFixture) -> None:
+        """Row with no recurrence is deleted, not rescheduled."""
+        add_event = mocker.patch("llm.service.schedule.addEvent")
+        bad_db = mocker.MagicMock()
+        row = self._make_row(recurrence_seconds=None, recurrence_rrule=None)
+        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
+        add_event.assert_not_called()
+
+    def test_cancelled_mid_fire_skips_reschedule(self, llm_service, mocker: MockerFixture) -> None:
+        """If the row is gone (cancelled mid-fire) reschedule is skipped."""
+        add_event = mocker.patch("llm.service.schedule.addEvent")
+        bad_db = mocker.MagicMock()
+        bad_db.get_scheduled_llm_task.return_value = None  # Cancelled mid-fire.
+        row = self._make_row()
+        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        add_event.assert_not_called()
+
+    def test_exhausted_rrule_deletes_row(self, llm_service, mocker: MockerFixture) -> None:
+        """recurrence_rrule with no future occurrence triggers row delete."""
+        mocker.patch("llm.service.schedule.addEvent")
+        bad_db = mocker.MagicMock()
+        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
+        row = self._make_row(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
+        # _next_rrule_fire returns None when the rule is exhausted.
+        llm_service.plugin._next_rrule_fire = mocker.Mock(return_value=None)
+        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
+
+
+def test_cancel_scheduled_llm_task_swallows_keyerror(
+    llm_service, db, mocker: MockerFixture
+) -> None:
+    """If the event is already gone from the scheduler, cancel still succeeds."""
+    mocker.patch("llm.service.schedule.removeEvent", side_effect=KeyError("gone"))
+    db.save_scheduled_llm_task(
+        event_name="mine",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 60,
+    )
+    result = llm_service.cancel_scheduled_llm_task(
+        event_name="mine", creator_nick="rdrake", account="rdrake_a"
+    )
+    assert result.status == "ok"
+    assert db.get_scheduled_llm_task("mine") is None
