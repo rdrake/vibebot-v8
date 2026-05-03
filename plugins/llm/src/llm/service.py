@@ -456,7 +456,7 @@ class LLMService:
             "searchApiKey",
         ):
             key = self.plugin.registryValue(key_name)
-            if key and isinstance(key, str):
+            if key:
                 result = result.replace(key, "[REDACTED]")
         return result
 
@@ -1176,14 +1176,12 @@ class LLMService:
             True if grounding was used, False otherwise
         """
         try:
-            # Check for grounding metadata in response (Gemini-specific)
-            # LiteLLM stores this in _hidden_params with the key "vertex_ai_grounding_metadata"
-            # IMPORTANT: Check for truthy value, not just key existence - LiteLLM may set
-            # the key to None/empty when grounding is available but wasn't actually used
-            if hasattr(response, "_hidden_params"):
-                hidden = response._hidden_params or {}
-                if hidden.get("vertex_ai_grounding_metadata"):
-                    return True
+            # LiteLLM stores grounding/citation metadata in `_hidden_params`.
+            # IMPORTANT: check for a truthy value, not just key existence — LiteLLM
+            # may set the key to None/empty when the tool was offered but unused.
+            hidden = getattr(response, "_hidden_params", None) or {}
+            if hidden.get("vertex_ai_grounding_metadata"):
+                return True
 
             # xAI live_search emits citation evidence at the response top-level
             # (`citations` list) or under `_hidden_params["citations"]`. Either
@@ -1191,9 +1189,7 @@ class LLMService:
             # web sources. Empty list = tool offered but unused.
             if getattr(response, "citations", None):
                 return True
-            if hasattr(response, "_hidden_params") and (
-                (response._hidden_params or {}).get("citations")
-            ):
+            if hidden.get("citations"):
                 return True
 
             # Check choices for grounding chunks/metadata
