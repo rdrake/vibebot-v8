@@ -3679,9 +3679,14 @@ class LLM(callbacks.Plugin):
         result = self._schedule_reminder(irc, msg, caller, text)
         if result.ok:
             self._ack(irc, msg, "⏰", result.message, prefixNick=True)
-        else:
-            self._react(irc, msg, "❌")
-            irc.error(_(result.message))
+            return
+        log.info(
+            "remind_set blocked nick=%s reason=%s",
+            caller.key,
+            result.message,
+        )
+        self._react(irc, msg, "❌")
+        irc.error(_(result.message))
 
     def _remind_set_for_assistant(
         self,
