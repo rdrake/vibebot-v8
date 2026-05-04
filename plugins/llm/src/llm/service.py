@@ -411,10 +411,13 @@ class LLMService:
     - Path traversal attempts blocked
     """
 
-    # Same 50-fire ceiling reminders use (LLM.plugin._REMINDER_MAX_CHAIN_POSITION).
-    # Bounds runaway recurring tasks when the parser misses a duration cap
-    # (e.g. "every minute for 3 minutes" → recurrence_seconds=60, no end).
-    _SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION = 50
+    # Tighter than the reminder cap (LLM.plugin._REMINDER_MAX_CHAIN_POSITION = 50)
+    # because scheduled_llm_tasks fire LLM completions and can target other
+    # channels/users via reply_target — recurring abuse becomes harassment fast.
+    # 5 fires forces the user to re-arm long before "every few minutes" becomes
+    # "ran for hours". Parser-level duration parsing ("for 3 minutes") is the
+    # cleaner fix for legitimate bounded recurrences and is tracked separately.
+    _SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION = 5
 
     def __init__(self, plugin_instance: LLM) -> None:
         """Initialize service with plugin reference.
