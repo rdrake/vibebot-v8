@@ -322,6 +322,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "longReplyLineThreshold": 6,
         "longReplyTeaserMaxChars": 220,
         "longReplyLinkMode": "footer",
+        "forestNicks": [],
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",

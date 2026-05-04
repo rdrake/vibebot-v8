@@ -1879,6 +1879,22 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
+    def _is_forest_nick(self, channel: str | None, nick: str) -> bool:
+        """True when ``nick`` is opted into the long-form ``forest`` profile.
+
+        Match is case-insensitive against ``forestNicks`` for the channel.
+        ``nick`` is the account-resolved identity (account when identified,
+        bare nick otherwise) so operators should add account names to
+        ``forestNicks`` for users who reliably identify.
+        """
+        if not channel:
+            return False
+        forest = self.registryValue("forestNicks", channel)
+        if not forest:
+            return False
+        target = ircutils.toLower(nick)
+        return any(ircutils.toLower(entry) == target for entry in forest)
+
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
     ) -> ToolCallbackResult:
@@ -2597,12 +2613,13 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight."""
         nick, channel = pf.nick, pf.channel
+        is_forest = self._is_forest_nick(channel, nick)
         request_context = self._build_request_context(
             irc,
             msg,
             pf,
             entry_route=entry_route,
-            profile="chat",
+            profile="forest" if is_forest else "chat",
         )
 
         caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
@@ -2616,19 +2633,23 @@ class LLM(callbacks.Plugin):
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
 
-            # Personality overlay = channel ``assistantSystemPrompt`` (operator
-            # config), optionally prefixed with the user's persistent
-            # instruction. The structural framework (length cap, plain-text
-            # rules, tool-behavior rules) is layered in by ``assistant_completion``
-            # — sending it again here would duplicate. Always send the overlay
-            # so a per-channel persona is preserved even without a user
-            # instruction.
-            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
-            effective_prompt = (
-                f"User instruction: {user_instruction}\n\n{ask_prompt}"
-                if user_instruction
-                else ask_prompt
-            )
+            # Personality overlay. Default: channel ``assistantSystemPrompt``,
+            # optionally prefixed with the user's persistent @instruct.
+            # Forest mode takes the user's @instruct as the *sole* overlay
+            # (channel persona bypassed), and falls back to no overlay when
+            # they haven't set one — the bare forest framework is
+            # intentionally personality-free. Either way, the structural
+            # framework (plain-text rules, tool-behavior rules) is layered
+            # in by ``assistant_completion``.
+            if is_forest:
+                effective_prompt = user_instruction or None
+            else:
+                ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+                effective_prompt = (
+                    f"User instruction: {user_instruction}\n\n{ask_prompt}"
+                    if user_instruction
+                    else ask_prompt
+                )
 
             with self._allow_concurrent():
                 request_text = text

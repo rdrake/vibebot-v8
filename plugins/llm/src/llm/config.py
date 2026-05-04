@@ -461,6 +461,24 @@ conf.registerChannelValue(
     ),
 )
 
+
+conf.registerChannelValue(
+    LLM,
+    "forestNicks",
+    registry.SpaceSeparatedListOfStrings(
+        [],
+        _("""Space-separated nicks opted into "forest mode" in this
+        channel. Their @ask traffic skips the 3-line length cap and
+        runs against a long-form system prompt. The plain-text and
+        no-markdown rules and tool-behavior rules still apply. If the
+        nick has set a personal @instruct, that becomes the sole
+        personality overlay (the channel's assistantSystemPrompt is
+        bypassed for them). Match is case-insensitive against the
+        account-resolved identity, so use the account name when the
+        user is identified."""),
+    ),
+)
+
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================

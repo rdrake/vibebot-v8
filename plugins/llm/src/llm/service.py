@@ -2831,6 +2831,7 @@ Examples (echo → action_prompt: ""):
             CHAT_SYSTEM_PROMPT,
             CODE_SYSTEM_PROMPT,
             DRAW_SYSTEM_PROMPT,
+            FOREST_SYSTEM_PROMPT,
             REMIND_ACTION_SYSTEM_PROMPT,
             AssistantToolExecutor,
             get_tools_for_profile,
@@ -2864,6 +2865,7 @@ Examples (echo → action_prompt: ""):
                 "code": CODE_SYSTEM_PROMPT,
                 "draw": DRAW_SYSTEM_PROMPT,
                 "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
+                "forest": FOREST_SYSTEM_PROMPT,
             }
             framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
                 bot_nick=bot_nick

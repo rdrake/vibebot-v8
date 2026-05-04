@@ -52,6 +52,7 @@ nav:
   - Operator Guide:
     - Installation & Deployment: operator/installation.md
     - Configuration: operator/configuration.md
+    - Forest Mode: operator/forest-mode.md
     - Rate Limiting & Security: operator/rate-limiting-security.md
     - Tuning & Monitoring: operator/tuning-monitoring.md
   - Reference:

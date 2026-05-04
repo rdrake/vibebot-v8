@@ -5269,6 +5269,26 @@ class TestAssistantRequestFacade:
         assert call_kwargs["route_profile"] == "code"
         assert call_kwargs["system_prompt"] is None
 
+    def test_forest_profile_forwards_route_profile(self) -> None:
+        """Forest profile forwards route_profile=forest so the planner picks
+        FOREST_SYSTEM_PROMPT (no length cap) as the structural framework."""
+        ctx = self._make_ctx(profile="forest")
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="long-form answer"),
+        )
+
+        self.service.assistant_request(
+            "tell me a long story",
+            request_context=ctx,
+            db=self.mocker.Mock(),
+            context=self.mocker.Mock(),
+            bot_nick="Bot",
+        )
+
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
+        assert call_kwargs["route_profile"] == "forest"
+        assert call_kwargs["system_prompt"] is None
+
     def test_draw_profile_forwards_route_profile(self) -> None:
         """Draw profile forwards route_profile=draw so the planner picks
         DRAW_SYSTEM_PROMPT as the structural framework."""
