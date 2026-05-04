@@ -67,10 +67,12 @@ class TestLLMService:
         assert call_kwargs["nick"] == "testuser"
         assert call_kwargs["channel"] == "#test"
 
-    def test_assistant_request_unknown_profile_falls_back_to_chat_prompt(self) -> None:
-        """GIVEN an unknown profile WHEN assistant_request is used THEN it falls back to chat prompt."""
-        from llm.assistant import CHAT_SYSTEM_PROMPT
-
+    def test_assistant_request_forwards_profile_without_replacing_system_prompt(
+        self,
+    ) -> None:
+        """assistant_request forwards route_profile and leaves system_prompt
+        unset when no personality overlay is provided. The structural framework
+        is selected by ``assistant_completion`` via ``route_profile``."""
         request_context = AssistantRequestContext(
             entry_route="meta",
             profile="unknown",
@@ -95,12 +97,12 @@ class TestLLMService:
         )
 
         call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["system_prompt"] == CHAT_SYSTEM_PROMPT
+        assert call_kwargs["route_profile"] == "unknown"
+        assert call_kwargs["system_prompt"] is None
 
-    def test_assistant_request_remind_action_uses_dedicated_prompt(self) -> None:
-        """GIVEN remind_action profile WHEN assistant_request runs THEN it uses REMIND_ACTION_SYSTEM_PROMPT."""
-        from llm.assistant import REMIND_ACTION_SYSTEM_PROMPT
-
+    def test_assistant_request_remind_action_forwards_profile(self) -> None:
+        """remind_action profile is forwarded so assistant_completion picks
+        REMIND_ACTION_SYSTEM_PROMPT as the structural framework."""
         request_context = AssistantRequestContext(
             entry_route="remind_action",
             profile="remind_action",
@@ -125,7 +127,8 @@ class TestLLMService:
         )
 
         call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["system_prompt"] == REMIND_ACTION_SYSTEM_PROMPT
+        assert call_kwargs["route_profile"] == "remind_action"
+        assert call_kwargs["system_prompt"] is None
 
     def test_validate_prompt_rejects_empty(self) -> None:
         """GIVEN empty prompt WHEN validated THEN rejected."""
@@ -5221,8 +5224,10 @@ class TestAssistantRequestFacade:
             capabilities=capabilities,
         )
 
-    def test_chat_profile_uses_chat_prompt(self) -> None:
-        """Chat profile dispatches to assistant_completion with CHAT_SYSTEM_PROMPT."""
+    def test_chat_profile_forwards_route_profile(self) -> None:
+        """Chat profile forwards route_profile=chat. ``assistant_completion``
+        selects CHAT_SYSTEM_PROMPT from the route_profile, not from
+        system_prompt — the latter is reserved for personality overlays."""
         ctx = self._make_ctx(profile="chat")
         self.service.assistant_completion = self.mocker.Mock(
             return_value=AssistantResult(content="answer"),
@@ -5237,11 +5242,12 @@ class TestAssistantRequestFacade:
         )
 
         call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert "NOT_META" not in call_kwargs["system_prompt"]
         assert call_kwargs["route_profile"] == "chat"
+        assert call_kwargs["system_prompt"] is None
 
-    def test_code_profile_uses_code_prompt(self) -> None:
-        """Code profile dispatches to assistant_completion with CODE_SYSTEM_PROMPT."""
+    def test_code_profile_forwards_route_profile(self) -> None:
+        """Code profile forwards route_profile=code so the planner picks
+        CODE_SYSTEM_PROMPT as the structural framework."""
         ctx = self._make_ctx(
             entry_route="code",
             profile="code",
@@ -5259,12 +5265,13 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert (
-            "generate_code" in self.service.assistant_completion.call_args.kwargs["system_prompt"]
-        )
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
+        assert call_kwargs["route_profile"] == "code"
+        assert call_kwargs["system_prompt"] is None
 
-    def test_draw_profile_uses_draw_prompt(self) -> None:
-        """Draw profile dispatches to assistant_completion with DRAW_SYSTEM_PROMPT."""
+    def test_draw_profile_forwards_route_profile(self) -> None:
+        """Draw profile forwards route_profile=draw so the planner picks
+        DRAW_SYSTEM_PROMPT as the structural framework."""
         ctx = self._make_ctx(
             entry_route="draw",
             profile="draw",
@@ -5282,9 +5289,9 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert (
-            "generate_image" in self.service.assistant_completion.call_args.kwargs["system_prompt"]
-        )
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
+        assert call_kwargs["route_profile"] == "draw"
+        assert call_kwargs["system_prompt"] is None
 
     def test_returns_meta_result(self) -> None:
         """assistant_request returns AssistantResult with all fields preserved."""

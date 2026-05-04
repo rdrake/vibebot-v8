@@ -1431,7 +1431,7 @@ class TestReminderActionDelivery:
         assert kwargs["history"] == [{"role": "user", "content": "hi"}]
         assert kwargs["channel_history"] == [{"role": "user", "content": "c"}]
         assert kwargs["memories"] == ["prefers concise"]
-        assert kwargs["system_prompt"] == "Be direct.\n\nYou are helpful."
+        assert kwargs["system_prompt"] == "User instruction: Be direct.\n\nYou are helpful."
         assert callable(kwargs["search_fn"])
         assert callable(kwargs["fetch_fn"])
         assert callable(kwargs["code_fn"])

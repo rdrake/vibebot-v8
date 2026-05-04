@@ -3025,8 +3025,11 @@ class TestAskWithInstruction:
         call_kwargs = plugin.llm_service.completion.call_args.kwargs
         assert "Picard" in call_kwargs["system_prompt"]
 
-    def test_ask_no_instruction_uses_default(self, plugin_env):
-        """GIVEN no instruction WHEN ask called THEN no system_prompt override."""
+    def test_ask_no_instruction_passes_personality_overlay(self, plugin_env):
+        """GIVEN no instruction WHEN ask called THEN the channel personality
+        (assistantSystemPrompt) is still forwarded as the overlay so the
+        operator's persona survives — the structural framework is layered in
+        by ``assistant_completion`` from the route_profile."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_instruction.return_value = None
         plugin.llm_service.detect_images.return_value = []
@@ -3040,7 +3043,9 @@ class TestAskWithInstruction:
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
         call_kwargs = plugin.llm_service.completion.call_args.kwargs
-        assert call_kwargs.get("system_prompt") is None
+        # assistantSystemPrompt is "You are helpful." in the test registry —
+        # the overlay must reach the lower layer regardless of user instruction.
+        assert call_kwargs.get("system_prompt") == "You are helpful."
 
 
 # ---------------------------------------------------------------------------

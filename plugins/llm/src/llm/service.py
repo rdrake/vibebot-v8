@@ -2276,20 +2276,6 @@ class LLMService:
         delegates to the planner loop so that all assistant routes share
         a single entry point with full tool access.
         """
-        from .assistant import (
-            CHAT_SYSTEM_PROMPT,
-            CODE_SYSTEM_PROMPT,
-            DRAW_SYSTEM_PROMPT,
-            REMIND_ACTION_SYSTEM_PROMPT,
-        )
-
-        profile_prompts = {
-            "chat": CHAT_SYSTEM_PROMPT,
-            "code": CODE_SYSTEM_PROMPT,
-            "draw": DRAW_SYSTEM_PROMPT,
-            "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
-        }
-
         self.log.info(
             "assistant_request route=%s profile=%s channel=%s nick=%s",
             request_context.entry_route,
@@ -2299,8 +2285,10 @@ class LLMService:
         )
 
         profile = request_context.profile
-        if system_prompt is None:
-            system_prompt = profile_prompts.get(profile, CHAT_SYSTEM_PROMPT)
+        # ``system_prompt`` is forwarded as personality overlay only;
+        # ``assistant_completion`` selects the route_profile's structural
+        # framework and layers the overlay on top so the IRC output rules and
+        # tool-behavior constraints survive a per-channel personality.
 
         return self.assistant_completion(
             prompt,
@@ -2841,6 +2829,9 @@ Examples (echo → action_prompt: ""):
         """
         from .assistant import (
             CHAT_SYSTEM_PROMPT,
+            CODE_SYSTEM_PROMPT,
+            DRAW_SYSTEM_PROMPT,
+            REMIND_ACTION_SYSTEM_PROMPT,
             AssistantToolExecutor,
             get_tools_for_profile,
         )
@@ -2863,10 +2854,34 @@ Examples (echo → action_prompt: ""):
             max_steps = self.plugin.registryValue("metaMaxSteps")
             timeout = self.plugin.registryValue("timeout")
 
-            effective_prompt = self._inject_memories(
-                (system_prompt or CHAT_SYSTEM_PROMPT).format(bot_nick=bot_nick),
-                memories,
+            # Structural framework (IRC output rules, tool-behavior rules) is
+            # selected by route_profile and is always present. ``system_prompt``
+            # is treated as an operator/user personality overlay that appends —
+            # never replaces — so a per-channel ``assistantSystemPrompt`` can't
+            # strip the format/length cap or the "don't fake tool success" rule.
+            profile_frameworks = {
+                "chat": CHAT_SYSTEM_PROMPT,
+                "code": CODE_SYSTEM_PROMPT,
+                "draw": DRAW_SYSTEM_PROMPT,
+                "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
+            }
+            framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
+                bot_nick=bot_nick
             )
+            if system_prompt:
+                # ``str.replace`` rather than ``.format`` so user-supplied text
+                # containing literal '{...}' (e.g. JSON examples) doesn't blow
+                # up with KeyError. Only ``{bot_nick}`` is supported.
+                personality = system_prompt.replace("{bot_nick}", bot_nick)
+                framework = (
+                    framework
+                    + "\n\n--- Personality / identity (overlay) ---\n"
+                    + personality
+                    + "\n\nThe rules above (output format, length cap, tool "
+                    "behavior) still apply — personality changes voice, not "
+                    "structure."
+                )
+            effective_prompt = self._inject_memories(framework, memories)
 
             messages = self._build_messages(
                 prompt,

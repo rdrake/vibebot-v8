@@ -893,10 +893,13 @@ class TestMetaCompletion:
 
         assert result.cost > 0
 
-    def test_assistant_completion_accepts_system_prompt(
+    def test_assistant_completion_layers_system_prompt_over_framework(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """assistant_completion uses provided system_prompt instead of META_SYSTEM_PROMPT."""
+        """assistant_completion appends system_prompt as personality overlay
+        instead of replacing the structural framework — the IRC output rules
+        and tool-behavior rules from CHAT_SYSTEM_PROMPT must still be present.
+        """
         mock_response = mocker.MagicMock()
         mock_choice = mocker.MagicMock()
         mock_choice.message.content = "Done."
@@ -919,12 +922,51 @@ class TestMetaCompletion:
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             bot_nick="VibeBot",
-            system_prompt="You are a helpful assistant named {bot_nick}.",
+            system_prompt="You are a Scottish wino named {bot_nick}.",
         )
 
+        content = captured_messages[0]["content"]
         assert captured_messages[0]["role"] == "system"
-        assert "helpful assistant" in captured_messages[0]["content"]
-        assert "VibeBot" in captured_messages[0]["content"]
+        # Personality overlay landed
+        assert "Scottish wino" in content
+        assert "VibeBot" in content
+        # Structural framework still present (length cap + tool-behavior rule)
+        assert "Length cap" in content
+        assert "claim actions succeeded" in content
+
+    def test_assistant_completion_user_supplied_braces_dont_crash(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A personality overlay containing literal '{...}' (e.g. JSON examples)
+        must not raise KeyError — only ``{bot_nick}`` is substituted.
+        """
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt='Reply as JSON like {"key": "value"}.',
+        )
+
+        content = captured_messages[0]["content"]
+        assert '{"key": "value"}' in content
 
     def test_assistant_completion_defaults_to_chat_prompt(
         self, service: LLMService, mocker: MockerFixture

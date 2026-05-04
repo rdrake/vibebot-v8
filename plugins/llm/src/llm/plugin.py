@@ -1175,9 +1175,13 @@ class LLM(callbacks.Plugin):
                         history, channel_history = self._gather_history(nick, channel)
                         memories = self._get_user_memories(nick)
                         user_instruction = self.db.get_instruction(nick)
+                        # See ``_ask_impl`` for the layering rationale —
+                        # always send the persona, never None.
                         ask_prompt = self.registryValue("assistantSystemPrompt", channel)
                         effective_prompt = (
-                            f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+                            f"User instruction: {user_instruction}\n\n{ask_prompt}"
+                            if user_instruction
+                            else ask_prompt
                         )
 
                         caller = Identity(raw_nick=nick, account=account)
@@ -2601,9 +2605,19 @@ class LLM(callbacks.Plugin):
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
 
-            # Build system prompt with optional user instruction
+            # Personality overlay = channel ``assistantSystemPrompt`` (operator
+            # config), optionally prefixed with the user's persistent
+            # instruction. The structural framework (length cap, plain-text
+            # rules, tool-behavior rules) is layered in by ``assistant_completion``
+            # — sending it again here would duplicate. Always send the overlay
+            # so a per-channel persona is preserved even without a user
+            # instruction.
             ask_prompt = self.registryValue("assistantSystemPrompt", channel)
-            effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+            effective_prompt = (
+                f"User instruction: {user_instruction}\n\n{ask_prompt}"
+                if user_instruction
+                else ask_prompt
+            )
 
             with self._allow_concurrent():
                 request_text = text
