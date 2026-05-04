@@ -364,16 +364,16 @@ make test
 
 ## Future work
 
-The remaining candidates from the audit are tracked here for prioritization in a future cycle. Full descriptions, suggested properties, and custom strategies are in [`docs/reviews/2026-05-04-hypothesis-audit.md`](../reviews/2026-05-04-hypothesis-audit.md).
+All audit candidates 5-11 have landed. Full descriptions, suggested properties, and custom strategies remain in [`docs/reviews/2026-05-04-hypothesis-audit.md`](../reviews/2026-05-04-hypothesis-audit.md).
 
-| # | Subsystem | File | Priority | Payoff |
+| # | Subsystem | File | Priority | Status |
 |---|---|---|---|---|
-| 5 | `validate_external_url` | `service.py:361-398` | MEDIUM-HIGH | Replace ~12 enumerated SSRF tests; catch IPv6 / embedded-auth oddities. **Note:** existing tests use fixed IPv4 literals only; IPv6 (`::1`, `fc00::/7`) and embedded-auth (`http://user@10.0.0.1/`) paths are not covered until this lands. |
-| 6 | `sanitize_output` | `service.py:496-535` | MEDIUM | Replace ~10 enumerated tests with idempotence + no-prefix invariants |
-| 7 | `_strip_markdown_fences` | `service.py:3278-3300` | MEDIUM | Replace 11 cases with strip/round-trip property |
-| 8 | Usage ranking & aggregation | `persistence.py:1378-1592` | MEDIUM | Monotone-rank property; catches tie-break and zero-cost short-circuit edges |
-| 9 | `_compute_backoff` | `service.py:1421-1433` | LOW | Trivial; fold into a "pure helpers" property file |
-| 10 | Reminder & scheduled-task DB CRUD | `persistence.py:545-880` | MEDIUM | Lock down case-insensitive owner matching |
-| 11 | `_next_rrule_fire` | `plugin.py:3349-3367` | MEDIUM | DST / leap-second edges; needs runtime check before adoption |
+| 5 | `validate_external_url` | `service.py:361-398` | MEDIUM-HIGH | Landed in `a13de3c` |
+| 6 | `sanitize_output` | `service.py:496-535` | MEDIUM | Landed in `74c2011` |
+| 7 | `_strip_markdown_fences` | `service.py:3278-3300` | MEDIUM | Landed in `3a93b72` |
+| 8 | Usage ranking & aggregation | `persistence.py:1378-1592` | MEDIUM | Landed in `227ae70` |
+| 9 | `_compute_backoff` | `service.py:1421-1433` | LOW | Landed in `753a5ea` (`test_service_helpers_properties.py`) |
+| 10 | Reminder & scheduled-task DB CRUD | `persistence.py:545-880` | MEDIUM | Landed in `4415cd7` |
+| 11 | `_next_rrule_fire` | `plugin.py:3349-3367` | MEDIUM | Landed in `f1625c3` |
 
 Explicitly skipped (see audit "Deprioritized / skip"): `limnoria_bridge.py`, `assistant.py` tool dispatchers, `parse_reminder` post-LLM coercion, trivial transformations in `service.py:3618-3725`, HTML rendering tests.
