@@ -597,7 +597,7 @@ class TestSendLongReply:
 
         mock_irc.queueMultilineBatches.assert_called_once()
         call = mock_irc.queueMultilineBatches.call_args
-        assert call.kwargs.get("concat") is False
+        assert call.kwargs.get("concat") is True
         msgs = call.args[0]
         assert len(msgs) == 3
         mock_irc.reply.assert_not_called()
@@ -637,7 +637,7 @@ class TestSendLongReply:
 
         plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
 
-        mock_irc.reply.assert_called_once_with("line one\nline two", prefixNick=False)
+        mock_irc.reply.assert_called_once_with("line one | line two", prefixNick=False)
         mock_irc.queueMultilineBatches.assert_not_called()
 
     def test_multiline_falls_back_when_experimental_disabled(self, plugin_env, mocker):
@@ -650,7 +650,7 @@ class TestSendLongReply:
 
         plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
 
-        mock_irc.reply.assert_called_once_with("line one\nline two", prefixNick=False)
+        mock_irc.reply.assert_called_once_with("line one | line two", prefixNick=False)
         mock_irc.queueMultilineBatches.assert_not_called()
 
     def test_long_reply_uses_teaser_and_full_answer_link(self, plugin_env, mocker):

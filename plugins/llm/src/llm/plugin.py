@@ -1781,11 +1781,14 @@ class LLM(callbacks.Plugin):
             and "draft/multiline" in irc.state.capabilities_ack
         )
         if not multiline_supported:
-            irc.reply("\n".join(logical_lines), prefixNick=prefixNick)
+            # No draft/multiline negotiated — flatten to one line and let
+            # supybot.reply.mores paginate by length. Raw \n in a PRIVMSG
+            # body trips Excess Flood on AfterNET.
+            irc.reply(" | ".join(logical_lines), prefixNick=prefixNick)
             return
 
         msgs = [ircmsgs.privmsg(target, ircutils.safeArgument(chunk)) for chunk in chunks]
-        irc.queueMultilineBatches(msgs, target, msg.nick, concat=False)
+        irc.queueMultilineBatches(msgs, target, msg.nick, concat=True)
 
     def _dispatch_assistant_reply(
         self,
