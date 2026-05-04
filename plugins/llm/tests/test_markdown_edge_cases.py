@@ -11,7 +11,15 @@ from llm.service import LLMService
 
 
 class TestCodeFenceEdgeCases:
-    """Test edge cases in code fence parsing and stripping."""
+    """Canonical executable spec for ``_strip_markdown_fences``.
+
+    Round-trip (with and without language), no-fence pass-through, and
+    re-strip idempotence are covered by
+    ``test_strip_markdown_fences_properties.py``. The single example
+    below documents the happy path; cases like incomplete fences,
+    multiline bodies, nested backticks, empty bodies, and non-``\\w+``
+    language tokens are subsumed by the property suite there.
+    """
 
     @pytest.fixture
     def service(self, make_service) -> LLMService:
@@ -26,95 +34,6 @@ class TestCodeFenceEdgeCases:
 
         assert clean == "print('hello')"
         assert lang == "python"
-
-    def test_strip_simple_fence_without_language(self, service: LLMService) -> None:
-        """GIVEN fenced code without language WHEN stripping THEN extracts code."""
-        code = "```\nprint('hello')\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        assert clean == "print('hello')"
-        assert lang is None
-
-    def test_strip_fence_with_trailing_whitespace(self, service: LLMService) -> None:
-        """GIVEN fenced code with trailing whitespace WHEN stripping THEN handles."""
-        code = "```python\nprint('hello')\n```  \n  "
-        clean, lang = service._strip_markdown_fences(code)
-
-        # Should handle trailing whitespace
-        assert "print('hello')" in clean
-
-    def test_no_fences_returns_original(self, service: LLMService) -> None:
-        """GIVEN code without fences WHEN stripping THEN returns original."""
-        code = "print('hello')"
-        clean, lang = service._strip_markdown_fences(code)
-
-        assert clean == code
-        assert lang is None
-
-    def test_incomplete_opening_fence(self, service: LLMService) -> None:
-        """GIVEN incomplete opening fence WHEN stripping THEN returns as-is."""
-        code = "``python\nprint('hello')\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        # Should not match incomplete fence
-        assert "``python" in clean or clean == code
-
-    def test_incomplete_closing_fence(self, service: LLMService) -> None:
-        """GIVEN incomplete closing fence WHEN stripping THEN returns as-is."""
-        code = "```python\nprint('hello')\n``"
-        clean, lang = service._strip_markdown_fences(code)
-
-        # Should not match incomplete fence
-        assert "```python" in clean or "print('hello')" in clean
-
-    def test_fence_with_extra_backticks(self, service: LLMService) -> None:
-        """GIVEN fence with >3 backticks WHEN stripping THEN handles gracefully."""
-        code = "````python\nprint('hello')\n````"
-        clean, lang = service._strip_markdown_fences(code)
-
-        # May or may not match depending on implementation
-        # At minimum should not crash
-        assert clean is not None
-
-    def test_nested_code_in_fence(self, service: LLMService) -> None:
-        """GIVEN nested backticks inside fence WHEN stripping THEN handles."""
-        code = "```python\nprint('`hello`')\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        assert "`hello`" in clean
-        assert lang == "python"
-
-    def test_multiline_code_preserved(self, service: LLMService) -> None:
-        """GIVEN multiline code WHEN stripping THEN all lines preserved."""
-        code = """```python
-def hello():
-    print('line 1')
-    print('line 2')
-    return True
-```"""
-        clean, lang = service._strip_markdown_fences(code)
-
-        assert "def hello():" in clean
-        assert "print('line 1')" in clean
-        assert "print('line 2')" in clean
-        assert "return True" in clean
-        assert lang == "python"
-
-    def test_empty_code_block(self, service: LLMService) -> None:
-        """GIVEN empty code block WHEN stripping THEN returns empty."""
-        code = "```python\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        # Should handle empty block
-        assert clean == "" or clean.strip() == ""
-
-    def test_fence_with_unusual_language(self, service: LLMService) -> None:
-        """GIVEN fence with unusual language spec WHEN stripping THEN extracts it."""
-        code = "```cpp-with-features\nint x = 0;\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        # Should still work with unusual language names
-        assert "int x = 0;" in clean
 
 
 class TestMarkdownInCodeOutput:
