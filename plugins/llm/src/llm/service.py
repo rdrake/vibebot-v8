@@ -411,6 +411,11 @@ class LLMService:
     - Path traversal attempts blocked
     """
 
+    # Same 50-fire ceiling reminders use (LLM.plugin._REMINDER_MAX_CHAIN_POSITION).
+    # Bounds runaway recurring tasks when the parser misses a duration cap
+    # (e.g. "every minute for 3 minutes" → recurrence_seconds=60, no end).
+    _SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION = 50
+
     def __init__(self, plugin_instance: LLM) -> None:
         """Initialize service with plugin reference.
 
@@ -4301,12 +4306,22 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 row.event_name,
             )
             return
+        next_position = row.chain_position + 1
+        if next_position > self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION:
+            self.log.info(
+                "scheduled_llm_task reschedule skipped: %s reached cap %d/%d",
+                row.event_name,
+                next_position,
+                self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION,
+            )
+            db.delete_scheduled_llm_task(row.event_name)
+            return
         next_fire = self._compute_next_fire(row)
         if next_fire is None:
             db.delete_scheduled_llm_task(row.event_name)
             return
         db.update_scheduled_llm_task_fire_at(
-            row.event_name, next_fire, chain_position=row.chain_position + 1
+            row.event_name, next_fire, chain_position=next_position
         )
         callback = self._make_scheduled_llm_task_callback(row.event_name)
         schedule.addEvent(callback, next_fire, name=row.event_name)
