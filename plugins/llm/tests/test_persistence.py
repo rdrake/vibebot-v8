@@ -274,6 +274,13 @@ class TestSchemaMigration:
         db.close()
 
 
+# NOTE: round-trip, fire_at-ordering, and recurrence-mutual-exclusion
+# invariants for reminders (and the parallel scheduled_llm_task family
+# below) are now covered by test_persistence_scheduled_properties.py.
+# The cases here are kept as executable specifications and to cover
+# paths the property tests intentionally do not parameterize: the 24h
+# EXPIRY_THRESHOLD cutoff, the IntegrityError on duplicate event_name,
+# and the delete_expired_reminders return-count contract.
 class TestReminderPersistence:
     """Test reminder CRUD operations."""
 
