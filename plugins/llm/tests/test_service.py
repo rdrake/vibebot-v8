@@ -3673,19 +3673,19 @@ class TestErrorClassification:
 
 
 class TestComputeBackoff:
-    """Test backoff calculation."""
+    """Canonical executable spec for ``_compute_backoff``.
 
-    def test_initial_backoff(self) -> None:
-        """GIVEN attempt 0 WHEN computing backoff THEN 30 seconds."""
-        assert LLMService._compute_backoff(0) == 30
+    Bounded-above, bounded-below, monotone-non-decreasing, and
+    initial-floor properties are covered by
+    ``test_service_helpers_properties.py``. The single example below
+    pins one numeric step so a regression that broke the formula but
+    kept the bounds (e.g. swapping ``2**n`` for ``n``) would still
+    fail here.
+    """
 
     def test_first_retry_backoff(self) -> None:
         """GIVEN attempt 1 WHEN computing backoff THEN 60 seconds."""
         assert LLMService._compute_backoff(1) == 60
-
-    def test_backoff_capped(self) -> None:
-        """GIVEN high attempt count WHEN computing backoff THEN capped at 300."""
-        assert LLMService._compute_backoff(10) == 300
 
 
 class TestServerHeaderLogging:
