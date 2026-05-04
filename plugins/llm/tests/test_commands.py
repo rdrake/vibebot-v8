@@ -654,13 +654,17 @@ class TestSendLongReply:
         mock_irc.queueMultilineBatches.assert_not_called()
 
     def test_long_reply_uses_teaser_and_full_answer_link(self, plugin_env, mocker):
-        """GIVEN reply over line threshold WHEN sent THEN channel gets teaser plus link."""
+        """GIVEN reply over line threshold AND teaser mode WHEN sent THEN channel gets teaser plus link."""
         import supybot.conf as supy_conf
 
         plugin, mock_irc, mock_msg = plugin_env
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
-                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+                {
+                    "longReplyLineThreshold": 6,
+                    "longReplyTeaserMaxChars": 220,
+                    "longReplyLinkMode": "teaser",
+                }
             )
         )
         mock_irc.state.capabilities_ack = {"draft/multiline"}
@@ -693,6 +697,30 @@ class TestSendLongReply:
             prefixNick=False,
         )
         mock_irc.queueMultilineBatches.assert_not_called()
+
+    def test_long_reply_footer_mode_appends_url_to_full_reply(self, plugin_env, mocker):
+        """GIVEN footer mode (default) AND over threshold THEN full reply ships with URL footer."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"longReplyLineThreshold": 6})
+        )
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+        long_text = "\n".join(f"line {i}" for i in range(1, 8))
+        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
+        plugin.llm_service.summarize_for_irc.assert_not_called()
+        mock_irc.queueMultilineBatches.assert_called_once()
+        msgs = mock_irc.queueMultilineBatches.call_args.args[0]
+        # Original 7 lines + 1 footer
+        assert len(msgs) == 8
+        assert msgs[-1].args[1] == "Full answer: https://example.com/llm/full.html"
+        mock_irc.reply.assert_not_called()
 
     def test_long_reply_threshold_zero_disables_linking(self, plugin_env, mocker):
         """GIVEN threshold disabled WHEN long reply sent THEN existing multiline path is used."""
@@ -736,7 +764,11 @@ class TestSendLongReply:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
-                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+                {
+                    "longReplyLineThreshold": 6,
+                    "longReplyTeaserMaxChars": 220,
+                    "longReplyLinkMode": "teaser",
+                }
             )
         )
         long_text = "\n".join(
@@ -766,7 +798,11 @@ class TestSendLongReply:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
-                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
+                {
+                    "longReplyLineThreshold": 6,
+                    "longReplyTeaserMaxChars": 220,
+                    "longReplyLinkMode": "teaser",
+                }
             )
         )
         mocker.patch("llm.plugin.conf.get", return_value=80)

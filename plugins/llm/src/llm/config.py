@@ -444,6 +444,23 @@ conf.registerChannelValue(
     ),
 )
 
+
+class _LongReplyLinkMode(registry.OnlySomeStrings):
+    validStrings = ("footer", "teaser")  # noqa: N815  (supybot registry API)
+
+
+conf.registerChannelValue(
+    LLM,
+    "longReplyLinkMode",
+    _LongReplyLinkMode(
+        "footer",
+        _("""How to surface the saved HTML answer when a reply exceeds
+        longReplyLineThreshold. "footer" (default) sends the full multi-line
+        reply with the URL appended as a final line. "teaser" replaces the
+        reply with a one-line teaser plus URL — quieter but hides content."""),
+    ),
+)
+
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================

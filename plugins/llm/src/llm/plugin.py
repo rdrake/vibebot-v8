@@ -1752,11 +1752,13 @@ class LLM(callbacks.Plugin):
             chunks.extend(wrapped if wrapped else [line])
 
         line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
-        if line_threshold > 0 and (
+        over_threshold = line_threshold > 0 and (
             len(logical_lines) > line_threshold or len(chunks) > line_threshold
-        ):
+        )
+        if over_threshold:
+            link_mode = self.registryValue("longReplyLinkMode", target) or "footer"
             url = self.llm_service.save_markdown_to_http(text)
-            if url:
+            if url and link_mode == "teaser":
                 suffix = f" - {_FULL_ANSWER_LABEL}: {url}"
                 configured_max_chars = int(
                     self.registryValue("longReplyTeaserMaxChars", target) or 220
@@ -1771,6 +1773,12 @@ class LLM(callbacks.Plugin):
                 teaser = self._trim_long_reply_teaser(teaser, max_chars)
                 irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
                 return
+            if url:
+                # "footer" mode: deliver the full reply and append the
+                # pastebin URL as a final IRC line.
+                footer = f"{_FULL_ANSWER_LABEL}: {url}"
+                logical_lines.append(footer)
+                chunks.append(footer)
 
         if len(chunks) <= 1:
             irc.reply(chunks[0] if chunks else text, prefixNick=prefixNick)

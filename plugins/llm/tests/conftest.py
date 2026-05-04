@@ -321,6 +321,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "httpUrlBase": TEST_URL_BASE,
         "longReplyLineThreshold": 6,
         "longReplyTeaserMaxChars": 220,
+        "longReplyLinkMode": "footer",
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
