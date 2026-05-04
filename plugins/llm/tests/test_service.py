@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import given
-from hypothesis.strategies import ip_addresses, sampled_from, text
+from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
 from llm.service import (
     AssistantRequestContext,
     AssistantResult,
@@ -1993,45 +1993,65 @@ class TestSanitizeOutput:
         text = "Hello, this is a normal response."
         assert self.service.sanitize_output(text) == text
 
-    def test_sanitize_output_dot_prefix(self) -> None:
-        """GIVEN text starting with dot WHEN sanitizing THEN adds space prefix."""
-        text = ".part #channel"
-        result = self.service.sanitize_output(text)
-        assert result == " .part #channel"
+    # NOTE: prefix-neutralization across single-line, multi-line, mixed-prefix,
+    # and "internal-dot/slash passthrough" cases is now covered by
+    # test_sanitize_output_prefix_invariant below.
 
-    def test_sanitize_output_slash_prefix(self) -> None:
-        """GIVEN text starting with slash WHEN sanitizing THEN passes through unchanged."""
-        text = "/msg someone hello"
-        result = self.service.sanitize_output(text)
-        assert result == "/msg someone hello"
+    @given(
+        # Build each line as (optional leading prefix char) + body so the
+        # prefix path is reliably exercised. A bare ``alphabet=characters``
+        # strategy hits ``.``-leading lines too rarely to be load-bearing.
+        lines=lists(
+            tuples(
+                sampled_from(["", ".", "/", "!"]),
+                text(
+                    alphabet=characters(min_codepoint=0x20, max_codepoint=0x7E),
+                    max_size=60,
+                ).filter(lambda s: "\\n" not in s),
+            ).map(lambda pair: pair[0] + pair[1]),
+            max_size=8,
+        ),
+    )
+    def test_sanitize_output_prefix_invariant(self, lines: list[str]) -> None:
+        """GIVEN any multi-line input WHEN sanitized THEN no output line starts with a prefix.
 
-    def test_sanitize_output_multiline_dot(self) -> None:
-        """GIVEN multiline text with dot lines WHEN sanitizing THEN preserves lines safely."""
-        text = "Line 1\n.ban user\nLine 3\n.part"
-        result = self.service.sanitize_output(text)
-        assert result == "Line 1\n .ban user\nLine 3\n .part"
+        Strategy filters out the literal ``\\n`` sequence so the input
+        already matches its post-literal-newline-substitution form; that
+        keeps the line-count assertion meaningful.
+        """
+        text_in = "\n".join(lines)
+        result = self.service.sanitize_output(text_in)
+        prefixes = (".",)  # matches the autouse fixture
+        for line in result.split("\n"):
+            assert not line.startswith(prefixes), (
+                f"output line {line!r} unexpectedly starts with a prefix"
+            )
+        # Line count is preserved: no spurious splitting/joining.
+        assert result.count("\n") == text_in.count("\n")
 
-    def test_sanitize_output_multiline_slash(self) -> None:
-        """GIVEN multiline text with slash lines WHEN sanitizing THEN preserves lines."""
-        text = "Line 1\n/quit message\nLine 3"
-        result = self.service.sanitize_output(text)
-        assert result == "Line 1\n/quit message\nLine 3"
+    @given(
+        lines=lists(
+            text(
+                alphabet=characters(min_codepoint=0x20, max_codepoint=0x7E),
+                max_size=80,
+            )
+            .filter(lambda s: "\\n" not in s)
+            .filter(lambda s: not s.startswith(".")),
+            min_size=1,
+            max_size=8,
+        ),
+    )
+    def test_sanitize_output_passthrough_when_no_prefix(self, lines: list[str]) -> None:
+        """No prefix-starting lines, no wrapping quotes ⇒ output is unchanged.
 
-    def test_sanitize_output_mixed_prefixes(self) -> None:
-        """GIVEN multiline text with mixed prefixes WHEN sanitizing THEN checks each line."""
-        text = ".dot command\n/slash command\nNormal line"
-        result = self.service.sanitize_output(text)
-        assert result == " .dot command\n/slash command\nNormal line"
-
-    def test_sanitize_output_preserves_internal_dots(self) -> None:
-        """GIVEN text with dots not at start WHEN sanitizing THEN preserves them."""
-        text = "A sentence with a . period and https://example.com URL"
-        assert self.service.sanitize_output(text) == text
-
-    def test_sanitize_output_preserves_internal_slashes(self) -> None:
-        """GIVEN text with slashes not at start WHEN sanitizing THEN preserves them."""
-        text = "Visit https://example.com/path for more info"
-        assert self.service.sanitize_output(text) == text
+        Filters out wrapping single/double quotes so the quote-strip path
+        does not fire (its idempotence is intentionally not asserted —
+        nested quoting can cascade across calls).
+        """
+        text_in = "\n".join(lines)
+        if len(text_in) >= 2 and text_in[0] == text_in[-1] and text_in[0] in ("'", '"'):
+            return  # Quote-strip path; out of scope for this property.
+        assert self.service.sanitize_output(text_in) == text_in
 
     def test_sanitize_output_custom_prefixes(self) -> None:
         """GIVEN custom prefix config WHEN sanitizing THEN uses those prefixes."""
