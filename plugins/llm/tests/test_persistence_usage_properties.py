@@ -20,6 +20,7 @@ from hypothesis.strategies import floats, lists, sampled_from, tuples
 from llm.persistence import LLMDatabase
 
 CHANNELS = ["#a", "#b", "#c", "#d", "#e"]
+NICKS = ["alice", "bob", "charlie", "dave", "eve"]
 
 
 def _new_db() -> tuple[LLMDatabase, Path]:
@@ -30,6 +31,11 @@ def _new_db() -> tuple[LLMDatabase, Path]:
 def _populate(db: LLMDatabase, rows: list[tuple[str, float]]) -> None:
     for channel, cost in rows:
         db.log_usage("alice", channel, "ask", "gpt-4", 10, 5, cost)
+
+
+def _populate_by_nick(db: LLMDatabase, rows: list[tuple[str, float]]) -> None:
+    for nick, cost in rows:
+        db.log_usage(nick, "#test", "ask", "gpt-4", 10, 5, cost)
 
 
 def _channels_in(rows: list[tuple[str, float]]) -> Iterator[str]:
@@ -207,6 +213,68 @@ def test_breakdown_is_sorted_by_cost_descending(rows: list[tuple[str, float]]) -
         breakdown = db.get_usage_by_channel(limit=len(CHANNELS))
         costs = [b.total_cost for b in breakdown]
         assert costs == sorted(costs, reverse=True)
+    finally:
+        db.close()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@given(
+    rows=lists(
+        tuples(sampled_from(NICKS), floats(min_value=0, max_value=1, allow_nan=False)),
+        max_size=40,
+    ),
+)
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_nick_rank_is_monotone_in_cost(rows: list[tuple[str, float]]) -> None:
+    """Nick variant: ``cost(a) > cost(b)`` ⇒ ``rank(a) < rank(b)``."""
+    db, work_dir = _new_db()
+    try:
+        _populate_by_nick(db, rows)
+        totals: dict[str, float] = {}
+        for nick, cost in rows:
+            totals[nick] = totals.get(nick, 0.0) + cost
+        seen: list[str] = []
+        for nick, _ in rows:
+            if nick not in seen:
+                seen.append(nick)
+        for i, nick_a in enumerate(seen):
+            for nick_b in seen[i + 1 :]:
+                ra = db.get_nick_rank(nick_a).rank
+                rb = db.get_nick_rank(nick_b).rank
+                if totals[nick_a] > totals[nick_b]:
+                    assert ra < rb
+                elif totals[nick_a] < totals[nick_b]:
+                    assert ra > rb
+    finally:
+        db.close()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@given(
+    rows=lists(
+        tuples(sampled_from(NICKS), floats(min_value=0, max_value=1, allow_nan=False)),
+        max_size=40,
+    ),
+)
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_unused_nick_rank_is_zero(rows: list[tuple[str, float]]) -> None:
+    """A nick that never appears in usage has ``rank == 0``."""
+    db, work_dir = _new_db()
+    try:
+        _populate_by_nick(db, rows)
+        used = {n for n, _ in rows}
+        for nick in NICKS:
+            if nick in used:
+                continue
+            assert db.get_nick_rank(nick).rank == 0
     finally:
         db.close()
         shutil.rmtree(work_dir, ignore_errors=True)

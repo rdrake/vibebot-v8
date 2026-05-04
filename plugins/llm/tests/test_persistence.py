@@ -593,41 +593,13 @@ class TestFilteredUsageSummary:
 
 
 class TestUsageRanking:
-    """Test rank computation for channels and nicks."""
+    """Test rank computation for channels and nicks.
 
-    def test_channel_rank_top(self, test_db: LLMDatabase) -> None:
-        """GIVEN channel with highest cost WHEN ranking THEN rank is 1."""
-        test_db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
-        test_db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
-        test_db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
-
-        rank = test_db.get_channel_rank("#top")
-        assert rank == UsageRank(rank=1, total=3)
-
-    def test_channel_rank_middle(self, test_db: LLMDatabase) -> None:
-        """GIVEN channel with middle cost WHEN ranking THEN rank is 2."""
-        test_db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
-        test_db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
-        test_db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
-
-        rank = test_db.get_channel_rank("#middle")
-        assert rank == UsageRank(rank=2, total=3)
-
-    def test_channel_rank_bottom(self, test_db: LLMDatabase) -> None:
-        """GIVEN channel with lowest cost WHEN ranking THEN rank is 3."""
-        test_db.log_usage("alice", "#top", "ask", "gpt-4", 100, 50, 0.10)
-        test_db.log_usage("bob", "#middle", "ask", "gpt-4", 100, 50, 0.05)
-        test_db.log_usage("charlie", "#bottom", "ask", "gpt-4", 100, 50, 0.01)
-
-        rank = test_db.get_channel_rank("#bottom")
-        assert rank == UsageRank(rank=3, total=3)
-
-    def test_channel_rank_unknown(self, test_db: LLMDatabase) -> None:
-        """GIVEN channel with no usage WHEN ranking THEN rank is 0."""
-        test_db.log_usage("alice", "#known", "ask", "gpt-4", 100, 50, 0.10)
-
-        rank = test_db.get_channel_rank("#unknown")
-        assert rank == UsageRank(rank=0, total=1)
+    Monotone-rank, valid-range, unused→0, and zero-cost short-circuit
+    invariants are covered by ``test_persistence_usage_properties.py``.
+    What remains here exercises code paths the property tests do not
+    parameterize: empty DB, ``since=`` filter, and ``channel=`` scoping.
+    """
 
     def test_channel_rank_empty_db(self, test_db: LLMDatabase) -> None:
         """GIVEN no usage data WHEN ranking THEN rank is 0 total is 0."""
@@ -653,22 +625,6 @@ class TestUsageRanking:
         since = time.time() - 3600
         rank = test_db.get_channel_rank("#recent", since=since)
         assert rank == UsageRank(rank=1, total=1)
-
-    def test_nick_rank_top(self, test_db: LLMDatabase) -> None:
-        """GIVEN nick with highest cost WHEN ranking THEN rank is 1."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.10)
-        test_db.log_usage("bob", "#test", "ask", "gpt-4", 100, 50, 0.05)
-        test_db.log_usage("charlie", "#test", "ask", "gpt-4", 100, 50, 0.01)
-
-        rank = test_db.get_nick_rank("alice")
-        assert rank == UsageRank(rank=1, total=3)
-
-    def test_nick_rank_unknown(self, test_db: LLMDatabase) -> None:
-        """GIVEN nick with no usage WHEN ranking THEN rank is 0."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.10)
-
-        rank = test_db.get_nick_rank("unknown_user")
-        assert rank == UsageRank(rank=0, total=1)
 
     def test_nick_rank_scoped_to_channel(self, test_db: LLMDatabase) -> None:
         """GIVEN usage in multiple channels WHEN ranking with channel THEN scoped."""
@@ -758,13 +714,14 @@ class TestMigrateNick:
         assert test_db.get_usage_summary_for_nick("bob").total_requests == 1
 
 
-# NOTE: lifecycle invariants (claim mutual-exclusion, attempt_count delta,
-# lease-deadline correctness) are now covered by
-# test_persistence_pending_task_properties.py. The cases below are kept as
-# executable specifications. TestDeliveryStatePersistence (line 969) covers
-# delivery_state_filter / max_delivery_attempts paths that the state machine
-# intentionally does not parameterize -- do not delete those without first
-# extending the property test.
+# NOTE: lifecycle invariants (claim mutual-exclusion, lease-deadline,
+# attempt_count delta with/without increment, expired-row deletion) are
+# now covered by test_persistence_pending_task_properties.py. What
+# remains here is the basic save/load shape spec, the not-due skip
+# (which was the mutation-test target — keep until property test
+# stabilizes), and the cross-process reopen path. TestDeliveryStatePersistence
+# (below) covers delivery_state_filter / max_delivery_attempts paths the
+# state machine intentionally does not parameterize.
 class TestPendingTasks:
     """Test pending task CRUD operations and claim/release semantics."""
 
@@ -803,30 +760,6 @@ class TestPendingTasks:
         assert t.attempt_count == 0
         assert t.last_error == ""
 
-    def test_claim_due_tasks_sets_lease(self, test_db: LLMDatabase) -> None:
-        """GIVEN a due task WHEN claimed THEN claimed_until is set."""
-        now = time.time()
-        test_db.save_pending_task(
-            task_type="code",
-            nick="bob",
-            reply_target="#dev",
-            is_channel=True,
-            prompt_preview="Write a sort",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now - 10,
-            expires_at=now + 50,
-            next_attempt_at=now - 5,
-        )
-
-        claimed = test_db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
-        assert len(claimed) == 1
-        assert claimed[0].task_type == "code"
-
-        # After claiming, the task should not be claimable again
-        claimed_again = test_db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
-        assert len(claimed_again) == 0
-
     def test_claim_skips_not_due_and_claimed(self, test_db: LLMDatabase) -> None:
         """GIVEN tasks not yet due or already claimed WHEN claiming THEN skipped."""
         now = time.time()
@@ -847,102 +780,6 @@ class TestPendingTasks:
 
         claimed = test_db.claim_due_pending_tasks(now, limit=10, lease_seconds=120)
         assert len(claimed) == 0
-
-    def test_release_increments_attempt_and_sets_backoff(self, test_db: LLMDatabase) -> None:
-        """GIVEN a claimed task WHEN released with increment THEN attempt_count bumped."""
-        now = time.time()
-        task_id = test_db.save_pending_task(
-            task_type="draw",
-            nick="charlie",
-            reply_target="#art",
-            is_channel=True,
-            prompt_preview="a cat",
-            model="dall-e-3",
-            request_data='{"prompt": "a cat"}',
-            submitted_at=now,
-            expires_at=now + 120,
-            next_attempt_at=now,
-        )
-
-        # Claim then release
-        test_db.claim_due_pending_tasks(now, limit=1, lease_seconds=120)
-        next_at = now + 30
-        result = test_db.release_pending_task(task_id, next_at, "timeout", increment_attempt=True)
-        assert result is True
-
-        tasks = test_db.load_pending_tasks()
-        assert len(tasks) == 1
-        assert tasks[0].attempt_count == 1
-        assert tasks[0].next_attempt_at == next_at
-        assert tasks[0].last_error == "timeout"
-        assert tasks[0].claimed_until == 0
-
-    def test_release_without_increment_for_undeliverable_channel(
-        self, test_db: LLMDatabase
-    ) -> None:
-        """GIVEN a claimed task WHEN released without increment THEN attempt_count unchanged."""
-        now = time.time()
-        task_id = test_db.save_pending_task(
-            task_type="ask",
-            nick="dave",
-            reply_target="#offline",
-            is_channel=True,
-            prompt_preview="hello",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now,
-            expires_at=now + 120,
-            next_attempt_at=now,
-        )
-
-        test_db.claim_due_pending_tasks(now, limit=1, lease_seconds=120)
-        test_db.release_pending_task(
-            task_id, now + 30, "Channel not available", increment_attempt=False
-        )
-
-        tasks = test_db.load_pending_tasks()
-        assert tasks[0].attempt_count == 0
-
-    def test_delete_expired_returns_rows(self, test_db: LLMDatabase) -> None:
-        """GIVEN expired tasks WHEN deleting THEN returns expired rows and removes them."""
-        now = time.time()
-
-        # Expired task
-        test_db.save_pending_task(
-            task_type="ask",
-            nick="eve",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="old question",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now - 120,
-            expires_at=now - 10,
-            next_attempt_at=now - 60,
-        )
-
-        # Still valid task
-        test_db.save_pending_task(
-            task_type="code",
-            nick="frank",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="new code",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now,
-            expires_at=now + 120,
-            next_attempt_at=now,
-        )
-
-        expired = test_db.delete_expired_pending_tasks(now)
-        assert len(expired) == 1
-        assert expired[0].nick == "eve"
-
-        # Only the valid task remains
-        remaining = test_db.load_pending_tasks()
-        assert len(remaining) == 1
-        assert remaining[0].nick == "frank"
 
     def test_survives_reopen(self, tmp_path: Path) -> None:
         """GIVEN saved pending task WHEN DB reopened THEN task loadable."""
@@ -1463,7 +1300,13 @@ class TestLogUsageExtended:
 
 
 class TestConversationPersistence:
-    """Test conversation persistence methods."""
+    """Test conversation persistence methods.
+
+    Round-trip, upsert (no duplicates), and case-insensitive
+    save/delete are covered by ``test_persistence_conversation_properties.py``.
+    What remains here exercises paths the property tests do not cover:
+    the bulk ``delete_all_conversations`` and the corrupt-JSON load path.
+    """
 
     def test_save_and_load_conversation(self, test_db: LLMDatabase) -> None:
         """GIVEN a saved conversation WHEN load_conversations THEN it is returned."""
@@ -1477,39 +1320,6 @@ class TestConversationPersistence:
         assert channel == "#channel"
         assert msgs == messages
         assert last_activity == 1000.0
-
-    def test_save_conversation_upserts(self, test_db: LLMDatabase) -> None:
-        """GIVEN an existing conversation WHEN saved again THEN it is replaced."""
-        test_db.save_conversation("user1", "#chan", [{"role": "user", "content": "first"}], 1000.0)
-        test_db.save_conversation("user1", "#chan", [{"role": "user", "content": "second"}], 2000.0)
-
-        loaded = test_db.load_conversations()
-        assert len(loaded) == 1
-        assert loaded[0][2] == [{"role": "user", "content": "second"}]
-        assert loaded[0][3] == 2000.0
-
-    def test_save_lowercases_nick_and_channel(self, test_db: LLMDatabase) -> None:
-        """GIVEN mixed-case nick/channel WHEN saved THEN stored lowercased."""
-        test_db.save_conversation("UserName", "#MyChannel", [], 1000.0)
-
-        loaded = test_db.load_conversations()
-        assert loaded[0][0] == "username"
-        assert loaded[0][1] == "#mychannel"
-
-    def test_delete_conversation(self, test_db: LLMDatabase) -> None:
-        """GIVEN a saved conversation WHEN deleted THEN load returns empty."""
-        test_db.save_conversation("user1", "#chan", [{"role": "user", "content": "hi"}], 1000.0)
-        test_db.delete_conversation("user1", "#chan")
-
-        loaded = test_db.load_conversations()
-        assert len(loaded) == 0
-
-    def test_delete_conversation_lowercases(self, test_db: LLMDatabase) -> None:
-        """GIVEN a saved conversation WHEN deleted with different case THEN still deleted."""
-        test_db.save_conversation("user1", "#chan", [], 1000.0)
-        test_db.delete_conversation("User1", "#Chan")
-
-        assert len(test_db.load_conversations()) == 0
 
     def test_delete_all_conversations(self, test_db: LLMDatabase) -> None:
         """GIVEN multiple conversations WHEN delete_all THEN all are removed."""
