@@ -307,6 +307,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "memoryEnabled": True,
         "memoryMaxPerUser": 50,
         "memoryCleanupInterval": 3,
+        "memoryPromotionThreshold": 2,
+        "memoryCandidateTTLDays": 14,
         # Spontaneous participation
         "spontaneousEnabled": False,
         "spontaneousChance": 15,

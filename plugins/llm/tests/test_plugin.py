@@ -3638,12 +3638,19 @@ class TestMemoryExtractionBackground:
         # Existing rows + max are wired so only ONE additional fact fits.
         snapshot = self._existing_rows(mocker, 9)
         plugin.db.get_memories.side_effect = [snapshot, snapshot]
-        # max_memories defaults via make_registry_side_effect; override it.
+        # Threshold=1 reproduces legacy single-stage behavior so this test
+        # keeps exercising the cap on direct saves.
         plugin.registryValue = mocker.Mock(
             side_effect=make_registry_side_effect(
-                {"memoryMaxPerUser": 10, "memoryEnabled": True, "memoryCleanupInterval": 0}
+                {
+                    "memoryMaxPerUser": 10,
+                    "memoryEnabled": True,
+                    "memoryCleanupInterval": 0,
+                    "memoryPromotionThreshold": 1,
+                }
             )
         )
+        plugin.db.get_memory_candidates.return_value = []
         plugin.llm_service.extract_memories.return_value = ExtractionResult(
             add=["one", "two", "three"]
         )
@@ -3666,9 +3673,15 @@ class TestMemoryExtractionBackground:
         plugin.db.get_memories.side_effect = [snapshot, snapshot]
         plugin.registryValue = mocker.Mock(
             side_effect=make_registry_side_effect(
-                {"memoryMaxPerUser": 50, "memoryEnabled": True, "memoryCleanupInterval": 3}
+                {
+                    "memoryMaxPerUser": 50,
+                    "memoryEnabled": True,
+                    "memoryCleanupInterval": 3,
+                    "memoryPromotionThreshold": 1,
+                }
             )
         )
+        plugin.db.get_memory_candidates.return_value = []
         plugin.llm_service.extract_memories.return_value = ExtractionResult(add=["a fresh fact"])
         plugin.db.increment_memory_saves.return_value = 3  # Reached interval.
         cleanup_spy = mocker.patch.object(plugin, "_run_memory_cleanup")
@@ -3679,6 +3692,113 @@ class TestMemoryExtractionBackground:
 
         plugin.db.reset_memory_saves.assert_called_once_with("alice")
         cleanup_spy.assert_called_once_with("alice", "#test")
+
+    def test_new_facts_become_candidates_not_memories(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """Default threshold>1: an unfamiliar fact is staged as a candidate."""
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 0)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        plugin.db.get_memory_candidates.return_value = []
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(
+            add=["uses Arch Linux"]
+        )
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        add_event.call_args.args[0]()
+
+        plugin.db.add_memory_candidate.assert_called_once_with(
+            "alice", "uses Arch Linux", "#test"
+        )
+        plugin.db.save_memory.assert_not_called()
+
+    def test_reinforce_below_threshold_bumps_only(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """A reinforcement that doesn't cross the threshold stays a candidate."""
+        from llm.persistence import MemoryCandidate
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 0)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        candidate = MemoryCandidate(
+            id=42,
+            nick="alice",
+            fact="uses Arch Linux",
+            mentions=1,
+            first_seen=100.0,
+            last_seen=100.0,
+            source_channel="#test",
+        )
+        plugin.db.get_memory_candidates.return_value = [candidate]
+        plugin.registryValue = mocker.Mock(
+            side_effect=make_registry_side_effect({"memoryPromotionThreshold": 3})
+        )
+        plugin.db.reinforce_memory_candidate.return_value = 2  # below threshold
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0])
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        add_event.call_args.args[0]()
+
+        plugin.db.reinforce_memory_candidate.assert_called_once_with(42, "alice")
+        plugin.db.save_memory.assert_not_called()
+        plugin.db.delete_memory_candidate.assert_not_called()
+
+    def test_reinforce_at_threshold_promotes_candidate(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """Reaching the threshold moves the candidate into memories."""
+        from llm.persistence import MemoryCandidate
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 0)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        candidate = MemoryCandidate(
+            id=7,
+            nick="alice",
+            fact="lives in Berlin",
+            mentions=1,
+            first_seen=100.0,
+            last_seen=100.0,
+            source_channel="#origin",
+        )
+        plugin.db.get_memory_candidates.return_value = [candidate]
+        plugin.db.reinforce_memory_candidate.return_value = 2  # crosses default threshold
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0])
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        add_event.call_args.args[0]()
+
+        plugin.db.save_memory.assert_called_once_with(
+            "alice", "lives in Berlin", "#origin"
+        )
+        plugin.db.delete_memory_candidate.assert_called_once_with(7, "alice")
+
+    def test_candidate_change_during_extraction_aborts(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """If candidate row IDs change mid-call, reinforce indices abort."""
+        from llm.persistence import MemoryCandidate
+        from llm.service import ExtractionResult
+
+        plugin, add_event = plugin_and_callback
+        snapshot = self._existing_rows(mocker, 0)
+        plugin.db.get_memories.side_effect = [snapshot, snapshot]
+        before = MemoryCandidate(1, "alice", "x", 1, 100.0, 100.0, "#test")
+        after = MemoryCandidate(2, "alice", "x", 1, 100.0, 100.0, "#test")
+        plugin.db.get_memory_candidates.side_effect = [[before], [after]]
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0])
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+        add_event.call_args.args[0]()
+
+        plugin.db.reinforce_memory_candidate.assert_not_called()
+        plugin.db.save_memory.assert_not_called()
 
 
 class TestMechanicalRescheduleEdgeCases:

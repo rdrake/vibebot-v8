@@ -292,6 +292,27 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "memoryPromotionThreshold",
+    registry.PositiveInteger(
+        2,
+        _("""Number of times a candidate fact must be reinforced before it
+        becomes a durable memory. 1 disables the candidate stage (every
+        extraction is saved immediately, restoring legacy behavior)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "memoryCandidateTTLDays",
+    registry.NonNegativeInteger(
+        14,
+        _("""Days a candidate fact may sit unreinforced before it is pruned.
+        Set to 0 to disable TTL pruning."""),
+    ),
+)
+
 # ============================================================================
 # Spontaneous Participation
 # ============================================================================

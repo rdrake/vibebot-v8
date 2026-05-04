@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -129,6 +129,24 @@ class MemoryRow(NamedTuple):
     fact: str
     source_channel: str
     created_at: float
+
+
+class MemoryCandidate(NamedTuple):
+    """A provisional fact about a user, awaiting enough mentions to promote.
+
+    Candidates accumulate ``mentions`` each time the extractor reinforces
+    them. Once ``mentions`` reaches ``memoryPromotionThreshold`` the row is
+    moved into ``memories``. Untouched candidates are pruned after
+    ``memoryCandidateTTLDays``.
+    """
+
+    id: int
+    nick: str
+    fact: str
+    mentions: int
+    first_seen: float
+    last_seen: float
+    source_channel: str
 
 
 class LLMDatabase:
@@ -444,6 +462,26 @@ class LLMDatabase:
             conn.executescript("""
                 ALTER TABLE scheduled_llm_tasks
                     ADD COLUMN reply_target TEXT;
+            """)
+            conn.commit()
+
+        if current_version < 15:
+            # Multi-stage memory: facts pass through ``memory_candidates``
+            # and are promoted to ``memories`` once enough mentions
+            # accumulate. Untouched rows decay via TTL. See
+            # _schedule_memory_extraction in plugin.py.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS memory_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nick TEXT NOT NULL,
+                    fact TEXT NOT NULL,
+                    mentions INTEGER NOT NULL DEFAULT 1,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    source_channel TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_candidates_nick
+                    ON memory_candidates(nick);
             """)
             conn.commit()
 
@@ -1733,6 +1771,133 @@ class LLMDatabase:
             (nick.lower(),),
         ).fetchone()
         return row[0] if row else 0
+
+    # ------------------------------------------------------------------
+    # Memory candidate operations
+    # ------------------------------------------------------------------
+
+    def add_memory_candidate(
+        self, nick: str, fact: str, source_channel: str
+    ) -> int:
+        """Insert a new candidate fact for a user with mentions=1.
+
+        Args:
+            nick: IRC nick (stored lowercased).
+            fact: The candidate fact text.
+            source_channel: Channel where the fact was first observed.
+
+        Returns:
+            The row ID of the inserted candidate.
+        """
+        now = time.time()
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO memory_candidates "
+                "(nick, fact, mentions, first_seen, last_seen, source_channel) "
+                "VALUES (?, ?, 1, ?, ?, ?)",
+                (nick.lower(), fact, now, now, source_channel.lower()),
+            )
+            assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
+            return cursor.lastrowid
+
+    def get_memory_candidates(self, nick: str) -> list[MemoryCandidate]:
+        """Get all candidates for a user, most-mentioned first.
+
+        Args:
+            nick: IRC nick (matched case-insensitively).
+
+        Returns:
+            Candidates ordered by mentions DESC, last_seen DESC.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, nick, fact, mentions, first_seen, last_seen, source_channel "
+            "FROM memory_candidates WHERE nick = ? "
+            "ORDER BY mentions DESC, last_seen DESC",
+            (nick.lower(),),
+        ).fetchall()
+        return [MemoryCandidate(*row) for row in rows]
+
+    def reinforce_memory_candidate(
+        self, candidate_id: int, nick: str, fact: str | None = None
+    ) -> int:
+        """Increment mentions and refresh last_seen for a candidate.
+
+        The nick check prevents one user's extraction from mutating
+        another's candidates.
+
+        Args:
+            candidate_id: Row ID of the candidate.
+            nick: IRC nick (must match the candidate's owner).
+            fact: Optional updated fact text (LLM may rephrase as it gathers
+                evidence); ``None`` leaves the existing text untouched.
+
+        Returns:
+            The new mentions value, or 0 if the candidate was not found.
+        """
+        with self._write_txn() as conn:
+            if fact is None:
+                cursor = conn.execute(
+                    "UPDATE memory_candidates "
+                    "SET mentions = mentions + 1, last_seen = ? "
+                    "WHERE id = ? AND nick = ? "
+                    "RETURNING mentions",
+                    (time.time(), candidate_id, nick.lower()),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE memory_candidates "
+                    "SET mentions = mentions + 1, last_seen = ?, fact = ? "
+                    "WHERE id = ? AND nick = ? "
+                    "RETURNING mentions",
+                    (time.time(), fact, candidate_id, nick.lower()),
+                )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    def delete_memory_candidate(self, candidate_id: int, nick: str) -> bool:
+        """Delete a candidate by ID and nick.
+
+        Args:
+            candidate_id: Row ID of the candidate.
+            nick: IRC nick (must match the candidate's owner).
+
+        Returns:
+            True if a candidate was deleted, False otherwise.
+        """
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM memory_candidates WHERE id = ? AND nick = ?",
+                (candidate_id, nick.lower()),
+            )
+            return cursor.rowcount > 0
+
+    def prune_memory_candidates(self, nick: str, older_than: float) -> int:
+        """Delete a user's candidates whose last_seen is older than a cutoff.
+
+        Args:
+            nick: IRC nick (matched case-insensitively).
+            older_than: Unix timestamp; candidates with last_seen strictly
+                less than this are removed.
+
+        Returns:
+            Number of candidates deleted.
+        """
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM memory_candidates WHERE nick = ? AND last_seen < ?",
+                (nick.lower(), older_than),
+            )
+            return cursor.rowcount
+
+    def delete_all_memory_candidates(self, nick: str) -> int:
+        """Delete every candidate for a user."""
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM memory_candidates WHERE nick = ?",
+                (nick.lower(),),
+            )
+            return cursor.rowcount
 
     # ------------------------------------------------------------------
     # User instruction operations

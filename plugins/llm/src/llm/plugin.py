@@ -2290,6 +2290,16 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """Schedule background memory extraction for a user interaction.
 
+        Two-stage flow:
+
+        1. The extractor proposes new candidate facts and/or reinforces
+           existing ones. New entries land in ``memory_candidates`` with
+           ``mentions=1``; reinforcements bump that counter.
+        2. Once a candidate's ``mentions`` reaches
+           ``memoryPromotionThreshold`` it is promoted to ``memories`` and
+           removed from the candidate table. Untouched candidates older
+           than ``memoryCandidateTTLDays`` are pruned on each pass.
+
         Args:
             nick: User's resolved identity
             channel: Channel where the interaction happened
@@ -2307,42 +2317,80 @@ class LLM(callbacks.Plugin):
             if len(existing_rows) >= max_memories:
                 return
 
-            snapshot_ids = tuple(r.id for r in existing_rows)
+            existing_candidates = self.db.get_memory_candidates(nick)
+            candidate_facts = [c.fact for c in existing_candidates]
+            snapshot_memory_ids = tuple(r.id for r in existing_rows)
+            snapshot_candidate_ids = tuple(c.id for c in existing_candidates)
 
             def _extract_memories_bg() -> None:
                 try:
                     extraction = self.llm_service.extract_memories(
-                        nick, channel, user_text, assistant_response, existing_facts
+                        nick,
+                        channel,
+                        user_text,
+                        assistant_response,
+                        existing_facts,
+                        candidate_facts,
                     )
-                    if not extraction.add:
+                    if not extraction.add and not extraction.reinforce:
+                        self._prune_stale_memory_candidates(nick)
                         return
 
-                    # Race protection: abort if memory rows changed during LLM
-                    # call. Compare row IDs (not just count) so a delete+insert
-                    # that preserves the count still triggers an abort.
+                    # Race protection: abort if memories or candidates
+                    # changed during the LLM call. The reinforce indices
+                    # reference our candidate snapshot, so a stale list
+                    # would mis-target rows.
                     current = self.db.get_memories(nick)
-                    current_ids = tuple(r.id for r in current)
-                    if current_ids != snapshot_ids:
+                    current_candidates = self.db.get_memory_candidates(nick)
+                    if (
+                        tuple(r.id for r in current) != snapshot_memory_ids
+                        or tuple(c.id for c in current_candidates) != snapshot_candidate_ids
+                    ):
                         log.info(
                             "Memory extraction for %s aborted: rows changed",
                             nick,
                         )
                         return
 
-                    # Add new facts (respecting cap)
-                    saved: list[str] = []
+                    threshold = self.registryValue("memoryPromotionThreshold")
+                    promoted: list[str] = []
                     current_count = len(current)
-                    for fact in extraction.add:
-                        if current_count >= max_memories:
-                            break
-                        self.db.save_memory(nick, fact, channel)
-                        saved.append(fact)
-                        current_count += 1
 
-                    if not saved:
+                    # Reinforce — bump existing candidates, promote any
+                    # that cross the threshold.
+                    for idx in extraction.reinforce:
+                        if not 0 <= idx < len(existing_candidates):
+                            continue
+                        cand = existing_candidates[idx]
+                        new_mentions = self.db.reinforce_memory_candidate(
+                            cand.id, nick
+                        )
+                        if new_mentions == 0:
+                            continue
+                        if new_mentions >= threshold and current_count < max_memories:
+                            self.db.save_memory(nick, cand.fact, cand.source_channel)
+                            self.db.delete_memory_candidate(cand.id, nick)
+                            promoted.append(cand.fact)
+                            current_count += 1
+
+                    # Add — new candidates start at mentions=1 (or promote
+                    # immediately if threshold == 1).
+                    for fact in extraction.add:
+                        if threshold <= 1 and current_count < max_memories:
+                            self.db.save_memory(nick, fact, channel)
+                            promoted.append(fact)
+                            current_count += 1
+                        else:
+                            self.db.add_memory_candidate(nick, fact, channel)
+
+                    self._prune_stale_memory_candidates(nick)
+
+                    if not promoted:
                         return
 
-                    # Trigger cleanup if counter reaches interval
+                    # Trigger cleanup if counter reaches interval — only
+                    # promotions count toward the cleanup cadence, since
+                    # they're what changes the durable memory set.
                     cleanup_interval = self.registryValue("memoryCleanupInterval")
                     if cleanup_interval > 0:
                         count = self.db.increment_memory_saves(nick)
@@ -2358,6 +2406,21 @@ class LLM(callbacks.Plugin):
 
         except Exception:
             log.exception("Memory extraction scheduling failed for %s", nick)
+
+    def _prune_stale_memory_candidates(self, nick: str) -> None:
+        """Drop candidates whose last_seen is older than the configured TTL.
+
+        TTL of 0 disables decay (candidates linger until promoted or the
+        admin clears them).
+        """
+        ttl_days = self.registryValue("memoryCandidateTTLDays")
+        if ttl_days <= 0:
+            return
+        cutoff = time.time() - (ttl_days * 86400)
+        try:
+            self.db.prune_memory_candidates(nick, cutoff)
+        except Exception:
+            log.exception("Memory candidate pruning failed for %s", nick)
 
     def _run_memory_cleanup(self, nick: str, channel: str) -> ToolCallbackResult:
         """Run memory cleanup for a user. Returns a ToolCallbackResult."""

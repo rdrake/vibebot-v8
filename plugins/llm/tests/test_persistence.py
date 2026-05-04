@@ -1124,13 +1124,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_14(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 14."""
+    def test_schema_version_is_15(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 15."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 14
+            assert row[0] == 15
         finally:
             conn.close()
 
@@ -1462,6 +1462,88 @@ class TestMemoryCleanupState:
     def test_get_memory_saves_default_zero(self, test_db: LLMDatabase) -> None:
         """GIVEN no prior saves WHEN get THEN returns 0."""
         assert test_db.get_memory_saves("user1") == 0
+
+
+class TestMemoryCandidates:
+    """Tests for the multi-stage memory candidate table."""
+
+    def test_add_and_get_returns_candidate(self, test_db: LLMDatabase) -> None:
+        """GIVEN one candidate WHEN listed THEN it is returned with mentions=1."""
+        cid = test_db.add_memory_candidate("user1", "uses Arch", "#test")
+        candidates = test_db.get_memory_candidates("user1")
+        assert len(candidates) == 1
+        assert candidates[0].id == cid
+        assert candidates[0].fact == "uses Arch"
+        assert candidates[0].mentions == 1
+        assert candidates[0].first_seen == candidates[0].last_seen
+        assert candidates[0].source_channel == "#test"
+
+    def test_get_orders_by_mentions_then_last_seen(self, test_db: LLMDatabase) -> None:
+        """GIVEN candidates with different mention counts WHEN listed THEN highest first."""
+        a = test_db.add_memory_candidate("u", "low", "#c")
+        b = test_db.add_memory_candidate("u", "high", "#c")
+        test_db.reinforce_memory_candidate(b, "u")
+        test_db.reinforce_memory_candidate(b, "u")
+        ordered = test_db.get_memory_candidates("u")
+        assert [c.id for c in ordered] == [b, a]
+
+    def test_reinforce_increments_mentions(self, test_db: LLMDatabase) -> None:
+        """GIVEN a candidate WHEN reinforced THEN mentions counter goes up."""
+        cid = test_db.add_memory_candidate("user1", "likes coffee", "#test")
+        new_count = test_db.reinforce_memory_candidate(cid, "user1")
+        assert new_count == 2
+        candidates = test_db.get_memory_candidates("user1")
+        assert candidates[0].mentions == 2
+        assert candidates[0].last_seen >= candidates[0].first_seen
+
+    def test_reinforce_can_update_fact_text(self, test_db: LLMDatabase) -> None:
+        """GIVEN reinforce called with new text WHEN listed THEN fact is updated."""
+        cid = test_db.add_memory_candidate("user1", "rough draft", "#test")
+        test_db.reinforce_memory_candidate(cid, "user1", fact="polished")
+        candidates = test_db.get_memory_candidates("user1")
+        assert candidates[0].fact == "polished"
+
+    def test_reinforce_unknown_id_returns_zero(self, test_db: LLMDatabase) -> None:
+        """GIVEN no such candidate WHEN reinforced THEN returns 0."""
+        assert test_db.reinforce_memory_candidate(999, "user1") == 0
+
+    def test_reinforce_wrong_owner_is_noop(self, test_db: LLMDatabase) -> None:
+        """GIVEN one user's candidate WHEN another reinforces THEN nothing changes."""
+        cid = test_db.add_memory_candidate("alice", "private", "#test")
+        assert test_db.reinforce_memory_candidate(cid, "bob") == 0
+        assert test_db.get_memory_candidates("alice")[0].mentions == 1
+
+    def test_delete_candidate(self, test_db: LLMDatabase) -> None:
+        """GIVEN a candidate WHEN deleted THEN it disappears."""
+        cid = test_db.add_memory_candidate("user1", "x", "#test")
+        assert test_db.delete_memory_candidate(cid, "user1") is True
+        assert test_db.get_memory_candidates("user1") == []
+
+    def test_delete_candidate_wrong_owner(self, test_db: LLMDatabase) -> None:
+        """GIVEN a candidate WHEN another user tries to delete THEN no-op."""
+        cid = test_db.add_memory_candidate("alice", "secret", "#test")
+        assert test_db.delete_memory_candidate(cid, "bob") is False
+        assert len(test_db.get_memory_candidates("alice")) == 1
+
+    def test_prune_removes_only_old_rows(self, test_db: LLMDatabase) -> None:
+        """GIVEN candidates older than cutoff WHEN pruned THEN only those removed."""
+        old = test_db.add_memory_candidate("user1", "old", "#test")
+        fresh = test_db.add_memory_candidate("user1", "fresh", "#test")
+        # Age the old row by rewriting last_seen directly.
+        conn = test_db._connect()
+        conn.execute("UPDATE memory_candidates SET last_seen = 0 WHERE id = ?", (old,))
+        conn.commit()
+        removed = test_db.prune_memory_candidates("user1", older_than=1.0)
+        assert removed == 1
+        remaining = [c.id for c in test_db.get_memory_candidates("user1")]
+        assert remaining == [fresh]
+
+    def test_delete_all_candidates(self, test_db: LLMDatabase) -> None:
+        """GIVEN multiple candidates WHEN delete_all THEN every one is removed."""
+        test_db.add_memory_candidate("user1", "a", "#test")
+        test_db.add_memory_candidate("user1", "b", "#test")
+        assert test_db.delete_all_memory_candidates("user1") == 2
+        assert test_db.get_memory_candidates("user1") == []
 
 
 class TestUserInstructions:
