@@ -758,6 +758,13 @@ class TestMigrateNick:
         assert test_db.get_usage_summary_for_nick("bob").total_requests == 1
 
 
+# NOTE: lifecycle invariants (claim mutual-exclusion, attempt_count delta,
+# lease-deadline correctness) are now covered by
+# test_persistence_pending_task_properties.py. The cases below are kept as
+# executable specifications. TestDeliveryStatePersistence (line 969) covers
+# delivery_state_filter / max_delivery_attempts paths that the state machine
+# intentionally does not parameterize -- do not delete those without first
+# extending the property test.
 class TestPendingTasks:
     """Test pending task CRUD operations and claim/release semantics."""
 
