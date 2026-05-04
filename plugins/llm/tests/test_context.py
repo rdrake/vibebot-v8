@@ -31,63 +31,9 @@ class TestConversationContext:
         assert messages[1]["role"] == "assistant"
         assert messages[1]["content"] == "Hi there!"
 
-    def test_context_per_user_isolation(self) -> None:
-        """GIVEN context WHEN different users THEN contexts are isolated."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#channel", "user", "Hello from user1")
-        ctx.add_message("user2", "#channel", "user", "Hello from user2")
-
-        messages1 = ctx.get_messages("user1", "#channel")
-        messages2 = ctx.get_messages("user2", "#channel")
-
-        assert len(messages1) == 1
-        assert messages1[0]["content"] == "Hello from user1"
-        assert len(messages2) == 1
-        assert messages2[0]["content"] == "Hello from user2"
-
-    def test_context_per_channel_isolation(self) -> None:
-        """GIVEN context WHEN same user different channels THEN contexts are isolated."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#channel1", "user", "Hello in channel1")
-        ctx.add_message("user1", "#channel2", "user", "Hello in channel2")
-
-        messages1 = ctx.get_messages("user1", "#channel1")
-        messages2 = ctx.get_messages("user1", "#channel2")
-
-        assert len(messages1) == 1
-        assert messages1[0]["content"] == "Hello in channel1"
-        assert len(messages2) == 1
-        assert messages2[0]["content"] == "Hello in channel2"
-
-    def test_context_case_insensitive(self) -> None:
-        """GIVEN context WHEN different case nick/channel THEN same context."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("User1", "#Channel", "user", "Hello")
-        ctx.add_message("user1", "#channel", "user", "World")
-
-        messages = ctx.get_messages("USER1", "#CHANNEL")
-        assert len(messages) == 2
-
-    def test_context_max_messages_limit(self) -> None:
-        """GIVEN context with max_messages WHEN exceed limit THEN oldest removed."""
-        config = ContextConfig(max_messages=4, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        # Add 6 messages (exceeds limit of 4)
-        for i in range(6):
-            ctx.add_message("user1", "#channel", "user", f"Message {i}")
-
-        messages = ctx.get_messages("user1", "#channel")
-        assert len(messages) == 4
-        # Should have messages 2-5, not 0-3
-        assert messages[0]["content"] == "Message 2"
-        assert messages[3]["content"] == "Message 5"
+    # NOTE: per-user isolation, per-channel isolation, case-insensitive
+    # lookup, and max_messages trim are now covered by
+    # test_context_properties.py::TestConversationContextStateMachine.
 
     def test_context_time_expiry(self) -> None:
         """GIVEN context WHEN timeout expires THEN context cleared."""
