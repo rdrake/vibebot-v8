@@ -3969,9 +3969,7 @@ class TestMemoryExtraction:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = (
-            '{"add": ["new fact"], "reinforce": [0, 2]}'
-        )
+        mock_response.choices[0].message.content = '{"add": ["new fact"], "reinforce": [0, 2]}'
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1",
@@ -3992,9 +3990,7 @@ class TestMemoryExtraction:
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
         mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = (
-            '{"add": [], "reinforce": [0, 5, -1, 1]}'
-        )
+        mock_response.choices[0].message.content = '{"add": [], "reinforce": [0, 5, -1, 1]}'
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "hi", "hello", [], existing_candidates=["a", "b"]
