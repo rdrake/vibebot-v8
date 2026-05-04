@@ -3703,16 +3703,12 @@ class TestMemoryExtractionBackground:
         snapshot = self._existing_rows(mocker, 0)
         plugin.db.get_memories.side_effect = [snapshot, snapshot]
         plugin.db.get_memory_candidates.return_value = []
-        plugin.llm_service.extract_memories.return_value = ExtractionResult(
-            add=["uses Arch Linux"]
-        )
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(add=["uses Arch Linux"])
 
         plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
         add_event.call_args.args[0]()
 
-        plugin.db.add_memory_candidate.assert_called_once_with(
-            "alice", "uses Arch Linux", "#test"
-        )
+        plugin.db.add_memory_candidate.assert_called_once_with("alice", "uses Arch Linux", "#test")
         plugin.db.save_memory.assert_not_called()
 
     def test_reinforce_below_threshold_bumps_only(
@@ -3774,9 +3770,7 @@ class TestMemoryExtractionBackground:
         plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
         add_event.call_args.args[0]()
 
-        plugin.db.save_memory.assert_called_once_with(
-            "alice", "lives in Berlin", "#origin"
-        )
+        plugin.db.save_memory.assert_called_once_with("alice", "lives in Berlin", "#origin")
         plugin.db.delete_memory_candidate.assert_called_once_with(7, "alice")
 
     def test_candidate_change_during_extraction_aborts(

@@ -2362,9 +2362,7 @@ class LLM(callbacks.Plugin):
                         if not 0 <= idx < len(existing_candidates):
                             continue
                         cand = existing_candidates[idx]
-                        new_mentions = self.db.reinforce_memory_candidate(
-                            cand.id, nick
-                        )
+                        new_mentions = self.db.reinforce_memory_candidate(cand.id, nick)
                         if new_mentions == 0:
                             continue
                         if new_mentions >= threshold and current_count < max_memories:

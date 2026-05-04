@@ -1776,9 +1776,7 @@ class LLMDatabase:
     # Memory candidate operations
     # ------------------------------------------------------------------
 
-    def add_memory_candidate(
-        self, nick: str, fact: str, source_channel: str
-    ) -> int:
+    def add_memory_candidate(self, nick: str, fact: str, source_channel: str) -> int:
         """Insert a new candidate fact for a user with mentions=1.
 
         Args:
