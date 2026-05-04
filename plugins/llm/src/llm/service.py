@@ -142,24 +142,39 @@ _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 # Pre-generated Pygments CSS for monokai theme (constant across calls)
 _PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
 
-# System prompt for memory extraction LLM calls
+# System prompt for memory extraction LLM calls.
+#
+# Two-stage memory: extracted facts enter ``memory_candidates`` with a
+# mention count. They are only promoted to durable ``memories`` once the
+# extractor reinforces them across multiple exchanges. The prompt asks the
+# LLM to pick between adding a brand-new candidate and reinforcing an
+# existing one to keep paraphrases from spawning duplicates.
 _MEMORY_EXTRACTION_PROMPT = (
     "You are a fact extractor. Given a conversation between a user and an assistant, "
-    "extract ONLY durable identity facts about the user — things that would still be "
-    "true and useful in a month.\n\n"
-    "SAVE: occupation, technical skills, OS/tool preferences, location, pets, hobbies, "
-    "strong opinions they have stated directly.\n\n"
+    "decide what (if anything) to record about the user.\n\n"
+    "You have two outputs:\n"
+    '- "add": brand-new candidate facts to start tracking.\n'
+    '- "reinforce": indices of existing candidates this exchange confirms or '
+    "restates (even paraphrased).\n\n"
+    "A fact is only kept long-term after it has been reinforced across multiple "
+    "exchanges, so prefer REINFORCE over ADD whenever a candidate already covers "
+    "the information — even loosely. Do NOT add a new candidate if an existing "
+    "candidate or known fact already covers the same subject.\n\n"
+    "SAVE (as add or reinforce): occupation, technical skills, OS/tool preferences, "
+    "location, pets, hobbies, strong opinions they have stated directly.\n\n"
     "DO NOT SAVE:\n"
     "- Conversation topics or questions they asked (not facts about them)\n"
     "- Jokes, sarcasm, or hypotheticals taken literally\n"
     "- Transient activities (working on X right now, debugging Y)\n"
     "- One-time preferences or situational advice\n"
     "- Vague or trivial observations\n"
-    "- Facts already known (listed below)\n"
+    "- Facts already known (listed below) — those are durable, leave them alone\n"
     "- Facts that contradict or update existing facts (periodic cleanup handles that)\n\n"
-    "Return ONLY a JSON object with one key:\n"
-    '- "add": array of brief NEW facts, max 8 words each (at most 2 per exchange)\n\n'
-    'If nothing worth saving: {"add": []}\n'
+    "Return ONLY a JSON object with both keys:\n"
+    '- "add": array of brief NEW candidate facts, max 8 words each '
+    "(at most 2 per exchange)\n"
+    '- "reinforce": array of integer indices into the candidate list below\n\n'
+    'If nothing applies: {"add": [], "reinforce": []}\n'
     "Prefer saving nothing over saving junk.\n"
 )
 
@@ -185,8 +200,9 @@ _EXTRACTION_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "add": {"type": "array", "items": {"type": "string"}},
+        "reinforce": {"type": "array", "items": {"type": "integer"}},
     },
-    "required": ["add"],
+    "required": ["add", "reinforce"],
     "additionalProperties": False,
 }
 
@@ -247,9 +263,15 @@ class ImageResult(NamedTuple):
 
 
 class ExtractionResult(NamedTuple):
-    """Result of memory extraction: new facts to add."""
+    """Result of memory extraction.
+
+    ``add`` lists brand-new candidate facts. ``reinforce`` lists indices into
+    the candidate list passed to ``extract_memories`` whose mention counters
+    should be bumped (and promoted, once they cross the threshold).
+    """
 
     add: list[str] = []
+    reinforce: list[int] = []
     error: str | None = None
 
 
@@ -3787,31 +3809,49 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         user_message: str,
         assistant_response: str,
         existing_memories: list[str],
+        existing_candidates: list[str] | None = None,
     ) -> ExtractionResult:
         """Extract memorable facts from a conversation exchange.
 
-        Uses a lightweight LLM call to identify new factual information about
-        the user that is worth remembering long-term.  Also identifies existing
-        memories that are contradicted or superseded by the new conversation.
+        Two-stage flow: results land in ``memory_candidates`` first and are
+        only promoted to durable memories after enough reinforcement. The
+        LLM is shown both confirmed memories and pending candidates so it
+        can choose between adding a new candidate and reinforcing an
+        existing one.
 
         Args:
             nick: The user's IRC nick.
             channel: The channel where the conversation took place.
             user_message: What the user said.
             assistant_response: What the assistant replied.
-            existing_memories: Already-known facts (to avoid duplicates).
+            existing_memories: Already-known durable facts.
+            existing_candidates: Pending candidate facts in the same order
+                the LLM should index them by (i.e. the order returned from
+                ``LLMDatabase.get_memory_candidates``). Each candidate's
+                position becomes its index in the ``reinforce`` array.
 
         Returns:
-            ExtractionResult with new facts to add.
+            ExtractionResult with new candidate facts and reinforcement indices.
         """
         existing_section = ""
         if existing_memories:
-            existing_section = "\n\nAlready known facts:\n" + "\n".join(
+            existing_section = "\n\nAlready known facts (do not re-add):\n" + "\n".join(
                 f"- {m}" for m in existing_memories
             )
 
+        candidates_section = ""
+        candidate_count = 0
+        if existing_candidates:
+            candidate_count = len(existing_candidates)
+            candidates_section = "\n\nPending candidate facts (index → fact):\n" + "\n".join(
+                f"[{i}] {c}" for i, c in enumerate(existing_candidates)
+            )
+
         messages = [
-            {"role": "system", "content": _MEMORY_EXTRACTION_PROMPT + existing_section},
+            {
+                "role": "system",
+                "content": _MEMORY_EXTRACTION_PROMPT + existing_section + candidates_section,
+            },
             {
                 "role": "user",
                 "content": f"User ({nick}): {user_message}\nAssistant: {assistant_response}",
@@ -3840,7 +3880,19 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             parsed = json.loads(content)
 
             add = [f for f in parsed.get("add", []) if isinstance(f, str)]
-            return ExtractionResult(add=add)
+            reinforce_raw = parsed.get("reinforce", [])
+            reinforce: list[int] = []
+            seen: set[int] = set()
+            for idx in reinforce_raw:
+                if (
+                    isinstance(idx, int)
+                    and not isinstance(idx, bool)
+                    and 0 <= idx < candidate_count
+                    and idx not in seen
+                ):
+                    reinforce.append(idx)
+                    seen.add(idx)
+            return ExtractionResult(add=add, reinforce=reinforce)
         except Exception as e:
             sanitized = self._sanitize(str(e))
             self.log.exception("extract_memories failed: %s", sanitized)

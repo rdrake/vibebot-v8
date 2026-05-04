@@ -3961,6 +3961,70 @@ class TestMemoryExtraction:
         prompt_text = " ".join(m["content"] for m in messages)
         assert "already knows Python" in prompt_text
 
+    def test_extract_memories_returns_reinforce_indices(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN candidates WHEN LLM reinforces THEN indices flow through."""
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"add": ["new fact"], "reinforce": [0, 2]}'
+        )
+        mock_litellm.completion.return_value = mock_response
+        result = service.extract_memories(
+            "user1",
+            "#test",
+            "hi",
+            "hello",
+            [],
+            existing_candidates=["a", "b", "c"],
+        )
+        assert result.add == ["new fact"]
+        assert result.reinforce == [0, 2]
+
+    def test_extract_memories_drops_out_of_range_reinforce(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN reinforce index >= candidate count WHEN parsed THEN dropped."""
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = (
+            '{"add": [], "reinforce": [0, 5, -1, 1]}'
+        )
+        mock_litellm.completion.return_value = mock_response
+        result = service.extract_memories(
+            "user1", "#test", "hi", "hello", [], existing_candidates=["a", "b"]
+        )
+        assert result.reinforce == [0, 1]
+
+    def test_extract_memories_includes_candidates_in_prompt(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN candidate facts WHEN extracting THEN they appear indexed in prompt."""
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_litellm.completion.return_value = mock_response
+        service.extract_memories(
+            "user1",
+            "#test",
+            "hi",
+            "hello",
+            [],
+            existing_candidates=["uses Arch Linux", "lives in Berlin"],
+        )
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        prompt_text = " ".join(m["content"] for m in messages)
+        assert "[0] uses Arch Linux" in prompt_text
+        assert "[1] lives in Berlin" in prompt_text
+
 
 class TestMemoryCleanup:
     """Test memory cleanup LLM call and validation."""
