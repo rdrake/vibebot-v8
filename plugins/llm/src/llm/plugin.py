@@ -1738,18 +1738,16 @@ class LLM(callbacks.Plugin):
         )
 
         # Build chunks: respect explicit \n boundaries, then byte-wrap each
-        # line so individual messages fit IRC's per-line limit.
+        # line so individual messages fit IRC's per-line limit. Blank lines
+        # are dropped — they're noise on IRC, not visual breathing room.
         raw_lines = text.split("\n") if "\n" in text else [text]
+        logical_lines = [line for line in raw_lines if line.strip()]
         chunks: list[str] = []
-        for line in raw_lines:
-            if not line:
-                chunks.append("")
-                continue
+        for line in logical_lines:
             wrapped = ircutils.wrap(line, allowed)
             chunks.extend(wrapped if wrapped else [line])
 
         line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
-        logical_lines = [line for line in raw_lines if line.strip()]
         if line_threshold > 0 and (
             len(logical_lines) > line_threshold or len(chunks) > line_threshold
         ):
@@ -1771,7 +1769,7 @@ class LLM(callbacks.Plugin):
                 return
 
         if len(chunks) <= 1:
-            irc.reply(text, prefixNick=prefixNick)
+            irc.reply(chunks[0] if chunks else text, prefixNick=prefixNick)
             return
 
         multiline_supported = (
@@ -1779,7 +1777,7 @@ class LLM(callbacks.Plugin):
             and "draft/multiline" in irc.state.capabilities_ack
         )
         if not multiline_supported:
-            irc.reply(text, prefixNick=prefixNick)
+            irc.reply("\n".join(logical_lines), prefixNick=prefixNick)
             return
 
         msgs = [ircmsgs.privmsg(target, ircutils.safeArgument(chunk)) for chunk in chunks]

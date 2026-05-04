@@ -602,6 +602,31 @@ class TestSendLongReply:
         assert len(msgs) == 3
         mock_irc.reply.assert_not_called()
 
+    def test_blank_lines_are_dropped_from_multiline_batch(self, plugin_env, mocker):
+        """Blank/whitespace lines never become their own IRC message."""
+        import supybot.conf as supy_conf
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
+
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\n\n   \nline two")
+
+        mock_irc.queueMultilineBatches.assert_called_once()
+        msgs = mock_irc.queueMultilineBatches.call_args.args[0]
+        assert len(msgs) == 2
+        mock_irc.reply.assert_not_called()
+
+    def test_single_logical_line_with_blank_padding_uses_irc_reply(self, plugin_env):
+        """Padding blank lines around one real line collapse to a single irc.reply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+
+        plugin._send_long_reply(mock_irc, mock_msg, "\n\nhello\n\n")
+
+        mock_irc.reply.assert_called_once_with("hello", prefixNick=False)
+        mock_irc.queueMultilineBatches.assert_not_called()
+
     def test_multiline_falls_back_when_cap_not_negotiated(self, plugin_env, mocker):
         """GIVEN \\n in text AND multiline NOT negotiated THEN falls back to irc.reply."""
         import supybot.conf as supy_conf
@@ -763,16 +788,18 @@ class TestSendLongReply:
         assert final_reply.endswith(suffix)
         mock_irc.queueMultilineBatches.assert_not_called()
 
-    def test_spaced_markdown_reply_uses_link_when_batch_would_exceed_threshold(
-        self, plugin_env, mocker
-    ):
-        """GIVEN blank-spaced Markdown WHEN IRC batch is long THEN link the full answer."""
+    def test_spaced_markdown_does_not_inflate_threshold_via_blank_lines(self, plugin_env, mocker):
+        """Blank separators no longer push line/chunk count over the threshold."""
+        import supybot.conf as supy_conf
+
         plugin, mock_irc, mock_msg = plugin_env
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
             )
         )
+        mock_irc.state.capabilities_ack = {"draft/multiline"}
+        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
         long_text = "\n\n".join(
             [
                 "### Abbreviated History of Liberia",
@@ -783,17 +810,13 @@ class TestSendLongReply:
                 "- 2003: Civil war ends.",
             ]
         )
-        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
-        plugin.llm_service.summarize_for_irc.return_value = "Liberia's history in brief."
 
         plugin._send_long_reply(mock_irc, mock_msg, long_text)
 
-        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
-        mock_irc.reply.assert_called_once_with(
-            "Liberia's history in brief. - Full answer: https://example.com/llm/full.html",
-            prefixNick=False,
-        )
-        mock_irc.queueMultilineBatches.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
+        mock_irc.queueMultilineBatches.assert_called_once()
+        msgs = mock_irc.queueMultilineBatches.call_args.args[0]
+        assert len(msgs) == 6
 
 
 # ---------------------------------------------------------------------------
