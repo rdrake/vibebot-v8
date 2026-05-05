@@ -1336,7 +1336,7 @@ class LLMService:
           tool_calls     — tool calls returned by the model on this turn
         """
         if error is not None:
-            self.log.info(
+            self.log.warning(
                 "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
                 "elapsed_ms=%.0f result=error error_type=%s",
                 op,
@@ -1376,7 +1376,7 @@ class LLMService:
         except (AttributeError, IndexError, TypeError):
             pass
 
-        self.log.info(
+        self.log.warning(
             "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
             "elapsed_ms=%.0f prompt_tokens=%d cached_tokens=%d "
             "completion_tokens=%d tool_calls=%d",
@@ -2264,7 +2264,7 @@ class LLMService:
                     metadata=self._get_litellm_metadata(),
                 )
             except Exception as exc:
-                self.log.info(
+                self.log.warning(
                     "completion_timing op=xai_responses_%s model=%s msg_chars=%d "
                     "tools=1 elapsed_ms=%.0f result=error error_type=%s",
                     kind,
@@ -2280,7 +2280,7 @@ class LLMService:
             grounding_used = self._check_responses_grounding(response)
             prompt_tokens, completion_tokens, cost = self._extract_responses_usage(response, model)
 
-            self.log.info(
+            self.log.warning(
                 "completion_timing op=xai_responses_%s model=%s msgs=1 msg_chars=%d "
                 "tools=1 elapsed_ms=%.0f prompt_tokens=%d cached_tokens=0 "
                 "completion_tokens=%d tool_calls=0",
@@ -2906,7 +2906,7 @@ Examples (echo → action_prompt: ""):
                 **kwargs,
             )
         except Exception as exc:
-            self.log.info(
+            self.log.warning(
                 "completion_timing op=image_generation model=%s prompt_chars=%d "
                 "elapsed_ms=%.0f result=error error_type=%s",
                 model,
@@ -2916,7 +2916,7 @@ Examples (echo → action_prompt: ""):
             )
             raise
         elapsed_ms = (time.monotonic() - t0) * 1000.0
-        self.log.info(
+        self.log.warning(
             "completion_timing op=image_generation model=%s prompt_chars=%d elapsed_ms=%.0f",
             model,
             len(prompt),
