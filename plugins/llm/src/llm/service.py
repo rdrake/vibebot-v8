@@ -712,16 +712,16 @@ class LLMService:
 
         lines = []
 
-        # Date and uptime
+        # Date (kept day-granular so it stays cacheable for ~24h)
         now = datetime.now(UTC)
         lines.append(f"Date: {now.strftime('%A, %B %d, %Y')}")
 
-        # Bot uptime (for troubleshooting)
-        uptime_info = self._get_uptime_info()
-        if uptime_info:
-            lines.append(f"Bot uptime: {uptime_info}")
+        # NB: Bot uptime intentionally omitted — it changes every minute and
+        # killed xAI's automatic prompt cache for the entire context message
+        # plus everything after it (cached_tokens stuck at ~128).
+        # _get_uptime_info() is still available for non-prompt callers.
 
-        # Build info (version + git SHA)
+        # Build info (version + git SHA) — only invalidates on deploy
         build_info = getattr(self.plugin, "build_info", None)
         if build_info:
             lines.append(f"Build: {build_info}")
