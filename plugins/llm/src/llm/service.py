@@ -1315,7 +1315,7 @@ class LLMService:
         if isinstance(error, litellm.ContentPolicyViolationError):
             return _("Error: Content violates AI safety policies. Please rephrase your request.")
         if isinstance(error, openai.APIError):
-            sanitized = self._sanitize(str(error))[:150]
+            sanitized = self._sanitize(str(error))[:1000]
             self.log.error("LLM API error (%s): %s", operation, sanitized)
             return _("Error: API returned an error. Check logs for details.")
 
