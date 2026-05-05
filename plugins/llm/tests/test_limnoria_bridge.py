@@ -865,3 +865,94 @@ def test_dispatch_gate_check_runs_before_capability_check(mocker):
     out = lb.dispatch(irc, msg, plugin="Later", command="tell", arg_string="alice hi")
     assert out == {"error": "denied: write commands disabled"}
     cap.assert_not_called()
+
+
+def _make_cmd(plugin, command, arg_syntax="", description=""):
+    from llm import limnoria_bridge as lb
+
+    return lb.BridgeCommand(
+        plugin=plugin, command=command, arg_syntax=arg_syntax, description=description
+    )
+
+
+def test_search_commands_returns_empty_for_blank_query():
+    from llm import limnoria_bridge as lb
+
+    cmds = [_make_cmd("Misc", "ping", description="Replies pong.")]
+    assert lb.search_commands(cmds, "") == []
+    assert lb.search_commands(cmds, "   ") == []
+
+
+def test_search_commands_matches_command_name():
+    from llm import limnoria_bridge as lb
+
+    cmds = [
+        _make_cmd("Misc", "ping", description="Replies pong."),
+        _make_cmd("Misc", "help", description="Shows command help."),
+    ]
+    out = lb.search_commands(cmds, "ping")
+    assert [c.command for c in out] == ["ping"]
+
+
+def test_search_commands_matches_description_text():
+    """The whole point: apropos can't do this — search_commands can."""
+    from llm import limnoria_bridge as lb
+
+    cmds = [
+        _make_cmd("Misc", "ping", description="Replies pong."),
+        _make_cmd("Time", "tell", description="Returns the time in a given timezone."),
+    ]
+    out = lb.search_commands(cmds, "timezone")
+    assert [c.command for c in out] == ["tell"]
+
+
+def test_search_commands_ranks_multi_field_matches_higher():
+    from llm import limnoria_bridge as lb
+
+    cmds = [
+        # 'channel' appears only in description
+        _make_cmd("Karma", "most", description="Top karma in this channel."),
+        # 'channel' appears in command, syntax, AND description
+        _make_cmd(
+            "Channels",
+            "channel",
+            arg_syntax="<channel>",
+            description="Information about the channel.",
+        ),
+    ]
+    out = lb.search_commands(cmds, "channel")
+    assert out[0].command == "channel"
+    assert out[1].command == "most"
+
+
+def test_search_commands_respects_limit():
+    from llm import limnoria_bridge as lb
+
+    cmds = [_make_cmd("Misc", f"cmd{i}", description="ping pong") for i in range(20)]
+    out = lb.search_commands(cmds, "ping", limit=5)
+    assert len(out) == 5
+
+
+def test_search_commands_is_case_insensitive():
+    from llm import limnoria_bridge as lb
+
+    cmds = [_make_cmd("Misc", "ping", description="Replies PONG.")]
+    out = lb.search_commands(cmds, "PoNg")
+    assert [c.command for c in out] == ["ping"]
+
+
+def test_search_commands_multiple_tokens_all_must_match_at_least_once():
+    """Tokens score additively across fields; a command matching every
+    token outranks one matching only some."""
+    from llm import limnoria_bridge as lb
+
+    cmds = [
+        _make_cmd("Config", "channel", description="Channel-specific config."),
+        _make_cmd("Misc", "help", description="Show help for a config item."),
+        _make_cmd("Misc", "ping", description="Replies pong."),
+    ]
+    out = lb.search_commands(cmds, "config channel")
+    # Both terms hit Config.channel; only "config" hits Misc.help; nothing for ping.
+    assert out[0].command == "channel"
+    assert out[1].command == "help"
+    assert all(c.command != "ping" for c in out)

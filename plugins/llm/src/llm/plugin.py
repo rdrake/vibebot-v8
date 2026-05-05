@@ -1593,16 +1593,18 @@ class LLM(callbacks.Plugin):
         return " | ".join(line for line in text.splitlines() if line.strip())
 
     def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
-        """Build the per-request Limnoria bridge tool schema + handler.
+        """Build the per-request Limnoria bridge tool schemas + handlers.
 
         Returns ``(None, None)`` when the bridge is disabled, the allowlist is
         empty, or no allowed command is currently exposable. Otherwise returns
-        ``(schema_dict, {"run_limnoria_command": handler})`` for injection
-        into ``assistant_completion`` via ``extra_tools`` / ``extra_handlers``.
+        ``([run_schema, search_schema], {"run_limnoria_command": ...,
+        "search_bridge_commands": ...})`` for injection into
+        ``assistant_completion`` via ``extra_tools`` / ``extra_handlers``.
 
         When ``trace`` is provided, each successful or failed dispatch appends
         a ``(plugin, command, args, status)`` tuple — used by the optional
-        ``bridgeDebugInChannel`` reply footer.
+        ``bridgeDebugInChannel`` reply footer. ``search_bridge_commands`` calls
+        append ``("bridge", "search", query, status)``.
         """
         if not self.registryValue("bridgeEnabled", channel):
             return None, None
@@ -1670,6 +1672,39 @@ class LLM(callbacks.Plugin):
                 },
             },
         }
+        search_schema = {
+            "type": "function",
+            "function": {
+                "name": "search_bridge_commands",
+                "description": (
+                    "Substring-search the available Limnoria bridge commands "
+                    "by plugin name, command name, argument syntax, and "
+                    "description text. Use this when Misc.apropos returns "
+                    "nothing — apropos only matches command NAMES, this also "
+                    "scans docstrings. Returns up to `limit` matches as "
+                    "Plugin.command — argsyntax — description rows."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Whitespace-separated keywords to match "
+                                "against command name, syntax, and description."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max matches to return (1-25).",
+                            "minimum": 1,
+                            "maximum": 25,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
 
         from .assistant import ToolResult
 
@@ -1692,7 +1727,40 @@ class LLM(callbacks.Plugin):
                 trace.append((plugin_name, command_name, arg_string, status))
             return ToolResult(content=json.dumps(envelope))
 
-        return schema, {"run_limnoria_command": handler}
+        def search_handler(arguments):
+            query = str(arguments.get("query", "")).strip()
+            try:
+                raw_limit = int(arguments.get("limit", 10))
+            except (TypeError, ValueError):
+                raw_limit = 10
+            limit = max(1, min(25, raw_limit))
+            if not query:
+                envelope = {"error": "query is required"}
+            else:
+                matches = limnoria_bridge.search_commands(commands, query, limit=limit)
+                envelope = {
+                    "status": "ok",
+                    "matches": [
+                        {
+                            "plugin": c.plugin,
+                            "command": c.command,
+                            "arg_syntax": c.arg_syntax,
+                            "description": c.description,
+                        }
+                        for c in matches
+                    ],
+                }
+            if trace is not None:
+                status = (
+                    "ok" if envelope.get("status") == "ok" else f"err:{envelope.get('error', '?')}"
+                )
+                trace.append(("bridge", "search", query, status))
+            return ToolResult(content=json.dumps(envelope))
+
+        return [schema, search_schema], {
+            "run_limnoria_command": handler,
+            "search_bridge_commands": search_handler,
+        }
 
     @staticmethod
     def _format_bridge_debug_footer(trace: list) -> str:
@@ -2723,12 +2791,12 @@ class LLM(callbacks.Plugin):
                         request_text = request_text.replace(img, "").strip()
 
                 bridge_trace: list = []
-                bridge_schema, bridge_handlers = self._build_bridge_tool(
+                bridge_schemas, bridge_handlers = self._build_bridge_tool(
                     irc, msg, channel, trace=bridge_trace
                 )
-                extra_tools = [bridge_schema] if bridge_schema else None
+                extra_tools = list(bridge_schemas) if bridge_schemas else None
                 bridge_debug = bool(
-                    bridge_schema and self.registryValue("bridgeDebugInChannel", channel)
+                    bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
                 )
 
                 result = self.llm_service.assistant_request(

@@ -109,7 +109,17 @@ CHAT_SYSTEM_PROMPT = (
     "thumbs-up for cancel). You can stay quiet — your reply would just "
     "duplicate the reaction. If the tool returned an error or refusal "
     "(cap reached, not found, parse failed), DO speak: surface the "
-    "reason in one short sentence so the user knows what went wrong."
+    "reason in one short sentence so the user knows what went wrong.\n"
+    "- The Limnoria bridge tools (run_limnoria_command, "
+    "search_bridge_commands) EXECUTE plugin commands on the user's "
+    "behalf. They are NOT a documentation lookup. For meta-questions "
+    "about Limnoria itself ('how do I X in Limnoria', config syntax, "
+    "registry semantics), answer directly from your training knowledge. "
+    "Misc.apropos matches command NAMES only, not docstrings, so it will "
+    "NOT find conceptual answers — if you must search, prefer "
+    "search_bridge_commands which scans descriptions too. Two empty "
+    "search/apropos results in a row means the answer is not in the "
+    "bridge surface; stop searching and answer from knowledge."
 )
 
 CODE_SYSTEM_PROMPT = (
@@ -176,6 +186,14 @@ FOREST_SYSTEM_PROMPT = (
     "user has already been acknowledged with an emoji reaction — you "
     "can stay quiet. If the tool returned an error, surface the reason "
     "in one short sentence.\n"
+    "- The Limnoria bridge tools (run_limnoria_command, "
+    "search_bridge_commands) EXECUTE plugin commands on the user's "
+    "behalf — they are not a documentation lookup. For meta-questions "
+    "about Limnoria itself, answer directly from knowledge. "
+    "Misc.apropos matches command NAMES only; prefer "
+    "search_bridge_commands when you do need to search the bridge. "
+    "Two empty searches in a row means the answer is not in the "
+    "bridge surface; stop searching and answer from knowledge.\n"
 )
 
 

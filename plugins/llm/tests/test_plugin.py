@@ -546,14 +546,117 @@ class TestBuildBridgeTool:
         ]
         mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=fake_cmds)
 
-        schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        schemas, handlers = plugin._build_bridge_tool(irc, msg, "#test")
 
-        assert schema is not None
+        assert schemas is not None
         assert handlers is not None
-        assert schema["function"]["name"] == "run_limnoria_command"
+        names = [s["function"]["name"] for s in schemas]
+        assert "run_limnoria_command" in names
+        assert "search_bridge_commands" in names
         assert "run_limnoria_command" in handlers
+        assert "search_bridge_commands" in handlers
+        run_schema = next(s for s in schemas if s["function"]["name"] == "run_limnoria_command")
         # Description should mention the available command.
-        assert "Misc.ping" in schema["function"]["description"]
+        assert "Misc.ping" in run_schema["function"]["description"]
+
+    def test_search_handler_returns_matching_commands(self, plugin_env, mocker):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        from llm import limnoria_bridge as lb
+
+        fake_cmds = [
+            lb.BridgeCommand(
+                plugin="Misc", command="ping", arg_syntax="", description="Replies pong."
+            ),
+            lb.BridgeCommand(
+                plugin="Misc",
+                command="help",
+                arg_syntax="<command>",
+                description="Returns help for a command.",
+            ),
+        ]
+        mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=fake_cmds)
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        result = handlers["search_bridge_commands"]({"query": "pong"})
+
+        import json
+
+        envelope = json.loads(result.content)
+        assert envelope["status"] == "ok"
+        assert len(envelope["matches"]) == 1
+        assert envelope["matches"][0]["plugin"] == "Misc"
+        assert envelope["matches"][0]["command"] == "ping"
+
+    def test_search_handler_blank_query_returns_error(self, plugin_env, mocker):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        result = handlers["search_bridge_commands"]({"query": ""})
+
+        import json
+
+        envelope = json.loads(result.content)
+        assert "error" in envelope
+
+    def test_search_handler_clamps_limit(self, plugin_env, mocker):
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True
+            if k == "bridgeEnabled"
+            else ["Misc"]
+            if k == "bridgeAllowedPlugins"
+            else False
+            if k == "bridgeAllowMutating"
+            else False
+            if k == "bridgeDebugInChannel"
+            else None
+        )
+        from llm import limnoria_bridge as lb
+
+        fake_cmds = [
+            lb.BridgeCommand(plugin="Misc", command=f"cmd{i}", arg_syntax="", description="ping")
+            for i in range(50)
+        ]
+        mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=fake_cmds)
+
+        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        # Over the cap → clamped to 25
+        result_over = handlers["search_bridge_commands"]({"query": "ping", "limit": 999})
+        # Under the floor → clamped to 1
+        result_under = handlers["search_bridge_commands"]({"query": "ping", "limit": 0})
+
+        import json
+
+        assert len(json.loads(result_over.content)["matches"]) == 25
+        assert len(json.loads(result_under.content)["matches"]) == 1
 
     def test_handler_returns_tool_result_with_json(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env
@@ -700,8 +803,8 @@ class TestBuildBridgeTool:
             ],
         )
 
-        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schema["function"]["description"]
+        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schemas[0]["function"]["description"]
         assert "write commands hidden" in desc
         assert "bridgeAllowMutating" in desc
 
@@ -731,8 +834,8 @@ class TestBuildBridgeTool:
             ],
         )
 
-        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schema["function"]["description"]
+        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schemas[0]["function"]["description"]
         assert "write commands hidden" not in desc
 
     def test_omits_footer_when_only_pure_read_plugins_allowed(self, plugin_env, mocker):
@@ -760,8 +863,8 @@ class TestBuildBridgeTool:
             ],
         )
 
-        schema, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schema["function"]["description"]
+        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schemas[0]["function"]["description"]
         assert "write commands hidden" not in desc
 
     def test_behavior_later_notes_visible_tell_hidden_when_gate_closed(self, plugin_env, mocker):
@@ -801,8 +904,8 @@ class TestBuildBridgeTool:
             if k == "bridgeDebugInChannel"
             else None
         )
-        schema_closed, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc_closed = schema_closed["function"]["description"]
+        schemas_closed, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc_closed = schemas_closed[0]["function"]["description"]
         assert "later.notes" in desc_closed.lower()
         assert "later.tell" not in desc_closed.lower()
 
@@ -818,8 +921,8 @@ class TestBuildBridgeTool:
             if k == "bridgeDebugInChannel"
             else None
         )
-        schema_open, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc_open = schema_open["function"]["description"]
+        schemas_open, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc_open = schemas_open[0]["function"]["description"]
         assert "later.notes" in desc_open.lower()
         assert "later.tell" in desc_open.lower()
 
@@ -3404,10 +3507,13 @@ class TestChatProfileBridgeWiring:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         extra_tools = kwargs.get("extra_tools")
         extra_handlers = kwargs.get("extra_handlers")
-        assert extra_tools is not None and len(extra_tools) == 1
-        assert extra_tools[0]["function"]["name"] == "run_limnoria_command"
+        assert extra_tools is not None and len(extra_tools) == 2
+        names = [t["function"]["name"] for t in extra_tools]
+        assert "run_limnoria_command" in names
+        assert "search_bridge_commands" in names
         assert extra_handlers is not None
         assert "run_limnoria_command" in extra_handlers
+        assert "search_bridge_commands" in extra_handlers
 
     def test_omits_bridge_extras_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN bridgeEnabled=False (default) WHEN ask is called

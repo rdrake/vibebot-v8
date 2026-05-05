@@ -261,6 +261,45 @@ def enumerate_commands(
             )
 
 
+def search_commands(
+    commands: list[BridgeCommand],
+    query: str,
+    *,
+    limit: int = 10,
+) -> list[BridgeCommand]:
+    """Rank ``commands`` by relevance to ``query`` and return the top ``limit``.
+
+    Scoring is whitespace-tokenized substring matching across
+    ``plugin.command``, ``arg_syntax``, and ``description`` — case-insensitive.
+    Each token contributes one point per field it appears in, so a match in
+    every field outranks a match in just one. Designed to compensate for
+    Limnoria's ``Misc.apropos``, which only matches command names.
+
+    Returns at most ``limit`` results in descending score order. Ties keep
+    the source ordering (``enumerate_commands``'s plugin/leaf order).
+    """
+    tokens = [t for t in query.lower().split() if t]
+    if not tokens:
+        return []
+    scored: list[tuple[int, int, BridgeCommand]] = []
+    for idx, c in enumerate(commands):
+        name = f"{c.plugin}.{c.command}".lower()
+        syntax = c.arg_syntax.lower()
+        desc = c.description.lower()
+        score = 0
+        for tok in tokens:
+            if tok in name:
+                score += 1
+            if tok in syntax:
+                score += 1
+            if tok in desc:
+                score += 1
+        if score:
+            scored.append((-score, idx, c))
+    scored.sort()
+    return [c for _score, _idx, c in scored[:limit]]
+
+
 def dispatch(
     irc: Any,
     msg: Any,
