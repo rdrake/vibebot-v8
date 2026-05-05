@@ -3105,6 +3105,20 @@ Examples (echo → action_prompt: ""):
             # tools= kwarg passed explicitly below.
             optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
 
+            # Cap output tokens on conversational profiles. Long-output cases
+            # (e.g. 960 tokens at ~50 tok/s ≈ 19s of generation) dominate the
+            # latency budget and trigger the pastebin path anyway when they
+            # cross the IRC line threshold. Capping here keeps short answers
+            # snappy and bounds the worst case. forest/code/draw are unbounded:
+            # forest is opt-in long-form, code/draw produce short summaries
+            # plus a URL by design.
+            profile_max_output = {
+                PROFILE_CHAT: 600,
+                PROFILE_REMIND_ACTION: 400,
+            }.get(route_profile)
+            if profile_max_output is not None:
+                optional_kwargs["max_tokens"] = profile_max_output
+
             executor = AssistantToolExecutor(
                 db=db,
                 context=context,
