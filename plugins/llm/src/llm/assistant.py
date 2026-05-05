@@ -27,6 +27,14 @@ _log = logging.getLogger("supybot.plugins.LLM.assistant")
 # when they're buried in a long rule list. Keep this block concrete
 # and example-driven — abstract instructions like "be concise" do not
 # work; an explicit list of forbidden tokens does.
+_MARKDOWN_BANNED_TOKENS = (
+    "    **bold** or __bold__\n"
+    "    *italics* or _italics_\n"
+    "    `inline code` or ``` fenced code blocks ```\n"
+    "    # headings (of any depth)\n"
+    "    [label](url) — write the bare URL instead\n"
+    "    | tables |, ASCII art, or box-drawing\n"
+)
 _IRC_OUTPUT_FORMAT = (
     "OUTPUT FORMAT — this is IRC, NOT a chat UI. Read this carefully:\n"
     "- Lead with the answer. Skip preambles like 'Sure!', 'Great question', "
@@ -35,13 +43,8 @@ _IRC_OUTPUT_FORMAT = (
     "user explicitly asks for detail, a list, or a step-by-step.\n"
     "- Plain text only — IRC clients DO NOT render markdown. Do NOT emit any "
     "of these tokens, in any form:\n"
-    "    **bold** or __bold__\n"
-    "    *italics* or _italics_\n"
-    "    `inline code` or ``` fenced code blocks ```\n"
-    "    # headings (of any depth)\n"
-    "    - bullet lists, * bullet lists, 1. numbered lists\n"
-    "    [label](url) — write the bare URL instead\n"
-    "    | tables |, ASCII art, or box-drawing\n"
+    + _MARKDOWN_BANNED_TOKENS
+    + "    - bullet lists, * bullet lists, 1. numbered lists\n"
     "- URLs: write them bare. No brackets, no surrounding link text.\n"
     "- Code or commands in a reply: emit the bare content on its own line "
     "with NO backticks and NO fences.\n"
@@ -123,24 +126,17 @@ DRAW_SYSTEM_PROMPT = (
     "URL.\n"
 )
 
-# Loosened format block for the "forest" route — drops the length cap
-# so nicks the operator opted into forestNicks can ask for long-form
-# prose, storytelling, or rants. Plain-text and IRC command-injection
-# rules stay; markdown still doesn't render on IRC, and lines starting
-# with `.` or `/` still get eaten by clients/Limnoria.
+# Long-form variant: drops the 3-line cap and the bullet-list ban (forest
+# replies can use lists). Lines starting with `.` or `/` still get eaten by
+# IRC clients and Limnoria, hence the explicit warning.
 _IRC_OUTPUT_FORMAT_FOREST = (
     "OUTPUT FORMAT — this is IRC, NOT a chat UI. Read this carefully:\n"
     "- No length cap. Long-form, multi-line, multi-paragraph replies "
     "are welcome — match what the user is actually asking for.\n"
     "- Plain text only — IRC clients DO NOT render markdown. Do NOT "
     "emit any of these tokens, in any form:\n"
-    "    **bold** or __bold__\n"
-    "    *italics* or _italics_\n"
-    "    `inline code` or ``` fenced code blocks ```\n"
-    "    # headings (of any depth)\n"
-    "    [label](url) — write the bare URL instead\n"
-    "    | tables |, ASCII art, or box-drawing\n"
-    "- URLs: write them bare. No brackets, no surrounding link text.\n"
+    + _MARKDOWN_BANNED_TOKENS
+    + "- URLs: write them bare. No brackets, no surrounding link text.\n"
     "- Separate paragraphs with a single blank line.\n"
     "- Don't start a line with `.` or `/` — IRC clients treat those as "
     "commands and will swallow the line.\n"

@@ -1892,8 +1892,7 @@ class LLM(callbacks.Plugin):
         forest = self.registryValue("forestNicks", channel)
         if not forest:
             return False
-        target = ircutils.toLower(nick)
-        return any(ircutils.toLower(entry) == target for entry in forest)
+        return any(ircutils.strEqual(entry, nick) for entry in forest)
 
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
