@@ -1320,6 +1320,7 @@ class LLMService:
         n_messages: int,
         msg_chars: int,
         n_tools: int,
+        prefix_hash: str = "-",
         response: Any | None = None,
         error: Exception | None = None,
     ) -> None:
@@ -1338,8 +1339,9 @@ class LLMService:
         if error is not None:
             self.log.warning(
                 f"completion_timing op={op} model={model} msgs={n_messages} "
-                f"msg_chars={msg_chars} tools={n_tools} elapsed_ms={elapsed_ms:.0f} "
-                f"result=error error_type={type(error).__name__}"
+                f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
+                f"elapsed_ms={elapsed_ms:.0f} result=error "
+                f"error_type={type(error).__name__}"
             )
             return
 
@@ -1372,10 +1374,29 @@ class LLMService:
 
         self.log.warning(
             f"completion_timing op={op} model={model} msgs={n_messages} "
-            f"msg_chars={msg_chars} tools={n_tools} elapsed_ms={elapsed_ms:.0f} "
-            f"prompt_tokens={pt} cached_tokens={cached} "
+            f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
+            f"elapsed_ms={elapsed_ms:.0f} prompt_tokens={pt} cached_tokens={cached} "
             f"completion_tokens={ct} tool_calls={n_tool_calls}"
         )
+
+    @staticmethod
+    def _prefix_hash(messages: list[dict[str, Any]], tools: list[Any] | None) -> str:
+        """8-char fingerprint of the cacheable prefix.
+
+        Captures system message + first 2 messages + tool schemas — all the
+        bytes that should be byte-identical across cache-eligible requests.
+        Two requests sharing this hash and being seconds apart should hit
+        any sane prefix cache.
+        """
+        try:
+            payload = {
+                "head": messages[: min(3, len(messages))],
+                "tools": tools or [],
+            }
+            blob = json.dumps(payload, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return "?"
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
 
     def _timed_completion(
         self,
@@ -1389,6 +1410,7 @@ class LLMService:
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
+        prefix_hash = self._prefix_hash(messages, kwargs.get("tools"))
         t0 = time.monotonic()
         try:
             response = litellm.completion(model=model, messages=messages, **kwargs)
@@ -1401,6 +1423,7 @@ class LLMService:
                 n_messages=n_messages,
                 msg_chars=msg_chars,
                 n_tools=n_tools,
+                prefix_hash=prefix_hash,
                 error=exc,
             )
             raise
@@ -1412,6 +1435,7 @@ class LLMService:
             n_messages=n_messages,
             msg_chars=msg_chars,
             n_tools=n_tools,
+            prefix_hash=prefix_hash,
             response=response,
         )
         return response
