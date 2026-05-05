@@ -90,6 +90,10 @@ Most settings support per-channel overrides: API keys, model selection, system p
 | `commandPrefixes` | `.` | Space-separated prefixes to sanitize in output (prevents IRC command injection) |
 | `databasePath` | (empty) | Path to SQLite database. If empty, uses `data/LLM.db` |
 | `logLevel` | `WARNING` | Plugin log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `metaMaxSteps` | `12` | Cap on tool-call round trips per assistant invocation. Stops runaway tool loops |
+| `memoryPromotionThreshold` | `2` | Times a candidate fact must be reinforced before it becomes a durable memory. `1` disables the candidate stage (every extraction saved immediately) |
+| `memoryCandidateTTLDays` | `14` | Days a candidate fact can sit unreinforced before pruning. `0` disables TTL pruning |
+| `skipAutoWhoOnJoin` | `True` | Suppress Limnoria's automatic `WHO` query on channel join when both the `account-tag` and `extended-join` IRCv3 capabilities have been acknowledged. Set `False` only if those capabilities misbehave on your server |
 
 ## Retry settings
 

@@ -23,8 +23,11 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 - **Vision** -- Drop an image URL into `@ask` and the bot will describe or reason about it.
 - **Code generation** -- `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
 - **Image generation** -- `@draw` creates images from text descriptions via Vertex AI Imagen.
-- **Reminders and scheduled tasks** -- One-shot or recurring. Plain echoes ("remind me to…") or full LLM tasks at fire time, with search, fetch, and code available.
-- **Stored facts** -- Save things about yourself with `@memories` that persist across sessions.
+- **[Scheduled tasks](user/scheduled-tasks.md)** -- Recurring or one-shot LLM runs with full tool access at run time, distinct from plain reminders.
+- **Stored facts** -- Save things about yourself with `@memories` that persist across sessions, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't become memories.
+- **[Spontaneous participation](operator/spontaneous.md)** -- Per-channel opt-in for the bot to chime in unprompted, with a tunable cadence.
+- **[Forest mode](operator/forest-mode.md)** -- Per-user opt-in for long-form replies that bypass the channel reply cap and channel persona.
+- **[Limnoria bridge](reference/bridge-tools.md)** -- The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, DDG, and so on) as tools, with read-only by default and mutations gated.
 - **Custom instructions** -- Shape how the bot responds to you with `@instruct`.
 - **Multi-provider AI** -- Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).
 

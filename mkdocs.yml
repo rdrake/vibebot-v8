@@ -49,11 +49,15 @@ nav:
     - AI Commands: user/ai-commands.md
     - Memory & Instructions: user/memory.md
     - Reminders & Usage: user/reminders-usage.md
+    - Scheduled Tasks: user/scheduled-tasks.md
   - Operator Guide:
     - Installation & Deployment: operator/installation.md
     - Configuration: operator/configuration.md
     - Forest Mode: operator/forest-mode.md
+    - Spontaneous Participation: operator/spontaneous.md
+    - Memory Promotion: operator/memory-promotion.md
     - Rate Limiting & Security: operator/rate-limiting-security.md
     - Tuning & Monitoring: operator/tuning-monitoring.md
   - Reference:
     - Command Reference: reference/commands.md
+    - Bridge Tools: reference/bridge-tools.md
