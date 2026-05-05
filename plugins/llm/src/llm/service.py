@@ -31,6 +31,13 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
+from .assistant import (
+    PROFILE_CHAT,
+    PROFILE_CODE,
+    PROFILE_DRAW,
+    PROFILE_FOREST,
+    PROFILE_REMIND_ACTION,
+)
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
 from .tracing import TraceFilter, extract_server_headers, request_id
@@ -2774,7 +2781,7 @@ Examples (echo → action_prompt: ""):
         api_key: str | None = None,
         model_override: str | None = None,
         is_owner: bool = False,
-        route_profile: str = "chat",
+        route_profile: str = PROFILE_CHAT,
         capabilities: frozenset[str] | None = None,
         account: str | None = None,
         images: list[str] | None = None,
@@ -2861,11 +2868,11 @@ Examples (echo → action_prompt: ""):
             # never replaces — so a per-channel ``assistantSystemPrompt`` can't
             # strip the format/length cap or the "don't fake tool success" rule.
             profile_frameworks = {
-                "chat": CHAT_SYSTEM_PROMPT,
-                "code": CODE_SYSTEM_PROMPT,
-                "draw": DRAW_SYSTEM_PROMPT,
-                "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
-                "forest": FOREST_SYSTEM_PROMPT,
+                PROFILE_CHAT: CHAT_SYSTEM_PROMPT,
+                PROFILE_CODE: CODE_SYSTEM_PROMPT,
+                PROFILE_DRAW: DRAW_SYSTEM_PROMPT,
+                PROFILE_REMIND_ACTION: REMIND_ACTION_SYSTEM_PROMPT,
+                PROFILE_FOREST: FOREST_SYSTEM_PROMPT,
             }
             framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
                 bot_nick=bot_nick
@@ -2927,7 +2934,7 @@ Examples (echo → action_prompt: ""):
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
             force_initial_search = (
-                route_profile in {"chat", "remind_action"}
+                route_profile in {PROFILE_CHAT, PROFILE_REMIND_ACTION}
                 and search_fn is not None
                 and _has_tool(profile_tools, "search_web")
                 and EXPLICIT_SEARCH_RE.search(prompt) is not None

@@ -22,6 +22,15 @@ if TYPE_CHECKING:
 _log = logging.getLogger("supybot.plugins.LLM.assistant")
 
 
+# Route profile identifiers — keep in sync with the keys of
+# ``profile_frameworks`` in service.py and the ``visible_in`` sets below.
+PROFILE_CHAT = "chat"
+PROFILE_CODE = "code"
+PROFILE_DRAW = "draw"
+PROFILE_FOREST = "forest"
+PROFILE_REMIND_ACTION = "remind_action"
+
+
 # Shared IRC output rules. Embedded near the top of every assistant
 # system prompt because models (notably Grok) ignore these constraints
 # when they're buried in a long rule list. Keep this block concrete
@@ -700,7 +709,7 @@ class ToolSpec:
     require_account: bool = False
     rate_bucket: str = "ask"
     destructive: bool = False
-    visible_in: frozenset[str] = frozenset({"chat", "forest", "remind_action"})
+    visible_in: frozenset[str] = frozenset({PROFILE_CHAT, PROFILE_FOREST, PROFILE_REMIND_ACTION})
 
     def as_tool(self) -> dict[str, Any]:
         """Return the OpenAI/LiteLLM tool schema for model calls."""
@@ -727,17 +736,25 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "generate_image": {
         "capability": "llm.draw",
         "require_account": True,
-        "visible_in": frozenset({"chat", "forest", "draw", "remind_action"}),
+        "visible_in": frozenset(
+            {PROFILE_CHAT, PROFILE_FOREST, PROFILE_DRAW, PROFILE_REMIND_ACTION}
+        ),
     },
     "search_web": {
-        "visible_in": frozenset({"chat", "forest", "code", "remind_action"}),
+        "visible_in": frozenset(
+            {PROFILE_CHAT, PROFILE_FOREST, PROFILE_CODE, PROFILE_REMIND_ACTION}
+        ),
     },
     "fetch_url": {
-        "visible_in": frozenset({"chat", "forest", "code", "remind_action"}),
+        "visible_in": frozenset(
+            {PROFILE_CHAT, PROFILE_FOREST, PROFILE_CODE, PROFILE_REMIND_ACTION}
+        ),
     },
     "generate_code": {
         "capability": "llm.code",
-        "visible_in": frozenset({"chat", "forest", "code", "remind_action"}),
+        "visible_in": frozenset(
+            {PROFILE_CHAT, PROFILE_FOREST, PROFILE_CODE, PROFILE_REMIND_ACTION}
+        ),
     },
     # Phase 2 Task 3 / C2 — schedule_llm_task fires "as you" with full bridge
     # access at fire time, so creating a schedule must require an authenticated

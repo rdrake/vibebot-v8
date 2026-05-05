@@ -32,6 +32,13 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
+from .assistant import (
+    PROFILE_CHAT,
+    PROFILE_CODE,
+    PROFILE_DRAW,
+    PROFILE_FOREST,
+    PROFILE_REMIND_ACTION,
+)
 from .context import ContextConfig, ConversationContext, Role
 from .persistence import LLMDatabase, ReminderRow
 from .service import (
@@ -1160,8 +1167,8 @@ class LLM(callbacks.Plugin):
                         synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
 
                         request_context = AssistantRequestContext(
-                            entry_route="remind_action",
-                            profile="remind_action",
+                            entry_route=PROFILE_REMIND_ACTION,
+                            profile=PROFILE_REMIND_ACTION,
                             nick=nick,
                             raw_nick=nick,
                             account=account,
@@ -2618,7 +2625,7 @@ class LLM(callbacks.Plugin):
             msg,
             pf,
             entry_route=entry_route,
-            profile="forest" if is_forest else "chat",
+            profile=PROFILE_FOREST if is_forest else PROFILE_CHAT,
         )
 
         caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
@@ -2748,8 +2755,8 @@ class LLM(callbacks.Plugin):
             irc,
             msg,
             pf,
-            entry_route="code",
-            profile="code",
+            entry_route=PROFILE_CODE,
+            profile=PROFILE_CODE,
         )
 
         caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
@@ -2840,8 +2847,8 @@ class LLM(callbacks.Plugin):
             irc,
             msg,
             pf,
-            entry_route="draw",
-            profile="draw",
+            entry_route=PROFILE_DRAW,
+            profile=PROFILE_DRAW,
         )
 
         caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
