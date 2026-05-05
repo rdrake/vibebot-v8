@@ -597,7 +597,9 @@ class TestSendLongReply:
 
         mock_irc.queueMultilineBatches.assert_called_once()
         call = mock_irc.queueMultilineBatches.call_args
-        assert call.kwargs.get("concat") is True
+        # concat=False because each chunk is a distinct logical line, not a
+        # wire-split fragment (IRCv3 multiline-concat is for wire-splits only).
+        assert call.kwargs.get("concat") is False
         msgs = call.args[0]
         assert len(msgs) == 3
         mock_irc.reply.assert_not_called()

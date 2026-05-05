@@ -1802,8 +1802,15 @@ class LLM(callbacks.Plugin):
             irc.reply(" | ".join(logical_lines), prefixNick=prefixNick)
             return
 
+        # Each chunk here is a distinct logical line (split on \n, then wrapped
+        # to ``allowed`` bytes which sits well under IRC's 512-byte wire limit).
+        # Per the IRCv3 multiline spec, ``draft/multiline-concat`` is *only*
+        # for joining wire-split fragments of a single logical line — not for
+        # joining distinct logical lines. Passing ``concat=True`` here made
+        # AfterNET's IRCd store the whole batch as one logical line, which
+        # collapsed pastebin renders to a single line.
         msgs = [ircmsgs.privmsg(target, ircutils.safeArgument(chunk)) for chunk in chunks]
-        irc.queueMultilineBatches(msgs, target, msg.nick, concat=True)
+        irc.queueMultilineBatches(msgs, target, msg.nick, concat=False)
 
     def _dispatch_assistant_reply(
         self,
