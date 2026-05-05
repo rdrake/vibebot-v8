@@ -5166,7 +5166,7 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
     )
     captured: list[dict] = []
 
-    def fake_call(*, model, messages, api_key, timeout, optional_kwargs):
+    def fake_call(*, model, messages, api_key, timeout, optional_kwargs, op="completion"):
         captured.append(optional_kwargs)
         response = mocker.MagicMock()
         response.choices[0].message.content = "result"

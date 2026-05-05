@@ -1028,6 +1028,7 @@ class LLMService:
         api_key: str,
         timeout: int,
         optional_kwargs: dict[str, Any],
+        op: str = "completion",
     ) -> Any:
         """Call litellm.completion with automatic fallback on tool errors.
 
@@ -1049,7 +1050,8 @@ class LLMService:
             Exception: If completion fails even without tools
         """
         try:
-            return litellm.completion(
+            return self._timed_completion(
+                op,
                 model=model,
                 messages=messages,
                 api_key=api_key,
@@ -1065,7 +1067,8 @@ class LLMService:
                     self._sanitize(str(e)),
                 )
                 fallback_kwargs = {k: v for k, v in optional_kwargs.items() if k != "tools"}
-                return litellm.completion(
+                return self._timed_completion(
+                    f"{op}_no_tools",
                     model=model,
                     messages=messages,
                     api_key=api_key,
@@ -1293,6 +1296,141 @@ class LLMService:
 
         return prompt_tokens, completion_tokens, cost
 
+    @staticmethod
+    def _msg_chars(messages: list[dict[str, Any]]) -> int:
+        total = 0
+        for m in messages:
+            content = m.get("content")
+            if isinstance(content, str):
+                total += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            total += len(text)
+        return total
+
+    def _log_completion_timing(
+        self,
+        *,
+        op: str,
+        model: str,
+        elapsed_ms: float,
+        n_messages: int,
+        msg_chars: int,
+        n_tools: int,
+        response: Any | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """One-line structured profiling record for any model call.
+
+        Fields:
+          op             — call site label (e.g. completion, assistant_step_1)
+          model          — provider/model id
+          msgs/msg_chars — input shape (message count + total content chars)
+          tools          — tool schemas attached on the request
+          elapsed_ms     — wall-clock for the litellm call only
+          *_tokens       — usage from the response
+          cached_tokens  — provider-reported prompt cache reads (0 = no cache)
+          tool_calls     — tool calls returned by the model on this turn
+        """
+        if error is not None:
+            self.log.info(
+                "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
+                "elapsed_ms=%.0f result=error error_type=%s",
+                op,
+                model,
+                n_messages,
+                msg_chars,
+                n_tools,
+                elapsed_ms,
+                type(error).__name__,
+            )
+            return
+
+        pt = ct = cached = n_tool_calls = 0
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                pt = int(
+                    getattr(usage, "prompt_tokens", 0) or getattr(usage, "input_tokens", 0) or 0
+                )
+                ct = int(
+                    getattr(usage, "completion_tokens", 0)
+                    or getattr(usage, "output_tokens", 0)
+                    or 0
+                )
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details is not None:
+                    cached = int(getattr(details, "cached_tokens", 0) or 0)
+                if not cached:
+                    cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+        try:
+            choice = response.choices[0]
+            tool_calls = getattr(choice.message, "tool_calls", None) or []
+            n_tool_calls = len(tool_calls)
+        except (AttributeError, IndexError, TypeError):
+            pass
+
+        self.log.info(
+            "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
+            "elapsed_ms=%.0f prompt_tokens=%d cached_tokens=%d "
+            "completion_tokens=%d tool_calls=%d",
+            op,
+            model,
+            n_messages,
+            msg_chars,
+            n_tools,
+            elapsed_ms,
+            pt,
+            cached,
+            ct,
+            n_tool_calls,
+        )
+
+    def _timed_completion(
+        self,
+        op: str,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> Any:
+        """Run litellm.completion and emit a completion_timing log line."""
+        n_tools = len(kwargs.get("tools") or [])
+        msg_chars = self._msg_chars(messages)
+        n_messages = len(messages)
+        t0 = time.monotonic()
+        try:
+            response = litellm.completion(model=model, messages=messages, **kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            self._log_completion_timing(
+                op=op,
+                model=model,
+                elapsed_ms=elapsed_ms,
+                n_messages=n_messages,
+                msg_chars=msg_chars,
+                n_tools=n_tools,
+                error=exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        self._log_completion_timing(
+            op=op,
+            model=model,
+            elapsed_ms=elapsed_ms,
+            n_messages=n_messages,
+            msg_chars=msg_chars,
+            n_tools=n_tools,
+            response=response,
+        )
+        return response
+
     def _handle_llm_error(self, error: Exception, operation: str) -> str:
         """Handle LiteLLM errors with consistent messaging and logging.
 
@@ -1513,6 +1651,7 @@ class LLMService:
             api_key=api_key,
             timeout=timeout,
             optional_kwargs=optional_kwargs,
+            op="pending_retry",
         )
 
         content = response.choices[0].message.content or ""
@@ -1889,6 +2028,7 @@ class LLMService:
                 api_key=effective_api_key,
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
+                op=f"run_completion_{command}",
             )
             self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
             self._log_server_headers(response)
@@ -2011,6 +2151,7 @@ class LLMService:
                 api_key=api_key,
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
+                op=f"grounded_{kind}",
             )
             content = response.choices[0].message.content
             grounding_used = self._check_grounding_used(response)
@@ -2112,18 +2253,44 @@ class LLMService:
                 model,
                 len(input_text),
             )
-            response = litellm.responses(
-                model=model,
-                input=input_text,
-                tools=[{"type": "web_search"}],
-                api_key=api_key,
-                timeout=timeout,
-                metadata=self._get_litellm_metadata(),
-            )
+            t0 = time.monotonic()
+            try:
+                response = litellm.responses(
+                    model=model,
+                    input=input_text,
+                    tools=[{"type": "web_search"}],
+                    api_key=api_key,
+                    timeout=timeout,
+                    metadata=self._get_litellm_metadata(),
+                )
+            except Exception as exc:
+                self.log.info(
+                    "completion_timing op=xai_responses_%s model=%s msg_chars=%d "
+                    "tools=1 elapsed_ms=%.0f result=error error_type=%s",
+                    kind,
+                    model,
+                    len(input_text),
+                    (time.monotonic() - t0) * 1000.0,
+                    type(exc).__name__,
+                )
+                raise
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
 
             content = self._responses_text(response)
             grounding_used = self._check_responses_grounding(response)
             prompt_tokens, completion_tokens, cost = self._extract_responses_usage(response, model)
+
+            self.log.info(
+                "completion_timing op=xai_responses_%s model=%s msgs=1 msg_chars=%d "
+                "tools=1 elapsed_ms=%.0f prompt_tokens=%d cached_tokens=0 "
+                "completion_tokens=%d tool_calls=0",
+                kind,
+                model,
+                len(input_text),
+                elapsed_ms,
+                prompt_tokens,
+                completion_tokens,
+            )
 
             self.log.info(
                 "xai_responses_%s ok model=%s grounding_used=%s content_len=%d "
@@ -2433,6 +2600,7 @@ Examples (echo → action_prompt: ""):
                 api_key=self.plugin.registryValue("assistantApiKey", target),
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
+                op="reminder_parse",
             )
 
             raw_content = response.choices[0].message.content.strip()
@@ -2551,7 +2719,8 @@ Examples (echo → action_prompt: ""):
                 {"role": Role.SYSTEM, "content": system_prompt},
                 {"role": Role.USER, "content": user_content},
             ]
-            response = litellm.completion(
+            response = self._timed_completion(
+                "ask_helper",
                 model=model,
                 messages=messages,
                 api_key=api_key,
@@ -2679,7 +2848,8 @@ Examples (echo → action_prompt: ""):
                 {"role": "user", "content": "\n".join(user_parts)},
             ]
 
-            response = litellm.completion(
+            response = self._timed_completion(
+                "prompt_rewrite",
                 model=model,
                 messages=messages,
                 api_key=api_key,
@@ -2724,14 +2894,33 @@ Examples (echo → action_prompt: ""):
             kwargs["quality"] = "high"
             kwargs["resolution"] = "2k"
 
-        response = litellm.image_generation(
-            prompt=prompt,
-            model=model,
-            api_key=self.plugin.registryValue("imageApiKey", channel),
-            n=1,
-            timeout=timeout,
-            metadata=self._get_litellm_metadata(),
-            **kwargs,
+        t0 = time.monotonic()
+        try:
+            response = litellm.image_generation(
+                prompt=prompt,
+                model=model,
+                api_key=self.plugin.registryValue("imageApiKey", channel),
+                n=1,
+                timeout=timeout,
+                metadata=self._get_litellm_metadata(),
+                **kwargs,
+            )
+        except Exception as exc:
+            self.log.info(
+                "completion_timing op=image_generation model=%s prompt_chars=%d "
+                "elapsed_ms=%.0f result=error error_type=%s",
+                model,
+                len(prompt),
+                (time.monotonic() - t0) * 1000.0,
+                type(exc).__name__,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        self.log.info(
+            "completion_timing op=image_generation model=%s prompt_chars=%d elapsed_ms=%.0f",
+            model,
+            len(prompt),
+            elapsed_ms,
         )
         self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
         self._log_server_headers(response)
@@ -2962,7 +3151,8 @@ Examples (echo → action_prompt: ""):
                         "function": {"name": "search_web"},
                     }
 
-                response = litellm.completion(
+                response = self._timed_completion(
+                    f"assistant_step_{_step + 1}",
                     model=model,
                     messages=messages,
                     api_key=effective_api_key,
@@ -3886,7 +4076,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             api_key = self.plugin.registryValue("assistantApiKey", target)
-            response = litellm.completion(
+            response = self._timed_completion(
+                "extract_memories",
                 model=model,
                 messages=messages,
                 api_key=api_key,
@@ -3955,7 +4146,8 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             api_key = self.plugin.registryValue("assistantApiKey", target)
-            response = litellm.completion(
+            response = self._timed_completion(
+                "cleanup_memories",
                 model=model,
                 messages=messages,
                 api_key=api_key,
