@@ -1337,15 +1337,9 @@ class LLMService:
         """
         if error is not None:
             self.log.warning(
-                "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
-                "elapsed_ms=%.0f result=error error_type=%s",
-                op,
-                model,
-                n_messages,
-                msg_chars,
-                n_tools,
-                elapsed_ms,
-                type(error).__name__,
+                f"completion_timing op={op} model={model} msgs={n_messages} "
+                f"msg_chars={msg_chars} tools={n_tools} elapsed_ms={elapsed_ms:.0f} "
+                f"result=error error_type={type(error).__name__}"
             )
             return
 
@@ -1377,19 +1371,10 @@ class LLMService:
             pass
 
         self.log.warning(
-            "completion_timing op=%s model=%s msgs=%d msg_chars=%d tools=%d "
-            "elapsed_ms=%.0f prompt_tokens=%d cached_tokens=%d "
-            "completion_tokens=%d tool_calls=%d",
-            op,
-            model,
-            n_messages,
-            msg_chars,
-            n_tools,
-            elapsed_ms,
-            pt,
-            cached,
-            ct,
-            n_tool_calls,
+            f"completion_timing op={op} model={model} msgs={n_messages} "
+            f"msg_chars={msg_chars} tools={n_tools} elapsed_ms={elapsed_ms:.0f} "
+            f"prompt_tokens={pt} cached_tokens={cached} "
+            f"completion_tokens={ct} tool_calls={n_tool_calls}"
         )
 
     def _timed_completion(
@@ -2264,14 +2249,11 @@ class LLMService:
                     metadata=self._get_litellm_metadata(),
                 )
             except Exception as exc:
+                err_elapsed = (time.monotonic() - t0) * 1000.0
                 self.log.warning(
-                    "completion_timing op=xai_responses_%s model=%s msg_chars=%d "
-                    "tools=1 elapsed_ms=%.0f result=error error_type=%s",
-                    kind,
-                    model,
-                    len(input_text),
-                    (time.monotonic() - t0) * 1000.0,
-                    type(exc).__name__,
+                    f"completion_timing op=xai_responses_{kind} model={model} msgs=1 "
+                    f"msg_chars={len(input_text)} tools=1 elapsed_ms={err_elapsed:.0f} "
+                    f"result=error error_type={type(exc).__name__}"
                 )
                 raise
             elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -2281,15 +2263,10 @@ class LLMService:
             prompt_tokens, completion_tokens, cost = self._extract_responses_usage(response, model)
 
             self.log.warning(
-                "completion_timing op=xai_responses_%s model=%s msgs=1 msg_chars=%d "
-                "tools=1 elapsed_ms=%.0f prompt_tokens=%d cached_tokens=0 "
-                "completion_tokens=%d tool_calls=0",
-                kind,
-                model,
-                len(input_text),
-                elapsed_ms,
-                prompt_tokens,
-                completion_tokens,
+                f"completion_timing op=xai_responses_{kind} model={model} msgs=1 "
+                f"msg_chars={len(input_text)} tools=1 elapsed_ms={elapsed_ms:.0f} "
+                f"prompt_tokens={prompt_tokens} cached_tokens=0 "
+                f"completion_tokens={completion_tokens} tool_calls=0"
             )
 
             self.log.info(
@@ -2906,21 +2883,17 @@ Examples (echo → action_prompt: ""):
                 **kwargs,
             )
         except Exception as exc:
+            err_elapsed = (time.monotonic() - t0) * 1000.0
             self.log.warning(
-                "completion_timing op=image_generation model=%s prompt_chars=%d "
-                "elapsed_ms=%.0f result=error error_type=%s",
-                model,
-                len(prompt),
-                (time.monotonic() - t0) * 1000.0,
-                type(exc).__name__,
+                f"completion_timing op=image_generation model={model} "
+                f"prompt_chars={len(prompt)} elapsed_ms={err_elapsed:.0f} "
+                f"result=error error_type={type(exc).__name__}"
             )
             raise
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         self.log.warning(
-            "completion_timing op=image_generation model=%s prompt_chars=%d elapsed_ms=%.0f",
-            model,
-            len(prompt),
-            elapsed_ms,
+            f"completion_timing op=image_generation model={model} "
+            f"prompt_chars={len(prompt)} elapsed_ms={elapsed_ms:.0f}"
         )
         self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
         self._log_server_headers(response)
