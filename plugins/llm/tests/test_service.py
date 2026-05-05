@@ -3803,7 +3803,7 @@ class TestMemoryInjection:
     def test_completion_with_memories_injects_into_prompt(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN memories WHEN completion called THEN facts in system prompt."""
+        """GIVEN memories WHEN completion called THEN facts in a user message after system+context, NOT in the system prompt (preserves prompt-cache stability)."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = mocker.MagicMock()
@@ -3817,8 +3817,15 @@ class TestMemoryInjection:
         call_args = mock_litellm.completion.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
         system_msg = next(m for m in messages if m["role"] == "system")
-        assert "likes Python" in system_msg["content"]
-        assert "lives in Toronto" in system_msg["content"]
+        assert "likes Python" not in system_msg["content"]
+        assert "lives in Toronto" not in system_msg["content"]
+        user_blob = "\n".join(
+            m.get("content", "")
+            for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        )
+        assert "likes Python" in user_blob
+        assert "lives in Toronto" in user_blob
 
     def test_completion_without_memories_no_section(
         self, make_service, mocker: MockerFixture

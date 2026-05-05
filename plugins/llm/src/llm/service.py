@@ -2003,14 +2003,20 @@ class LLMService:
             else:
                 base_system_prompt = system_prompt
 
-            # Build system prompt (context now injected as user message in _build_messages)
-            built_system_prompt = self._inject_memories(
-                self._build_system_prompt(base_system_prompt), memories
-            )
+            # System prompt stays per-channel-stable; memories ride in a
+            # separate user message inside _build_messages so the cacheable
+            # prefix doesn't shift every time the user's memory list changes.
+            built_system_prompt = self._build_system_prompt(base_system_prompt)
 
-            # Build messages with history, system prompt, and context
             messages = self._build_messages(
-                prompt, images, history, channel_history, built_system_prompt, irc, msg
+                prompt,
+                images,
+                history,
+                channel_history,
+                built_system_prompt,
+                irc,
+                msg,
+                memories=memories,
             )
 
             # Get timeout
@@ -3076,7 +3082,10 @@ Examples (echo → action_prompt: ""):
                     "behavior) still apply — personality changes voice, not "
                     "structure."
                 )
-            effective_prompt = self._inject_memories(framework, memories)
+            # Memories are passed positionally below so they land in a user
+            # message after the static system+context prefix — keeps the
+            # system prompt cache-stable across users.
+            effective_prompt = framework
 
             messages = self._build_messages(
                 prompt,
@@ -3086,6 +3095,7 @@ Examples (echo → action_prompt: ""):
                 system_prompt=effective_prompt,
                 irc=irc,
                 msg=msg,
+                memories=memories,
             )
             # Snapshot for timeout stashing — the loop below mutates `messages`
             # by appending tool calls/results.
@@ -3875,6 +3885,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         system_prompt: str | None = None,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
+        memories: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build messages array for LiteLLM.
 
@@ -3886,6 +3897,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             system_prompt: Optional system prompt for bot personality
             irc: IRC connection for context (optional)
             msg: IRC message for context (optional)
+            memories: Optional per-user durable facts. Placed in a user
+                message *after* the system+context prefix so the
+                system+context bytes stay byte-stable across users —
+                otherwise xAI's automatic prompt cache invalidates whenever
+                memories change.
 
         Returns:
             Messages array in LiteLLM format
@@ -3900,6 +3916,26 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         context_msg = self._build_context_message(irc, msg)
         if context_msg:
             messages.append(context_msg)
+            messages.append({"role": Role.ASSISTANT, "content": "Got it."})
+
+        # Memories live AFTER the static system+context prefix so the
+        # cacheable prefix stays stable across users in the same channel.
+        # When extract_memories adds a fact, only this message and what
+        # follows are invalidated — the system prompt cache survives.
+        if memories:
+            nick = "this user"
+            if msg is not None and getattr(msg, "prefix", None):
+                with contextlib.suppress(ValueError, AttributeError):
+                    nick = ircutils.nickFromHostmask(msg.prefix)
+            memory_lines = "\n".join(f"- {fact}" for fact in memories)
+            messages.append(
+                {
+                    "role": Role.USER,
+                    "content": (
+                        f"What you know about {nick} from past conversations:\n{memory_lines}"
+                    ),
+                }
+            )
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
         # Add shared channel context (allows following group conversations)
