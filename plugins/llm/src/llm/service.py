@@ -3273,6 +3273,45 @@ Examples (echo → action_prompt: ""):
                         }
                     )
 
+                # Short-circuit: if the model just called generate_image
+                # alone and got back a URL, return it directly. step_2
+                # would only have produced a "here's your image" sentence
+                # — costs ~4s on prod for a one-liner the user doesn't
+                # need (the URL is the deliverable).
+                if (
+                    len(message.tool_calls) == 1
+                    and message.tool_calls[0].function.name == "generate_image"
+                ):
+                    last_tool_msg = messages[-1]
+                    try:
+                        img_parsed = json.loads(last_tool_msg.get("content", "") or "")
+                    except (json.JSONDecodeError, TypeError):
+                        img_parsed = None
+                    if (
+                        isinstance(img_parsed, dict)
+                        and img_parsed.get("status") == "ok"
+                        and img_parsed.get("message")
+                    ):
+                        url = str(img_parsed["message"])
+                        total_prompt_tokens += executor.accumulated_prompt_tokens
+                        total_completion_tokens += executor.accumulated_completion_tokens
+                        total_cost += executor.accumulated_cost
+                        self.log.info(
+                            "assistant_completion: short-circuit after generate_image, "
+                            "skipping step_%d",
+                            _step + 2,
+                        )
+                        return AssistantResult(
+                            content=self.sanitize_output(url),
+                            prompt_tokens=total_prompt_tokens,
+                            completion_tokens=total_completion_tokens,
+                            cost=total_cost,
+                            model=model,
+                            grounding_used=executor.grounding_used,
+                            last_successful_tool="generate_image",
+                            final_text_after_tools=url,
+                        )
+
             # Step cap reached — fold in leaf tool costs
             total_prompt_tokens += executor.accumulated_prompt_tokens
             total_completion_tokens += executor.accumulated_completion_tokens
@@ -3918,10 +3957,23 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             messages.append(context_msg)
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
-        # Memories live AFTER the static system+context prefix so the
-        # cacheable prefix stays stable across users in the same channel.
-        # When extract_memories adds a fact, only this message and what
-        # follows are invalidated — the system prompt cache survives.
+        # Add shared channel context (allows following group conversations)
+        if channel_history:
+            channel_summary = self._format_channel_history(channel_history)
+            if channel_summary:
+                messages.append(
+                    {
+                        "role": Role.USER,
+                        "content": f"[Recent channel discussion]\n{channel_summary}",
+                    }
+                )
+                messages.append({"role": Role.ASSISTANT, "content": "I see the context."})
+
+        # Memories live AFTER channel history. Memories mutate when
+        # extract_memories adds/reinforces a fact; placing them after
+        # channel_history means a memory change only invalidates the
+        # cache from this point onward — the channel-history block (often
+        # the largest chunk) stays cached even when memories shift.
         if memories:
             nick = "this user"
             if msg is not None and getattr(msg, "prefix", None):
@@ -3937,18 +3989,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 }
             )
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
-
-        # Add shared channel context (allows following group conversations)
-        if channel_history:
-            channel_summary = self._format_channel_history(channel_history)
-            if channel_summary:
-                messages.append(
-                    {
-                        "role": Role.USER,
-                        "content": f"[Recent channel discussion]\n{channel_summary}",
-                    }
-                )
-                messages.append({"role": Role.ASSISTANT, "content": "I see the context."})
 
         # Add personal conversation history if provided
         if history:
