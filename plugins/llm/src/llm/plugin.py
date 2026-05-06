@@ -477,6 +477,9 @@ class LLM(callbacks.Plugin):
         self._spontaneous_events: set[str] = set()
         self._spontaneous_events_lock = threading.Lock()
 
+        # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
+        self._irc_send_lock = threading.Lock()
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -1816,6 +1819,29 @@ class LLM(callbacks.Plugin):
         teaser = teaser.lstrip("#").strip()
         teaser = teaser.lstrip("-* ").strip()
         return LLM._trim_long_reply_teaser(teaser, max_chars)
+
+    def _safe_queue(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
+        """Thread-safe wrapper around irc.queueMsg for worker-thread sends.
+
+        Limnoria's IrcMsgQueue.enqueue (irclib.py:245) mutates internal
+        state without an explicit lock and the dedup check is TOCTOU.
+        With the new executor pool, multiple workers may call queueMsg
+        concurrently — serialize them on the plugin side and short-circuit
+        cleanly when the plugin is shutting down.
+
+        Returns True if the message was queued, False if dropped due
+        to the plugin closing. Callers that mutate durable state on
+        successful send must check the return.
+        """
+        if self._llm_executor.closing:
+            self.log.debug(
+                "safe_queue dropped (closing) command=%s",
+                getattr(msg, "command", "?"),
+            )
+            return False
+        with self._irc_send_lock:
+            irc.queueMsg(msg)
+        return True
 
     def _send_long_reply(
         self,

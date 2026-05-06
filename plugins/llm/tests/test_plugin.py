@@ -1142,6 +1142,23 @@ class TestPluginLifecycle:
         mock_unhook.assert_called_with("llm")
 
 
+class TestSafeQueue:
+    def test_safe_queue_drops_when_closing(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor.shutdown()
+        target_irc = mocker.MagicMock()
+        ok = plugin._safe_queue(target_irc, mocker.sentinel.msg)
+        target_irc.queueMsg.assert_not_called()
+        assert ok is False
+
+    def test_safe_queue_calls_queuemsg(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        target_irc = mocker.MagicMock()
+        ok = plugin._safe_queue(target_irc, mocker.sentinel.msg)
+        target_irc.queueMsg.assert_called_once_with(mocker.sentinel.msg)
+        assert ok is True
+
+
 class TestRateBucketsConcurrency:
     def test_concurrent_rate_limit_count_is_exact(self, plugin_env) -> None:
         """The lock guarantees the deque length matches the number of
