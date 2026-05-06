@@ -1029,6 +1029,7 @@ class LLMService:
         timeout: int,
         optional_kwargs: dict[str, Any],
         op: str = "completion",
+        channel: str | None = None,
     ) -> Any:
         """Call litellm.completion with automatic fallback on tool errors.
 
@@ -1042,6 +1043,8 @@ class LLMService:
             api_key: API key
             timeout: Timeout in seconds
             optional_kwargs: Additional kwargs (tools, safety_settings, etc.)
+            channel: IRC channel/target — drives xAI prompt-cache sticky
+                routing via ``x-grok-conv-id``.
 
         Returns:
             LiteLLM completion response
@@ -1054,6 +1057,7 @@ class LLMService:
                 op,
                 model=model,
                 messages=messages,
+                channel=channel,
                 api_key=api_key,
                 timeout=timeout,
                 **optional_kwargs,
@@ -1071,6 +1075,7 @@ class LLMService:
                     f"{op}_no_tools",
                     model=model,
                     messages=messages,
+                    channel=channel,
                     api_key=api_key,
                     timeout=timeout,
                     **fallback_kwargs,
@@ -1199,6 +1204,21 @@ class LLMService:
     def _is_xai_model(model: str) -> bool:
         """True if ``model`` is an xAI ``provider/name`` identifier."""
         return "/" in model and model.split("/", 1)[0].lower() == "xai"
+
+    @staticmethod
+    def _xai_extra_headers(model: str, channel: str | None) -> dict[str, str]:
+        """Return ``x-grok-conv-id`` header for xAI models, else empty.
+
+        xAI's prompt cache is per-backend-server. Without a stable
+        ``x-grok-conv-id``, the load balancer scatters requests and the
+        cache rarely hits. Scoping by channel keeps a conversation
+        glued to one server, lifting cached_tokens from ~128 (a fixed
+        provider-side baseline) to ~99% of the cacheable prefix on
+        follow-up turns.
+        """
+        if not channel or not LLMService._is_xai_model(model):
+            return {}
+        return {"x-grok-conv-id": f"chan:{channel}"}
 
     def _check_grounding_used(self, response: Any) -> bool:
         """Check if Google grounding/search was used in the response.
@@ -1404,9 +1424,14 @@ class LLMService:
         *,
         model: str,
         messages: list[dict[str, Any]],
+        channel: str | None = None,
         **kwargs: Any,
     ) -> Any:
         """Run litellm.completion and emit a completion_timing log line."""
+        xai_headers = self._xai_extra_headers(model, channel)
+        if xai_headers:
+            existing = kwargs.get("extra_headers") or {}
+            kwargs["extra_headers"] = {**existing, **xai_headers}
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
@@ -1661,6 +1686,7 @@ class LLMService:
             timeout=timeout,
             optional_kwargs=optional_kwargs,
             op="pending_retry",
+            channel=task.reply_target,
         )
 
         content = response.choices[0].message.content or ""
@@ -2044,6 +2070,7 @@ class LLMService:
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op=f"run_completion_{command}",
+                channel=channel,
             )
             self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
             self._log_server_headers(response)
@@ -2153,6 +2180,7 @@ class LLMService:
                     api_key=api_key,
                     timeout=timeout,
                     kind=kind,
+                    channel=channel,
                 )
 
             messages: list[dict[str, object]] = [{"role": "user", "content": user_content}]
@@ -2167,6 +2195,7 @@ class LLMService:
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op=f"grounded_{kind}",
+                channel=channel,
             )
             content = response.choices[0].message.content
             grounding_used = self._check_grounding_used(response)
@@ -2240,6 +2269,7 @@ class LLMService:
         api_key: str,
         timeout: int,
         kind: str,
+        channel: str | None = None,
     ) -> ToolResult:
         """Run an xAI Responses-API call with the ``web_search`` tool.
 
@@ -2269,6 +2299,7 @@ class LLMService:
                 len(input_text),
             )
             t0 = time.monotonic()
+            xai_headers = self._xai_extra_headers(model, channel)
             try:
                 response = litellm.responses(
                     model=model,
@@ -2277,6 +2308,7 @@ class LLMService:
                     api_key=api_key,
                     timeout=timeout,
                     metadata=self._get_litellm_metadata(),
+                    **({"extra_headers": xai_headers} if xai_headers else {}),
                 )
             except Exception as exc:
                 err_elapsed = (time.monotonic() - t0) * 1000.0
@@ -2608,6 +2640,7 @@ Examples (echo → action_prompt: ""):
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op="reminder_parse",
+                channel=channel,
             )
 
             raw_content = response.choices[0].message.content.strip()
@@ -2730,6 +2763,7 @@ Examples (echo → action_prompt: ""):
                 "ask_helper",
                 model=model,
                 messages=messages,
+                channel=channel,
                 api_key=api_key,
                 timeout=self.plugin.registryValue("timeout"),
                 **self._get_provider_kwargs(model, include_tools=False),
@@ -2859,6 +2893,7 @@ Examples (echo → action_prompt: ""):
                 "prompt_rewrite",
                 model=model,
                 messages=messages,
+                channel=channel,
                 api_key=api_key,
                 timeout=timeout,
                 metadata=self._get_litellm_metadata(),
@@ -3176,6 +3211,7 @@ Examples (echo → action_prompt: ""):
                     f"assistant_step_{_step + 1}",
                     model=model,
                     messages=messages,
+                    channel=channel,
                     api_key=effective_api_key,
                     timeout=timeout,
                     tools=profile_tools,
@@ -4167,6 +4203,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 "extract_memories",
                 model=model,
                 messages=messages,
+                channel=channel,
                 api_key=api_key,
                 timeout=15,
                 response_format={
@@ -4237,6 +4274,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 "cleanup_memories",
                 model=model,
                 messages=messages,
+                channel=channel,
                 api_key=api_key,
                 timeout=60,
                 num_retries=2,

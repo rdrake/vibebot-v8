@@ -4488,6 +4488,68 @@ class TestCompletionWithToolFallback:
         assert second_call_kwargs["safety_settings"] == "low"
 
 
+class TestXaiConvIdHeader:
+    """xAI prompt-cache sticky-routing header (`x-grok-conv-id`)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_header_set_for_xai_with_channel(self) -> None:
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=self.mocker.Mock()
+        )
+        self.service._timed_completion(
+            "op",
+            model="xai/grok-4.3",
+            messages=[{"role": "user", "content": "hi"}],
+            channel="#dev",
+        )
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["extra_headers"] == {"x-grok-conv-id": "chan:#dev"}
+
+    def test_header_omitted_for_non_xai(self) -> None:
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=self.mocker.Mock()
+        )
+        self.service._timed_completion(
+            "op",
+            model="gemini/gemini-2.5-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            channel="#dev",
+        )
+        assert "extra_headers" not in mock_completion.call_args.kwargs
+
+    def test_header_omitted_for_xai_without_channel(self) -> None:
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=self.mocker.Mock()
+        )
+        self.service._timed_completion(
+            "op",
+            model="xai/grok-4.3",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert "extra_headers" not in mock_completion.call_args.kwargs
+
+    def test_header_merged_with_caller_extra_headers(self) -> None:
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=self.mocker.Mock()
+        )
+        self.service._timed_completion(
+            "op",
+            model="xai/grok-4.3",
+            messages=[{"role": "user", "content": "hi"}],
+            channel="#dev",
+            extra_headers={"x-trace-id": "abc"},
+        )
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["extra_headers"] == {
+            "x-trace-id": "abc",
+            "x-grok-conv-id": "chan:#dev",
+        }
+
+
 class TestExtractUsage:
     """Tests for _extract_usage error handling."""
 
@@ -5173,7 +5235,9 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
     )
     captured: list[dict] = []
 
-    def fake_call(*, model, messages, api_key, timeout, optional_kwargs, op="completion"):
+    def fake_call(
+        *, model, messages, api_key, timeout, optional_kwargs, op="completion", channel=None
+    ):
         captured.append(optional_kwargs)
         response = mocker.MagicMock()
         response.choices[0].message.content = "result"
