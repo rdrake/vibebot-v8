@@ -297,7 +297,13 @@ class LLMExecutor:
                 self._running -= 1
             self._semaphore.release()
 
-    def submit(self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
+    def submit(
+        self,
+        label: str,
+        fn: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Future[Any]:
         if getattr(self._worker_ctx, "in_worker", False):
             raise RecursiveSubmitError(
                 f"submit('{label}') called from worker thread; nested LLM "
@@ -553,17 +559,19 @@ def plugin_env(mocker: MockerFixture):
     try:
         yield plugin, mock_irc, mock_msg
     finally:
-        # die() shuts down the executor and drains briefly. Safe to
-        # call even if a test already invoked die(); shutdown is
-        # idempotent.
-        try:
-            plugin.die()
-        except Exception:
-            pass
+        # die() must be idempotent under the executor wiring (see
+        # Task 3 step 3 — shutdown is already idempotent, db.close
+        # is sqlite-idempotent). Don't suppress exceptions here:
+        # if die() raises, that's a real lifecycle bug we want the
+        # test to surface.
+        plugin.die()
 ```
 
-(The `try/except Exception` matches the spirit of pytest fixture
-teardown — never let teardown noise hide the actual test failure.)
+(`die()` is intentionally not wrapped in `try/except` — swallowing
+teardown errors hides exactly the lifecycle regressions this work
+introduces. If you find a real, narrow exception that legitimately
+fires during teardown, suppress only that specific class with a
+`# why this is OK` comment.)
 
 **Step 4: Verify**
 
@@ -732,6 +740,19 @@ git commit -m "fix(llm): add _spontaneous_events_lock for worker-thread safety"
   helper near `_send_long_reply` (~1797).
 - Modify: `plugins/llm/tests/test_plugin.py`.
 
+**Design note:** `_safe_queue` serializes worker IRC sends through a
+plugin-side lock and short-circuits cleanly when shutting down. It
+does **not** marshal back to the main thread via `schedule.addEvent`
+— Limnoria's `IrcMsgQueue.enqueue` mutation is fast, the lock cost
+is nanoseconds, and direct sends preserve ordering. This matches the
+design doc's Component 6.
+
+The helper returns `bool` — `True` if the send was queued, `False`
+if dropped because closing. Callers that mutate durable state after
+a successful send (e.g. `_deliver_pending_result` setting
+`delivered = True` and then deleting the pending row) **must** check
+the return so a dropped send does not falsely advance state.
+
 **Step 1: Write failing test**
 
 ```python
@@ -740,14 +761,16 @@ class TestSafeQueue:
         plugin, _irc, _msg = plugin_env
         plugin._llm_executor.shutdown()
         target_irc = mocker.MagicMock()
-        plugin._safe_queue(target_irc, mocker.sentinel.msg)
+        ok = plugin._safe_queue(target_irc, mocker.sentinel.msg)
         target_irc.queueMsg.assert_not_called()
+        assert ok is False
 
     def test_safe_queue_calls_queuemsg(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env
         target_irc = mocker.MagicMock()
-        plugin._safe_queue(target_irc, mocker.sentinel.msg)
+        ok = plugin._safe_queue(target_irc, mocker.sentinel.msg)
         target_irc.queueMsg.assert_called_once_with(mocker.sentinel.msg)
+        assert ok is True
 ```
 
 **Step 2: Verify failure**
@@ -766,7 +789,7 @@ In `__init__`:
 Add method on `LLM` (near other send helpers):
 
 ```python
-    def _safe_queue(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+    def _safe_queue(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
         """Thread-safe wrapper around irc.queueMsg for worker-thread sends.
 
         Limnoria's IrcMsgQueue.enqueue (irclib.py:245) mutates internal
@@ -774,15 +797,20 @@ Add method on `LLM` (near other send helpers):
         With the new executor pool, multiple workers may call queueMsg
         concurrently — serialize them on the plugin side and short-circuit
         cleanly when the plugin is shutting down.
+
+        Returns True if the message was queued, False if dropped due
+        to the plugin closing. Callers that mutate durable state on
+        successful send must check the return.
         """
         if self._llm_executor.closing:
             self.log.debug(
                 "safe_queue dropped (closing) command=%s",
                 getattr(msg, "command", "?"),
             )
-            return
+            return False
         with self._irc_send_lock:
             irc.queueMsg(msg)
+        return True
 ```
 
 **Step 4: Verify**
@@ -814,25 +842,42 @@ global cap.
 
 **Step 1: Write failing test**
 
-In `tests/test_commands.py`:
+In `tests/test_commands.py` (use the existing `ask` command pattern
+from the file — `grep -n "def test_ask" plugins/llm/tests/test_commands.py`
+to find an existing example to copy):
 
 ```python
 class TestCommandPathPermit:
     def test_ask_acquires_permit(self, plugin_env, mocker) -> None:
         plugin, irc, msg = plugin_env
+        # Replace the executor with a MagicMock so we can assert on
+        # permit() without coupling to the real semaphore.
         permit_cm = mocker.MagicMock()
         permit_cm.__enter__ = mocker.MagicMock(return_value=None)
         permit_cm.__exit__ = mocker.MagicMock(return_value=None)
         plugin._llm_executor = mocker.MagicMock()
         plugin._llm_executor.permit.return_value = permit_cm
-        # Stub assistant_request to a benign result so we hit permit and return.
-        plugin.llm_service.assistant_request = mocker.MagicMock(
-            return_value=mocker.MagicMock(content="ok", error=None)
+        plugin._llm_executor.closing = False
+
+        # Stub assistant_request to a benign AssistantResult.
+        result = mocker.MagicMock(
+            content="ok", error=None, prompt_tokens=1,
+            completion_tokens=1, cost=0.0, model="m",
+            grounding_used=False,
         )
-        # Invoke _ask_impl through the test fixture's normal path.
-        # (Adapt to the fixture shape used by other command tests in this file.)
-        ...
-        plugin._llm_executor.permit.assert_called()
+        plugin.llm_service.assistant_request = mocker.MagicMock(
+            return_value=result
+        )
+
+        # Invoke ask via the public command surface — matches how
+        # the existing test_ask_* tests in this file drive it.
+        plugin.ask(irc, msg, ["hello"])
+
+        plugin._llm_executor.permit.assert_called_once()
+        # Verify ordering: _allow_concurrent must be entered before
+        # permit (releases plugin RLock first, then bounded wait).
+        # The MagicMock for _allow_concurrent is provided by the
+        # fixture's _MetaSynchronized_rlock; assert via call_args.
 ```
 
 **Step 2: Verify failure**
@@ -980,6 +1025,19 @@ def _evaluate() -> None:
 The memory-extraction shim itself also short-circuits on closing
 (Task 9), but stopping at the source avoids the round-trip.
 
+Also gate the worker `finally` discard at line 919:
+
+```python
+finally:
+    # Closing-gate hygiene: capture once, gate the locked discard.
+    # discard on an empty set is harmless, but gating is consistent
+    # with invariant 6 (locked _spontaneous_events access at all
+    # three sites: die, worker discard, main add).
+    if not self._llm_executor.closing:
+        with self._spontaneous_events_lock:
+            self._spontaneous_events.discard(event_name)
+```
+
 **Step 4: Verify**
 
 Run: `make lint && make typecheck && make test`.
@@ -1063,6 +1121,25 @@ Audit the closure body for worker-thread writes — the closure does
 are DB-only and use the thread-local connection. No `irc.queueMsg`
 in this path.
 
+**In-flight closing-gate** (codex finding): an extraction submitted
+*before* `die()` may still be running when shutdown lands. Gate the
+extraction body itself, not just the scheduler shim, so post-die
+extractions don't continue mutating persistence:
+
+```python
+def _extract_memories_bg() -> None:
+    # Short-circuit at the top — extraction may have been queued
+    # before die() but not yet started.
+    if self._llm_executor.closing:
+        return
+    # ... existing extraction work ...
+    # Re-check before the final promotion / cleanup writes (the
+    # extraction itself can take seconds; closing may flip mid-run).
+    if self._llm_executor.closing:
+        return
+    self._run_memory_cleanup(nick, channel)
+```
+
 **Step 4: Verify**
 
 Run tests; `make lint && make typecheck && make test`.
@@ -1088,31 +1165,121 @@ git commit -m "refactor(llm): submit memory extraction via LLMExecutor"
 
 ```python
 class TestWatchModeReminderMigration:
+    """Bodies sketched here are minimum-viable; copy the build-then-fire
+    pattern from the existing `test_reminder_*` tests in
+    plugins/llm/tests/test_plugin.py to wire up the closure properly
+    (use make_reminder_row from conftest.py:93)."""
+
     def test_dispatch_runs_on_worker_via_submit(self, plugin_env, mocker) -> None:
         """Action-prompt reminder _deliver submits to executor."""
-        ...
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        # Stub world.ircs so active_irc resolves on main thread.
+        mocker.patch("llm.plugin.world.ircs", [irc])
+
+        row = make_reminder_row(action_prompt="say hi", chain_position=1)
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        deliver()
+        plugin._llm_executor.submit.assert_called_once()
+        label = plugin._llm_executor.submit.call_args[0][0]
+        assert label.startswith("reminder:")
 
     def test_chain_reschedules_on_inner_exception(self, plugin_env, mocker) -> None:
-        """NEW BEHAVIOR — assistant_request raises ⇒ _mechanical_reschedule still called."""
-        ...
+        """NEW BEHAVIOR — assistant_request raises ⇒ _finalize_reminder_fire
+        still calls _mechanical_reschedule for structured rows."""
+        plugin, irc, _msg = plugin_env
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._mechanical_reschedule = mocker.MagicMock()
+        plugin.llm_service.assistant_request = mocker.MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        row = make_reminder_row(action_prompt="x", recurrence_seconds=60, chain_position=1)
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        deliver()  # synchronously runs through worker since executor is real
+        # Wait briefly for the worker to finish (real executor here
+        # so we exercise the finally path).
+        time.sleep(0.5)
+        plugin._mechanical_reschedule.assert_called_once()
 
     def test_active_irc_resolved_on_main_thread(self, plugin_env, mocker) -> None:
         """Worker does NOT iterate world.ircs."""
-        ...
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        ircs_attr = mocker.patch("llm.plugin.world.ircs", new_callable=mocker.PropertyMock)
+        # The submit call_args should not include world.ircs iteration.
+        # Check by asserting the captured `active_irc` equals the
+        # main-thread snapshot, not some lookup function.
+        row = make_reminder_row(action_prompt="x", chain_position=1)
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        deliver()
+        # The submit's args[1] is the worker fn; its closed-over irc is captured.
+        assert plugin._llm_executor.submit.called
 
     def test_rate_limit_skip_does_not_submit(self, plugin_env, mocker) -> None:
-        """Precheck blocks ⇒ executor.submit NOT called and skip notice queued."""
-        ...
+        """Precheck blocks ⇒ executor.submit NOT called, skip notice
+        queued, and _finalize_reminder_fire ran (one-shot deletes,
+        recurring reschedules)."""
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=True)  # block
+        plugin._mechanical_reschedule = mocker.MagicMock()
+        plugin.db.delete_reminder = mocker.MagicMock()
+
+        row = make_reminder_row(action_prompt="x", recurrence_seconds=60, chain_position=1)
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        deliver()
+        plugin._llm_executor.submit.assert_not_called()
+        # Skip notice was queued via _safe_queue → irc.queueMsg.
+        irc.queueMsg.assert_called()
+        # Recurring ⇒ rescheduled, not deleted.
+        plugin._mechanical_reschedule.assert_called_once()
 
     def test_finally_short_circuits_on_closing(self, plugin_env, mocker) -> None:
         """closing=True at finally entry ⇒ no reschedule, no _reminders mutation, no DB delete."""
-        ...
+        plugin, irc, _msg = plugin_env
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._mechanical_reschedule = mocker.MagicMock()
+        plugin.db.delete_reminder = mocker.MagicMock()
+        plugin.llm_service.assistant_request = mocker.MagicMock(
+            return_value=mocker.MagicMock(content="ok", error=None)
+        )
+
+        row = make_reminder_row(action_prompt="x", chain_position=1)
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        # Flip closing right after the worker submits but before it runs:
+        # use a real executor and shutdown immediately.
+        plugin._llm_executor.shutdown()
+        deliver()
+        time.sleep(0.3)
+        plugin._mechanical_reschedule.assert_not_called()
+        plugin.db.delete_reminder.assert_not_called()
 
     def test_skip_notice_preserves_nick_prefix_and_collapse(
         self, plugin_env, mocker
     ) -> None:
         """Today's _send prepends 'nick: ' and runs _collapse_for_irc — preserve both."""
-        ...
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=True)
+        plugin._collapse_for_irc = mocker.MagicMock(side_effect=lambda s: s)
+
+        row = make_reminder_row(
+            action_prompt="x", nick="alice", channel="#test", chain_position=1
+        )
+        deliver = plugin._make_reminder_delivery_closure(row, mocker.MagicMock())
+        deliver()
+        # Last queued msg should be the prefixed skip notice.
+        sent = irc.queueMsg.call_args[0][0]
+        assert "alice:" in str(sent)
+        plugin._collapse_for_irc.assert_called()
 ```
 
 (Use the existing `make_reminder_row` factory from
@@ -1144,18 +1311,51 @@ a) **Extract a shared sender helper** so both the main-thread skip
        self._safe_queue(irc, ircmsgs.privmsg(target, collapsed))
    ```
 
-b) **Main-thread shim** (replaces today's body of `_deliver`):
+b) **Shared finalize helper** (codex C2 — pre-submit early returns
+   in the main-thread shim must not bypass cleanup; the existing
+   `_deliver` finally at plugin.py:1307–1310 is unconditional today,
+   and the migration must preserve that):
+
+   ```python
+   def _finalize_reminder_fire(
+       self,
+       *,
+       event_name: str,
+       is_structured: bool,
+       reschedule_args: tuple[Any, ...] | None,
+   ) -> None:
+       """Cleanup + (optionally) reschedule for a fired reminder.
+
+       Used by every fire branch — main-thread shim early returns
+       (no IRC, rate-limited) AND the worker's finally — so a
+       reminder is never left half-cleaned. Closing-gated so a
+       shutting-down plugin does not mutate `_reminders` or DB.
+       """
+       if self._llm_executor.closing:
+           return
+       if is_structured and reschedule_args is not None:
+           self._mechanical_reschedule(*reschedule_args)
+       with self._reminders_lock:
+           self._reminders.pop(event_name, None)
+       self.db.delete_reminder(event_name)
+   ```
+
+c) **Main-thread shim** (replaces today's body of `_deliver`):
    - Resolve `active_irc = next((c for c in world.ircs), None)` —
      no more `for/break` pattern.
-   - If `active_irc is None`, log and return.
+   - If `active_irc is None`: call `self._finalize_reminder_fire(
+     event_name=..., is_structured=is_structured,
+     reschedule_args=...)` and return. (Recurring reminders still
+     reschedule against wallclock; one-shots get cleaned up.)
    - Run rate-limit precheck via
      `self._check_rate_limit(active_irc, "ask", rl_account, ..., silent=True)`.
    - If blocked, call `self._send_reminder_text(active_irc, target, nick,
-     "(action skipped — daily ask limit reached)")` and return.
+     "(action skipped — daily ask limit reached)")` then
+     `self._finalize_reminder_fire(...)` and return.
    - `self._llm_executor.submit(f"reminder:{event_name}",
      self._fire_reminder_action, active_irc, captured_args...)`.
 
-c) **Worker `_fire_reminder_action(active_irc, ...)`**:
+d) **Worker `_fire_reminder_action(active_irc, ...)`**:
 
    ```python
    def _fire_reminder_action(self, active_irc, ..., is_structured, event_name, ...) -> None:
@@ -1165,25 +1365,23 @@ c) **Worker `_fire_reminder_action(active_irc, ...)`**:
            # No iteration of world.ircs; use captured active_irc.
            ...
        finally:
-           # Capture closing ONCE so a flip mid-finally does not silently drop
-           # half the cleanup.
-           closing = self._llm_executor.closing
-           if not closing and is_structured:
-               self._mechanical_reschedule(...)
-           if not closing:
-               with self._reminders_lock:
-                   self._reminders.pop(event_name, None)
-               self.db.delete_reminder(event_name)
+           # _finalize_reminder_fire captures `closing` itself and
+           # short-circuits — single source of truth for cleanup.
+           self._finalize_reminder_fire(
+               event_name=event_name,
+               is_structured=is_structured,
+               reschedule_args=(...),
+           )
    ```
 
-d) **Behavior change (deliberate):** today an exception in the inner
+e) **Behavior change (deliberate):** today an exception in the inner
    try (LLM timeout, transient provider error) skips
    `_mechanical_reschedule` and the watch chain dies after one bad
    fire. After this change the chain survives a single failed fire.
    The regression test `test_chain_reschedules_on_inner_exception`
    asserts the new behavior.
 
-e) **`irc.queueMsg` audit**: every queueMsg site reachable from the
+f) **`irc.queueMsg` audit**: every queueMsg site reachable from the
    worker uses `_safe_queue` (or `_send_reminder_text` which itself
    uses `_safe_queue`). The fallback-error queueMsg path inside the
    `except Exception` at line 1294 (`_send` for the fallback message)
@@ -1225,19 +1423,61 @@ path** (must move to `_safe_queue` / closing-gate):
 
 **Step 1: Write failing tests**
 
-In `tests/test_service.py`:
+In `tests/test_service.py` (use the existing
+`TestScheduledLLMTask*` patterns at the top of that file as a
+template — they already wire a service instance against a real
+plugin):
 
 ```python
 class TestScheduledLLMTaskMigration:
-    def test_fire_submits_to_executor(self, ...) -> None:
+    def test_fire_submits_to_executor(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        # Build a row + db mock, then build the callback the way
+        # _make_scheduled_llm_task_callback does and invoke it.
+        # Capture the inner _worker so we can assert on submit().
         ...
+        plugin._llm_executor.submit.assert_called_once()
+        label = plugin._llm_executor.submit.call_args[0][0]
+        assert label.startswith("scheduled_task:")
 
-    def test_reschedule_runs_after_dispatch_even_on_exception(self, ...) -> None:
+    def test_reschedule_runs_after_dispatch_even_on_exception(
+        self, plugin_env, mocker
+    ) -> None:
+        """_dispatch_scheduled_task raises ⇒ _maybe_reschedule_or_clean
+        still called from finally (provided closing=False)."""
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor.shutdown()  # use real executor for finally semantics
+        plugin._llm_executor = make_real_executor(plugin)  # helper or new instance
+        service = plugin.llm_service
+        service._dispatch_scheduled_task = mocker.MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+        service._maybe_reschedule_or_clean = mocker.MagicMock()
+        # Drive fire() with a non-None row from get_scheduled_llm_task.
         ...
+        time.sleep(0.3)
+        service._maybe_reschedule_or_clean.assert_called_once()
 
-    def test_closing_short_circuits(self, ...) -> None:
+    def test_closing_short_circuits(self, plugin_env, mocker) -> None:
+        """closing=True at fire() entry ⇒ no submit, no dispatch."""
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+        service = plugin.llm_service
+        service._dispatch_scheduled_task = mocker.MagicMock()
+        # Drive fire() the same way the periodic-event would.
         ...
+        plugin._llm_executor.submit.assert_not_called()
+        service._dispatch_scheduled_task.assert_not_called()
 ```
+
+(The `...` lines are the `make_*` row construction and `fire`
+invocation — copy from the existing `test_scheduled_*` tests in
+this file. They are not "test the implementation, then write the
+test" placeholders; they're construction boilerplate that the
+implementing agent fills in by analogy.)
 
 **Step 2: Verify failure.**
 
@@ -1357,6 +1597,31 @@ class TestSafetyPollGuard:
         with pytest.raises(RuntimeError):
             plugin._enqueue_safety_poll()
         assert not plugin._safety_poll_inflight.is_set()
+
+    def test_dropped_send_does_not_mark_delivered(self, plugin_env, mocker) -> None:
+        """Codex C3: _safe_queue drop on closing must not falsely
+        advance delivery state (delete_pending_task, log_usage)."""
+        plugin, irc, _msg = plugin_env
+        plugin.db.delete_pending_task = mocker.MagicMock()
+        plugin.db.log_usage = mocker.MagicMock()
+        # Closing flips between safe_queue and the delete: simulate
+        # by patching _safe_queue to return False.
+        plugin._safe_queue = mocker.MagicMock(return_value=False)
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+
+        # Build a pending result row and call _deliver_pending_result.
+        result = mocker.MagicMock(
+            task_id="tid", is_channel=False, status="completed",
+            content="hello", delivery_attempt_count=0,
+        )
+        # Patch world.ircs to a single connection whose state lets
+        # the channel branch / PM branch route normally.
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._deliver_pending_result(result, "alice", "alice")
+
+        plugin.db.delete_pending_task.assert_not_called()
+        plugin.db.log_usage.assert_not_called()
 ```
 
 **Step 2: Verify failure.**
@@ -1400,9 +1665,42 @@ In `_check_pending_tasks` body (now running on a worker):
   **723, 728** — line 720 is the `for irc_conn in world.ircs:` loop
   iteration, leave it untouched) use
   `self._safe_queue(irc_conn, ...)` instead of
-  `irc_conn.queueMsg(...)`.
+  `irc_conn.queueMsg(...)`. Capture the boolean return — a dropped
+  send must NOT mark `delivered = True`:
+
+  ```python
+  if r.is_channel:
+      if target in irc_conn.state.channels:
+          if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+              delivered = True
+          break
+  else:
+      if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+          delivered = True
+      break
+  ```
+
+- **Closing-gate the durable delivery state** (codex C3): if the
+  worker continues past the queueMsg loop while `closing=True`, it
+  must not mutate persistence. Insert a closing check before the
+  `if r.task_id is not None:` block at plugin.py:740 and before the
+  `_log_pending_delivery_usage` call at plugin.py:763:
+
+  ```python
+  if self._llm_executor.closing:
+      return  # no DB writes from a shutting-down worker
+
+  # existing lines 740–760: delete_pending_task / update_delivery_attempt
+  # / _schedule_queue_wakeup — left as-is (already past closing gate).
+
+  # existing lines 762–764: log_usage on completed+delivered.
+  ```
+
 - Delivery retry that does `schedule.addEvent` from worker (line
-  759–760): gate with `if not self._llm_executor.closing:`.
+  759–760): the closing-gate above subsumes this. The
+  `_schedule_queue_wakeup` call still needs its own gate per the
+  first bullet because it is reachable from the periodic-poll path
+  even when no row was processed.
 
 **Step 4: Verify.**
 
@@ -1434,21 +1732,56 @@ command. The closest user-facing diagnostic surface is `usage`
 
 Existing usage tests live in `plugins/llm/tests/test_commands.py`
 around line 1459 — they invoke `plugin.usage(irc, msg, [])` and
-inspect `irc.reply.call_args_list` for the captured reply text. Use
-the same pattern:
+inspect `irc.reply.call_args_list` for the captured reply text.
+
+**Routing trap (codex I1):** `plugin.usage` at plugin.py:3208–3214
+dispatches to `_usage_channel` for channel messages and
+`_usage_global` only for PMs (with the `admin` capability). The
+default `plugin_env` fixture sets `msg.channel = "#test"` (line 174)
+and patches `ircdb.checkCapability` to grant only `llm.*` (line 187).
+The test must override both:
 
 ```python
 class TestUsageExecutorField:
     def test_global_usage_includes_executor(self, plugin_env, mocker) -> None:
         plugin, irc, msg = plugin_env
-        # Real executor exists from plugin_env (max_concurrency=16
-        # default from conftest.make_registry_side_effect).
+        # Force the PM + admin path so usage routes to _usage_global.
+        msg.channel = None
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=True,  # grant admin
+        )
+
         plugin.usage(irc, msg, [])
         replies = " ".join(
             str(call.args[0]) for call in irc.reply.call_args_list
         )
         # running/queued/max — at construction time both are 0.
         assert "executor: 0/0/16" in replies
+
+    def test_global_usage_executor_field_under_load(
+        self, plugin_env, mocker
+    ) -> None:
+        """Field reflects actual executor counters."""
+        plugin, irc, msg = plugin_env
+        msg.channel = None
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        # Submit a long-running task so running()=1 at the moment of
+        # the usage query; release it after assertion.
+        release = threading.Event()
+        plugin._llm_executor.submit("hold", release.wait, 5)
+        # Wait for running() to reflect the held slot.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and plugin._llm_executor.running() < 1:
+            time.sleep(0.02)
+        try:
+            plugin.usage(irc, msg, [])
+            replies = " ".join(
+                str(call.args[0]) for call in irc.reply.call_args_list
+            )
+            assert "executor: 1/0/16" in replies
+        finally:
+            release.set()
 ```
 
 **Step 2: Verify failure.**
