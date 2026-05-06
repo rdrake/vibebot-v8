@@ -716,7 +716,7 @@ class TestSendLongReply:
         mock_irc.queueBatch.assert_not_called()
 
     def test_long_reply_footer_mode_appends_url_to_full_reply(self, plugin_env, mocker):
-        """GIVEN footer mode (default) AND over threshold THEN full reply ships with URL footer."""
+        """GIVEN footer mode AND over threshold THEN reply is capped at threshold + URL footer."""
         import supybot.conf as supy_conf
 
         plugin, mock_irc, mock_msg = plugin_env
@@ -734,8 +734,9 @@ class TestSendLongReply:
         plugin.llm_service.summarize_for_irc.assert_not_called()
         mock_irc.queueBatch.assert_called_once()
         privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        # Original 7 lines + 1 footer
-        assert len(privmsgs) == 8
+        # Threshold caps content at 6 lines + 1 footer.
+        assert len(privmsgs) == 7
+        assert [m.args[1] for m in privmsgs[:6]] == [f"line {i}" for i in range(1, 7)]
         assert privmsgs[-1].args[1] == "Full answer: https://example.com/llm/full.html"
         # Footer is its own logical line — no concat tag.
         assert "draft/multiline-concat" not in privmsgs[-1].server_tags

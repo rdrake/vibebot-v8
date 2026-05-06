@@ -1852,9 +1852,15 @@ class LLM(callbacks.Plugin):
                 irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
                 return
             if url:
-                # "footer" mode: deliver the full reply and append the
-                # pastebin URL as a final, distinct logical line.
+                # "footer" mode: cap content at the threshold so the
+                # registry value is a hard line cap (not just a trigger
+                # for attaching a URL), then append the pastebin URL as
+                # a final, distinct logical line. Without the cap a
+                # threshold of N would still emit all original lines
+                # plus the footer, totalling N+1+ wire lines.
                 footer = f"{_FULL_ANSWER_LABEL}: {url}"
+                chunks = chunks[:line_threshold]
+                logical_lines = [c for c, _ in chunks]
                 logical_lines.append(footer)
                 chunks.append((footer, False))
 

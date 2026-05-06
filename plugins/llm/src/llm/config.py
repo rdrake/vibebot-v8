@@ -428,9 +428,12 @@ conf.registerChannelValue(
     "longReplyLineThreshold",
     registry.NonNegativeInteger(
         3,
-        _("""Number of generated IRC reply lines after which chat replies are saved
-        as a full HTML answer and replaced in IRC with a one-line teaser plus
-        link. Set to 0 to disable hybrid long-reply linking."""),
+        _("""Maximum rendered IRC wire-lines for a chat reply before the full
+        answer is saved as HTML and linked. In "teaser" mode the reply collapses
+        to a one-line summary plus link. In "footer" mode content is capped at
+        this many wire-lines and the link is appended as a final line (total
+        sent: threshold + 1). Lines longer than the IRC byte limit count as
+        multiple wire-lines. Set to 0 to disable hybrid long-reply linking."""),
     ),
 )
 

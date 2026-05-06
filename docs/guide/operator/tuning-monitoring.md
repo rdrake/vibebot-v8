@@ -207,7 +207,7 @@ Set `httpRoot` to a filesystem path (e.g., `/var/www/llm`) and `httpUrlBase` to 
 |---------|---------|-------------|
 | `httpRoot` | (empty) | Filesystem path for output files. Empty = use Limnoria's built-in server |
 | `httpUrlBase` | (empty) | Base URL for accessing files. Empty = use Limnoria's public URL + `/llm/` |
-| `longReplyLineThreshold` | `6` | Generated IRC reply lines after which chat replies are saved as HTML and replaced with a one-line teaser plus link. Set `0` to disable |
+| `longReplyLineThreshold` | `3` | Maximum rendered IRC wire-lines before the full reply is saved as HTML and linked. In `teaser` mode the body collapses to one summary line plus link; in `footer` mode content is capped at this many wire-lines and the link is appended (total: threshold + 1). Lines past the IRC byte limit count as multiple wire-lines. Set `0` to disable |
 | `longReplyTeaserMaxChars` | `220` | Maximum characters in the one-line teaser for linked long replies |
 
 ### File cleanup
