@@ -2556,6 +2556,10 @@ class LLM(callbacks.Plugin):
             snapshot_candidate_ids = tuple(c.id for c in existing_candidates)
 
             def _extract_memories_bg() -> None:
+                # Short-circuit at the top — extraction may have been
+                # queued before die() but not yet started.
+                if self._llm_executor.closing:
+                    return
                 try:
                     extraction = self.llm_service.extract_memories(
                         nick,
@@ -2626,6 +2630,10 @@ class LLM(callbacks.Plugin):
                     if cleanup_interval > 0:
                         count = self.db.increment_memory_saves(nick)
                         if count >= cleanup_interval:
+                            # Re-check closing before the cleanup pass:
+                            # extraction itself can take seconds.
+                            if self._llm_executor.closing:
+                                return
                             self.db.reset_memory_saves(nick)
                             self._run_memory_cleanup(nick, channel)
 
@@ -2633,7 +2641,13 @@ class LLM(callbacks.Plugin):
                     log.exception("Memory extraction failed for %s", nick)
 
             event_name = f"llm_memory_{uuid.uuid4().hex[:8]}"
-            schedule.addEvent(_extract_memories_bg, time.time() + 0.1, name=event_name)
+
+            def _enqueue() -> None:
+                if self._llm_executor.closing:
+                    return
+                self._llm_executor.submit(f"memory_extract:{nick}", _extract_memories_bg)
+
+            schedule.addEvent(_enqueue, time.time() + 0.1, name=event_name)
 
         except Exception:
             log.exception("Memory extraction scheduling failed for %s", nick)

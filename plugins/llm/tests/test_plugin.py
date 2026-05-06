@@ -1196,6 +1196,31 @@ class TestRateBucketsConcurrency:
         assert len(plugin._rate_buckets[key]) == threads_n * per_thread
 
 
+class TestMemoryExtractionMigration:
+    def test_extraction_submitted_to_executor(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_memory_extraction("alice", "#chan", "user msg", "bot reply")
+        callback = add_event.call_args[0][0]
+        callback()
+        plugin._llm_executor.submit.assert_called_once()
+        assert plugin._llm_executor.submit.call_args[0][0].startswith("memory_extract:")
+
+    def test_extraction_short_circuits_when_closing(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_memory_extraction("alice", "#chan", "user msg", "bot reply")
+        callback = add_event.call_args[0][0]
+        callback()
+        plugin._llm_executor.submit.assert_not_called()
+
+
 class TestSpontaneousMigration:
     def test_add_event_callback_is_shim_not_evaluate(self, plugin_env, mocker) -> None:
         plugin, irc, _msg = plugin_env
