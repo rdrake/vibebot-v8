@@ -1432,20 +1432,6 @@ class LLMService:
         if xai_headers:
             existing = kwargs.get("extra_headers") or {}
             kwargs["extra_headers"] = {**existing, **xai_headers}
-            self.log.warning(
-                "xai_conv_id op=%s model=%s channel=%r conv_id=%s",
-                op,
-                model,
-                channel,
-                xai_headers.get("x-grok-conv-id"),
-            )
-        elif self._is_xai_model(model):
-            self.log.warning(
-                "xai_conv_id op=%s model=%s channel=%r MISSING (no channel)",
-                op,
-                model,
-                channel,
-            )
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
