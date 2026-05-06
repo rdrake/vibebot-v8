@@ -1,6 +1,6 @@
 .PHONY: install run test test-all lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
-       install-deploy worktree-create worktree-remove wait-ci push-and-wait rebase-pr docs docs-serve
+       install-deploy worktree-create worktree-remove wait-ci push-and-wait deploy rebase-pr docs docs-serve
 
 install:
 	uv sync
@@ -80,6 +80,17 @@ wait-ci:
 		sleep 10; \
 	done
 
+# Push, wait for CI + Docker, then restart the production bot. The
+# systemd unit's ExecStartPre runs `docker pull` so a restart picks
+# up the freshly published image. VIBEBOT_HOST overrides the SSH
+# target (default: vibebot@rdrake.org).
+VIBEBOT_HOST ?= vibebot@rdrake.org
+
+deploy: push-and-wait
+	@echo "→ Restarting vibebot on $(VIBEBOT_HOST) …"
+	@ssh $(VIBEBOT_HOST) 'systemctl --user restart vibebot && sleep 5 && systemctl --user is-active vibebot'
+	@echo "vibebot restarted ✓"
+
 # Push current branch and block until CI + Docker image build both succeed.
 # Docker is workflow_run-triggered after CI, so we wait for them in series.
 push-and-wait:
@@ -149,6 +160,7 @@ help:
 	@echo "  worktree-remove - Remove worktree and branch (BRANCH=name required)"
 	@echo "  wait-ci         - Watch current GitHub Actions run until completion"
 	@echo "  push-and-wait   - Push current branch, then wait for CI + Docker image build"
+	@echo "  deploy          - push-and-wait, then restart the bot via SSH (VIBEBOT_HOST=...)"
 	@echo "  rebase-pr       - Ask dependabot to rebase a PR (PR=number required)"
 	@echo "  clean           - Remove cache files"
 	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
