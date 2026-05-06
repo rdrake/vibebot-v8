@@ -427,7 +427,7 @@ conf.registerChannelValue(
     LLM,
     "longReplyLineThreshold",
     registry.NonNegativeInteger(
-        4,
+        3,
         _("""Number of generated IRC reply lines after which chat replies are saved
         as a full HTML answer and replaced in IRC with a one-line teaser plus
         link. Set to 0 to disable hybrid long-reply linking."""),
