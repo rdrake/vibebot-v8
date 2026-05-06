@@ -176,7 +176,7 @@ class TestConfigValues:
         import supybot.conf as conf
         from llm import config  # noqa: F401
 
-        assert conf.supybot.plugins.LLM.longReplyLineThreshold() == 6
+        assert conf.supybot.plugins.LLM.longReplyLineThreshold() == 1
         assert conf.supybot.plugins.LLM.longReplyTeaserMaxChars() == 220
 
     def test_bridge_registry_values_registered_with_safe_defaults(self) -> None:

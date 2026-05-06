@@ -427,7 +427,7 @@ conf.registerChannelValue(
     LLM,
     "longReplyLineThreshold",
     registry.NonNegativeInteger(
-        6,
+        1,
         _("""Number of generated IRC reply lines after which chat replies are saved
         as a full HTML answer and replaced in IRC with a one-line teaser plus
         link. Set to 0 to disable hybrid long-reply linking."""),
@@ -453,11 +453,11 @@ conf.registerChannelValue(
     LLM,
     "longReplyLinkMode",
     _LongReplyLinkMode(
-        "footer",
+        "teaser",
         _("""How to surface the saved HTML answer when a reply exceeds
-        longReplyLineThreshold. "footer" (default) sends the full multi-line
-        reply with the URL appended as a final line. "teaser" replaces the
-        reply with a one-line teaser plus URL — quieter but hides content."""),
+        longReplyLineThreshold. "footer" sends the full multi-line
+        reply with the URL appended as a final line. "teaser" (default) replaces
+        the reply with a one-line teaser plus URL — quieter but hides content."""),
     ),
 )
 
