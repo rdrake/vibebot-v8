@@ -264,6 +264,10 @@ class LLMExecutor:
         # Track in-flight futures so drain() can wait without re-shutting down.
         self._inflight: set[Future[Any]] = set()
         self._inflight_lock = threading.Lock()
+        # Worker-context flag — robust against thread renaming/wrapping
+        # (a thread-name-prefix check silently misfires if anything ever
+        # wraps the pool or renames threads). Set inside `_run` below.
+        self._worker_ctx = threading.local()
 
     @property
     def max_concurrency(self) -> int:
@@ -294,7 +298,7 @@ class LLMExecutor:
             self._semaphore.release()
 
     def submit(self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
-        if threading.current_thread().name.startswith(_WORKER_THREAD_PREFIX):
+        if getattr(self._worker_ctx, "in_worker", False):
             raise RecursiveSubmitError(
                 f"submit('{label}') called from worker thread; nested LLM "
                 "calls must run inline within the existing permit"
@@ -312,6 +316,7 @@ class LLMExecutor:
         )
 
         def _run() -> Any:
+            self._worker_ctx.in_worker = True
             self._semaphore.acquire()
             with self._counter_lock:
                 self._queued -= 1
@@ -336,6 +341,10 @@ class LLMExecutor:
                 with self._counter_lock:
                     self._running -= 1
                 self._semaphore.release()
+                # Clear the in_worker flag — pool threads are reused, so
+                # leaving it set would falsely trip the guard for the
+                # next task on the same thread.
+                self._worker_ctx.in_worker = False
 
         fut = self._executor.submit(_run)
         with self._inflight_lock:
@@ -451,6 +460,11 @@ git commit -m "feat(llm): register maxConcurrentLLMCalls (default 16) and wire t
 **Files:**
 - Modify: `plugins/llm/src/llm/plugin.py` — `LLM.__init__` (~423–517),
   `LLM.die` (529–570).
+- Modify: `plugins/llm/tests/conftest.py` — convert `plugin_env` to a
+  yielding fixture with `plugin.die()` teardown (the executor must be
+  shut down per test or every plugin-level test leaks 16 idle pool
+  threads, hitting OS limits and producing pytest `ResourceWarning`s
+  during `make test-all`).
 - Modify: `plugins/llm/tests/test_plugin.py` — add lifecycle tests.
 
 **Step 1: Write failing tests**
@@ -523,16 +537,47 @@ Note: `drain()` uses `concurrent.futures.wait` on captured futures —
 NOT a second call to `_executor.shutdown(timeout=…)`, which is not a
 real signature in CPython 3.12–3.14.
 
+**Step 3b: Convert `plugin_env` fixture to teardown the executor**
+
+`plugin_env` at `plugins/llm/tests/conftest.py:154` currently ends with
+`return plugin, mock_irc, mock_msg` (line 264) — there is no teardown.
+Once Task 3 lands, every test that uses `plugin_env` constructs a real
+`LLMExecutor` (a 16-worker `ThreadPoolExecutor`), and the threads
+remain idle for the rest of the pytest process. Convert the fixture
+to yield and call `die()` on teardown:
+
+```python
+@pytest.fixture
+def plugin_env(mocker: MockerFixture):
+    # ... existing body unchanged through line 263 ...
+    try:
+        yield plugin, mock_irc, mock_msg
+    finally:
+        # die() shuts down the executor and drains briefly. Safe to
+        # call even if a test already invoked die(); shutdown is
+        # idempotent.
+        try:
+            plugin.die()
+        except Exception:
+            pass
+```
+
+(The `try/except Exception` matches the spirit of pytest fixture
+teardown — never let teardown noise hide the actual test failure.)
+
 **Step 4: Verify**
 
 Run: `cd plugins/llm && uv run pytest tests/test_plugin.py::TestLLMExecutorLifecycle -v`
 Expected: PASS.
 Run: `make lint && make typecheck && make test`.
+Spot-check that `make test` is not noisier with thread-leak
+`ResourceWarning`s than before (a single short pytest run should not
+report `unclosed.*ThreadPoolExecutor`-style warnings).
 
 **Step 5: Commit**
 
 ```bash
-git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_plugin.py
+git add plugins/llm/src/llm/plugin.py plugins/llm/tests/conftest.py plugins/llm/tests/test_plugin.py
 git commit -m "feat(llm): wire LLMExecutor into plugin lifecycle with drain on die"
 ```
 
@@ -555,32 +600,44 @@ Real signatures (from `plugin.py:2170, 2208`):
 
 ```python
 class TestRateBucketsConcurrency:
-    def test_concurrent_rate_limit_check_does_not_raise(self, plugin_env) -> None:
+    def test_concurrent_rate_limit_count_is_exact(self, plugin_env) -> None:
+        """The lock guarantees the deque length matches the number of
+        recorded hits exactly. CPython's GIL makes individual deque ops
+        atomic, so a "no exception" assertion would pass even on the
+        broken code — assert the count instead."""
         import threading
         import time
         plugin, _irc, _msg = plugin_env
         errors: list[Exception] = []
+        threads_n = 8
+        per_thread = 200
+        now = time.time()
+        barrier = threading.Barrier(threads_n)
 
         def hammer() -> None:
             try:
-                now = time.time()
-                for _ in range(200):
+                barrier.wait(timeout=2)
+                for _ in range(per_thread):
                     plugin._record_rate_limit_hit("ask", "alice", now)
                     plugin._is_rate_limited("ask", "alice", now, tier="registered")
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        threads = [threading.Thread(target=hammer) for _ in range(threads_n)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
         assert not errors
+        # The deque trims entries older than the window; with `now`
+        # constant, every hit lands in the window.
+        key = "ask:alice"
+        assert len(plugin._rate_buckets[key]) == threads_n * per_thread
 ```
 
 **Step 2: Verify failure (or flake)**
 
-Run: `cd plugins/llm && uv run pytest tests/test_plugin.py::TestRateBucketsConcurrency -v` (rerun several times — TOCTOU is probabilistic).
+Run: `cd plugins/llm && uv run pytest tests/test_plugin.py::TestRateBucketsConcurrency -v` (rerun several times — TOCTOU is probabilistic; the count assertion makes it visible). If the failure mode is "deque trim races a check and produces an off-by-one count", the count assertion catches it; "no exception" alone would not.
 
 **Step 3: Add lock and use it**
 
@@ -719,6 +776,10 @@ Add method on `LLM` (near other send helpers):
         cleanly when the plugin is shutting down.
         """
         if self._llm_executor.closing:
+            self.log.debug(
+                "safe_queue dropped (closing) command=%s",
+                getattr(msg, "command", "?"),
+            )
             return
         with self._irc_send_lock:
             irc.queueMsg(msg)
@@ -886,18 +947,38 @@ def _enqueue() -> None:
 schedule.addEvent(_enqueue, time.time() + 0.5, name=event_name)
 ```
 
-Inside `_evaluate`, audit and replace worker-thread writes:
+Inside `_evaluate`, audit and replace worker-thread writes. The
+closing-gate must come **after** the existing PASS short-circuit at
+~line 887 (otherwise a closing flip mid-evaluation suppresses the
+PASS early-return and we waste work). Concretely the body becomes:
 
-- Line 893 (`irc.queueMsg(ircmsgs.action(...))`) → `self._safe_queue(irc, ircmsgs.action(...))`.
-- Line 898–900 (`irc.queueMsg(ircmsgs.privmsg(...))`) → `self._safe_queue(irc, ircmsgs.privmsg(...))`.
-- Line 902–912 (`self.db.log_usage(...)`) — guard with closing
-  check: `if self._llm_executor.closing: return` after the PASS
-  check, so a shutting-down plugin doesn't write a usage row that
-  the replacement plugin will not see.
-- Line 914–915 (`self._schedule_memory_extraction(...)`) — same
-  closing check before scheduling. The memory-extraction shim itself
-  also short-circuits on closing (Task 9), but stopping at the
-  source avoids the round-trip.
+```python
+def _evaluate() -> None:
+    # ... existing setup, history gather, assistant_request ...
+
+    # Existing PASS short-circuit stays first.
+    if result.error or result.content.strip().upper() == "PASS":
+        return
+
+    # NEW closing gate — after PASS check, before any worker-thread
+    # write to plugin/db state or IRC.
+    if self._llm_executor.closing:
+        return
+
+    # Replaced send sites:
+    if action_intended:
+        self._safe_queue(irc, ircmsgs.action(channel, body))   # was line 893: irc.queueMsg(...)
+    else:
+        self._safe_queue(irc, ircmsgs.privmsg(channel, body))  # was lines 898–900: irc.queueMsg(...)
+
+    # log_usage and memory-extraction stay gated by the closing
+    # check above (we already returned if closing).
+    self.db.log_usage(...)                          # existing lines 902–912
+    self._schedule_memory_extraction(...)           # existing lines 914–915
+```
+
+The memory-extraction shim itself also short-circuits on closing
+(Task 9), but stopping at the source avoids the round-trip.
 
 **Step 4: Verify**
 
@@ -1034,8 +1115,8 @@ class TestWatchModeReminderMigration:
         ...
 ```
 
-(Use the existing `make_reminder_row` fixture from
-`conftest.py:379+` and look at existing reminder tests for the
+(Use the existing `make_reminder_row` factory from
+`conftest.py:93` and look at existing reminder tests for the
 build-then-invoke pattern.)
 
 **Step 2: Verify failures**
@@ -1185,6 +1266,11 @@ def fire() -> None:
     row = db.get_scheduled_llm_task(event_name)
     if row is None:
         return
+    # Resolve irc on the main (scheduler) thread. The captured object
+    # may go stale if the IRC connection drops and reconnects between
+    # fire() and worker dispatch — `_safe_queue` will silently drop
+    # writes through the dead connection, which is preferable to
+    # crashing the worker.
     irc = world.getIrc(row.network) or (world.ircs[0] if world.ircs else None)
     if irc is None:
         return
@@ -1225,10 +1311,14 @@ git commit -m "refactor(llm): submit scheduled LLM task fires via LLMExecutor"
 
 **Files:**
 - Modify: `plugins/llm/src/llm/plugin.py` — `_check_pending_tasks`
-  (620–652); `__init__` for the `Event`; both schedule registrations
-  at 504 (periodic) and 613 (event wakeup); `_deliver_pending_result`
-  worker-reachable queueMsg sites at 720–729; `_schedule_queue_wakeup`
-  call from worker at 649–650; delivery-retry schedule at 759–760.
+  (620–652); `__init__` for the `Event` (must initialize **before**
+  the `addPeriodicEvent` registration at line 504, otherwise a
+  synchronous fire during construction would NameError); both
+  schedule registrations at 504 (periodic) and 613 (event wakeup);
+  `_deliver_pending_result` worker-reachable queueMsg sites at 723
+  and 728 (line 720 is the `for irc_conn in world.ircs:` loop — do
+  **not** edit that line); `_schedule_queue_wakeup` call from worker
+  at 649–650; delivery-retry schedule at 759–760.
 
 **Step 1: Write failing tests**
 
@@ -1244,8 +1334,15 @@ class TestSafetyPollGuard:
         plugin._llm_executor.submit.assert_not_called()
 
     def test_flag_clears_after_worker_completes(self, plugin_env, mocker) -> None:
+        """Use a real LLMExecutor so add_done_callback fires."""
         plugin, _irc, _msg = plugin_env
-        # Use a real LLMExecutor so add_done_callback fires.
+        # Stub the worker body so the future completes promptly with a
+        # known result. Without this stub, the worker enters the real
+        # `_check_pending_tasks` which iterates a MagicMock service
+        # return value (TypeError) — the test would still "pass" but
+        # only via the exception path, not the success path.
+        plugin.llm_service.check_pending_tasks = mocker.MagicMock(return_value=[])
+
         plugin._enqueue_safety_poll()
         # Wait briefly for the future to complete.
         time.sleep(0.5)
@@ -1266,7 +1363,9 @@ class TestSafetyPollGuard:
 
 **Step 3: Add Event and shim**
 
-In `__init__`:
+In `__init__`, **before** the `addPeriodicEvent` call at line 504
+(any synchronous fire during `__init__` would NameError without the
+flag):
 
 ```python
         self._safety_poll_inflight = threading.Event()
@@ -1297,8 +1396,10 @@ Replace both schedule registrations to use the shim:
 In `_check_pending_tasks` body (now running on a worker):
 - Line 649–650 (`self._schedule_queue_wakeup()`): gate with
   `if not self._llm_executor.closing:`.
-- Worker calls into `_deliver_pending_result` (lines 720, 723, 728)
-  use `self._safe_queue(irc_conn, ...)` instead of
+- Worker calls into `_deliver_pending_result` queueMsg sites (lines
+  **723, 728** — line 720 is the `for irc_conn in world.ircs:` loop
+  iteration, leave it untouched) use
+  `self._safe_queue(irc_conn, ...)` instead of
   `irc_conn.queueMsg(...)`.
 - Delivery retry that does `schedule.addEvent` from worker (line
   759–760): gate with `if not self._llm_executor.closing:`.
@@ -1331,14 +1432,23 @@ command. The closest user-facing diagnostic surface is `usage`
 
 **Step 1: Write failing test**
 
+Existing usage tests live in `plugins/llm/tests/test_commands.py`
+around line 1459 — they invoke `plugin.usage(irc, msg, [])` and
+inspect `irc.reply.call_args_list` for the captured reply text. Use
+the same pattern:
+
 ```python
 class TestUsageExecutorField:
     def test_global_usage_includes_executor(self, plugin_env, mocker) -> None:
         plugin, irc, msg = plugin_env
-        # Invoke usage with no args via the existing test harness.
-        ...
-        # Assert one of the reply messages contains "executor: 0/0/16"
-        # (running/queued/max).
+        # Real executor exists from plugin_env (max_concurrency=16
+        # default from conftest.make_registry_side_effect).
+        plugin.usage(irc, msg, [])
+        replies = " ".join(
+            str(call.args[0]) for call in irc.reply.call_args_list
+        )
+        # running/queued/max — at construction time both are 0.
+        assert "executor: 0/0/16" in replies
 ```
 
 **Step 2: Verify failure.**
@@ -1387,21 +1497,41 @@ from llm.executor import LLMExecutor, RecursiveSubmitError
 
 
 def test_cap_honored_under_burst() -> None:
+    """Cap is fully utilized AND not exceeded.
+
+    A `<=` assertion would pass even if the cap were 1 (or 0 — never
+    observed running). Use a barrier so all `max_concurrency` workers
+    reach `running()` measurement together, then assert exact equality.
+    """
     ex = LLMExecutor(max_concurrency=4, log=logging.getLogger("test"))
     try:
         max_seen = [0]
         seen_lock = threading.Lock()  # SHARED, not per-task — bug from v1 plan.
+        all_started = threading.Barrier(ex.max_concurrency)
         release = threading.Event()
 
         def task() -> None:
+            try:
+                # Wait for all `max_concurrency` workers to be running
+                # before sampling, so `running()` is measured at the
+                # saturated state.
+                all_started.wait(timeout=5)
+            except threading.BrokenBarrierError:
+                return
             with seen_lock:
                 max_seen[0] = max(max_seen[0], ex.running())
             release.wait(timeout=5)
 
+        # Submit max_concurrency * 3 so queue depth is also exercised.
         futs = [ex.submit(f"t{i}", task) for i in range(ex.max_concurrency * 3)]
-        # Give pool time to fill.
-        time.sleep(0.1)
-        assert max_seen[0] <= ex.max_concurrency
+        # Wait for the barrier to release all initial workers, then
+        # give the seen-lock window a moment to capture.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and max_seen[0] < ex.max_concurrency:
+            time.sleep(0.02)
+        assert max_seen[0] == ex.max_concurrency, (
+            f"expected {ex.max_concurrency} concurrent, saw {max_seen[0]}"
+        )
         release.set()
         done, not_done = wait(futs, timeout=5)
         assert not not_done, "all tasks must finish"
@@ -1530,13 +1660,21 @@ skip hooks).
 **Step 3:** Push to main (project allows direct pushes per
 `feedback_branch_protection`).
 
+The Makefile target `make deploy` (commit `e6daad2`) bundles the
+push + wait + remote restart and is the recommended path:
+
 ```bash
-git push origin main
+make deploy
 ```
 
-**Step 4:** Wait for the Docker build workflow to complete (per
-`feedback_wait_for_docker`), then `systemctl --user restart vibebot`
-on the prod host.
+If running each step manually instead:
+
+```bash
+git push origin main
+# Wait for the Docker build workflow to complete (per
+# `feedback_wait_for_docker`) before restarting.
+ssh -i ~/.ssh/id_rsa vibebot@rdrake.org systemctl --user restart vibebot
+```
 
 ---
 
@@ -1562,4 +1700,6 @@ Key invariants the implementation must preserve:
    worker discard, main add).
 7. `irc.queueMsg` from any worker goes through `_safe_queue`. Sites
    to migrate are enumerated per task: plugin.py 893, 898, 1117 (via
-   `_send_reminder_text`), 720, 723, 728; service.py 4594, 4620, 4699.
+   `_send_reminder_text`), 723, 728; service.py 4594, 4620, 4699.
+   (Note: plugin.py:720 is the `for irc_conn in world.ircs:` loop in
+   `_deliver_pending_result`, not a `queueMsg` site — leave it alone.)
