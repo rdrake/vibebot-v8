@@ -7,6 +7,7 @@ without requiring a full Limnoria runtime environment.
 from __future__ import annotations
 
 import inspect
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -1139,6 +1140,43 @@ class TestPluginLifecycle:
         plugin.die()
 
         mock_unhook.assert_called_with("llm")
+
+
+class TestRateBucketsConcurrency:
+    def test_concurrent_rate_limit_count_is_exact(self, plugin_env) -> None:
+        """The lock guarantees the deque length matches the number of
+        recorded hits exactly. CPython's GIL makes individual deque ops
+        atomic, so a "no exception" assertion would pass even on the
+        broken code — assert the count instead."""
+        import threading
+        import time
+
+        plugin, _irc, _msg = plugin_env
+        errors: list[Exception] = []
+        threads_n = 8
+        per_thread = 200
+        now = time.time()
+        barrier = threading.Barrier(threads_n)
+
+        def hammer() -> None:
+            try:
+                barrier.wait(timeout=2)
+                for _ in range(per_thread):
+                    plugin._record_rate_limit_hit("ask", "alice", now)
+                    plugin._is_rate_limited("ask", "alice", now, tier="registered")
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=hammer) for _ in range(threads_n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        # The deque trims entries older than the window; with `now`
+        # constant, every hit lands in the window.
+        key = "ask:alice"
+        assert len(plugin._rate_buckets[key]) == threads_n * per_thread
 
 
 class TestLLMExecutorLifecycle:
@@ -2662,6 +2700,7 @@ class TestRateLimiter:
         p.db = mocker.MagicMock()
         p.log = mocker.MagicMock()
         p._rate_buckets = {}
+        p._rate_buckets_lock = threading.Lock()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 15,
@@ -2773,6 +2812,7 @@ class TestRunPreflight:
         p.db = mocker.MagicMock()
         p.log = mocker.MagicMock()
         p._rate_buckets = {}
+        p._rate_buckets_lock = threading.Lock()
         p._migrated_nicks = set()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {

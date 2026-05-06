@@ -465,6 +465,7 @@ class LLM(callbacks.Plugin):
 
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
+        self._rate_buckets_lock = threading.Lock()
 
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
@@ -2207,20 +2208,21 @@ class LLM(callbacks.Plugin):
         cutoff = now - window
 
         key = f"{command}:{account}"
-        bucket = self._rate_buckets.get(key)
-        if bucket is None:
-            return False
+        with self._rate_buckets_lock:
+            bucket = self._rate_buckets.get(key)
+            if bucket is None:
+                return False
 
-        # Evict expired entries
-        while bucket and bucket[0] <= cutoff:
-            bucket.popleft()
+            # Evict expired entries
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
 
-        # Clean up idle keys so bucket map cannot grow forever.
-        if not bucket:
-            self._rate_buckets.pop(key, None)
-            return False
+            # Clean up idle keys so bucket map cannot grow forever.
+            if not bucket:
+                self._rate_buckets.pop(key, None)
+                return False
 
-        return len(bucket) >= max_count
+            return len(bucket) >= max_count
 
     def _record_rate_limit_hit(self, command: str, account: str, now: float) -> None:
         """Record a request timestamp in the rate-limit bucket.
@@ -2231,11 +2233,12 @@ class LLM(callbacks.Plugin):
             now: Current time.
         """
         key = f"{command}:{account}"
-        bucket = self._rate_buckets.get(key)
-        if bucket is None:
-            bucket = collections.deque()
-            self._rate_buckets[key] = bucket
-        bucket.append(now)
+        with self._rate_buckets_lock:
+            bucket = self._rate_buckets.get(key)
+            if bucket is None:
+                bucket = collections.deque()
+                self._rate_buckets[key] = bucket
+            bucket.append(now)
 
     def _check_rate_limit(
         self,
@@ -2290,7 +2293,8 @@ class LLM(callbacks.Plugin):
         enforce = self.registryValue("enforceRateLimits")
         max_count, window = self._get_tier_limits(command, tier)
         key = f"{command}:{account}"
-        count = len(self._rate_buckets.get(key, ()))
+        with self._rate_buckets_lock:
+            count = len(self._rate_buckets.get(key, ()))
 
         if enforce:
             self.log.info(
