@@ -1196,6 +1196,82 @@ class TestRateBucketsConcurrency:
         assert len(plugin._rate_buckets[key]) == threads_n * per_thread
 
 
+class TestWatchModeReminderMigration:
+    """Verify the action-prompt reminder path submits to the executor and
+    that the legacy / rate-limited / no-IRC paths still finalize on the
+    main thread."""
+
+    def test_action_prompt_dispatch_submits_to_executor(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=False)
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice", "#chan", "watch news", "evt-1", action_prompt="say hi"
+        )
+        deliver()
+        plugin._llm_executor.submit.assert_called_once()
+        label = plugin._llm_executor.submit.call_args[0][0]
+        assert label.startswith("reminder:")
+
+    def test_legacy_no_action_prompt_does_not_submit(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        deliver = plugin._make_reminder_delivery_closure("alice", "#chan", "ping", "evt-2")
+        deliver()
+        plugin._llm_executor.submit.assert_not_called()
+        irc.queueMsg.assert_called_once()
+
+    def test_rate_limit_skip_does_not_submit(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=True)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice", "#chan", "ping", "evt-3", action_prompt="say hi"
+        )
+        deliver()
+        plugin._llm_executor.submit.assert_not_called()
+        # Skip notice queued via _safe_queue → irc.queueMsg.
+        irc.queueMsg.assert_called()
+
+    def test_no_active_irc_finalizes_in_main_thread(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [])
+        finalize = mocker.spy(plugin, "_finalize_reminder_fire")
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice", "#chan", "ping", "evt-4", action_prompt="say hi"
+        )
+        deliver()
+        plugin._llm_executor.submit.assert_not_called()
+        finalize.assert_called_once()
+
+    def test_closing_skips_submit_and_finalize(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=False)
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice", "#chan", "ping", "evt-5", action_prompt="say hi"
+        )
+        deliver()
+        plugin._llm_executor.submit.assert_not_called()
+
+
 class TestMemoryExtractionMigration:
     def test_extraction_submitted_to_executor(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env

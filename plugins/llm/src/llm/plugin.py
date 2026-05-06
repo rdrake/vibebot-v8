@@ -1102,6 +1102,219 @@ class LLM(callbacks.Plugin):
             channel_max_messages=self.registryValue("channelContextMaxMessages", channel),
         )
 
+    def _send_reminder_text(
+        self,
+        irc: callbacks.Irc,
+        target: str,
+        nick: str,
+        text: str,
+    ) -> None:
+        """Match the inner _send closure semantics for reminder output.
+
+        Reminders bypass _send_long_reply, so collapse multi-line content
+        here — raw \\n in a PRIVMSG body causes Excess Flood disconnects
+        on AfterNET.
+        """
+        safe_text = self.llm_service.sanitize_output(text)
+        safe_text = self._collapse_for_irc(safe_text) or safe_text
+        prefixed = f"{nick}: {safe_text}" if nick else safe_text
+        self._safe_queue(irc, ircmsgs.privmsg(target, prefixed))
+
+    def _finalize_reminder_fire(
+        self,
+        *,
+        event_name: str,
+        is_structured: bool,
+        reschedule_kwargs: dict | None,
+    ) -> None:
+        """Cleanup + (optionally) reschedule for a fired reminder.
+
+        Used by every fire branch — main-thread early returns (no IRC,
+        rate-limited) AND the worker's finally — so a reminder is never
+        left half-cleaned. Closing-gated so a shutting-down plugin does
+        not mutate ``_reminders`` or DB.
+        """
+        if self._llm_executor.closing:
+            return
+        if is_structured and reschedule_kwargs is not None:
+            self._mechanical_reschedule(**reschedule_kwargs)
+        with self._reminders_lock:
+            self._reminders.pop(event_name, None)
+        self.db.delete_reminder(event_name)
+
+    def _fire_reminder_action(
+        self,
+        *,
+        active_irc: callbacks.Irc,
+        target: str,
+        nick: str,
+        channel: str,
+        message: str,
+        event_name: str,
+        action_prompt: str,
+        account: str | None,
+        bot_nick: str,
+        parent_chain: int,
+        is_structured: bool,
+        recurrence_seconds: int | None,
+        recurrence_rrule: str | None,
+        watch_mode: bool,
+        now: float,
+    ) -> None:
+        """Worker-thread reminder action body.
+
+        Resolves history, performs the LLM call, dispatches the response,
+        logs usage, and finalizes (which optionally reschedules). The
+        finalize step always runs in the worker's finally regardless of
+        inner-try outcome — a single failed fire no longer kills a
+        recurring watch chain (intentional behavior change).
+        """
+        reschedule_kwargs = (
+            {
+                "nick": nick,
+                "channel": channel,
+                "message": message,
+                "event_name": event_name,
+                "action_prompt": action_prompt,
+                "account": account,
+                "chain_position": parent_chain,
+                "recurrence_seconds": recurrence_seconds,
+                "recurrence_rrule": recurrence_rrule,
+                "watch_mode": watch_mode,
+                "now": now,
+            }
+            if is_structured
+            else None
+        )
+        try:
+            msg_target = channel if ircutils.isChannel(channel) else nick
+            msg_kwargs: dict[str, object] = {
+                "prefix": f"{nick}!~remind@scheduled",
+                "command": "PRIVMSG",
+                "args": (msg_target, ""),
+            }
+            if account:
+                msg_kwargs["server_tags"] = {"account": account}
+            synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
+
+            request_context = AssistantRequestContext(
+                entry_route=PROFILE_REMIND_ACTION,
+                profile=PROFILE_REMIND_ACTION,
+                nick=nick,
+                raw_nick=nick,
+                account=account,
+                channel=channel,
+                is_private=not ircutils.isChannel(channel),
+                is_owner=False,
+                # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
+                capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
+            )
+
+            history, channel_history = self._gather_history(nick, channel)
+            memories = self._get_user_memories(nick)
+            user_instruction = self.db.get_instruction(nick)
+            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+            effective_prompt = (
+                f"User instruction: {user_instruction}\n\n{ask_prompt}"
+                if user_instruction
+                else ask_prompt
+            )
+
+            caller = Identity(raw_nick=nick, account=account)
+            exclude_tools = frozenset({"set_reminder"}) if is_structured else frozenset()
+
+            result = self.llm_service.assistant_request(
+                prompt=action_prompt,
+                request_context=request_context,
+                db=self.db,
+                context=self.context,
+                bot_nick=bot_nick,
+                history=history,
+                channel_history=channel_history,
+                irc=active_irc,
+                msg=synthetic_msg,
+                memories=memories,
+                system_prompt=effective_prompt,
+                search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                code_fn=lambda p: self._code_for_assistant(p, channel),
+                draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: (
+                    self._draw_for_assistant(_irc, _msg, p)
+                ),
+                cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                exclude_tools=exclude_tools,
+                **self._pending_task_fns(
+                    caller=caller,
+                    irc=active_irc,
+                    msg=synthetic_msg,
+                    channel=channel,
+                    pass_irc_msg_to_callbacks=False,
+                ),
+            )
+            response = result.content.strip() if result.content else ""
+            is_silent = response == "[silent]"
+            if is_silent:
+                pass  # No user-visible output this fire.
+            elif not response:
+                self._send_reminder_text(
+                    active_irc,
+                    target,
+                    nick,
+                    f"Reminder: {message} (action returned empty response)",
+                )
+            elif message:
+                self._send_reminder_text(
+                    active_irc, target, nick, f"Reminder ({message}): {response}"
+                )
+            else:
+                self._send_reminder_text(active_irc, target, nick, f"Reminder: {response}")
+            # Attribute the action fire's LLM cost to the chain owner.
+            try:
+                owner_key = account or nick
+                self.db.log_usage(
+                    owner_key,
+                    channel,
+                    "remind_action",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                    prompt=action_prompt,
+                    status=("silent" if is_silent else "success"),
+                    error_detail=(result.error or "")[:200],
+                )
+            except Exception:
+                self.log.exception("reminder_action_usage_log_failed event=%s", event_name)
+        except Exception:
+            self.log.exception(
+                "reminder_action_delivery_failed nick=%s channel=%s event=%s",
+                nick,
+                channel,
+                event_name,
+            )
+            try:
+                self._send_reminder_text(
+                    active_irc,
+                    target,
+                    nick,
+                    f"Reminder action '{message}' failed. (Set this reminder again to retry.)",
+                )
+            except Exception:
+                self.log.exception(
+                    "reminder_action_fallback_failed nick=%s channel=%s event=%s",
+                    nick,
+                    channel,
+                    event_name,
+                )
+        finally:
+            # Single source of truth for cleanup. Runs even if the inner
+            # try raised — recurring chains survive a single failed fire.
+            self._finalize_reminder_fire(
+                event_name=event_name,
+                is_structured=is_structured,
+                reschedule_kwargs=reschedule_kwargs,
+            )
+
     def _make_reminder_delivery_closure(
         self,
         nick: str,
@@ -1118,8 +1331,11 @@ class LLM(callbacks.Plugin):
     ):
         """Create a reminder delivery closure with error handling.
 
-        Wraps delivery in try/finally so cleanup (removing from _reminders
-        and database) always happens even if queueMsg raises.
+        The returned callable runs on the main IRC scheduler thread:
+        resolves the active IRC connection, runs the rate-limit precheck,
+        then either submits the heavy LLM-call body to the executor (for
+        action-prompt reminders) or sends the legacy plain-echo reminder
+        directly. Cleanup + reschedule run in `_finalize_reminder_fire`.
 
         Args:
             nick: User's nick
@@ -1134,7 +1350,6 @@ class LLM(callbacks.Plugin):
         Returns:
             Callable for use with schedule.addEvent
         """
-        lock = self._reminders_lock
         parent_chain: int = chain_position or 1
         is_structured = self._is_structured_recurring(
             recurrence_seconds=recurrence_seconds,
@@ -1144,210 +1359,103 @@ class LLM(callbacks.Plugin):
         # Deliver to the user's nick instead.
         target = channel if ircutils.isChannel(channel) else nick
 
+        def _build_reschedule_kwargs(now_t: float) -> dict | None:
+            return (
+                {
+                    "nick": nick,
+                    "channel": channel,
+                    "message": message,
+                    "event_name": event_name,
+                    "action_prompt": action_prompt,
+                    "account": account,
+                    "chain_position": parent_chain,
+                    "recurrence_seconds": recurrence_seconds,
+                    "recurrence_rrule": recurrence_rrule,
+                    "watch_mode": watch_mode,
+                    "now": now_t,
+                }
+                if is_structured
+                else None
+            )
+
         def _deliver() -> None:
+            now = time.time()
+            submitted = False
             try:
-                for active_irc in world.ircs:
+                active_irc = next(iter(world.ircs), None)
+                if active_irc is None:
+                    return
 
-                    def _send(text: str, *, _irc=active_irc) -> None:
-                        safe_text = self.llm_service.sanitize_output(text)
-                        # Reminders go straight to PRIVMSG without the
-                        # _send_long_reply pagination, so collapse newlines —
-                        # raw \n in a PRIVMSG body causes Excess Flood.
-                        safe_text = self._collapse_for_irc(safe_text) or safe_text
-                        _irc.queueMsg(ircmsgs.privmsg(target, f"{nick}: {safe_text}"))
+                # Legacy reminder path: plain echo delivery.
+                if not action_prompt:
+                    self._send_reminder_text(active_irc, target, nick, f"Reminder: {message}")
+                    return
 
-                    # Legacy reminder path: plain echo delivery.
-                    if not action_prompt:
-                        _send(f"Reminder: {message}")
-                        break
+                bot_nick = getattr(active_irc, "nick", None)
+                if not bot_nick:
+                    self.log.warning(
+                        "reminder_action_missing_bot_nick nick=%s channel=%s event=%s",
+                        nick,
+                        channel,
+                        event_name,
+                    )
+                    self._send_reminder_text(active_irc, target, nick, f"Reminder: {message}")
+                    return
 
-                    bot_nick = getattr(active_irc, "nick", None)
-                    if not bot_nick:
-                        self.log.warning(
-                            "reminder_action_missing_bot_nick nick=%s channel=%s event=%s",
-                            nick,
-                            channel,
-                            event_name,
-                        )
-                        _send(f"Reminder: {message}")
-                        break
+                rl_account = account if account else nick
+                rl_tier = "registered" if account else "unregistered"
+                if self._check_rate_limit(
+                    None,
+                    "ask",
+                    rl_account,
+                    "",
+                    "",
+                    "",
+                    tier=rl_tier,
+                    silent=True,
+                    now=now,
+                ):
+                    self._send_reminder_text(
+                        active_irc,
+                        target,
+                        nick,
+                        f"Reminder: {message} (action skipped — daily ask limit reached)",
+                    )
+                    return
 
-                    # Wrap the entire action delivery body so any exception
-                    # (history gathering, msg construction, registry lookup,
-                    # rate-limit check, assistant request, etc.) yields a
-                    # generic user-visible fallback rather than silently
-                    # losing the reminder. Never include exception text in
-                    # user-visible output — full traceback to logs only.
-                    try:
-                        now = time.time()
-                        rl_account = account if account else nick
-                        rl_tier = "registered" if account else "unregistered"
-                        if self._check_rate_limit(
-                            None,
-                            "ask",
-                            rl_account,
-                            "",
-                            "",
-                            "",
-                            tier=rl_tier,
-                            silent=True,
-                            now=now,
-                        ):
-                            _send(f"Reminder: {message} (action skipped — daily ask limit reached)")
-                            break
+                if self._llm_executor.closing:
+                    return
 
-                        msg_target = channel if ircutils.isChannel(channel) else nick
-                        msg_kwargs: dict[str, object] = {
-                            "prefix": f"{nick}!~remind@scheduled",
-                            "command": "PRIVMSG",
-                            "args": (msg_target, ""),
-                        }
-                        if account:
-                            msg_kwargs["server_tags"] = {"account": account}
-                        synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
-
-                        request_context = AssistantRequestContext(
-                            entry_route=PROFILE_REMIND_ACTION,
-                            profile=PROFILE_REMIND_ACTION,
-                            nick=nick,
-                            raw_nick=nick,
-                            account=account,
-                            channel=channel,
-                            is_private=not ircutils.isChannel(channel),
-                            is_owner=False,
-                            # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
-                            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
-                        )
-
-                        history, channel_history = self._gather_history(nick, channel)
-                        memories = self._get_user_memories(nick)
-                        user_instruction = self.db.get_instruction(nick)
-                        # See ``_ask_impl`` for the layering rationale —
-                        # always send the persona, never None.
-                        ask_prompt = self.registryValue("assistantSystemPrompt", channel)
-                        effective_prompt = (
-                            f"User instruction: {user_instruction}\n\n{ask_prompt}"
-                            if user_instruction
-                            else ask_prompt
-                        )
-
-                        caller = Identity(raw_nick=nick, account=account)
-
-                        # Structured rows reschedule via _mechanical_reschedule
-                        # below. Drop set_reminder from the fire-time tool
-                        # surface so the action LLM can't double-schedule.
-                        exclude_tools = (
-                            frozenset({"set_reminder"}) if is_structured else frozenset()
-                        )
-
-                        result = self.llm_service.assistant_request(
-                            prompt=action_prompt,
-                            request_context=request_context,
-                            db=self.db,
-                            context=self.context,
-                            bot_nick=bot_nick,
-                            history=history,
-                            channel_history=channel_history,
-                            irc=active_irc,
-                            msg=synthetic_msg,
-                            memories=memories,
-                            system_prompt=effective_prompt,
-                            search_fn=lambda q: self.llm_service.search_completion(
-                                q, channel=channel
-                            ),
-                            fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                            code_fn=lambda p: self._code_for_assistant(p, channel),
-                            draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: (
-                                self._draw_for_assistant(_irc, _msg, p)
-                            ),
-                            cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                            exclude_tools=exclude_tools,
-                            **self._pending_task_fns(
-                                caller=caller,
-                                irc=active_irc,
-                                msg=synthetic_msg,
-                                channel=channel,
-                                pass_irc_msg_to_callbacks=False,
-                            ),
-                        )
-                        response = result.content.strip() if result.content else ""
-                        # Watch-mode sentinel: action LLM signals "no news to
-                        # share, just stay scheduled." Usage is still logged
-                        # so silent watches show up in the user's stats.
-                        is_silent = response == "[silent]"
-                        if is_silent:
-                            pass  # No user-visible output this fire.
-                        elif not response:
-                            _send(f"Reminder: {message} (action returned empty response)")
-                        elif message:
-                            _send(f"Reminder ({message}): {response}")
-                        else:
-                            _send(f"Reminder: {response}")
-                        # Attribute the action fire's LLM cost to the chain
-                        # owner (account when present, raw nick as fallback)
-                        # so runaway watches are visible in @usage and
-                        # weigh against the same identity as rate limits.
-                        try:
-                            owner_key = account or nick
-                            self.db.log_usage(
-                                owner_key,
-                                channel,
-                                "remind_action",
-                                result.model,
-                                result.prompt_tokens,
-                                result.completion_tokens,
-                                result.cost,
-                                prompt=action_prompt,
-                                status=("silent" if is_silent else "success"),
-                                error_detail=(result.error or "")[:200],
-                            )
-                        except Exception:
-                            self.log.exception(
-                                "reminder_action_usage_log_failed event=%s", event_name
-                            )
-                        # Structured rows reschedule mechanically (set_reminder
-                        # was filtered out of the tool surface so the LLM
-                        # cannot have done it). One-shot rows do nothing.
-                        # Watch-mode + structured: still reschedule even if
-                        # response was [silent]; the watch must keep watching.
-                        if is_structured:
-                            self._mechanical_reschedule(
-                                nick=nick,
-                                channel=channel,
-                                message=message,
-                                event_name=event_name,
-                                action_prompt=action_prompt,
-                                account=account,
-                                chain_position=parent_chain,
-                                recurrence_seconds=recurrence_seconds,
-                                recurrence_rrule=recurrence_rrule,
-                                watch_mode=watch_mode,
-                                now=now,
-                            )
-                    except Exception:
-                        self.log.exception(
-                            "reminder_action_delivery_failed nick=%s channel=%s event=%s",
-                            nick,
-                            channel,
-                            event_name,
-                        )
-                        try:
-                            _send(
-                                f"Reminder action '{message}' failed. "
-                                "(Set this reminder again to retry.)"
-                            )
-                        except Exception:
-                            self.log.exception(
-                                "reminder_action_fallback_failed nick=%s channel=%s event=%s",
-                                nick,
-                                channel,
-                                event_name,
-                            )
-                    break
+                self._llm_executor.submit(
+                    f"reminder:{event_name}",
+                    self._fire_reminder_action,
+                    active_irc=active_irc,
+                    target=target,
+                    nick=nick,
+                    channel=channel,
+                    message=message,
+                    event_name=event_name,
+                    action_prompt=action_prompt,
+                    account=account,
+                    bot_nick=bot_nick,
+                    parent_chain=parent_chain,
+                    is_structured=is_structured,
+                    recurrence_seconds=recurrence_seconds,
+                    recurrence_rrule=recurrence_rrule,
+                    watch_mode=watch_mode,
+                    now=now,
+                )
+                submitted = True
             finally:
-                with lock:
-                    self._reminders.pop(event_name, None)
-                self.db.delete_reminder(event_name)
+                # Finalize on the main thread for every fire branch that
+                # did NOT submit work to a worker. The worker's own
+                # finally handles cleanup for submitted paths.
+                if not submitted:
+                    self._finalize_reminder_fire(
+                        event_name=event_name,
+                        is_structured=is_structured,
+                        reschedule_kwargs=_build_reschedule_kwargs(now),
+                    )
 
         return _deliver
 
