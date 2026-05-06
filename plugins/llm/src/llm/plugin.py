@@ -1832,7 +1832,9 @@ class LLM(callbacks.Plugin):
                 chunks.append((piece, i > 0))
 
         line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
-        over_threshold = line_threshold > 0 and len(logical_lines) > line_threshold
+        over_threshold = line_threshold > 0 and (
+            len(logical_lines) > line_threshold or len(chunks) > line_threshold
+        )
         if over_threshold:
             link_mode = self.registryValue("longReplyLinkMode", target) or "footer"
             url = self.llm_service.save_markdown_to_http(text)
