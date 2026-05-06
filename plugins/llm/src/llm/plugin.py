@@ -911,16 +911,23 @@ class LLM(callbacks.Plugin):
                 if result.error or result.content.strip().upper() == "PASS":
                     return
 
+                # Closing-gate after PASS short-circuit: avoid worker-thread
+                # mutations (queueMsg, db.log_usage, memory-extraction) once
+                # die() has begun.
+                if self._llm_executor.closing:
+                    return
+
                 response = self.llm_service.sanitize_output(result.content)
                 action_text = self._extract_action(irc, response)
                 if action_text:
-                    irc.queueMsg(ircmsgs.action(channel, action_text))
+                    self._safe_queue(irc, ircmsgs.action(channel, action_text))
                 else:
                     # Spontaneous replies bypass _send_long_reply, so collapse
                     # multi-line content here — raw \n on PRIVMSG triggers
                     # Excess Flood disconnects on AfterNET.
-                    irc.queueMsg(
-                        ircmsgs.privmsg(channel, self._collapse_for_irc(response) or response)
+                    self._safe_queue(
+                        irc,
+                        ircmsgs.privmsg(channel, self._collapse_for_irc(response) or response),
                     )
 
                 self.db.log_usage(
@@ -940,13 +947,20 @@ class LLM(callbacks.Plugin):
             except Exception:
                 log.exception("Spontaneous evaluation failed for %s", channel)
             finally:
-                with self._spontaneous_events_lock:
-                    self._spontaneous_events.discard(event_name)
+                if not self._llm_executor.closing:
+                    with self._spontaneous_events_lock:
+                        self._spontaneous_events.discard(event_name)
 
         event_name = f"llm_spontaneous_{uuid.uuid4().hex[:8]}"
         with self._spontaneous_events_lock:
             self._spontaneous_events.add(event_name)
-        schedule.addEvent(_evaluate, time.time() + 0.5, name=event_name)
+
+        def _enqueue() -> None:
+            if self._llm_executor.closing:
+                return
+            self._llm_executor.submit(f"spontaneous:{channel}", _evaluate)
+
+        schedule.addEvent(_enqueue, time.time() + 0.5, name=event_name)
 
     def _will_skip_auto_who(self, irc: callbacks.Irc) -> bool:
         """Return True iff the auto-WHO on channel join should be suppressed.

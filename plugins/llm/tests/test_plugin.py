@@ -1196,6 +1196,33 @@ class TestRateBucketsConcurrency:
         assert len(plugin._rate_buckets[key]) == threads_n * per_thread
 
 
+class TestSpontaneousMigration:
+    def test_add_event_callback_is_shim_not_evaluate(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+
+        plugin._schedule_spontaneous(irc, "#chan", "alice", "hi")
+
+        callback = add_event.call_args[0][0]
+        callback()
+        plugin._llm_executor.submit.assert_called_once()
+        label = plugin._llm_executor.submit.call_args[0][0]
+        assert label.startswith("spontaneous:")
+
+    def test_shim_short_circuits_when_closing(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+
+        plugin._schedule_spontaneous(irc, "#chan", "alice", "hi")
+        callback = add_event.call_args[0][0]
+        callback()
+        plugin._llm_executor.submit.assert_not_called()
+
+
 class TestLLMExecutorLifecycle:
     def test_plugin_constructs_executor(self, plugin_env) -> None:
         from llm.executor import LLMExecutor
