@@ -1380,7 +1380,9 @@ class LLMService:
                     or getattr(usage, "output_tokens", 0)
                     or 0
                 )
-                details = getattr(usage, "prompt_tokens_details", None)
+                details = getattr(usage, "prompt_tokens_details", None) or getattr(
+                    usage, "input_tokens_details", None
+                )
                 if details is not None:
                     cached = int(getattr(details, "cached_tokens", 0) or 0)
                 if not cached:
