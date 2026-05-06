@@ -2839,7 +2839,7 @@ class LLM(callbacks.Plugin):
                     else ask_prompt
                 )
 
-            with self._allow_concurrent():
+            with self._allow_concurrent(), self._llm_executor.permit():
                 request_text = text
                 if images:
                     # Clean prompt by removing image URLs
@@ -2958,7 +2958,7 @@ class LLM(callbacks.Plugin):
                 f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
             )
 
-            with self._allow_concurrent():
+            with self._allow_concurrent(), self._llm_executor.permit():
                 result = self.llm_service.assistant_request(
                     text,
                     request_context=request_context,
@@ -3042,7 +3042,7 @@ class LLM(callbacks.Plugin):
                 max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
             )
 
-            with self._allow_concurrent():
+            with self._allow_concurrent(), self._llm_executor.permit():
                 result = self.llm_service.assistant_request(
                     text,
                     request_context=request_context,
@@ -3852,7 +3852,11 @@ class LLM(callbacks.Plugin):
         """
         channel = self._get_channel(msg)
 
-        with self._trace_request("remind", caller.key, channel), self._allow_concurrent():
+        with (
+            self._trace_request("remind", caller.key, channel),
+            self._allow_concurrent(),
+            self._llm_executor.permit(),
+        ):
             result = self.llm_service.parse_reminder(text, channel)
 
         if result.action == "clarify":

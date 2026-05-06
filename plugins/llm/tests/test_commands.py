@@ -29,6 +29,26 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+class TestCommandPathPermit:
+    """Verify command paths acquire the global LLMExecutor permit."""
+
+    def test_ask_acquires_permit(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok",
+            grounding_used=False,
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost=0.0,
+            model="m",
+        )
+        spy = mocker.spy(plugin._llm_executor, "permit")
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+        spy.assert_called_once()
+
+
 class TestAskCommand:
     """Tests for the real LLM.ask method."""
 
