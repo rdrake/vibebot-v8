@@ -7,6 +7,7 @@ probability and cooldown system.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -331,6 +332,7 @@ class TestSpontaneousDie:
         plugin = LLM.__new__(LLM)
         plugin._http_callback = None
         plugin._spontaneous_events = {"llm_spontaneous_aaa", "llm_spontaneous_bbb"}
+        plugin._spontaneous_events_lock = threading.Lock()
         plugin._spontaneous_cooldowns = {"#test": time.time()}
 
         mock_remove = mocker.patch("supybot.schedule.removeEvent")
