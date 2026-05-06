@@ -1,6 +1,6 @@
 .PHONY: install run test test-all lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
-       install-deploy worktree-create worktree-remove wait-ci rebase-pr docs docs-serve
+       install-deploy worktree-create worktree-remove wait-ci push-and-wait rebase-pr docs docs-serve
 
 install:
 	uv sync
@@ -80,6 +80,25 @@ wait-ci:
 		sleep 10; \
 	done
 
+# Push current branch and block until CI + Docker image build both succeed.
+# Docker is workflow_run-triggered after CI, so we wait for them in series.
+push-and-wait:
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	echo "Pushing $$BRANCH…"; \
+	git push origin "$$BRANCH"; \
+	SHA=$$(git rev-parse HEAD); \
+	for WF in "CI" "Build and Push Docker Image"; do \
+		echo "→ Waiting for $$WF on $$SHA …"; \
+		RUN_ID=""; \
+		while [ -z "$$RUN_ID" ] || [ "$$RUN_ID" = "null" ]; do \
+			sleep 3; \
+			RUN_ID=$$(gh run list --workflow="$$WF" --commit="$$SHA" --limit 1 --json databaseId --jq '.[0].databaseId // ""'); \
+		done; \
+		gh run watch "$$RUN_ID" --exit-status >/dev/null || { echo "$$WF failed ✗ (run $$RUN_ID)"; exit 1; }; \
+		echo "$$WF passed ✓"; \
+	done; \
+	echo "Image published — safe to restart."
+
 rebase-pr:
 ifndef PR
 	$(error PR is required: make rebase-pr PR=42)
@@ -129,6 +148,7 @@ help:
 	@echo "  worktree-create - Create isolated worktree (BRANCH=name required)"
 	@echo "  worktree-remove - Remove worktree and branch (BRANCH=name required)"
 	@echo "  wait-ci         - Watch current GitHub Actions run until completion"
+	@echo "  push-and-wait   - Push current branch, then wait for CI + Docker image build"
 	@echo "  rebase-pr       - Ask dependabot to rebase a PR (PR=number required)"
 	@echo "  clean           - Remove cache files"
 	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
