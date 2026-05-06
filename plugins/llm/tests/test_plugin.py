@@ -1072,7 +1072,8 @@ class TestPluginInitialization:
 
         mock_irc = mocker.MagicMock()
 
-        mocker.patch.object(LLM, "registryValue", return_value="/var/www/llm")
+        registry = make_registry_side_effect({"httpRoot": "/var/www/llm"})
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
         mocker.patch("llm.plugin.LLMService")
         mocker.patch("llm.plugin.LLMDatabase")
         mocker.patch("llm.plugin.log")
@@ -1091,16 +1092,8 @@ class TestPluginInitialization:
 
         mock_irc = mocker.MagicMock()
 
-        def registry_side_effect(key, *args):
-            if key == "httpRoot":
-                return ""
-            if key == "databasePath":
-                return ""
-            if key == "logLevel":
-                return "WARNING"
-            return mocker.MagicMock()
-
-        mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
+        registry = make_registry_side_effect({"httpRoot": ""})
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
         mocker.patch("llm.plugin.LLMService")
         mocker.patch("llm.plugin.LLMDatabase")
         mocker.patch("llm.plugin.log")
@@ -1146,6 +1139,20 @@ class TestPluginLifecycle:
         plugin.die()
 
         mock_unhook.assert_called_with("llm")
+
+
+class TestLLMExecutorLifecycle:
+    def test_plugin_constructs_executor(self, plugin_env) -> None:
+        from llm.executor import LLMExecutor
+
+        plugin, _irc, _msg = plugin_env
+        assert isinstance(plugin._llm_executor, LLMExecutor)
+        assert plugin._llm_executor.max_concurrency == 16
+
+    def test_die_shuts_down_executor(self, plugin_env) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin.die()
+        assert plugin._llm_executor.closing is True
 
 
 class TestRunFileCleanup:
@@ -1925,7 +1932,7 @@ class TestPendingTaskScheduler:
 
         mock_irc = mocker.MagicMock()
 
-        mocker.patch.object(LLM, "registryValue", return_value="")
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         mocker.patch("llm.plugin.LLMService")
         mocker.patch("llm.plugin.LLMDatabase")
         mocker.patch("llm.plugin.log")

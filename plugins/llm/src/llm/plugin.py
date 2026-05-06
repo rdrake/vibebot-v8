@@ -436,6 +436,15 @@ class LLM(callbacks.Plugin):
         # Apply configured log level to plugin and service loggers
         self._apply_log_level()
 
+        # Global concurrency cap for all LLM I/O. See
+        # docs/plans/2026-05-06-async-llm-concurrency.md
+        from .executor import LLMExecutor
+
+        self._llm_executor = LLMExecutor(
+            max_concurrency=self.registryValue("maxConcurrentLLMCalls"),
+            log=self.log,
+        )
+
         self.startup_time = time.time()  # Track startup for ZNC playback filtering
         self.build_info = self._get_build_info()
 
@@ -528,6 +537,14 @@ class LLM(callbacks.Plugin):
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
+        # Shutdown the executor before mutating shared state so workers
+        # see closing=True at their commit points. Brief drain gives
+        # already-running workers a chance to flush final
+        # db.log_usage / queueMsg writes before we close the DB.
+        if hasattr(self, "_llm_executor"):
+            self._llm_executor.shutdown()
+            self._llm_executor.drain(timeout=2.0)
+
         # Clean up expired reminders from database
         if hasattr(self, "db"):
             self.db.delete_expired_reminders()

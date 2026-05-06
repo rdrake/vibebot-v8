@@ -261,7 +261,14 @@ def plugin_env(mocker: MockerFixture):
     plugin.db.migrate_nick.return_value = 0
     plugin.db.migrate_conversations.return_value = 0
 
-    return plugin, mock_irc, mock_msg
+    try:
+        yield plugin, mock_irc, mock_msg
+    finally:
+        # die() must be idempotent under the executor wiring (see Task 3
+        # — shutdown is idempotent, db.close is sqlite-idempotent). Don't
+        # suppress exceptions here: if die() raises, that's a real
+        # lifecycle bug we want the test to surface.
+        plugin.die()
 
 
 def make_registry_side_effect(overrides: dict[str, Any] | None = None):
