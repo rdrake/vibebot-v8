@@ -712,6 +712,18 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "maxConcurrentLLMCalls",
+    registry.PositiveInteger(
+        16,
+        _("""Maximum number of simultaneous outbound LLM calls (across the
+        command path and background work — spontaneous replies, memory
+        extraction, watch-mode reminders, scheduled tasks). Lower this on
+        small hosts or when the provider rate-limits aggressively."""),
+    ),
+)
+
 # ============================================================================
 # Limnoria tool bridge (Phase 1)
 # ============================================================================
