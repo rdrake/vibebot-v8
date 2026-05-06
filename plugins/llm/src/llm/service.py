@@ -1206,19 +1206,22 @@ class LLMService:
         return "/" in model and model.split("/", 1)[0].lower() == "xai"
 
     @staticmethod
-    def _xai_extra_headers(model: str, channel: str | None) -> dict[str, str]:
-        """Return ``x-grok-conv-id`` header for xAI models, else empty.
+    def _xai_cache_key(model: str, channel: str | None) -> str | None:
+        """Return a stable xAI prompt-cache routing key, or ``None``.
 
-        xAI's prompt cache is per-backend-server. Without a stable
-        ``x-grok-conv-id``, the load balancer scatters requests and the
-        cache rarely hits. Scoping by channel keeps a conversation
-        glued to one server, lifting cached_tokens from ~128 (a fixed
-        provider-side baseline) to ~99% of the cacheable prefix on
-        follow-up turns.
+        xAI's prompt cache is per-backend-server. Without a stable key,
+        the load balancer scatters requests and the cache rarely hits.
+        Scoping by channel keeps a conversation glued to one server,
+        lifting cached_tokens from ~128 (a fixed provider-side baseline)
+        to ~99% of the cacheable prefix on follow-up turns.
+
+        Callers attach the key per API surface — Chat Completions sends
+        it as ``x-grok-conv-id`` HTTP header; Responses API sends it as
+        the ``prompt_cache_key`` body field.
         """
         if not channel or not LLMService._is_xai_model(model):
-            return {}
-        return {"x-grok-conv-id": f"chan:{channel}"}
+            return None
+        return f"chan:{channel}"
 
     def _check_grounding_used(self, response: Any) -> bool:
         """Check if Google grounding/search was used in the response.
@@ -1428,10 +1431,10 @@ class LLMService:
         **kwargs: Any,
     ) -> Any:
         """Run litellm.completion and emit a completion_timing log line."""
-        xai_headers = self._xai_extra_headers(model, channel)
-        if xai_headers:
+        cache_key = self._xai_cache_key(model, channel)
+        if cache_key:
             existing = kwargs.get("extra_headers") or {}
-            kwargs["extra_headers"] = {**existing, **xai_headers}
+            kwargs["extra_headers"] = {**existing, "x-grok-conv-id": cache_key}
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
@@ -2299,7 +2302,8 @@ class LLMService:
                 len(input_text),
             )
             t0 = time.monotonic()
-            xai_headers = self._xai_extra_headers(model, channel)
+            cache_key = self._xai_cache_key(model, channel)
+            extra_body = {"prompt_cache_key": cache_key} if cache_key else None
             try:
                 response = litellm.responses(
                     model=model,
@@ -2308,7 +2312,7 @@ class LLMService:
                     api_key=api_key,
                     timeout=timeout,
                     metadata=self._get_litellm_metadata(),
-                    **({"extra_headers": xai_headers} if xai_headers else {}),
+                    **({"extra_body": extra_body} if extra_body else {}),
                 )
             except Exception as exc:
                 err_elapsed = (time.monotonic() - t0) * 1000.0
@@ -2322,12 +2326,14 @@ class LLMService:
 
             content = self._responses_text(response)
             grounding_used = self._check_responses_grounding(response)
-            prompt_tokens, completion_tokens, cost = self._extract_responses_usage(response, model)
+            prompt_tokens, completion_tokens, cached_tokens, cost = self._extract_responses_usage(
+                response, model
+            )
 
             self.log.warning(
                 f"completion_timing op=xai_responses_{kind} model={model} msgs=1 "
                 f"msg_chars={len(input_text)} tools=1 elapsed_ms={elapsed_ms:.0f} "
-                f"prompt_tokens={prompt_tokens} cached_tokens=0 "
+                f"prompt_tokens={prompt_tokens} cached_tokens={cached_tokens} "
                 f"completion_tokens={completion_tokens} tool_calls=0"
             )
 
@@ -2419,16 +2425,20 @@ class LLMService:
             return False
         return False
 
-    def _extract_responses_usage(self, response: Any, model: str) -> tuple[int, int, float]:
+    def _extract_responses_usage(self, response: Any, model: str) -> tuple[int, int, int, float]:
         """Extract token usage and cost from a Responses API response.
 
         Responses API uses ``input_tokens`` / ``output_tokens`` (not the
         chat-style ``prompt_tokens`` / ``completion_tokens``), so the
-        regular ``_extract_usage`` returns zeros. Cost falls back to
+        regular ``_extract_usage`` returns zeros. Prompt-cache reads land
+        on ``usage.input_tokens_details.cached_tokens`` (note the
+        ``input_tokens_details`` shape — Chat Completions uses
+        ``prompt_tokens_details`` instead). Cost falls back to
         ``litellm.completion_cost`` when the response doesn't carry one.
         """
         prompt_tokens = 0
         completion_tokens = 0
+        cached_tokens = 0
         cost = 0.0
 
         try:
@@ -2436,6 +2446,9 @@ class LLMService:
             if usage:
                 prompt_tokens = getattr(usage, "input_tokens", 0) or 0
                 completion_tokens = getattr(usage, "output_tokens", 0) or 0
+                details = getattr(usage, "input_tokens_details", None)
+                if details is not None:
+                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
                 usage_cost = getattr(usage, "cost", None)
                 if usage_cost:
                     cost = float(usage_cost)
@@ -2450,7 +2463,7 @@ class LLMService:
                     "completion_cost failed for responses model=%s", model, exc_info=True
                 )
 
-        return prompt_tokens, completion_tokens, cost
+        return prompt_tokens, completion_tokens, cached_tokens, cost
 
     def assistant_request(
         self,

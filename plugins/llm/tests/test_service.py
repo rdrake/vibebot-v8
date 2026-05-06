@@ -664,6 +664,43 @@ class TestXAIResponsesCall:
         )
         assert "URL fetch failed" in result_url.content
 
+    def test_responses_uses_prompt_cache_key_in_extra_body(self) -> None:
+        """xAI Responses API expects prompt_cache_key as a body field, not as a header."""
+        responses = self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response("ok", with_search_call=True),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        self.service._xai_responses_call(
+            "q",
+            model="xai/grok-4.3",
+            api_key="k",
+            timeout=30,
+            kind="search",
+            channel="#dev",
+        )
+
+        kwargs = responses.call_args.kwargs
+        assert kwargs.get("extra_body") == {"prompt_cache_key": "chan:#dev"}
+        assert "extra_headers" not in kwargs
+
+    def test_responses_omits_cache_key_without_channel(self) -> None:
+        """Without a channel context, no prompt_cache_key is attached."""
+        responses = self.mocker.patch(
+            "llm.service.litellm.responses",
+            return_value=self._make_response("ok", with_search_call=True),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        self.service._xai_responses_call(
+            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+        )
+
+        kwargs = responses.call_args.kwargs
+        assert "extra_body" not in kwargs
+        assert "extra_headers" not in kwargs
+
 
 class TestGroundingDetection:
     """Tests for _check_grounding_used and CompletionResult."""
@@ -6541,25 +6578,47 @@ class TestResponsesApiTextAndUsage:
     def test_extract_responses_usage_uses_usage_cost_when_present(self) -> None:
         """When usage.cost is truthy, the helper avoids calling completion_cost."""
         response = self.mocker.MagicMock()
-        response.usage = self.mocker.Mock(input_tokens=10, output_tokens=5, cost=0.05)
-        completion_cost = self.mocker.patch("llm.service.litellm.completion_cost")
-        prompt_tokens, completion_tokens, cost = self.service._extract_responses_usage(
-            response, "xai/grok-4.3"
+        response.usage = self.mocker.Mock(
+            input_tokens=10, output_tokens=5, cost=0.05, input_tokens_details=None
         )
-        assert (prompt_tokens, completion_tokens) == (10, 5)
+        completion_cost = self.mocker.patch("llm.service.litellm.completion_cost")
+        prompt_tokens, completion_tokens, cached_tokens, cost = (
+            self.service._extract_responses_usage(response, "xai/grok-4.3")
+        )
+        assert (prompt_tokens, completion_tokens, cached_tokens) == (10, 5, 0)
         assert cost == pytest.approx(0.05)
         completion_cost.assert_not_called()
 
     def test_extract_responses_usage_swallows_completion_cost_failure(self) -> None:
         """A litellm.completion_cost exception is swallowed; cost defaults to 0.0."""
         response = self.mocker.MagicMock()
-        response.usage = self.mocker.Mock(input_tokens=3, output_tokens=2, cost=None)
-        self.mocker.patch("llm.service.litellm.completion_cost", side_effect=RuntimeError("boom"))
-        prompt_tokens, completion_tokens, cost = self.service._extract_responses_usage(
-            response, "xai/grok-4.3"
+        response.usage = self.mocker.Mock(
+            input_tokens=3, output_tokens=2, cost=None, input_tokens_details=None
         )
-        assert (prompt_tokens, completion_tokens) == (3, 2)
+        self.mocker.patch("llm.service.litellm.completion_cost", side_effect=RuntimeError("boom"))
+        prompt_tokens, completion_tokens, cached_tokens, cost = (
+            self.service._extract_responses_usage(response, "xai/grok-4.3")
+        )
+        assert (prompt_tokens, completion_tokens, cached_tokens) == (3, 2, 0)
         assert cost == 0.0
+
+    def test_extract_responses_usage_reads_cached_tokens_from_input_details(self) -> None:
+        """Responses API exposes cache reads via usage.input_tokens_details.cached_tokens."""
+        response = self.mocker.MagicMock()
+        response.usage = self.mocker.Mock(
+            input_tokens=200,
+            output_tokens=12,
+            cost=0.01,
+            input_tokens_details=self.mocker.Mock(cached_tokens=180),
+        )
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        prompt_tokens, completion_tokens, cached_tokens, cost = (
+            self.service._extract_responses_usage(response, "xai/grok-4.3")
+        )
+        assert prompt_tokens == 200
+        assert completion_tokens == 12
+        assert cached_tokens == 180
+        assert cost == pytest.approx(0.01)
 
 
 class TestScheduleLlmTaskFailurePaths:
