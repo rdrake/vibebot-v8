@@ -162,6 +162,99 @@ class TestLoomAfterBeat1:
         assert client.calls == ["seed", "beat"]
 
 
+class TestLoomDigestPhase:
+    def test_full_cycle_applies_high_confidence_event(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_entity("avatar", "Forest")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+        )
+        client = StubClient(
+            {
+                "seed": "the bell rings",
+                "beat": "shadows lengthen",
+                "digest": (
+                    '[{"op":"add_event",'
+                    '"payload":{"summary":"a chime","entity_ids":[]},'
+                    '"confidence":0.95,"provenance":"l-1","rationale":"r"}]'
+                ),
+            }
+        )
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+
+        loom.tick()
+        loom.observe_transcript("botB", "I hear it too")
+        bridge.scheduled[0][1]()
+        loom.observe_transcript("botC", "the wind takes it")
+        bridge.scheduled[-1][1]()
+
+        events = store.recent_events()
+        assert any(e.summary == "a chime" for e in events)
+        rows = store.list_proposals(status="approved")
+        assert len(rows) == 1
+        assert rows[0].reviewer == "loom"
+        assert client.calls == ["seed", "beat", "digest"]
+        assert loom._active is None
+        assert [u[1] for u in bridge.usage_log] == ["seed", "beat", "digest"]
+
+    def test_uses_snapshotted_stable_block_across_phases(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+        )
+        captured: list[str] = []
+
+        class CapturingClient:
+            def __init__(self, replies: dict[str, str]) -> None:
+                self.replies = dict(replies)
+                self.calls: list[str] = []
+
+            def call(
+                self,
+                *,
+                op: str,
+                model: str,
+                messages: list[dict[str, str]],
+            ) -> tuple[str, LoomCallUsage]:
+                captured.append(messages[1]["content"])
+                self.calls.append(op)
+                return self.replies[op], LoomCallUsage(10, 5, 0.0)
+
+        client = CapturingClient(
+            {"seed": "ring", "beat": "echo", "digest": "[]"},
+        )
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        bridge.snapshots["#afnet"] = VerseSnapshot(
+            "#afnet",
+            "different summary",
+            [("avatar", "Different")],
+            ["a new event"],
+        )
+        loom.observe_transcript("botB", "I hear it")
+        bridge.scheduled[0][1]()
+        loom.observe_transcript("botB", "I hear it")
+        bridge.scheduled[-1][1]()
+        assert captured[0] == captured[1] == captured[2]
+        assert "different summary" not in captured[0]
+
+
 class TestApplyOrQueue:
     def test_high_confidence_event_auto_applies_and_records_audit_row(self, verse_db_dir) -> None:
         from llm.verse.loom import ParsedProposal, apply_or_queue

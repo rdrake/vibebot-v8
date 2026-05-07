@@ -566,5 +566,67 @@ class Loom:
         )
 
     def after_beat2(self) -> None:
-        """Stub; populated in B10c."""
-        raise NotImplementedError
+        with self._lock:
+            cycle = self._active
+            if cycle is None:
+                return
+        # Concurrency invariant: Limnoria's scheduler serializes timer
+        # callbacks (see plugins/llm/src/llm/plugin.py — addPeriodicEvent
+        # is single-threaded). Combined with the lock guarding _active and
+        # the worker-thread submit boundary, no two cycles can overlap.
+        self._bridge.submit("loom:digest", lambda: self._digest_phase(cycle))
+
+    def _digest_phase(self, cycle: LoomCycle) -> None:
+        try:
+            with self._lock:
+                transcript = truncate_transcript(
+                    cycle.snapshot_transcript(),
+                    max_lines=self._cfg.transcript_max_lines,
+                    max_chars=self._cfg.transcript_max_chars,
+                )
+            if not transcript:
+                self._log.info(
+                    "loom: empty transcript at digest; finalizing cycle %s",
+                    cycle.cycle_id,
+                )
+                return
+            messages = [
+                {"role": "system", "content": LOOM_STATIC_PREFIX},
+                {"role": "system", "content": cycle.verse_stable_block},
+                {
+                    "role": "user",
+                    "content": build_digest_tail(loom_transcript_so_far=transcript),
+                },
+            ]
+            try:
+                content, usage = self._client.call(
+                    op="digest", model=self._cfg.model, messages=messages
+                )
+            except Exception:
+                self._log.exception("loom digest call failed")
+                return
+            self._bridge.log_usage(
+                channel=cycle.channel,
+                op="digest",
+                model=self._cfg.model,
+                usage=usage,
+            )
+            proposals = parse_digest(content)
+            store = self._bridge.store_for(cycle.channel)
+            for p in proposals:
+                try:
+                    apply_or_queue(
+                        store,
+                        p,
+                        cycle_id=cycle.cycle_id,
+                        threshold=self._cfg.auto_apply_threshold,
+                    )
+                except Exception:
+                    self._log.exception(
+                        "loom proposal apply failed: op=%s payload=%s",
+                        p.op,
+                        p.payload,
+                    )
+        finally:
+            with self._lock:
+                self._active = None
