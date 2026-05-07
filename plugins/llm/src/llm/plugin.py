@@ -511,12 +511,15 @@ class LLM(callbacks.Plugin):
             now=False,  # Don't run immediately on startup
         )
 
-        # Safety poll for pending tasks (5-minute fallback for event-driven wakeups)
+        # Safety poll for pending tasks (5-minute fallback for event-driven wakeups).
+        # Initialize the in-flight gate BEFORE scheduling — a synchronous fire
+        # during construction would NameError without the flag.
+        self._safety_poll_inflight = threading.Event()
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_pending_tasks")
 
         schedule.addPeriodicEvent(
-            self._check_pending_tasks,
+            self._enqueue_safety_poll,
             self._SAFETY_POLL_INTERVAL,
             name="llm_pending_tasks",
             now=False,
@@ -601,6 +604,25 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Scheduled file cleanup failed: %s", e)
 
+    def _enqueue_safety_poll(self) -> None:
+        """Submit a single safety-poll worker, deduped by ``_safety_poll_inflight``.
+
+        The flag prevents overlapping polls when a long LLM dispatch holds
+        the worker; we never queue more than one inflight at a time.
+        """
+        if self._llm_executor.closing:
+            return
+        if self._safety_poll_inflight.is_set():
+            return
+        self._safety_poll_inflight.set()
+        try:
+            fut = self._llm_executor.submit("safety_poll", self._check_pending_tasks)
+        except Exception:
+            # Synchronous submit failure must not leave the flag stuck set.
+            self._safety_poll_inflight.clear()
+            raise
+        fut.add_done_callback(lambda _f: self._safety_poll_inflight.clear())
+
     def _schedule_queue_wakeup(self, at_time: float | None = None) -> None:
         """Schedule a one-shot wakeup for the next due queue task.
 
@@ -635,7 +657,7 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_queue_wakeup")
 
         schedule.addEvent(
-            self._check_pending_tasks,
+            self._enqueue_safety_poll,
             effective,
             name="llm_queue_wakeup",
         )
@@ -671,7 +693,8 @@ class LLM(callbacks.Plugin):
                     )
 
             # Schedule the next wakeup based on remaining queue state
-            self._schedule_queue_wakeup()
+            if not self._llm_executor.closing:
+                self._schedule_queue_wakeup()
         except Exception as e:
             self.log.error("Pending task check failed: %s", e)
 
@@ -738,19 +761,21 @@ class LLM(callbacks.Plugin):
         # content. A raw \n on PRIVMSG triggers Excess Flood disconnects.
         text = self._collapse_for_irc(text) or text
 
-        # Try to deliver via IRC
+        # Try to deliver via IRC. _safe_queue serializes workers and short-
+        # circuits cleanly when shutting down — a False return must not
+        # advance durable delivery state.
         delivered = False
         try:
             for irc_conn in world.ircs:
                 if r.is_channel:
                     if target in irc_conn.state.channels:
-                        irc_conn.queueMsg(ircmsgs.privmsg(target, text))
-                        delivered = True
+                        if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+                            delivered = True
                         break
                 else:
                     # PM delivery — use first available connection
-                    irc_conn.queueMsg(ircmsgs.privmsg(target, text))
-                    delivered = True
+                    if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+                        delivered = True
                     break
         except Exception as e:
             self.log.warning(
@@ -759,6 +784,12 @@ class LLM(callbacks.Plugin):
                 self.llm_service.sanitize_output(str(e)),
             )
             delivered = False
+
+        # No durable-state mutations from a shutting-down worker — bail
+        # before touching delete_pending_task / update_delivery_attempt /
+        # log_usage / _schedule_queue_wakeup.
+        if self._llm_executor.closing:
+            return
 
         # Acknowledge or retry delivery for durable results
         if r.task_id is not None:

@@ -1142,6 +1142,52 @@ class TestPluginLifecycle:
         mock_unhook.assert_called_with("llm")
 
 
+class TestSafetyPollGuard:
+    def test_overlapping_poll_is_skipped(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._safety_poll_inflight.set()
+
+        plugin._enqueue_safety_poll()
+        plugin._llm_executor.submit.assert_not_called()
+
+    def test_flag_clears_after_worker_completes(self, plugin_env, mocker) -> None:
+        """Use a real LLMExecutor so add_done_callback fires."""
+        import time as _t
+
+        plugin, _irc, _msg = plugin_env
+        # Stub the worker body so the future completes promptly with a
+        # known result. Without this stub, the worker enters the real
+        # `_check_pending_tasks` which iterates a MagicMock service
+        # return value (TypeError) — the test would still "pass" but
+        # only via the exception path, not the success path.
+        plugin.llm_service.check_pending_tasks = mocker.MagicMock(return_value=[])
+
+        plugin._enqueue_safety_poll()
+        # Wait briefly for the future to complete.
+        _t.sleep(0.5)
+        assert not plugin._safety_poll_inflight.is_set()
+
+    def test_flag_clears_on_synchronous_submit_failure(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._llm_executor.submit.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            plugin._enqueue_safety_poll()
+        assert not plugin._safety_poll_inflight.is_set()
+
+    def test_closing_short_circuits(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+
+        plugin._enqueue_safety_poll()
+        plugin._llm_executor.submit.assert_not_called()
+
+
 class TestSafeQueue:
     def test_safe_queue_drops_when_closing(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env
@@ -2159,6 +2205,9 @@ class TestDeliverPendingResult:
         plugin.llm_service.save_code_to_http.return_value = None
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._irc_send_lock = threading.Lock()
         return plugin
 
     def _make_result(self, **overrides):
@@ -2326,6 +2375,9 @@ class TestDeliveryRetry:
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._irc_send_lock = threading.Lock()
         return plugin
 
     def _make_result(self, **overrides):
@@ -2627,6 +2679,9 @@ class TestWakeupTriggers:
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._irc_send_lock = threading.Lock()
         return plugin
 
     def _make_result(self, **overrides):
@@ -3207,6 +3262,9 @@ class TestDeliverPendingResultCodeBranch:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        plugin._irc_send_lock = threading.Lock()
         return plugin
 
     def _make_result(self, **overrides):
