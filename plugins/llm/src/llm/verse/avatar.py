@@ -180,3 +180,111 @@ def verse_recall(store: VerseStore, query: str) -> list[Event]:
         event for event in events if any(token in event.summary.lower() for token in tokens)
     ]
     return filtered[:5]
+
+
+# ---------------------------------------------------------------------------
+# OOC escape detector
+# ---------------------------------------------------------------------------
+
+OOC_PREFIX = "(("
+OOC_SUFFIX = "))"
+
+
+def is_ooc(message: str) -> bool:
+    """True if ``message`` is wrapped in OOC parentheses ((like this)).
+
+    Whitespace around the wrapper is tolerated, but BOTH the prefix and
+    suffix must be present. An empty wrapper "(())" returns True (it's
+    syntactically OOC, even if useless).
+    """
+    s = message.strip()
+    return s.startswith(OOC_PREFIX) and s.endswith(OOC_SUFFIX)
+
+
+# ---------------------------------------------------------------------------
+# System prompt builder
+# ---------------------------------------------------------------------------
+
+
+def build_verse_system_prompt(
+    store: VerseStore,
+    avatar_id: int,
+    instruct_text: str,
+) -> str:
+    """Build the system prompt for the verse-aware @ask flow.
+
+    Composes (in order):
+    - "You are <avatar.name>."
+    - "Persona: <instruct_text>" — or "Persona: no persona set." if instruct_text is empty/whitespace.
+    - "Scene: You are at <place name>. <place summary>" — derived from avatar's
+      ``location`` attribute. If no location set or place not found,
+      "Scene: You are nowhere in particular." is used.
+    - "Recent events involving you:" followed by up to 5 bulleted lines.
+      Each line is "- <event.summary>". If no events, "- (none yet)".
+    - "Other avatars present here:" followed by bulleted lines for each ACTIVE
+      avatar (kind='avatar', status='active') whose location matches this
+      avatar's own location, EXCLUDING this avatar. Each line: "- <name>: <summary>"
+      (or just "- <name>" if summary is empty). If none,
+      "- (no other avatars present)".
+    """
+    avatar = store.get_entity(avatar_id)
+    if avatar is None:
+        raise ValueError("avatar not found")
+
+    # --- Identity ---
+    identity_line = f"You are {avatar.name}."
+
+    # --- Persona ---
+    if instruct_text.strip():
+        persona_line = f"Persona: {instruct_text}"
+    else:
+        persona_line = "Persona: no persona set."
+
+    # --- Scene ---
+    location = store.get_attribute(avatar_id, "location")
+    place = store.find_entity_by_name(location, kind="place") if location is not None else None
+
+    if place is not None:
+        scene_line = f"Scene: You are at {place.name}. {place.summary}"
+    else:
+        scene_line = "Scene: You are nowhere in particular."
+
+    # --- Recent events involving this avatar ---
+    all_events = store.recent_events(limit=50)
+    avatar_events = [ev for ev in all_events if avatar_id in ev.entity_ids][:5]
+
+    events_header = "Recent events involving you:"
+    if avatar_events:
+        event_bullets = "\n".join(f"- {ev.summary}" for ev in avatar_events)
+    else:
+        event_bullets = "- (none yet)"
+
+    # --- Other avatars present at same location ---
+    others_header = "Other avatars present here:"
+    if location is not None:
+        all_avatars = store.list_entities_by_kind("avatar", status="active")
+        others = [
+            a
+            for a in all_avatars
+            if a.id != avatar_id and store.get_attribute(a.id, "location") == location
+        ]
+    else:
+        others = []
+
+    if others:
+        other_bullets = "\n".join(
+            f"- {a.name}: {a.summary}" if a.summary else f"- {a.name}" for a in others
+        )
+    else:
+        other_bullets = "- (no other avatars present)"
+
+    parts = [
+        identity_line,
+        persona_line,
+        scene_line,
+        events_header,
+        event_bullets,
+        others_header,
+        other_bullets,
+    ]
+    return "\n".join(parts)
