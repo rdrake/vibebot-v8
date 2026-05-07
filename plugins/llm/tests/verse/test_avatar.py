@@ -6,9 +6,13 @@ import time
 
 import pytest
 from llm.verse.avatar import (
+    OOC_PREFIX,
+    OOC_SUFFIX,
     VERB_TABLE,
     ActResult,
     VerbEffect,
+    build_verse_system_prompt,
+    is_ooc,
     verse_act,
     verse_look,
     verse_move,
@@ -305,3 +309,128 @@ class TestVerseRecall:
         store.add_event(summary="Something", entity_ids=[], source="avatar")
         assert verse_recall(store, "") == []
         assert verse_recall(store, "   ") == []
+
+
+# ---------------------------------------------------------------------------
+# TestSystemPrompt
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPrompt:
+    def test_basic_structure_includes_all_sections(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "curious traveller")
+
+        assert "You are alice" in prompt
+        assert "Persona: curious traveller" in prompt
+        assert "Scene:" in prompt
+        assert "The Clearing" in prompt
+        assert "A quiet woodland clearing where new stories begin." in prompt
+        assert "Recent events involving you:" in prompt
+        assert "Other avatars present here:" in prompt
+
+    def test_empty_instruct_uses_no_persona_set(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "")
+        assert "Persona: no persona set." in prompt
+
+    def test_whitespace_instruct_uses_no_persona_set(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "   ")
+        assert "Persona: no persona set." in prompt
+
+    def test_recent_events_filtered_by_avatar(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        bob_id = _opt_in(store, nick="bob")
+
+        store.add_event(summary="alice does something", entity_ids=[alice_id], source="avatar")
+        store.add_event(summary="bob does one thing", entity_ids=[bob_id], source="avatar")
+        store.add_event(summary="bob does another thing", entity_ids=[bob_id], source="avatar")
+
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+
+        assert "alice does something" in prompt
+        assert "bob does one thing" not in prompt
+        assert "bob does another thing" not in prompt
+
+    def test_recent_events_capped_at_5(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+
+        summaries = [f"alice event {i}" for i in range(7)]
+        for s in summaries:
+            store.add_event(summary=s, entity_ids=[alice_id], source="avatar")
+
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+
+        found = [s for s in summaries if s in prompt]
+        assert len(found) == 5
+
+    def test_no_events_shows_none_yet_marker(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        # opt_in writes no events for alice
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "(none yet)" in prompt
+
+    def test_other_avatars_present_filtered_by_location(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")  # placed at The Clearing by opt_in
+        _opt_in(store, nick="bob")  # also placed at The Clearing by opt_in
+
+        # Create carol manually at a different location
+        carol_id = store.add_entity("avatar", "carol", "A mysterious stranger.")
+        store.link_avatar(carol_id, nick="carol")
+        store.set_attribute(carol_id, "location", "Riverside")
+        # Ensure Riverside exists as a place entity so the location is meaningful
+        store.add_entity("place", "Riverside", "A bend in the river.")
+
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+
+        assert "bob" in prompt
+        assert "carol" not in prompt
+
+    def test_no_other_avatars_marker(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "(no other avatars present)" in prompt
+
+    def test_no_location_uses_nowhere_in_particular(self, store: VerseStore) -> None:
+        # Create avatar manually without location attribute
+        avatar_id = store.add_entity("avatar", "ghost", "A wandering spirit.")
+        store.link_avatar(avatar_id, nick="ghost")
+        prompt = build_verse_system_prompt(store, avatar_id, "a spirit")
+        assert "nowhere in particular" in prompt
+
+    def test_unknown_avatar_id_raises(self, store: VerseStore) -> None:
+        with pytest.raises(ValueError, match="avatar not found"):
+            build_verse_system_prompt(store, 99999, "something")
+
+
+# ---------------------------------------------------------------------------
+# TestOOC
+# ---------------------------------------------------------------------------
+
+
+class TestOOC:
+    def test_simple_ooc_wrap(self) -> None:
+        assert is_ooc("((hi))") is True
+
+    def test_no_wrap(self) -> None:
+        assert is_ooc("hi") is False
+
+    def test_only_prefix(self) -> None:
+        assert is_ooc("((hi") is False
+
+    def test_only_suffix(self) -> None:
+        assert is_ooc("hi))") is False
+
+    def test_whitespace_around(self) -> None:
+        assert is_ooc("  ((hi))  ") is True
+
+    def test_empty_wrap(self) -> None:
+        assert is_ooc("(())") is True
+
+    def test_empty_string(self) -> None:
+        assert is_ooc("") is False
+
+    def test_constants_exported(self) -> None:
+        assert OOC_PREFIX == "(("
+        assert OOC_SUFFIX == "))"
