@@ -11,7 +11,6 @@ from llm.assistant import (
     CHAT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
-    FOREST_SYSTEM_PROMPT,
     REMIND_ACTION_SYSTEM_PROMPT,
     AssistantToolExecutor,
     ToolCallbackResult,
@@ -999,40 +998,6 @@ class TestMetaCompletion:
 
         assert captured_messages[0]["role"] == "system"
         assert captured_messages[0]["content"] == CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot")
-
-    def test_assistant_completion_uses_forest_prompt_for_forest_route(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """route_profile='forest' selects FOREST_SYSTEM_PROMPT, not CHAT_SYSTEM_PROMPT."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "long-form."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
-
-        captured_messages: list = []
-
-        def capture_completion(**kwargs: object) -> object:
-            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
-            return mock_response
-
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
-
-        service.assistant_completion(
-            prompt="tell me a story",
-            nick="fc42",
-            channel="#afternet",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            route_profile="forest",
-        )
-
-        framework = captured_messages[0]["content"]
-        assert framework == FOREST_SYSTEM_PROMPT.format(bot_nick="VibeBot")
-        # Sanity: the chat 3-line cap text must NOT appear in the forest framework.
-        assert "Length cap: 3 lines" not in framework
 
     def test_assistant_completion_passes_search_fn_to_executor(
         self, service: LLMService, mocker: MockerFixture
@@ -2361,23 +2326,6 @@ class TestProfileSystemPrompts:
         """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick}."""
         assert "{bot_nick}" in REMIND_ACTION_SYSTEM_PROMPT
 
-    def test_forest_system_prompt_drops_length_cap(self) -> None:
-        """Forest profile must NOT carry the chat 3-line length cap; that's
-        the whole point of the opt-in."""
-        assert "3 lines" not in FOREST_SYSTEM_PROMPT
-        assert "Length cap" not in FOREST_SYSTEM_PROMPT
-        # And it should explicitly authorize long-form output.
-        assert "No length cap" in FOREST_SYSTEM_PROMPT
-
-    def test_forest_system_prompt_keeps_plain_text_rules(self) -> None:
-        """Markdown still doesn't render on IRC; forest mode keeps that rule."""
-        assert "markdown" in FOREST_SYSTEM_PROMPT.lower()
-        assert "Plain text only" in FOREST_SYSTEM_PROMPT
-
-    def test_forest_system_prompt_has_bot_nick_placeholder(self) -> None:
-        """Framework templates use {bot_nick}; forest must follow suit."""
-        assert "{bot_nick}" in FOREST_SYSTEM_PROMPT
-
 
 class TestToolSpecVisibility:
     """GIVEN tool specs WHEN inspected THEN visibility and capability are correct."""
@@ -2397,7 +2345,7 @@ class TestToolSpecVisibility:
     def test_fetch_url_visible_in_chat_code_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["fetch_url"].visible_in == frozenset(
-            {"chat", "forest", "code", "remind_action"}
+            {"chat", "verse", "code", "remind_action"}
         )
 
     def test_generate_code_capability_is_llm_code(self) -> None:
@@ -2407,20 +2355,20 @@ class TestToolSpecVisibility:
     def test_generate_code_visible_in_chat_and_code_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_code"].visible_in == frozenset(
-            {"chat", "forest", "code", "remind_action"}
+            {"chat", "verse", "code", "remind_action"}
         )
 
     def test_generate_image_visible_in_chat_draw_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["generate_image"].visible_in == frozenset(
-            {"chat", "forest", "draw", "remind_action"}
+            {"chat", "verse", "draw", "remind_action"}
         )
 
-    def test_forest_profile_inherits_chat_tool_surface(self) -> None:
-        """Forest mode is chat with a longer leash — same tools, same caps."""
+    def test_verse_profile_inherits_chat_tool_surface(self) -> None:
+        """Verse mode uses the same tool surface as chat (same visible_in membership)."""
         chat_tools = {t["function"]["name"] for t in get_tools_for_profile("chat")}
-        forest_tools = {t["function"]["name"] for t in get_tools_for_profile("forest")}
-        assert forest_tools == chat_tools
+        verse_tools = {t["function"]["name"] for t in get_tools_for_profile("verse")}
+        assert verse_tools == chat_tools
 
     def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
         """Action reminders need the union of @ask + @draw tool surfaces."""
@@ -2525,17 +2473,17 @@ class TestScheduleLlmTaskFamily:
         sch = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
         assert sch.capability == "llm.ask"
         assert sch.require_account is True
-        assert sch.visible_in == frozenset({"chat", "forest", "remind_action"})
+        assert sch.visible_in == frozenset({"chat", "verse", "remind_action"})
 
         lst = ASSISTANT_TOOL_REGISTRY["list_pending_tasks"]
         assert lst.capability == "llm.ask"
         assert lst.require_account is False
-        assert lst.visible_in == frozenset({"chat", "forest", "remind_action"})
+        assert lst.visible_in == frozenset({"chat", "verse", "remind_action"})
 
         can = ASSISTANT_TOOL_REGISTRY["cancel_pending_task"]
         assert can.capability == "llm.ask"
         assert can.require_account is False
-        assert can.visible_in == frozenset({"chat", "forest", "remind_action"})
+        assert can.visible_in == frozenset({"chat", "verse", "remind_action"})
 
     def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
         """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""

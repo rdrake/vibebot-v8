@@ -4003,127 +4003,6 @@ class TestChatProfileBridgeWiring:
         assert kwargs.get("extra_handlers") is None
 
 
-class TestForestNickRouting:
-    """``_ask_impl`` flips to the ``forest`` profile for nicks listed in
-    ``forestNicks``, and uses their @instruct text as the sole personality
-    overlay (channel persona bypassed)."""
-
-    def _result(self) -> AssistantResult:
-        return AssistantResult(
-            content="long-form reply",
-            grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
-        )
-
-    def test_is_forest_nick_matches_case_insensitive(self, plugin_env) -> None:
-        plugin, _irc, _msg = plugin_env
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {"forestNicks": ["fc42", "OtherNick"]}
-        )
-
-        assert plugin._is_forest_nick("#afternet", "FC42") is True
-        assert plugin._is_forest_nick("#afternet", "othernick") is True
-        assert plugin._is_forest_nick("#afternet", "stranger") is False
-
-    def test_is_forest_nick_returns_false_for_private_message(self, plugin_env) -> None:
-        """Without a channel there's no per-channel forestNicks to match against."""
-        plugin, _irc, _msg = plugin_env
-        plugin.registryValue.side_effect = make_registry_side_effect({"forestNicks": ["fc42"]})
-
-        assert plugin._is_forest_nick(None, "fc42") is False
-        assert plugin._is_forest_nick("", "fc42") is False
-
-    def test_forest_nick_routes_to_forest_profile(self, plugin_env, mocker: MockerFixture) -> None:
-        """A nick on forestNicks gets request_context.profile='forest'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_msg.prefix = "fc42!user@host"
-        mock_msg.nick = "fc42"
-        plugin.registryValue.side_effect = make_registry_side_effect({"forestNicks": ["fc42"]})
-
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
-        plugin.db.get_instruction.return_value = ""
-
-        plugin.ask(mock_irc, mock_msg, ["tell", "me", "a", "story"])
-
-        plugin.llm_service.assistant_request.assert_called_once()
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "forest"
-
-    def test_non_forest_nick_stays_on_chat_profile(self, plugin_env, mocker: MockerFixture) -> None:
-        """Default: nicks not in forestNicks keep route_profile='chat'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_msg.prefix = "stranger!user@host"
-        mock_msg.nick = "stranger"
-        # forestNicks empty by default.
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
-        plugin.db.get_instruction.return_value = ""
-
-        plugin.ask(mock_irc, mock_msg, ["hi"])
-
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "chat"
-
-    def test_forest_nick_without_instruction_sends_no_overlay(
-        self, plugin_env, mocker: MockerFixture
-    ) -> None:
-        """Forest + no @instruct → system_prompt=None so the bare forest
-        framework runs personality-free instead of inheriting the channel
-        persona."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_msg.prefix = "fc42!user@host"
-        mock_msg.nick = "fc42"
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {
-                "forestNicks": ["fc42"],
-                "assistantSystemPrompt": "Channel persona that forest nicks bypass.",
-            }
-        )
-
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
-        plugin.db.get_instruction.return_value = ""
-
-        plugin.ask(mock_irc, mock_msg, ["go", "for", "it"])
-
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        assert kwargs["system_prompt"] is None
-
-    def test_forest_nick_with_instruction_uses_only_instruction(
-        self, plugin_env, mocker: MockerFixture
-    ) -> None:
-        """Forest + @instruct → user_instruction is the sole overlay; channel
-        assistantSystemPrompt is NOT prepended/appended."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_msg.prefix = "fc42!user@host"
-        mock_msg.nick = "fc42"
-        channel_persona = "Channel persona that forest nicks bypass."
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {
-                "forestNicks": ["fc42"],
-                "assistantSystemPrompt": channel_persona,
-            }
-        )
-
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
-        plugin.db.get_instruction.return_value = "I am a sea captain. Yarrr."
-
-        plugin.ask(mock_irc, mock_msg, ["tell", "a", "tale"])
-
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        assert kwargs["system_prompt"] == "I am a sea captain. Yarrr."
-        assert channel_persona not in (kwargs["system_prompt"] or "")
-
-
 class TestExtractActionFloodSafety:
     """``_extract_action`` must collapse newlines so the IRC ACTION is single-line.
 
@@ -6267,13 +6146,13 @@ class TestAskWithVerseRoute:
         assert expected.issubset(tool_names)
 
     def test_ask_in_verse_bypasses_token_cap(self, verse_ask_env, mocker: MockerFixture) -> None:
-        """GIVEN verse route WHEN @ask THEN request_context uses PROFILE_FOREST.
+        """GIVEN verse route WHEN @ask THEN request_context uses PROFILE_VERSE.
 
-        PROFILE_FOREST is the only profile not in the profile_max_output dict
+        PROFILE_VERSE is the only profile not in the profile_max_output dict
         in assistant.py, so it bypasses the token cap applied to PROFILE_CHAT.
         We verify by checking the profile on the request_context passed to assistant_request.
         """
-        from llm.assistant import PROFILE_FOREST
+        from llm.assistant import PROFILE_VERSE
 
         plugin, irc, msg, _store = verse_ask_env
 
@@ -6282,7 +6161,7 @@ class TestAskWithVerseRoute:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         request_context = kwargs.get("request_context")
         assert request_context is not None
-        assert request_context.profile == PROFILE_FOREST
+        assert request_context.profile == PROFILE_VERSE
 
     def test_ask_in_verse_does_not_pass_model_override(self, verse_ask_env) -> None:
         """GIVEN verse route WHEN @ask THEN assistant_request receives no model_override.

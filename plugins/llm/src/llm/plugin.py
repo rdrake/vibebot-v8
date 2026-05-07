@@ -37,8 +37,8 @@ from .assistant import (
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
-    PROFILE_FOREST,
     PROFILE_REMIND_ACTION,
+    PROFILE_VERSE,
 )
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor
@@ -2374,21 +2374,6 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
-    def _is_forest_nick(self, channel: str | None, nick: str) -> bool:
-        """True when ``nick`` is opted into the long-form ``forest`` profile.
-
-        Match is case-insensitive against ``forestNicks`` for the channel.
-        ``nick`` is the account-resolved identity (account when identified,
-        bare nick otherwise) so operators should add account names to
-        ``forestNicks`` for users who reliably identify.
-        """
-        if not channel:
-            return False
-        forest = self.registryValue("forestNicks", channel)
-        if not forest:
-            return False
-        return any(ircutils.strEqual(entry, nick) for entry in forest)
-
     def _verse_route_for(
         self,
         channel: str,
@@ -3152,7 +3137,7 @@ class LLM(callbacks.Plugin):
             self._ask_impl(irc, msg, text, pf, entry_route="ask")
         else:
             # Verse path: override system prompt, append verse tools, use
-            # PROFILE_FOREST (bypasses token cap), use assistantModel.
+            # PROFILE_VERSE (bypasses token cap), use assistantModel.
             self._ask_impl(
                 irc,
                 msg,
@@ -3161,7 +3146,7 @@ class LLM(callbacks.Plugin):
                 entry_route="ask",
                 system_prompt_override=route.system_prompt,
                 extra_tools_override=route.tools,
-                profile_override=PROFILE_FOREST,
+                profile_override=PROFILE_VERSE,
                 verse_route=route,
             )
 
@@ -3187,13 +3172,12 @@ class LLM(callbacks.Plugin):
           ``assistantSystemPrompt`` personality overlay entirely.
         - ``extra_tools_override``: tool specs appended to the profile tool list.
         - ``profile_override``: when set, overrides the profile selection
-          (e.g. PROFILE_FOREST to bypass the token cap).
+          (e.g. PROFILE_VERSE to bypass the token cap).
         - ``verse_route``: when set, verse tool handlers are built and merged
           into extra_handlers so the assistant loop can dispatch them (C7d).
         """
         nick, channel = pf.nick, pf.channel
-        is_forest = self._is_forest_nick(channel, nick)
-        effective_profile = profile_override or (PROFILE_FOREST if is_forest else PROFILE_CHAT)
+        effective_profile = profile_override or PROFILE_CHAT
         request_context = self._build_request_context(
             irc,
             msg,
@@ -3218,17 +3202,11 @@ class LLM(callbacks.Plugin):
             # encodes the full persona+scene context and must replace, not
             # augment, the channel ``assistantSystemPrompt``.
             # Default: channel ``assistantSystemPrompt``, optionally prefixed
-            # with the user's persistent @instruct.
-            # Forest mode takes the user's @instruct as the *sole* overlay
-            # (channel persona bypassed), and falls back to no overlay when
-            # they haven't set one — the bare forest framework is
-            # intentionally personality-free. Either way, the structural
-            # framework (plain-text rules, tool-behavior rules) is layered
-            # in by ``assistant_completion``.
+            # with the user's persistent @instruct. The structural framework
+            # (plain-text rules, tool-behavior rules) is layered in by
+            # ``assistant_completion``.
             if system_prompt_override is not None:
                 effective_prompt = system_prompt_override
-            elif is_forest:
-                effective_prompt = user_instruction or None
             else:
                 ask_prompt = self.registryValue("assistantSystemPrompt", channel)
                 effective_prompt = (
