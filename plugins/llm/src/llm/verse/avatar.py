@@ -8,6 +8,80 @@ from typing import NamedTuple
 from .store import Event, VerseStore
 
 
+def make_verse_tool_specs() -> list[dict]:
+    """Return OpenAI/LiteLLM tool specs for the four verse tools.
+
+    The tools are model-callable but only meaningful when the @ask path
+    is verse-routed (see plugin._verse_route_for + C7d dispatch).
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_act",
+                "description": (
+                    "Record an in-character action. The whitelist of verbs "
+                    "with side effects is: move, flee, follow (relocate), "
+                    "take, drop, give (item refs), and event-only verbs "
+                    "whisper, speak, listen, examine, wait, signal, gesture, "
+                    "search. Off-list verbs are recorded as events with no "
+                    "world change."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "verb": {"type": "string"},
+                        "target": {"type": "string"},
+                        "details": {"type": "string"},
+                    },
+                    "required": ["verb"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_move",
+                "description": "Move the avatar to a named place.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"place_name": {"type": "string"}},
+                    "required": ["place_name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_look",
+                "description": (
+                    "Describe an entity in the scene. With no target, "
+                    "describes the avatar's current location."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_recall",
+                "description": (
+                    "Recall up to 5 recent events whose summaries match any token of the query."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        },
+    ]
+
+
 class VerbEffect(Enum):
     EVENT_ONLY = "event_only"
     MOVE = "move"

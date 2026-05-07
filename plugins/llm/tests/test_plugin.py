@@ -6025,25 +6025,26 @@ class TestVerseRouteForGating:
         assert result is None
 
     # ------------------------------------------------------------------
-    # Gate 4: all preconditions satisfied — body still None until C7c
+    # Gate 4: all preconditions satisfied but no avatar — None (C7c)
     # ------------------------------------------------------------------
 
-    def test_all_preconditions_satisfied_still_returns_none(
-        self, plugin_env, mocker: MockerFixture
+    def test_all_preconditions_satisfied_no_avatar_returns_none(
+        self, plugin_env, mocker: MockerFixture, tmp_path
     ) -> None:
-        """GIVEN verseEnabled=True, cap granted, plain message WHEN called THEN None.
+        """GIVEN verseEnabled=True, cap granted, plain message, but user has no avatar
+        WHEN called THEN None (no opt-in → chat path)."""
+        from llm.verse.store import VerseStore
 
-        NOTE: This test will break in C7c when the body is filled in with avatar
-        lookup + route construction. That is expected and acceptable.
-        """
         plugin, _irc, _msg = plugin_env
 
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
         plugin.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: True if key == "verseEnabled" else ""
         )
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
 
-        result = plugin._verse_route_for("#afnet", "alice", "alice", "just a plain message")
+        result = plugin._verse_route_for("#afnet", "alice", None, "just a plain message")
 
         assert result is None
 
@@ -6076,3 +6077,224 @@ class TestVerseRouteForGating:
 
         # The chat path must have fired.
         plugin.llm_service.assistant_request.assert_called_once()
+
+
+# =============================================================================
+# C7c: _verse_route_for system prompt + tool list assembly
+# =============================================================================
+
+
+class TestVerseRouteForC7c:
+    """Tests for _verse_route_for returning a populated VerseRoute (C7c).
+
+    Complements TestVerseRouteForGating which covers the None branches.
+    """
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """plugin_env + real VerseStore, verse-enabled channel, alice opted in."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@verseopt in")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        # Opt alice in so she has an avatar.
+        plugin.verseopt(irc, msg, ["in"])
+        irc.reply.reset_mock()
+
+        return plugin, irc, msg, store
+
+    def test_avatar_present_returns_route(self, verse_env) -> None:
+        """GIVEN opted-in avatar WHEN _verse_route_for called THEN non-None route returned."""
+        plugin, _irc, _msg, store = verse_env
+
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+
+        assert route is not None
+        assert route.avatar_id is not None
+        assert isinstance(route.system_prompt, str)
+        assert "alice" in route.system_prompt
+        assert len(route.tools) == 4
+        assert route.store is store
+
+    def test_route_system_prompt_includes_identity(self, verse_env) -> None:
+        """System prompt must start with 'You are alice.'"""
+        plugin, _irc, _msg, _store = verse_env
+
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+
+        assert route is not None
+        assert route.system_prompt.startswith("You are alice.")
+
+    def test_route_system_prompt_includes_scene(self, verse_env) -> None:
+        """System prompt must include a Scene section."""
+        plugin, _irc, _msg, _store = verse_env
+
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+
+        assert route is not None
+        assert "Scene:" in route.system_prompt
+
+    def test_route_tools_have_expected_names(self, verse_env) -> None:
+        """Returned tools must be the four verse tool specs."""
+        plugin, _irc, _msg, _store = verse_env
+
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+
+        assert route is not None
+        tool_names = {t["function"]["name"] for t in route.tools}
+        assert tool_names == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+
+
+class TestAskWithVerseRoute:
+    """Tests that @ask in a verse channel with an opted-in avatar uses the verse path (C7c)."""
+
+    SENTINEL = "VIBEBOT_TEST_SENTINEL_DO_NOT_LEAK"
+
+    @staticmethod
+    def _make_result(content: str = "verse reply") -> AssistantResult:
+        return AssistantResult(
+            content=content,
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+    @pytest.fixture
+    def verse_ask_env(self, plugin_env, tmp_path, mocker):
+        """plugin_env with verse enabled, alice opted in, and assistant_request stubbed."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            if key == "assistantSystemPrompt":
+                return self.SENTINEL
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@verseopt in")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        # Opt alice in.
+        plugin.verseopt(irc, msg, ["in"])
+        irc.reply.reset_mock()
+
+        # Stub assistant_request for the @ask call.
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_result()
+
+        msg.args = ("#afnet", "@ask hello")
+
+        return plugin, irc, msg, store
+
+    def test_ask_uses_verse_prompt_not_sentinel(self, verse_ask_env) -> None:
+        """GIVEN verse route WHEN @ask THEN assistantSystemPrompt sentinel is NOT in system_prompt.
+
+        The verse system prompt (avatar persona + scene) must entirely replace the
+        channel assistantSystemPrompt — the sentinel must not appear in the call.
+        """
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.ask(irc, msg, ["hello"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        system_prompt = kwargs.get("system_prompt", "")
+        assert self.SENTINEL not in (system_prompt or "")
+
+    def test_ask_verse_prompt_contains_avatar_name(self, verse_ask_env) -> None:
+        """GIVEN verse route WHEN @ask THEN system_prompt includes avatar name 'alice'."""
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        system_prompt = kwargs.get("system_prompt", "")
+        assert "alice" in (system_prompt or "")
+
+    def test_ask_in_verse_appends_verse_tools(self, verse_ask_env) -> None:
+        """GIVEN verse route WHEN @ask THEN all 4 verse tool names appear in extra_tools."""
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        extra_tools = kwargs.get("extra_tools") or []
+        tool_names = {t["function"]["name"] for t in extra_tools}
+        expected = {"verse_act", "verse_move", "verse_look", "verse_recall"}
+        assert expected.issubset(tool_names)
+
+    def test_ask_in_verse_bypasses_token_cap(self, verse_ask_env, mocker: MockerFixture) -> None:
+        """GIVEN verse route WHEN @ask THEN request_context uses PROFILE_FOREST.
+
+        PROFILE_FOREST is the only profile not in the profile_max_output dict
+        in assistant.py, so it bypasses the token cap applied to PROFILE_CHAT.
+        We verify by checking the profile on the request_context passed to assistant_request.
+        """
+        from llm.assistant import PROFILE_FOREST
+
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        request_context = kwargs.get("request_context")
+        assert request_context is not None
+        assert request_context.profile == PROFILE_FOREST
+
+    def test_ask_in_verse_does_not_pass_model_override(self, verse_ask_env) -> None:
+        """GIVEN verse route WHEN @ask THEN assistant_request receives no model_override.
+
+        The verse path must not hard-code an alternate model — it defers to the
+        standard assistantModel registry key, which the service reads itself.
+        Passing model_override=None (or not at all) is the correct behaviour.
+        """
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        # model_override should be absent or None — never a hard-coded value.
+        assert kwargs.get("model_override") is None

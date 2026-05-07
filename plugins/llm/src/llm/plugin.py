@@ -54,7 +54,7 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
-from .verse.avatar import is_ooc
+from .verse.avatar import build_verse_system_prompt, is_ooc, make_verse_tool_specs
 from .verse.store import VerseStore
 
 if TYPE_CHECKING:
@@ -153,14 +153,14 @@ class PreflightResult(NamedTuple):
 
 
 class VerseRoute(NamedTuple):
-    """Result of _verse_route_for.  Populated in C7c with avatar_id,
-    system_prompt, tools, and store.  C7a defines only the shape so the
-    helper's return type type-checks; it always returns None until C7c."""
+    """Result of _verse_route_for.  Populated when the message should be
+    handled by the verse engine (verseEnabled, llm.verse capability, avatar
+    exists, not OOC)."""
 
     avatar_id: int
     system_prompt: str
-    tools: list  # type: list[dict] in C7c
-    store: object  # type: VerseStore in C7c
+    tools: list[dict]
+    store: VerseStore
 
 
 @dataclass(frozen=True)
@@ -2410,8 +2410,17 @@ class LLM(callbacks.Plugin):
             return None  # capability fallthrough — quiet
         if is_ooc(message_text):
             return None
-        # Body lands in C7c.
-        return None
+        # Avatar lookup: account takes priority, then nick.
+        store = self._get_or_create_verse_store(channel)
+        avatar_id = (
+            store.find_avatar_by_account(account) if account else None
+        ) or store.find_avatar_by_nick(nick)
+        if avatar_id is None:
+            return None  # User opted into the channel but isn't in the verse → chat path.
+        instruct = self.db.get_instruction(nick) or ""
+        system_prompt = build_verse_system_prompt(store, avatar_id, instruct)
+        tools = make_verse_tool_specs()
+        return VerseRoute(avatar_id, system_prompt, tools, store)
 
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
@@ -3136,12 +3145,19 @@ class LLM(callbacks.Plugin):
         route = self._verse_route_for(pf.channel, pf.nick, pf.account, text)
         if route is None:
             self._ask_impl(irc, msg, text, pf, entry_route="ask")
-            return
-        # Route handling added in C7c/d.  _verse_route_for always returns None
-        # until C7c; this branch is dead code and errors loudly if ever reached.
-        raise RuntimeError(  # pragma: no cover
-            f"verse route returned non-None before C7c: {route!r}"
-        )
+        else:
+            # Verse path: override system prompt, append verse tools, use
+            # PROFILE_FOREST (bypasses token cap), use assistantModel.
+            self._ask_impl(
+                irc,
+                msg,
+                text,
+                pf,
+                entry_route="ask",
+                system_prompt_override=route.system_prompt,
+                extra_tools_override=route.tools,
+                profile_override=PROFILE_FOREST,
+            )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
@@ -3153,16 +3169,28 @@ class LLM(callbacks.Plugin):
         pf: PreflightResult,
         *,
         entry_route: str = "ask",
+        system_prompt_override: str | None = None,
+        extra_tools_override: list[dict] | None = None,
+        profile_override: str | None = None,
     ) -> None:
-        """Core ask logic, separated so invalidCommand can reuse without double-preflight."""
+        """Core ask logic, separated so invalidCommand can reuse without double-preflight.
+
+        Optional keyword-only overrides for verse routing (C7c):
+        - ``system_prompt_override``: when set, replaces the normal
+          ``assistantSystemPrompt`` personality overlay entirely.
+        - ``extra_tools_override``: tool specs appended to the profile tool list.
+        - ``profile_override``: when set, overrides the profile selection
+          (e.g. PROFILE_FOREST to bypass the token cap).
+        """
         nick, channel = pf.nick, pf.channel
         is_forest = self._is_forest_nick(channel, nick)
+        effective_profile = profile_override or (PROFILE_FOREST if is_forest else PROFILE_CHAT)
         request_context = self._build_request_context(
             irc,
             msg,
             pf,
             entry_route=entry_route,
-            profile=PROFILE_FOREST if is_forest else PROFILE_CHAT,
+            profile=effective_profile,
         )
 
         caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
@@ -3176,15 +3204,21 @@ class LLM(callbacks.Plugin):
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
 
-            # Personality overlay. Default: channel ``assistantSystemPrompt``,
-            # optionally prefixed with the user's persistent @instruct.
+            # Personality overlay. When system_prompt_override is provided
+            # (verse route), use it directly — the verse system prompt already
+            # encodes the full persona+scene context and must replace, not
+            # augment, the channel ``assistantSystemPrompt``.
+            # Default: channel ``assistantSystemPrompt``, optionally prefixed
+            # with the user's persistent @instruct.
             # Forest mode takes the user's @instruct as the *sole* overlay
             # (channel persona bypassed), and falls back to no overlay when
             # they haven't set one — the bare forest framework is
             # intentionally personality-free. Either way, the structural
             # framework (plain-text rules, tool-behavior rules) is layered
             # in by ``assistant_completion``.
-            if is_forest:
+            if system_prompt_override is not None:
+                effective_prompt = system_prompt_override
+            elif is_forest:
                 effective_prompt = user_instruction or None
             else:
                 ask_prompt = self.registryValue("assistantSystemPrompt", channel)
@@ -3205,7 +3239,10 @@ class LLM(callbacks.Plugin):
                 bridge_schemas, bridge_handlers = self._build_bridge_tool(
                     irc, msg, channel, trace=bridge_trace
                 )
-                extra_tools = list(bridge_schemas) if bridge_schemas else None
+                # Combine bridge tools with any verse tools from the route.
+                bridge_list = list(bridge_schemas) if bridge_schemas else []
+                verse_list = list(extra_tools_override) if extra_tools_override else []
+                extra_tools = (bridge_list + verse_list) or None
                 bridge_debug = bool(
                     bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
                 )
