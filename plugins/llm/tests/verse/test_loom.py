@@ -7,6 +7,54 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+class TestPromptBuilders:
+    def test_static_prefix_is_constant(self) -> None:
+        from llm.verse.loom import LOOM_STATIC_PREFIX
+
+        assert isinstance(LOOM_STATIC_PREFIX, str)
+        assert "proposal" in LOOM_STATIC_PREFIX.lower()
+        assert "json" in LOOM_STATIC_PREFIX.lower()
+        assert '"id"' not in LOOM_STATIC_PREFIX
+
+    def test_verse_stable_block_deterministic(self) -> None:
+        from llm.verse.loom import VerseSnapshot, build_verse_stable_block
+
+        snap = VerseSnapshot(
+            channel="#afnet",
+            summary="Three avatars wander a moonlit grove.",
+            top_entities=[("avatar", "Forest"), ("place", "Hollow Oak")],
+            recent_events=["Forest entered the grove.", "Owl hooted thrice."],
+        )
+        a = build_verse_stable_block(snap)
+        b = build_verse_stable_block(snap)
+        assert a == b
+        assert "Forest" in a
+        assert "Hollow Oak" in a
+        assert "Owl hooted" in a
+
+    def test_seed_tail_includes_emit_instruction(self) -> None:
+        from llm.verse.loom import build_seed_tail
+
+        out = build_seed_tail()
+        assert "one line" in out.lower() or "1 line" in out.lower()
+
+    def test_beat_tail_includes_transcript(self) -> None:
+        from llm.verse.loom import build_beat_tail
+
+        out = build_beat_tail(loom_transcript_so_far=[("botB", "the bell echoes")])
+        assert "botB" in out
+        assert "bell" in out
+
+    def test_digest_tail_demands_json_array(self) -> None:
+        from llm.verse.loom import build_digest_tail
+
+        out = build_digest_tail(
+            loom_transcript_so_far=[("botB", "the bell echoes")],
+        )
+        assert "json" in out.lower()
+        assert "array" in out.lower() or "list" in out.lower()
+
+
 class TestPickFocusVerse:
     def test_returns_none_if_all_in_cooldown(self) -> None:
         from llm.verse.loom import VerseCandidate, pick_focus_verse
