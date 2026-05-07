@@ -332,15 +332,13 @@ class LiteLLMLoomClient:
             cost = float(litellm.completion_cost(completion_response=response, model=model) or 0.0)
         except Exception:
             cost = 0.0
+        # Match service.py:_log_completion_timing's f-string convention.
+        # %-args formatting was partially failing under the bot's runtime
+        # logger setup (some args substituted, %d ones not) — see #66.
         self._log.warning(
-            "completion_timing op=loom:%s model=%s elapsed_ms=%.0f "
-            "prompt_tokens=%d completion_tokens=%d cost=%.6f",
-            op,
-            model,
-            elapsed_ms,
-            pt,
-            ct,
-            cost,
+            f"completion_timing op=loom:{op} model={model} "
+            f"elapsed_ms={elapsed_ms:.0f} "
+            f"prompt_tokens={pt} completion_tokens={ct} cost={cost:.6f}"
         )
         return content, LoomCallUsage(pt, ct, cost)
 
@@ -442,17 +440,6 @@ class Loom:
             if self._active is None:
                 return
             self._active.append_transcript(nick, text)
-
-    def observe_transcript_diag(self, nick: str, text: str) -> str | None:
-        """Diagnostic variant of ``observe_transcript`` — appends and returns
-        the active cycle id, or ``None`` if no cycle was active when the
-        line arrived. Used by the doPrivmsg hook to log capture vs miss
-        decisions while we shake out the transcript pipeline."""
-        with self._lock:
-            if self._active is None:
-                return None
-            self._active.append_transcript(nick, text)
-            return self._active.cycle_id
 
     def tick(self) -> None:
         with self._lock:

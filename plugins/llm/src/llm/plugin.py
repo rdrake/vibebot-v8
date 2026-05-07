@@ -1067,31 +1067,12 @@ class LLM(callbacks.Plugin):
                 cache_network = self._loom_network_cache or ""
                 target_arg = msg.args[0] if msg.args else ""
                 cache_channel = self._loom_channel_cache or ""
-                net_match = ircutils.strEqual(irc_network, cache_network)
-                ch_match = ircutils.strEqual(target_arg, cache_channel)
-                if net_match and ch_match:
+                if ircutils.strEqual(irc_network, cache_network) and ircutils.strEqual(
+                    target_arg, cache_channel
+                ):
                     allowlist = self._loom_bot_nicks_cache or ()
                     if not allowlist or any(ircutils.strEqual(n, msg.nick) for n in allowlist):
-                        captured = loom.observe_transcript_diag(msg.nick, text)
-                        self.log.warning(
-                            "loom_capture nick=%s active=%s captured=%s text_len=%d",
-                            msg.nick,
-                            captured is not None,
-                            captured,
-                            len(text),
-                        )
-                else:
-                    self.log.warning(
-                        "loom_skip net_match=%s ch_match=%s "
-                        "irc_network=%r cache_network=%r "
-                        "target=%r cache_channel=%r",
-                        net_match,
-                        ch_match,
-                        irc_network,
-                        cache_network,
-                        target_arg,
-                        cache_channel,
-                    )
+                        loom.observe_transcript(msg.nick, text)
             except Exception:
                 self.log.exception("loom transcript capture failed (non-fatal)")
 
