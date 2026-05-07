@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, cast
@@ -396,3 +398,119 @@ class LoomBridge(Protocol):
         model: str,
         usage: LoomCallUsage,
     ) -> None: ...
+
+
+class Loom:
+    """Forest-verse loom orchestrator.
+
+    Owns ``_active`` cycle state, ``_last_cycle_by_channel`` cooldowns,
+    the round-robin pointer, and a ``threading.Lock`` guarding all of
+    them. ``tick`` runs on the scheduler thread; the per-phase workers
+    run on the LLM executor and reacquire the lock only to mutate cycle
+    state.
+    """
+
+    def __init__(
+        self,
+        *,
+        cfg: LoomConfig,
+        bridge: LoomBridge,
+        client: LoomModelClient,
+    ) -> None:
+        self._cfg = cfg
+        self._bridge = bridge
+        self._client = client
+        self._active: LoomCycle | None = None
+        self._last_cycle_by_channel: dict[str, float] = {}
+        self._pointer = 0
+        self._lock = threading.Lock()
+        self._log = logging.getLogger("llm.verse.loom")
+
+    def observe_transcript(self, nick: str, text: str) -> None:
+        """Plugin's doPrivmsg hook calls this for every loom-channel line
+        that survived the source filter."""
+        with self._lock:
+            if self._active is None:
+                return
+            self._active.append_transcript(nick, text)
+
+    def tick(self) -> None:
+        with self._lock:
+            if self._active is not None:
+                self._log.debug("loom: tick during active cycle; skipping")
+                return
+            channels = self._bridge.list_candidate_channels()
+            now = self._bridge.now()
+            candidates = [
+                VerseCandidate(
+                    channel=c,
+                    weight=self._bridge.candidate_weight(c),
+                    last_cycle_at=self._last_cycle_by_channel.get(c),
+                )
+                for c in channels
+            ]
+            choice = pick_focus_verse(
+                candidates,
+                now=now,
+                cooldown_s=self._cfg.verse_cooldown_s,
+                pointer=self._pointer,
+            )
+            if choice is None:
+                self._log.debug("loom_idle: no eligible verse")
+                return
+            self._pointer += 1
+            snap = self._bridge.snapshot(choice.channel)
+            cycle = LoomCycle(
+                cycle_id=uuid.uuid4().hex[:12],
+                channel=choice.channel,
+                started_at=now,
+                verse_stable_block=build_verse_stable_block(snap),
+            )
+            self._active = cycle
+            self._last_cycle_by_channel[choice.channel] = now
+        self._bridge.submit("loom:seed", lambda: self._seed_phase(cycle))
+
+    def _seed_phase(self, cycle: LoomCycle) -> None:
+        messages = [
+            {"role": "system", "content": LOOM_STATIC_PREFIX},
+            {"role": "system", "content": cycle.verse_stable_block},
+            {"role": "user", "content": build_seed_tail()},
+        ]
+        try:
+            content, usage = self._client.call(op="seed", model=self._cfg.model, messages=messages)
+        except Exception:
+            self._log.exception("loom seed call failed; aborting cycle")
+            with self._lock:
+                self._active = None
+            return
+        self._bridge.log_usage(
+            channel=cycle.channel,
+            op="seed",
+            model=self._cfg.model,
+            usage=usage,
+        )
+        line = (content.strip().splitlines() or [""])[0]
+        if not line:
+            with self._lock:
+                self._active = None
+            return
+        if not self._bridge.post_to_loom_channel(line):
+            self._log.warning(
+                "loom seed: post_to_loom_channel failed (network down?); rolling back cycle for %s",
+                cycle.channel,
+            )
+            with self._lock:
+                self._active = None
+                self._last_cycle_by_channel.pop(cycle.channel, None)
+            return
+        with self._lock:
+            cycle.beats_posted = 1
+        self._bridge.schedule_after(
+            self._cfg.beat_window_s,
+            self.after_beat1,
+            "llm_loom_after_beat1",
+        )
+
+    def after_beat1(self) -> None:
+        """Stub; populated in B10b."""
+        raise NotImplementedError

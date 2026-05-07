@@ -7,6 +7,23 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+def _minimal_cfg():
+    from llm.verse.loom import LoomConfig
+
+    return LoomConfig(
+        network="afternet",
+        loom_channel="#forest",
+        bot_nicks=(),
+        model="gemini/x",
+        cycle_interval_s=300,
+        verse_cooldown_s=20,
+        beat_window_s=90,
+        transcript_max_lines=40,
+        transcript_max_chars=8000,
+        auto_apply_threshold=0.85,
+    )
+
+
 class _StubMsg:
     content = "ok"
 
@@ -23,6 +40,80 @@ class _StubUsage:
 class _StubResp:
     choices = [_StubChoice()]
     usage = _StubUsage()
+
+
+class TestLoomTick:
+    def test_tick_with_no_candidates_does_nothing(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
+        client = StubClient({})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        assert client.calls == []
+        assert bridge.posts == []
+        assert bridge.scheduled == []
+        assert loom._active is None
+
+    def test_idle_tick_does_not_advance_pointer(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({}))
+        loom.tick()
+        loom.tick()
+        loom.tick()
+        assert loom._pointer == 0
+
+    def test_tick_records_last_cycle_at_for_picked_channel(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+        )
+        client = StubClient({"seed": "the bell rings"})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        assert loom._last_cycle_by_channel["#afnet"] == bridge.now()
+        assert bridge.posts == ["the bell rings"]
+        assert bridge.scheduled
+        assert bridge.scheduled[0][2] == "llm_loom_after_beat1"
+
+    def test_tick_aborts_if_post_to_channel_fails(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
+            post_returns=False,
+        )
+        client = StubClient({"seed": "the bell rings"})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        assert bridge.scheduled == []
+        assert "#afnet" not in loom._last_cycle_by_channel
+        assert loom._active is None
 
 
 class TestApplyOrQueue:
