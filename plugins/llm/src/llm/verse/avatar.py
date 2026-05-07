@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import NamedTuple
 
-from .store import VerseStore
+from .store import Event, VerseStore
 
 
 class VerbEffect(Enum):
@@ -126,3 +126,57 @@ def verse_act(
     )
     scene = f"You attempt to {verb}" + (f" {target}." if target else ".")
     return ActResult(event_id, scene)
+
+
+# ---------------------------------------------------------------------------
+# Verse navigation / info helpers
+# ---------------------------------------------------------------------------
+
+
+def verse_move(store: VerseStore, avatar_id: int, place_name: str) -> str:
+    """Move the avatar to the given place by name.
+
+    Returns the canonical place name on success.
+    Raises ValueError("no such place") if no active place matches.
+    """
+    place = store.find_entity_by_name(place_name, kind="place")
+    if place is None:
+        raise ValueError("no such place")
+    store.set_attribute(avatar_id, "location", place.name)
+    return place.name
+
+
+def verse_look(
+    store: VerseStore,
+    avatar_id: int,
+    target: str | None = None,
+) -> str | None:
+    """Return summary text for the avatar's current location or a named entity.
+
+    When target is None: return the avatar's current location's summary
+    (None if avatar has no location set or the named place doesn't exist).
+    When target is given: return that entity's summary (case-insensitive
+    name match across all kinds), or None if not found.
+    """
+    if target is None:
+        location = store.get_attribute(avatar_id, "location")
+        if location is None:
+            return None
+        place = store.find_entity_by_name(location, kind="place")
+        return place.summary if place is not None else None
+    else:
+        entity = store.find_entity_by_name(target)
+        return entity.summary if entity is not None else None
+
+
+def verse_recall(store: VerseStore, query: str) -> list[Event]:
+    """Return up to 5 recent events whose summary contains any whitespace-split
+    token of ``query`` (case-insensitive substring match). Newest-first."""
+    tokens = [t for t in query.lower().split() if t]
+    if not tokens:
+        return []
+    events = store.recent_events(limit=100)
+    filtered = [
+        event for event in events if any(token in event.summary.lower() for token in tokens)
+    ]
+    return filtered[:5]

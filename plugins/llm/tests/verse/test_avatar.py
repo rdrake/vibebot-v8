@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
-from llm.verse.avatar import VERB_TABLE, ActResult, VerbEffect, verse_act
+from llm.verse.avatar import (
+    VERB_TABLE,
+    ActResult,
+    VerbEffect,
+    verse_act,
+    verse_look,
+    verse_move,
+    verse_recall,
+)
 from llm.verse.store import VerseStore
 
 
@@ -188,3 +198,110 @@ class TestVerseAct:
     def test_unknown_avatar_id_raises(self, store: VerseStore) -> None:
         with pytest.raises(ValueError, match="avatar retired"):
             verse_act(store, 99999, "speak")
+
+
+# ---------------------------------------------------------------------------
+# TestVerseMove
+# ---------------------------------------------------------------------------
+
+
+class TestVerseMove:
+    def test_success_updates_location_and_returns_place_name(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        store.add_entity("place", "Riverside", "A bend in the river.")
+        result = verse_move(store, alice_id, "Riverside")
+        assert result == "Riverside"
+        assert store.get_attribute(alice_id, "location") == "Riverside"
+
+    def test_no_such_place_raises_and_does_not_change_location(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        original_location = store.get_attribute(alice_id, "location")
+        with pytest.raises(ValueError, match="no such place"):
+            verse_move(store, alice_id, "Nowhere")
+        assert store.get_attribute(alice_id, "location") == original_location
+
+    def test_case_insensitive_place_lookup(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        store.add_entity("place", "Riverside", "A bend in the river.")
+        result = verse_move(store, alice_id, "RIVERSIDE")
+        assert result == "Riverside"
+        assert store.get_attribute(alice_id, "location") == "Riverside"
+
+
+# ---------------------------------------------------------------------------
+# TestVerseLook
+# ---------------------------------------------------------------------------
+
+
+class TestVerseLook:
+    def test_no_target_returns_current_place_summary(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        # opt_in places alice at The Clearing
+        result = verse_look(store, alice_id)
+        assert result == "A quiet woodland clearing where new stories begin."
+
+    def test_target_existing_entity_returns_summary(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        store.add_entity("item", "Sword", "A bright blade.")
+        result = verse_look(store, alice_id, target="sword")
+        assert result == "A bright blade."
+
+    def test_target_not_found_returns_none(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        result = verse_look(store, alice_id, target="phantom")
+        assert result is None
+
+    def test_no_target_no_location_returns_none(self, store: VerseStore) -> None:
+        # Create avatar entity directly, without opt_in (no location attribute).
+        eid = store.add_entity("avatar", "ghost", "A wandering spirit.")
+        result = verse_look(store, eid)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestVerseRecall
+# ---------------------------------------------------------------------------
+
+
+class TestVerseRecall:
+    def test_substring_match(self, store: VerseStore) -> None:
+        store.add_event(summary="Alice walks to the river", entity_ids=[], source="avatar")
+        store.add_event(summary="Bob sits down", entity_ids=[], source="avatar")
+        store.add_event(summary="Carol crosses the bridge", entity_ids=[], source="avatar")
+        results = verse_recall(store, "river")
+        assert len(results) == 1
+        assert "river" in results[0].summary
+
+    def test_case_insensitive(self, store: VerseStore) -> None:
+        store.add_event(summary="Alice walks to the river", entity_ids=[], source="avatar")
+        store.add_event(summary="Bob sits down", entity_ids=[], source="avatar")
+        results = verse_recall(store, "RIVER")
+        assert len(results) == 1
+        assert "river" in results[0].summary
+
+    def test_token_or_match(self, store: VerseStore) -> None:
+        store.add_event(summary="Alice walks to the river", entity_ids=[], source="avatar")
+        store.add_event(summary="Bob sits down", entity_ids=[], source="avatar")
+        store.add_event(summary="Carol crosses the bridge", entity_ids=[], source="avatar")
+        results = verse_recall(store, "river bridge")
+        assert len(results) == 2
+
+    def test_limit_to_5_newest_first(self, store: VerseStore) -> None:
+        for i in range(10):
+            store.add_event(summary=f"alpha event {i}", entity_ids=[], source="avatar")
+            time.sleep(0.01)
+        results = verse_recall(store, "alpha")
+        assert len(results) == 5
+        # Newest-first: ts of each result must be >= ts of the next
+        for i in range(len(results) - 1):
+            assert results[i].ts >= results[i + 1].ts
+
+    def test_no_matches_returns_empty(self, store: VerseStore) -> None:
+        store.add_event(summary="Something unrelated", entity_ids=[], source="avatar")
+        results = verse_recall(store, "nonsense")
+        assert results == []
+
+    def test_empty_query_returns_empty(self, store: VerseStore) -> None:
+        store.add_event(summary="Something", entity_ids=[], source="avatar")
+        assert verse_recall(store, "") == []
+        assert verse_recall(store, "   ") == []
