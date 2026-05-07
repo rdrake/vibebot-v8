@@ -711,6 +711,51 @@ class TestProposalsCRUD:
                 status="weird",
             )
 
+    def test_list_proposals_filters_and_decodes(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import Proposal, VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        p1 = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "first"},
+            confidence=0.9,
+        )
+        time.sleep(0.005)
+        p2 = store.add_proposal(
+            cycle_id="c-2",
+            op="add_event",
+            payload={"summary": "second"},
+            confidence=0.5,
+        )
+        rows = store.list_proposals()
+        assert [r.id for r in rows] == [p2, p1]
+        assert isinstance(rows[0], Proposal)
+        assert rows[0].payload == {"summary": "second"}
+        assert [r.id for r in store.list_proposals(status="pending")] == [p2, p1]
+        assert [r.id for r in store.list_proposals(cycle_id="c-1")] == [p1]
+
+    def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "p"},
+            confidence=0.9,
+        )
+        approved = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "a"},
+            confidence=0.9,
+            status="approved",
+            reviewer="loom",
+        )
+        rows = store.list_proposals(status="approved")
+        assert [r.id for r in rows] == [approved]
+
 
 class TestWriteLockConcurrency:
     def test_concurrent_add_entity_yields_unique_ids(self, verse_db_dir: Path) -> None:

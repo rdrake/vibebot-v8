@@ -571,3 +571,45 @@ class VerseStore:
                 ),
             )
         return pid
+
+    def list_proposals(
+        self,
+        *,
+        status: str | None = None,
+        cycle_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Proposal]:
+        """Return proposals newest-first, optionally filtered by status/cycle."""
+        sql = (
+            "SELECT id, created_at, cycle_id, op, payload, confidence, "
+            "provenance, status, reviewer, reviewed_at FROM proposals"
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if cycle_id is not None:
+            clauses.append("cycle_id = ?")
+            params.append(cycle_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            Proposal(
+                id=r[0],
+                created_at=r[1],
+                cycle_id=r[2],
+                op=r[3],
+                payload=json.loads(r[4]),
+                confidence=r[5],
+                provenance=r[6],
+                status=r[7],
+                reviewer=r[8],
+                reviewed_at=r[9],
+            )
+            for r in rows
+        ]
