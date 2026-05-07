@@ -42,6 +42,220 @@ class _StubResp:
     usage = _StubUsage()
 
 
+class TestParseDigestExtra:
+    def test_top_level_not_list_returns_empty(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        assert parse_digest('{"not": "a list"}') == []
+
+    def test_non_dict_item_dropped(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            "[42, "
+            '{"op":"add_event",'
+            '"payload":{"summary":"k","entity_ids":[]},'
+            '"confidence":0.7,"provenance":"x","rationale":"y"}]'
+        )
+        out = parse_digest(text)
+        assert len(out) == 1
+
+    def test_payload_not_dict_dropped(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            "["
+            '{"op":"add_event","payload":"oops",'
+            '"confidence":0.7,"provenance":"x","rationale":"y"}'
+            "]"
+        )
+        assert parse_digest(text) == []
+
+    def test_unparseable_confidence_falls_back_to_zero(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"add_event",'
+            '"payload":{"summary":"x","entity_ids":[]},'
+            '"confidence":"NaaN-ish","provenance":"x","rationale":"y"}]'
+        )
+        out = parse_digest(text)
+        assert out and out[0].confidence == 0.0
+
+
+class TestLoomFailureBranches:
+    def test_seed_call_exception_aborts_cycle(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+
+        class _BoomClient:
+            def call(
+                self, *, op: str, model: str, messages: list[dict[str, str]]
+            ) -> tuple[str, LoomCallUsage]:
+                raise RuntimeError("boom")
+
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_BoomClient())
+        loom.tick()
+        assert loom._active is None
+        assert bridge.scheduled == []
+
+    def test_empty_seed_content_aborts_cycle(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({"seed": "   "}))
+        loom.tick()
+        assert loom._active is None
+        assert bridge.posts == []
+
+    def test_after_beat1_with_no_active_cycle_is_noop(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({}))
+        loom.after_beat1()
+        loom.after_beat2()
+        assert bridge.submitted_labels == []
+
+    def test_beat_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+
+        class _PartialBoom:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(
+                self, *, op: str, model: str, messages: list[dict[str, str]]
+            ) -> tuple[str, LoomCallUsage]:
+                self.calls.append(op)
+                if op == "seed":
+                    return "ring", LoomCallUsage(1, 1, 0.0)
+                raise RuntimeError("beat boom")
+
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_PartialBoom())
+        loom.tick()
+        loom.observe_transcript("botB", "I hear it")
+        bridge.scheduled[0][1]()
+        assert loom._active is None
+
+    def test_empty_beat_content_still_schedules_digest(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+        loom = Loom(
+            cfg=_minimal_cfg(),
+            bridge=bridge,
+            client=StubClient({"seed": "ring", "beat": "   "}),
+        )
+        loom.tick()
+        loom.observe_transcript("botB", "I hear it")
+        bridge.scheduled[0][1]()
+        # No second post (empty beat content), but digest still scheduled.
+        assert bridge.posts == ["ring"]
+        assert bridge.scheduled[-1][2] == "llm_loom_after_beat2"
+
+    def test_digest_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+
+        class _DigestBoom:
+            def call(
+                self, *, op: str, model: str, messages: list[dict[str, str]]
+            ) -> tuple[str, LoomCallUsage]:
+                if op == "digest":
+                    raise RuntimeError("dig boom")
+                return f"reply-{op}", LoomCallUsage(1, 1, 0.0)
+
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_DigestBoom())
+        loom.tick()
+        loom.observe_transcript("botB", "yes")
+        bridge.scheduled[0][1]()
+        loom.observe_transcript("botC", "no")
+        bridge.scheduled[-1][1]()
+        assert loom._active is None
+
+    def test_digest_with_empty_transcript_finalizes(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
+        )
+        loom = Loom(
+            cfg=_minimal_cfg(),
+            bridge=bridge,
+            client=StubClient({"seed": "ring", "beat": "echo"}),
+        )
+        loom.tick()
+        loom.observe_transcript("botB", "yes")
+        # Beat scheduled. Fire the beat — it has transcript so it posts.
+        bridge.scheduled[0][1]()
+        # Now manually clear the cycle's transcript to simulate the digest
+        # having no transcript (e.g. truncated to empty by tight caps).
+        loom._active.transcript.clear()
+        bridge.scheduled[-1][1]()
+        assert loom._active is None
+
+
 class TestLoomTick:
     def test_tick_with_no_candidates_does_nothing(self, verse_db_dir) -> None:
         from llm.verse.loom import Loom
