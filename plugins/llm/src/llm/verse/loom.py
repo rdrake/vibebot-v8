@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, Protocol, cast
 
 
 class VerseCandidate(NamedTuple):
@@ -239,6 +239,66 @@ def pick_focus_verse(
     top_weight = max(c.weight for c in eligible)
     top = [c for c in eligible if c.weight == top_weight]
     return top[pointer % len(top)]
+
+
+class LoomCallUsage(NamedTuple):
+    prompt_tokens: int
+    completion_tokens: int
+    cost: float
+
+
+class LoomModelClient(Protocol):
+    def call(
+        self, *, op: str, model: str, messages: list[dict[str, str]]
+    ) -> tuple[str, LoomCallUsage]: ...
+
+
+class LiteLLMLoomClient:
+    """Default loom client.
+
+    Calls ``litellm.completion`` synchronously (already on a worker thread
+    by the time this runs) and returns the content string plus a
+    ``LoomCallUsage``. Errors propagate to the caller.
+    """
+
+    def __init__(self, log: logging.Logger | None = None) -> None:
+        self._log = log or logging.getLogger("llm.verse.loom")
+
+    def call(
+        self, *, op: str, model: str, messages: list[dict[str, str]]
+    ) -> tuple[str, LoomCallUsage]:
+        import time
+
+        import litellm
+
+        t0 = time.monotonic()
+        response = litellm.completion(model=model, messages=messages)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        try:
+            content = response.choices[0].message.content or ""
+        except (AttributeError, IndexError):
+            content = ""
+        try:
+            usage = response.usage
+            pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+            ct = int(getattr(usage, "completion_tokens", 0) or 0)
+        except AttributeError:
+            pt = ct = 0
+        try:
+            cost = float(litellm.completion_cost(completion_response=response, model=model) or 0.0)
+        except Exception:
+            cost = 0.0
+        self._log.warning(
+            "completion_timing op=loom:%s model=%s elapsed_ms=%.0f "
+            "prompt_tokens=%d completion_tokens=%d cost=%.6f",
+            op,
+            model,
+            elapsed_ms,
+            pt,
+            ct,
+            cost,
+        )
+        return content, LoomCallUsage(pt, ct, cost)
 
 
 @dataclass(frozen=True, slots=True)

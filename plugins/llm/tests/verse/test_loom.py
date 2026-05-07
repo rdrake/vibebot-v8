@@ -7,6 +7,44 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+class _StubMsg:
+    content = "ok"
+
+
+class _StubChoice:
+    message = _StubMsg()
+
+
+class _StubUsage:
+    prompt_tokens = 7
+    completion_tokens = 3
+
+
+class _StubResp:
+    choices = [_StubChoice()]
+    usage = _StubUsage()
+
+
+class TestLiteLLMLoomClient:
+    def test_returns_content_and_usage(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        import litellm
+        from llm.verse.loom import LiteLLMLoomClient
+
+        monkeypatch.setattr(litellm, "completion", lambda **_: _StubResp())
+        monkeypatch.setattr(litellm, "completion_cost", lambda **_: 0.0)
+        caplog.set_level(logging.WARNING, logger="llm.verse.loom")
+        client = LiteLLMLoomClient()
+        content, usage = client.call(op="seed", model="gemini/x", messages=[])
+        assert content == "ok"
+        assert usage.prompt_tokens == 7
+        assert usage.completion_tokens == 3
+        assert any("op=loom:seed" in rec.message for rec in caplog.records)
+
+
 class TestTruncateTranscript:
     def test_caps_lines(self) -> None:
         from llm.verse.loom import truncate_transcript
