@@ -78,6 +78,17 @@ def db_path_for_channel(base_dir: Path, channel: str) -> Path:
     return base_dir / f"{safe}_{digest}.db"
 
 
+def list_active_verses(base_dir: Path) -> list[Path]:
+    """Return paths of all verse DB files in *base_dir*, sorted.
+
+    The caller maps these back to channel names via the same
+    db_path_for_channel sanitizer used at construction time.
+    """
+    if not base_dir.exists():
+        return []
+    return sorted(base_dir.glob("*.db"))
+
+
 class VerseStore:
     """Per-channel verse SQLite store. Thread-local connection + WAL +
     per-store write lock. Mirrors plugins/llm/src/llm/persistence.py:160-229,

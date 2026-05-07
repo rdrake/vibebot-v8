@@ -980,6 +980,29 @@ class TestApplyProposalAndMark:
             store.apply_proposal_and_mark(pid, reviewer="alice")
 
 
+class TestListActiveVerses:
+    def test_returns_paths_for_existing_dbs(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore, list_active_verses
+
+        VerseStore(verse_db_dir, "#afnet")
+        VerseStore(verse_db_dir, "#forest")
+        result = list_active_verses(verse_db_dir)
+        assert len(result) == 2
+        for path in result:
+            assert path.suffix == ".db"
+            assert path.exists()
+
+    def test_empty_dir_returns_empty_list(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import list_active_verses
+
+        assert list_active_verses(verse_db_dir) == []
+
+    def test_missing_dir_returns_empty_list(self, tmp_path: Path) -> None:
+        from llm.verse.store import list_active_verses
+
+        assert list_active_verses(tmp_path / "nope") == []
+
+
 class TestWriteLockConcurrency:
     def test_concurrent_add_entity_yields_unique_ids(self, verse_db_dir: Path) -> None:
         """50 concurrent add_entity calls across 8 threads — all rows persist
