@@ -397,3 +397,102 @@ class TestEventsCrud:
 
         store = VerseStore(verse_db_dir, "#afnet")
         assert store.recent_events() == []
+
+
+class TestAvatarLinkCrud:
+    def test_link_inserts_row(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Alice", "")
+        store.link_avatar(eid, nick="Alice", account=None)
+        assert store.find_avatar_by_nick("alice") == eid
+
+    def test_link_with_account(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Alice", "")
+        store.link_avatar(eid, nick="Alice", account="alice@network")
+        assert store.find_avatar_by_account("alice@network") == eid
+        assert store.find_avatar_by_account("Alice@Network") is None  # case-sensitive
+
+    def test_link_upserts_existing_row(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Alice", "")
+        store.link_avatar(eid, nick="Alice", account=None)
+        store.link_avatar(eid, nick="Bob", account=None)
+        assert store.find_avatar_by_nick("alice") is None
+        assert store.find_avatar_by_nick("bob") == eid
+
+    def test_find_unknown_nick_returns_none(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        assert store.find_avatar_by_nick("ghost") is None
+
+    def test_find_unknown_account_returns_none(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        assert store.find_avatar_by_account("nope") is None
+
+    def test_find_by_nick_case_insensitive(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Alice", "")
+        store.link_avatar(eid, nick="Alice")
+        for variant in ("ALICE", "alice", "aLiCe"):
+            assert store.find_avatar_by_nick(variant) == eid
+
+    def test_unlink_removes_link_and_retires_entity(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Alice", "")
+        store.link_avatar(eid, nick="Alice")
+        store.unlink_avatar(eid)
+        assert store.find_avatar_by_nick("Alice") is None
+        entity = store.get_entity(eid)
+        assert entity is not None
+        assert entity.status == "retired"
+
+    def test_unlink_atomicity(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Bob", "")
+        store.link_avatar(eid, nick="Bob", account="bob@net")
+        store.unlink_avatar(eid)
+        # Both effects visible after single call
+        assert store.find_avatar_by_nick("Bob") is None
+        assert store.find_avatar_by_account("bob@net") is None
+        entity = store.get_entity(eid)
+        assert entity is not None
+        assert entity.status == "retired"
+
+    def test_unlink_unknown_id_silent(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.unlink_avatar(99999)  # must not raise
+
+    def test_two_avatars_distinct_links(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid_a = store.add_entity("avatar", "Alice", "")
+        eid_b = store.add_entity("avatar", "Bob", "")
+        store.link_avatar(eid_a, nick="Alice")
+        store.link_avatar(eid_b, nick="Bob")
+        assert store.find_avatar_by_nick("alice") == eid_a
+        assert store.find_avatar_by_nick("bob") == eid_b
+        store.unlink_avatar(eid_a)
+        assert store.find_avatar_by_nick("alice") is None
+        assert store.find_avatar_by_nick("bob") == eid_b
+        entity_b = store.get_entity(eid_b)
+        assert entity_b is not None
+        assert entity_b.status == "active"

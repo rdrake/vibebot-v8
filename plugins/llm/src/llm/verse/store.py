@@ -259,6 +259,51 @@ class VerseStore:
             assert cur.lastrowid is not None
             return cur.lastrowid
 
+    # ------------------------------------------------------------------
+    # Avatar link CRUD
+    # ------------------------------------------------------------------
+
+    def link_avatar(self, entity_id: int, nick: str, account: str | None = None) -> None:
+        """Upsert an avatar_link row for entity_id."""
+        with self.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO avatar_link (entity_id, nick, account) VALUES (?, ?, ?)"
+                " ON CONFLICT(entity_id) DO UPDATE SET nick = excluded.nick,"
+                " account = excluded.account",
+                (entity_id, nick, account),
+            )
+
+    def find_avatar_by_nick(self, nick: str) -> int | None:
+        """Case-insensitive nick lookup. Returns entity_id or None."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT entity_id FROM avatar_link WHERE LOWER(nick) = LOWER(?)",
+                (nick,),
+            ).fetchone()
+        return int(row[0]) if row else None
+
+    def find_avatar_by_account(self, account: str) -> int | None:
+        """Case-sensitive account lookup. Returns entity_id or None."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT entity_id FROM avatar_link WHERE account = ?",
+                (account,),
+            ).fetchone()
+        return int(row[0]) if row else None
+
+    def unlink_avatar(self, entity_id: int) -> None:
+        """Remove avatar link and retire the entity atomically."""
+        now = time.time()
+        with self.write_transaction() as conn:
+            conn.execute(
+                "DELETE FROM avatar_link WHERE entity_id = ?",
+                (entity_id,),
+            )
+            conn.execute(
+                "UPDATE entities SET status = 'retired', updated_at = ? WHERE id = ?",
+                (now, entity_id),
+            )
+
     def recent_events(
         self,
         limit: int = 10,
