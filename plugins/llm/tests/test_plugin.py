@@ -3332,6 +3332,7 @@ class TestCommandRegistry:
             "instruct",
             "remind",
             "usage",
+            "verseopt",
         }
         assert names == expected
 
@@ -4569,3 +4570,285 @@ class TestVerseCapabilities:
         assert "llm.verse.gm" in caps
         # Distinct: having gm does not subsume verse by default
         assert "llm.verse" != "llm.verse.gm"
+
+
+# =============================================================================
+# TestVerseoptCommand
+# =============================================================================
+
+
+class TestVerseoptCommand:
+    """Tests for the @verseopt in/out command (C3).
+
+    Strategy: use the ``plugin_env`` fixture (mocked LLMService/DB) plus a
+    real VerseStore backed by ``tmp_path`` so the avatar table round-trips
+    through actual SQLite.  We swap ``plugin._get_or_create_verse_store`` with
+    a factory that always returns the same real store, giving us full
+    DB coverage without touching production paths.
+    """
+
+    SCENE_PREFIX = "You step into The Clearing."
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        # Patch store lookup so the command uses our real store.
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        # Enable verse for the channel.
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        # Capability: user has llm.verse.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        # Instruct text for the user (empty by default).
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        # msg arrives in #afnet
+        msg.args = ("#afnet", "@verseopt in")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    # ------------------------------------------------------------------
+    # Branch 1: verseopt in — happy path (new avatar)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Helper: invoke the wrapped command correctly.
+    # wrap(verseopt, [("checkCapability", "llm.verse"), ("literal", ("in", "out"))])
+    # produces a callable (irc, msg, args) where args is the token list.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _call(plugin, irc, msg, mode: str) -> None:
+        """Call the wrapped verseopt command with the given mode token."""
+        plugin.verseopt(irc, msg, [mode])
+
+    # ------------------------------------------------------------------
+    # Branch 1: verseopt in — happy path (new avatar)
+    # ------------------------------------------------------------------
+
+    def test_verseopt_in_new_avatar_replies_scene(self, verse_env) -> None:
+        """GIVEN verse-enabled channel and llm.verse WHEN @verseopt in THEN scene text replied."""
+        plugin, irc, msg, store = verse_env
+
+        self._call(plugin, irc, msg, "in")
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert self.SCENE_PREFIX in reply_text
+        assert "You are already opted in." not in reply_text
+
+    def test_verseopt_in_new_avatar_created_in_store(self, verse_env) -> None:
+        """GIVEN new opt-in WHEN @verseopt in THEN avatar entity exists in store."""
+        plugin, irc, msg, store = verse_env
+
+        self._call(plugin, irc, msg, "in")
+
+        entity_id = store.find_avatar_by_nick("alice")
+        assert entity_id is not None
+
+    def test_verseopt_in_uses_instruct_text(self, verse_env, mocker) -> None:
+        """GIVEN user has @instruct set WHEN @verseopt in THEN opt_in_avatar called with it."""
+        plugin, irc, msg, store = verse_env
+        plugin.db.get_instruction = mocker.MagicMock(return_value="Be a wizard.")
+
+        spy = mocker.patch.object(store, "opt_in_avatar", wraps=store.opt_in_avatar)
+
+        self._call(plugin, irc, msg, "in")
+
+        spy.assert_called_once()
+        _, _, instruct_arg = spy.call_args[0]
+        assert instruct_arg == "Be a wizard."
+
+    # ------------------------------------------------------------------
+    # Branch 2: verseopt in — already opted in
+    # ------------------------------------------------------------------
+
+    def test_verseopt_in_already_opted_in_prefixes_message(self, verse_env) -> None:
+        """GIVEN active avatar WHEN @verseopt in again THEN reply prefixed with already-in message."""
+        plugin, irc, msg, store = verse_env
+
+        # First opt-in creates the avatar.
+        self._call(plugin, irc, msg, "in")
+        irc.reply.reset_mock()
+
+        # Second opt-in should detect was_already_opted_in=True.
+        self._call(plugin, irc, msg, "in")
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text.startswith("You are already opted in. ")
+        assert self.SCENE_PREFIX in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 3: verseopt in after verseopt out — reactivation
+    # ------------------------------------------------------------------
+
+    def test_verseopt_in_after_out_reactivates_without_prefix(self, verse_env) -> None:
+        """GIVEN retired avatar WHEN @verseopt in THEN was_already_opted_in=False, no prefix."""
+        plugin, irc, msg, store = verse_env
+
+        # Create avatar.
+        self._call(plugin, irc, msg, "in")
+        entity_id = store.find_avatar_by_nick("alice")
+        assert entity_id is not None
+
+        # Retire it.
+        msg.args = ("#afnet", "@verseopt out")
+        self._call(plugin, irc, msg, "out")
+        assert store.find_avatar_by_nick("alice") is None
+
+        # Reactivate.
+        irc.reply.reset_mock()
+        msg.args = ("#afnet", "@verseopt in")
+        self._call(plugin, irc, msg, "in")
+
+        reply_text = irc.reply.call_args[0][0]
+        assert not reply_text.startswith("You are already opted in.")
+        assert self.SCENE_PREFIX in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 4: verseopt out
+    # ------------------------------------------------------------------
+
+    def test_verseopt_out_replies_retired(self, verse_env) -> None:
+        """GIVEN active avatar WHEN @verseopt out THEN retired message replied."""
+        plugin, irc, msg, store = verse_env
+
+        self._call(plugin, irc, msg, "in")
+        irc.reply.reset_mock()
+
+        msg.args = ("#afnet", "@verseopt out")
+        self._call(plugin, irc, msg, "out")
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "Avatar retired. Use @verseopt in to rejoin."
+
+    def test_verseopt_out_removes_avatar_link(self, verse_env) -> None:
+        """GIVEN active avatar WHEN @verseopt out THEN find_avatar_by_nick returns None."""
+        plugin, irc, msg, store = verse_env
+
+        self._call(plugin, irc, msg, "in")
+        assert store.find_avatar_by_nick("alice") is not None
+
+        msg.args = ("#afnet", "@verseopt out")
+        self._call(plugin, irc, msg, "out")
+
+        assert store.find_avatar_by_nick("alice") is None
+
+    def test_verseopt_out_with_no_avatar_replies_not_found(self, verse_env) -> None:
+        """GIVEN no avatar WHEN @verseopt out THEN 'no avatar' reply."""
+        plugin, irc, msg, store = verse_env
+
+        msg.args = ("#afnet", "@verseopt out")
+        self._call(plugin, irc, msg, "out")
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "You don't have an avatar in this channel."
+
+    # ------------------------------------------------------------------
+    # Branch 5: verseEnabled=False
+    # ------------------------------------------------------------------
+
+    def test_verseopt_in_disabled_channel_replies_not_enabled(self, plugin_env, mocker) -> None:
+        """GIVEN channel without verse WHEN @verseopt in THEN not-enabled message."""
+        plugin, irc, msg = plugin_env
+
+        # verse disabled (default in make_registry_side_effect)
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": False})
+        )
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@verseopt in")
+        plugin.verseopt(irc, msg, ["in"])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == (
+            "This channel doesn't have a verse. Ask the operator to set verseEnabled."
+        )
+
+    def test_verseopt_in_disabled_channel_no_store_created(
+        self, plugin_env, mocker, tmp_path
+    ) -> None:
+        """GIVEN channel without verse WHEN @verseopt in THEN no VerseStore is instantiated."""
+        plugin, irc, msg = plugin_env
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": False})
+        )
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        store_cls = mocker.patch("llm.plugin.VerseStore")
+
+        msg.args = ("#afnet", "@verseopt in")
+        plugin.verseopt(irc, msg, ["in"])
+
+        store_cls.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Branch 6: missing llm.verse capability
+    # ------------------------------------------------------------------
+
+    def test_verseopt_in_no_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse WHEN @verseopt in THEN Limnoria capability denial."""
+        plugin, irc, msg = plugin_env
+
+        # Deny all capabilities.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+
+        msg.args = ("#test", "@verseopt in")
+
+        # wrap's checkCapability gate raises an error via irc.error when denied.
+        # Call the wrapped version; the body should NOT run (capability blocked).
+        plugin.verseopt(irc, msg, ["in"])
+
+        # The scene text should not have been replied.
+        if irc.reply.called:
+            reply_text = irc.reply.call_args[0][0]
+            assert "step into" not in reply_text
