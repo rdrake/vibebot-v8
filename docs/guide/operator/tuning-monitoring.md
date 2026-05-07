@@ -219,6 +219,36 @@ Output files are cleaned up automatically based on age and count:
 | `fileCleanupAge` | `720` | Delete files older than this many hours (default: 30 days) |
 | `fileCleanupMax` | `1000` | Maximum number of files to keep in the output directory |
 
+## Async LLM concurrency
+
+Every outbound LLM call (command path and background work — spontaneous
+replies, memory extraction, watch-mode reminders, scheduled tasks)
+runs through a single bounded executor so a slow provider never
+backs up the IRC event loop.
+
+| Setting | Default | Scope | Description |
+|---------|---------|-------|-------------|
+| `maxConcurrentLLMCalls` | `16` | Global | Maximum simultaneous outbound LLM calls across all surfaces |
+
+Lower this on small hosts or when the provider rate-limits aggressively.
+Raising it helps with long-running queries but increases concurrent
+provider load.
+
+### Watch-mode reschedule resilience
+
+A single failed action-fire (LLM timeout, transient provider error)
+no longer kills a recurring `@remind` watch chain — the chain
+reschedules from the worker `finally` regardless of inner-try
+outcome. Repeated failures still surface in `logLevel INFO` logs.
+
+### Observing utilization
+
+The global `%usage` PM command (admin-only) appends an `executor:
+running/queued/max` field. Sustained `queued > 0` with `running ==
+max` indicates the cap is the bottleneck — raise
+`maxConcurrentLLMCalls` if the host can absorb more concurrent
+provider calls.
+
 ## Monitoring
 
 ### Log locations
