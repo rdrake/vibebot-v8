@@ -23,6 +23,18 @@ own conventional-commit history (`type(scope): summary`).
 - Forest-verse: per-channel SQLite entity graph + avatar shim. New commands
   `@verseopt`, `@verse`, `@look`, `@who`, plus owner commands `@versedump`,
   `@versepurge`. New capabilities `llm.verse` and `llm.verse.gm`.
+- **Loom orchestrator (PR 2 of forest-verse).** Multi-turn cycles in the
+  configured `loomChannel` on `loomNetwork` riff with other bots and digest
+  the transcript into proposals. High-confidence non-entity proposals
+  auto-apply with an audit row; the rest queue for `@verseapprove` /
+  `@versereject`. New registry: `loomNetwork`, `loomChannel`, `loomModel`,
+  `loomCycleInterval`, `loomVerseCooldown`, `loomBeatWindow`,
+  `loomTranscriptMaxLines`, `loomTranscriptMaxChars`, `loomBotNicks`,
+  `verseAutoApplyThreshold`. New commands: `@verseproposals`,
+  `@verseapprove`, `@versereject`. Loom calls visible in `@usage` tagged
+  `loom:seed` / `loom:beat` / `loom:digest`. Defaults are empty / disabled
+  — upgrades are zero-effect until an operator points the loom at a
+  channel.
 
 ### Bug Fixes
 

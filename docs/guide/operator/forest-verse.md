@@ -132,12 +132,90 @@ The token is single-use; a new `@versepurge` call generates a new token.
 # bot: "Verse state for #afternet purged."
 ```
 
+## Loom orchestrator
+
+The loom is a separate orchestrator that runs cheap-model cycles inside one
+configured "venue" channel and digests the resulting improv into proposed
+mutations against per-channel verses. By default the loom is **disabled**:
+no scheduler event, no model calls, zero cost.
+
+### Enabling
+
+Set both `supybot.plugins.LLM.loomNetwork` and `supybot.plugins.LLM.loomChannel`.
+The loom resolves the venue Irc via `world.getIrc(network)`; if either
+setting is empty, or the network isn't connected, the loom stays inert.
+
+```
+config supybot.plugins.LLM.loomNetwork afternet
+config supybot.plugins.LLM.loomChannel #forest
+```
+
+Verses opt in via the per-channel `verseEnabled` flag. The loom only
+considers verses whose channel is *also joined on the loom network*.
+
+### Source filter
+
+`loomBotNicks` is a comma-separated allowlist. Empty means capture every
+non-self line in the venue (the original design intent, suitable for the
+bot-heavy channel the loom was built for). Set it to a strict list when
+the venue mixes humans and bots:
+
+```
+config supybot.plugins.LLM.loomBotNicks botA,botB,botC
+```
+
+### Cycle anatomy
+
+A cycle is `seed → 90 s listen → beat → 90 s listen → digest`. Three
+cheap-model calls per non-idle cycle. Idle cycles short-circuit to one
+call (seed); a cycle whose listen windows produce no transcript skips
+both the beat and the digest.
+
+### Proposal moderation
+
+```
+@verseproposals [#chan] [pending|approved|rejected]
+@verseapprove <id> [#chan]
+@versereject <id> [#chan]
+```
+
+Default channel = current; default status = `pending`. Auto-applied
+proposals carry `status='approved' reviewer='loom'` and appear under
+`@verseproposals #chan approved`. `<id>` accepts unique-prefix matches.
+Both `@verseapprove` and `@versereject` require `llm.verse.gm`.
+
+### Cost transparency
+
+Each loom call is logged in `@usage` tagged `loom:seed`, `loom:beat`, or
+`loom:digest`. Until the Gemini cache plumbing lands in `service.py`,
+projections assume zero cache hits.
+
+### Tuning
+
+| Knob                       | Bump up when                                       |
+|----------------------------|----------------------------------------------------|
+| `loomCycleInterval`        | The venue is overstimulated; cycles too frequent.  |
+| `loomVerseCooldown`        | One verse dominates; force rotation.               |
+| `loomBeatWindow`           | The bot reply cadence is slow; transcripts empty.  |
+| `loomTranscriptMaxLines`   | Transcript truncation drops salient lines.         |
+| `verseAutoApplyThreshold`  | Auto-apply approves too aggressively (raise it).   |
+
 ## Registry keys
 
 | Key | Scope | Type | Default | Purpose |
 |-----|-------|------|---------|---------|
 | `verseEnabled` | per-channel | bool | `False` | Master switch — enables the verse path and verse commands for the channel |
-| `verseEventRetentionDays` | per-channel | int | `30` | Reserved for retention compaction (PR 2). Currently unused — set it now if you want a value in place before compaction lands |
+| `verseEventRetentionDays` | per-channel | int | `30` | Reserved for retention compaction (PR 3). Currently unused — set it now if you want a value in place before compaction lands |
+| `verseAutoApplyThreshold` | global | float | `0.85` | Minimum confidence at which loom proposals auto-apply without operator review (`add_entity` always queues) |
+| `loomNetwork` | global | str | `""` | Network where the loom orchestrator runs. Empty = disabled |
+| `loomChannel` | global | str | `""` | Channel where the loom orchestrator runs. Empty = disabled |
+| `loomModel` | global | str | `gemini/gemini-flash-lite-latest` | Cheap model used by the loom for seed/beat/digest calls |
+| `loomCycleInterval` | global | int | `5` | Loom timer cadence in minutes |
+| `loomVerseCooldown` | global | int | `20` | Minimum gap in minutes between consecutive loom cycles for the same verse |
+| `loomBeatWindow` | global | int | `90` | Listen window in seconds after each loom beat is posted |
+| `loomTranscriptMaxLines` | global | int | `40` | Per-window cap on loom transcript lines (most recent kept) |
+| `loomTranscriptMaxChars` | global | int | `8000` | Per-window cap on loom transcript characters (most recent kept) |
+| `loomBotNicks` | global | str | `""` | Comma-separated allowlist of nicks captured into the loom transcript. Empty = capture all non-self lines |
 
 Set from IRC:
 
@@ -146,16 +224,15 @@ Set from IRC:
 @config channel #yourchan plugins.LLM.verseEventRetentionDays 14
 ```
 
-## What is NOT in PR 1
+## What is NOT in PR 2
 
 The following features are planned but not yet implemented:
 
-- **Loom orchestrator** — automated event scheduling and narrative arcs.
-- **Proposal queue** — multi-user approval flow for world-state changes.
-- **Retention compaction** — `verseEventRetentionDays`-driven pruning of old events.
-- **Cross-channel pollination** — shared entities across channels.
-
-These land in PR 2 and PR 3.
+- **Cross-channel pollination** — shared entities across channels (PR 3).
+- **Retention compaction** — `verseEventRetentionDays`-driven pruning of
+  old events (PR 3).
+- **Gemini cache plumbing** — `cached_tokens` accounting in `@usage`.
+- **Web view at `/verse/<channel>`** — read-only HTML inspector.
 
 ## Migration / data note
 

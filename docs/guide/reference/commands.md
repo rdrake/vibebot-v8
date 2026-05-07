@@ -36,6 +36,9 @@ Use the following commands when you want direct, predictable behavior.
 | `@who` | | List active avatars in this channel's verse (requires `llm.verse`) |
 | `@versedump` | `#chan` | Dump verse state as JSON (requires `llm.verse.gm`) |
 | `@versepurge` | `#chan [token]` | Irreversibly purge verse state; two-step token confirmation (requires `llm.verse.gm`) |
+| `@verseproposals` | `[#chan] [pending\|approved\|rejected]` | List loom proposals (default channel = current; default status = `pending`) (requires `llm.verse.gm`) |
+| `@verseapprove` | `<id> [#chan]` | Apply a pending loom proposal and mark it approved; accepts unique-prefix ids (requires `llm.verse.gm`) |
+| `@versereject` | `<id> [#chan]` | Reject a pending loom proposal without applying its mutation; accepts unique-prefix ids (requires `llm.verse.gm`) |
 
 ## Command details
 
