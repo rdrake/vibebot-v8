@@ -6,7 +6,7 @@ The model/key surface is capability-based: one assistant loop, an image generato
 
 | Setting | Scope | Used for |
 |---------|-------|----------|
-| `assistantModel` | Channel | Chat, planner loop, bridge tool selection, reminder parsing, memory extraction, memory cleanup, spontaneous participation, image-prompt rewrite, scheduled tasks |
+| `assistantModel` | Channel | Chat, planner loop, bridge tool selection, reminder parsing, memory extraction, memory cleanup, image-prompt rewrite, scheduled tasks |
 | `assistantApiKey` | Channel | Same as above (private) |
 | `assistantSystemPrompt` | Channel | Personality and constraints for assistant work |
 | `imageModel` | Channel | Image generation |
@@ -33,7 +33,7 @@ Conversation context allows the bot to remember recent exchanges within a channe
 
 ### Privacy note on contextTrackAllMessages
 
-When `contextTrackAllMessages` is enabled, **all messages in the channel are sent to third-party LLM providers** as part of the conversation context. This is disabled by default for privacy reasons. Enable it only in channels where users are aware and consent to this. It is required for spontaneous participation to work.
+When `contextTrackAllMessages` is enabled, **all messages in the channel are sent to third-party LLM providers** as part of the conversation context. This is disabled by default for privacy reasons. Enable it only in channels where users are aware and consent to this.
 
 ### Channel context
 
@@ -50,21 +50,6 @@ Non-volatile memory stores facts about users that persist across sessions and co
 | `memoryCleanupInterval` | `3` | Global | Extraction passes (with saves) between cleanup runs. `0` to disable |
 
 Memory extraction and cleanup both run on the configured `assistantModel`/`assistantApiKey`. The extraction runs in the background after `@ask` interactions; the cleanup process periodically consolidates duplicate or outdated memories.
-
-## Spontaneous participation
-
-When enabled, the bot occasionally joins channel conversations without being explicitly invoked.
-
-| Setting | Default | Scope | Description |
-|---------|---------|-------|-------------|
-| `spontaneousEnabled` | `False` | Channel | Enable spontaneous replies |
-| `spontaneousChance` | `15` | Channel | Percent chance (1-100) of evaluating a reply per message |
-| `spontaneousCooldown` | `2` | Channel | Minimum minutes between spontaneous replies per channel |
-| `spontaneousSystemPrompt` | *(see below)* | Channel | Personality prompt for spontaneous participation |
-
-Spontaneous participation runs on the configured `assistantModel`/`assistantApiKey`. It requires `contextTrackAllMessages` to be enabled in the channel -- the bot needs to see the conversation to decide when to join in.
-
-The default system prompt instructs the model to act as a channel regular who can respond naturally or reply with `PASS` to stay silent.
 
 ## Limnoria tool bridge
 
@@ -221,8 +206,8 @@ Output files are cleaned up automatically based on age and count:
 
 ## Async LLM concurrency
 
-Every outbound LLM call (command path and background work — spontaneous
-replies, memory extraction, watch-mode reminders, scheduled tasks)
+Every outbound LLM call (command path and background work — memory
+extraction, watch-mode reminders, scheduled tasks)
 runs through a single bounded executor so a slow provider never
 backs up the IRC event loop.
 
@@ -308,10 +293,3 @@ The bot stores reminders, usage statistics, and memories in a SQLite database. T
 - If using the built-in server: ensure Limnoria's HTTP server is enabled and its `publicUrl` is set. See the [Limnoria HTTP server documentation](https://docs.limnoria.net/use/httpserver.html).
 - If using an external server: verify `httpRoot` is writable by the bot process, and `httpUrlBase` matches the directory served by your web server.
 - Check `logLevel DEBUG` output for file save errors.
-
-**Spontaneous replies not triggering**
-
-- `spontaneousEnabled` must be `True` for the channel.
-- `contextTrackAllMessages` must also be `True` for the same channel.
-- The `spontaneousChance` is a percent chance per message, so low values may take many messages before triggering.
-- Check `spontaneousCooldown` -- the bot will not reply more than once per cooldown period.

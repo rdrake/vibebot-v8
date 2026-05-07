@@ -58,8 +58,7 @@ nav:
     - Installation & Deployment: operator/installation.md
     - Operations & Auto-Updates: operator/operations.md
     - Configuration: operator/configuration.md
-    - Forest Mode: operator/forest-mode.md
-    - Spontaneous Participation: operator/spontaneous.md
+    - Forest-Verse: operator/forest-verse.md
     - Memory Promotion: operator/memory-promotion.md
     - Rate Limiting & Security: operator/rate-limiting-security.md
     - Tuning & Monitoring: operator/tuning-monitoring.md
