@@ -332,6 +332,20 @@ class LiteLLMLoomClient:
             cost = float(litellm.completion_cost(completion_response=response, model=model) or 0.0)
         except Exception:
             cost = 0.0
+        # Sanity clamp: litellm.completion_cost falls back to a token count
+        # for models without pricing data (observed in prod for
+        # gemini-flash-lite-latest, returning ~365). Anything over $1 for a
+        # single short cheap-model call is implausible — assume the
+        # accounting is wrong and zero it out so @usage isn't polluted with
+        # nonsense. This is a soft clamp; remove once litellm pricing
+        # catches up or once we add explicit pricing tables.
+        if cost > 1.0:
+            self._log.warning(
+                f"loom completion_cost returned implausible value {cost!r} "
+                f"for model={model}; clamping to 0.0 (likely missing "
+                "pricing data in litellm)"
+            )
+            cost = 0.0
         # Match service.py:_log_completion_timing's f-string convention.
         # %-args formatting was partially failing under the bot's runtime
         # logger setup (some args substituted, %d ones not) — see #66.
