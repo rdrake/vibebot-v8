@@ -4543,3 +4543,29 @@ class TestMechanicalRescheduleEdgeCases:
 
         add_event.assert_not_called()
         plugin.db.save_reminder.assert_not_called()
+
+
+class TestVerseCapabilities:
+    """llm.verse and llm.verse.gm must be declared in _REQUEST_CONTEXT_CAPABILITIES."""
+
+    def test_llm_verse_in_request_context_capabilities(self) -> None:
+        """GIVEN plugin module WHEN capabilities inspected THEN llm.verse is declared."""
+        import llm.plugin as plugin_module
+
+        assert "llm.verse" in plugin_module._REQUEST_CONTEXT_CAPABILITIES
+
+    def test_llm_verse_gm_in_request_context_capabilities(self) -> None:
+        """GIVEN plugin module WHEN capabilities inspected THEN llm.verse.gm is declared."""
+        import llm.plugin as plugin_module
+
+        assert "llm.verse.gm" in plugin_module._REQUEST_CONTEXT_CAPABILITIES
+
+    def test_llm_verse_and_llm_verse_gm_are_distinct(self) -> None:
+        """GIVEN both verse capabilities WHEN compared THEN they are separate entries."""
+        import llm.plugin as plugin_module
+
+        caps = plugin_module._REQUEST_CONTEXT_CAPABILITIES
+        assert "llm.verse" in caps
+        assert "llm.verse.gm" in caps
+        # Distinct: having gm does not subsume verse by default
+        assert "llm.verse" != "llm.verse.gm"
