@@ -932,8 +932,9 @@ class TestDoPrivmsg:
     """Test plugin doPrivmsg for channel message tracking."""
 
     @pytest.fixture
-    def plugin_with_mocks(self, mocker: MockerFixture) -> tuple:
+    def plugin_with_mocks(self, mocker: MockerFixture):
         """Create plugin with mocked dependencies."""
+        import supybot.conf as supy_conf
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -942,10 +943,16 @@ class TestDoPrivmsg:
 
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "usernick!user@host"
+        mock_msg.nick = "usernick"
         mock_msg.args = ("#channel", "hello world")
         mock_msg.time = time.time() + 100  # Future time (not ZNC playback)
         mock_msg.channel = "#channel"
         mock_msg.server_tags = {}  # default: no IRCv3 account-tag
+
+        # Configure command prefix so `@cmd` short-circuits in doPrivmsg.
+        chars_value = supy_conf.supybot.reply.whenAddressedBy.chars
+        original_chars = chars_value()
+        chars_value.setValue("@")
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
@@ -958,16 +965,24 @@ class TestDoPrivmsg:
         plugin._spontaneous_cooldowns = {}
         plugin._spontaneous_events = set()
         plugin._spontaneous_events_lock = threading.Lock()
+        plugin._route_addressed_to_assistant = mocker.MagicMock()
 
-        return plugin, mock_irc, mock_msg
+        try:
+            yield plugin, mock_irc, mock_msg
+        finally:
+            chars_value.setValue(original_chars)
 
-    def test_doprivmsg_skips_private_messages(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN private message WHEN doPrivmsg called THEN does not track."""
+    def test_doprivmsg_routes_private_messages_to_assistant(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN private message WHEN doPrivmsg called THEN routed to assistant."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.channel = None  # Private message
+        mock_msg.args = ("botname", "remove the memories about RMS")
+        mock_msg.channel = None  # Private message — no channel context
 
         plugin.doPrivmsg(mock_irc, mock_msg)
 
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "remove the memories about RMS"
+        )
         plugin.context.add_message.assert_not_called()
 
     def test_doprivmsg_skips_old_messages(self, plugin_with_mocks: tuple) -> None:
@@ -1044,6 +1059,197 @@ class TestDoPrivmsg:
         call_args = plugin.context.add_message.call_args
         assert call_args[0] == ("usernick", "#channel", "user", "hello world")
         assert "config" in call_args[1]
+        plugin._route_addressed_to_assistant.assert_not_called()
+
+    def test_doprivmsg_routes_nick_addressed_channel_message(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN nick-addressed channel message WHEN doPrivmsg THEN routes to assistant."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "botname: remove the memories about RMS")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "remove the memories about RMS"
+        )
+        plugin.context.add_message.assert_not_called()
+
+    def test_doprivmsg_routes_nick_addressed_with_comma_separator(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN nick-addressed with comma WHEN doPrivmsg THEN routes to assistant."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "botname, draw a cat")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "draw a cat"
+        )
+
+    def test_doprivmsg_routes_nick_addressed_with_whitespace_separator(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN nick-addressed with whitespace WHEN doPrivmsg THEN routes to assistant."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "botname what time is it?")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "what time is it?"
+        )
+
+    def test_doprivmsg_does_not_route_when_nick_prefix_is_part_of_word(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN nick is prefix of a longer word WHEN doPrivmsg THEN treats as plain chatter."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "botnamesomething")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        # Falls through to channel chatter tracking
+        plugin.context.add_message.assert_called_once()
+
+    def test_doprivmsg_does_not_route_explicit_command_prefix(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN @-prefixed command WHEN doPrivmsg THEN skips (Limnoria handles)."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "@search foo")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_not_called()
+
+    def test_doprivmsg_does_not_route_bare_nick_mention(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN message with nick alone WHEN doPrivmsg THEN treats as chatter."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "botname")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+
+
+class TestInFilterDispatchGate:
+    """inFilter must suppress Limnoria's command dispatcher for non-prefix
+    addressed messages by tagging msg.addressed=''."""
+
+    @pytest.fixture
+    def plugin_and_irc(self, mocker: MockerFixture):
+        import supybot.conf as supy_conf
+        from llm.plugin import LLM
+
+        chars_value = supy_conf.supybot.reply.whenAddressedBy.chars
+        original_chars = chars_value()
+        chars_value.setValue("@")
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        irc = mocker.MagicMock()
+        irc.nick = "botname"
+        try:
+            yield plugin, irc
+        finally:
+            chars_value.setValue(original_chars)
+
+    def _msg(self, target: str, text: str, *, sender: str = "user") -> object:
+        from supybot import ircmsgs
+
+        return ircmsgs.IrcMsg(prefix=f"{sender}!u@h", command="PRIVMSG", args=(target, text))
+
+    def test_nick_addressed_channel_msg_is_marked_unaddressed(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        msg = self._msg("#chan", "botname: remove that thing")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.tagged("addressed") == ""
+
+    def test_unprefixed_pm_is_marked_unaddressed(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        msg = self._msg("botname", "remove that thing")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.tagged("addressed") == ""
+
+    def test_at_prefixed_command_is_not_marked(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        msg = self._msg("#chan", "@search foo")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.tagged("addressed") is None
+
+    def test_at_prefixed_pm_is_not_marked(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        msg = self._msg("botname", "@later add foo bar")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.tagged("addressed") is None
+
+    def test_plain_channel_chatter_is_marked(self, plugin_and_irc: tuple) -> None:
+        # Even for non-addressed channel chatter, tagging with '' is a no-op
+        # for dispatch (it would already be unaddressed). The tag itself is
+        # harmless because doPrivmsg routes only when text actually starts
+        # with our nick.
+        plugin, irc = plugin_and_irc
+        msg = self._msg("#chan", "just chatting")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.tagged("addressed") == ""
+
+
+class TestStripNickPrefix:
+    """Direct unit coverage for the nick-prefix-stripping helper."""
+
+    def test_colon_separator(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bot: hello") == "hello"
+
+    def test_comma_separator(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bot, hello") == "hello"
+
+    def test_whitespace_separator(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bot hello") == "hello"
+
+    def test_case_insensitive_match(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "BOT, hi") == "hi"
+
+    def test_returns_none_when_nick_is_part_of_word(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bottle of wine") is None
+
+    def test_returns_none_when_no_text_after_nick(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bot") is None
+
+    def test_returns_none_when_text_does_not_start_with_nick(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "hello bot") is None
+
+    def test_returns_none_when_only_separators_after_nick(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_prefix("bot", "bot:   ") is None
 
 
 class TestInitContext:
@@ -1675,6 +1881,13 @@ class TestInFilter:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         return LLM.__new__(LLM)
 
+    @pytest.fixture
+    def irc(self, mocker: MockerFixture) -> object:
+        """Mock irc with a nick so the dispatch-gate path can run."""
+        mock_irc = mocker.MagicMock()
+        mock_irc.nick = "botname"
+        return mock_irc
+
     @staticmethod
     def _privmsg(text: str, channel: str = "#test") -> object:
         """Build a minimal PRIVMSG, bypassing Limnoria's argument validation.
@@ -1686,62 +1899,62 @@ class TestInFilter:
 
         return ircmsgs.IrcMsg(s=f":n!u@h PRIVMSG {channel} :{text}\r\n")
 
-    def test_normal_text_passes_through(self, plugin: object) -> None:
+    def test_normal_text_passes_through(self, plugin: object, irc: object) -> None:
         """GIVEN plain text WHEN inFilter THEN message unchanged."""
         msg = self._privmsg("hello world")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert result.args[1] == "hello world"
 
-    def test_strips_esc_byte(self, plugin: object) -> None:
+    def test_strips_esc_byte(self, plugin: object, irc: object) -> None:
         """GIVEN text with ESC byte WHEN inFilter THEN ESC removed."""
         msg = self._privmsg("before\x1bafter")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert "\x1b" not in result.args[1]
         assert result.args[1] == "beforeafter"
 
-    def test_ansi_escape_sequence_with_bracket(self, plugin: object) -> None:
+    def test_ansi_escape_sequence_with_bracket(self, plugin: object, irc: object) -> None:
         """GIVEN ANSI escape \\x1b[6n WHEN inFilter THEN does not crash tokenizer."""
         from supybot import callbacks
 
         msg = self._privmsg("\x1b[6n cursor position check")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         # Should not raise SyntaxError
         callbacks.tokenize(result.args[1])
 
-    def test_unbalanced_open_bracket_escaped(self, plugin: object) -> None:
+    def test_unbalanced_open_bracket_escaped(self, plugin: object, irc: object) -> None:
         """GIVEN unmatched [ WHEN inFilter THEN brackets replaced with full-width."""
         msg = self._privmsg("explain array[0")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert "[" not in result.args[1]
         assert "\uff3b" in result.args[1]
 
-    def test_balanced_brackets_preserved(self, plugin: object) -> None:
+    def test_balanced_brackets_preserved(self, plugin: object, irc: object) -> None:
         """GIVEN matched brackets WHEN inFilter THEN original brackets kept."""
         msg = self._privmsg("run [echo hello]")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert result.args[1] == "run [echo hello]"
 
-    def test_non_privmsg_passes_through(self, plugin: object) -> None:
+    def test_non_privmsg_passes_through(self, plugin: object, irc: object) -> None:
         """GIVEN non-PRIVMSG WHEN inFilter THEN returned unchanged."""
         import supybot.ircmsgs as ircmsgs
 
         msg = ircmsgs.join("#test")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert result is msg
 
-    def test_strips_null_bytes(self, plugin: object) -> None:
+    def test_strips_null_bytes(self, plugin: object, irc: object) -> None:
         """GIVEN text with null bytes WHEN inFilter THEN nulls removed."""
         msg = self._privmsg("hello\x00world")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert result.args[1] == "helloworld"
 
-    def test_preserves_tabs(self, plugin: object) -> None:
+    def test_preserves_tabs(self, plugin: object, irc: object) -> None:
         """GIVEN text with tab WHEN inFilter THEN preserved."""
         msg = self._privmsg("col1\tcol2")
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         assert result.args[1] == "col1\tcol2"
 
-    def test_original_crash_message(self, plugin: object) -> None:
+    def test_original_crash_message(self, plugin: object, irc: object) -> None:
         r"""GIVEN the exact message that caused the crash WHEN inFilter THEN tokenizable."""
         from supybot import callbacks
 
@@ -1751,7 +1964,7 @@ class TestInFilter:
             " into his input buffer."
         )
         msg = self._privmsg(text)
-        result = plugin.inFilter(None, msg)
+        result = plugin.inFilter(irc, msg)
         # Must not raise SyntaxError
         callbacks.tokenize(result.args[1])
 

@@ -844,34 +844,73 @@ class LLM(callbacks.Plugin):
             cleaned = cleaned.replace("[", "\uff3b").replace("]", "\uff3d")
 
         if cleaned != text:
-            return ircmsgs.IrcMsg(msg=msg, args=(msg.args[0], cleaned))
+            msg = ircmsgs.IrcMsg(msg=msg, args=(msg.args[0], cleaned))
+            text = cleaned
+
+        # Gate Limnoria's command dispatcher: only messages prefixed with
+        # the configured command character reach Owner.doPrivmsg's
+        # tokenizer. Nick-addressed channel messages and unprefixed PMs are
+        # routed through the assistant in doPrivmsg instead — otherwise
+        # plain English verbs like "remove", "later", or "search" collide
+        # with built-in plugins and surface ambiguity errors. We tag
+        # msg.addressed=''; callbacks.addressed() reads the cached tag,
+        # returns '', and Owner.doPrivmsg skips dispatch.
+        if msg.prefix and not ircutils.strEqual(irc.nick, msg.nick):
+            prefix_chars = conf.supybot.reply.whenAddressedBy.chars()
+            if not text or text[0] not in prefix_chars:
+                msg.tag("addressed", "")
+
         return msg
 
     def doPrivmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
-        """Monitor channel messages for enhanced context (opt-in feature).
+        """Route addressed text to the assistant; observe channel chatter for context.
 
-        When contextTrackAllMessages is enabled, this captures all channel
-        messages to provide richer context for the ask command.
+        Two paths:
 
-        Note: Disabled by default for privacy since messages are sent to
-        third-party LLM providers.
+        - Addressed text (channel message starting with our nick, or any PM
+          without the configured command-prefix character) goes to
+          ``_ask_impl``. The Limnoria command dispatcher is suppressed for
+          these by ``inFilter``.
+        - Other channel messages flow through the existing
+          ``contextTrackAllMessages`` capture and spontaneous-reply logic.
+
+        Explicit prefix-char commands (e.g. ``@search`` or ``@later``) are
+        handled entirely by Limnoria's dispatcher and short-circuit before
+        the assistant routing.
         """
-        channel = msg.channel
-        if not channel:
-            return  # Skip private messages
-
-        # Check config first (cheapest checks)
-        if not self.registryValue("contextEnabled", channel):
-            return
-        if not self.registryValue("contextTrackAllMessages", channel):
-            return
-
-        # Then message checks
+        # Universal early-outs before any branching.
         if self._is_old_message(msg):
             return
         if ircmsgs.isCtcp(msg) and not ircmsgs.isAction(msg):
             return
-        if ircutils.strEqual(irc.nick, msg.nick):
+        if not msg.prefix or ircutils.strEqual(irc.nick, msg.nick):
+            return
+
+        text = msg.args[1] if len(msg.args) > 1 else ""
+        if not text:
+            return
+
+        prefix_chars = conf.supybot.reply.whenAddressedBy.chars()
+        if text[0] in prefix_chars:
+            # Explicit command — Limnoria's dispatcher handles it.
+            return
+
+        target = msg.args[0]
+        is_pm = ircutils.nickEqual(target, irc.nick)
+        addressed_text = text.strip() if is_pm else self._strip_nick_prefix(irc.nick, text)
+
+        if addressed_text:
+            self._route_addressed_to_assistant(irc, msg, addressed_text)
+            return
+
+        # Not addressed — channel chatter only.
+        channel = msg.channel
+        if not channel:
+            return
+
+        if not self.registryValue("contextEnabled", channel):
+            return
+        if not self.registryValue("contextTrackAllMessages", channel):
             return
 
         display_nick = msg.nick
@@ -1631,6 +1670,37 @@ class LLM(callbacks.Plugin):
             return
 
         self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
+
+    @staticmethod
+    def _strip_nick_prefix(bot_nick: str, text: str) -> str | None:
+        """Return ``text`` with a leading bot-nick mention stripped, or None.
+
+        Matches Limnoria's nick-addressing rules: optional leading whitespace,
+        the bot's nick (case-insensitive), then a separator (whitespace, ``:``,
+        ``,``, or ``;``). The nick must terminate at a non-alnum boundary so
+        ``vibebotter`` is not treated as ``vibebot``.
+        """
+        stripped = text.lstrip()
+        if not stripped:
+            return None
+        nick_len = len(bot_nick)
+        if not ircutils.strEqual(stripped[:nick_len], bot_nick):
+            return None
+        rest = stripped[nick_len:]
+        if not rest:
+            return None
+        if rest[0] not in " \t,:;":
+            return None
+        return rest.lstrip(" \t,:;").strip() or None
+
+    def _route_addressed_to_assistant(self, irc: callbacks.Irc, msg: IrcMsg, text: str) -> None:
+        """Run preflight and dispatch addressed text through ``_ask_impl``."""
+        if not ircdb.checkCapability(msg.prefix, "llm.ask"):
+            return
+        preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
+        if preflight.blocked:
+            return
+        self._ask_impl(irc, msg, text, preflight, entry_route="addressed")
 
     def _account_from_msg(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Resolve the requesting user's account name from an incoming message.
