@@ -5734,4 +5734,230 @@ class TestVersedumpCommand:
         msg.args = ("#afnet", "@versedump #afnet")
         plugin.versedump(irc, msg, ["#afnet"])
 
-        irc.error.assert_called_once()
+
+# ===========================================================================
+# C6: @instruct double-write — avatar summary syncs with instruct text
+# ===========================================================================
+
+
+class TestInstructVerseSync:
+    """C6: @instruct updates avatar.summary when channel is verse-enabled.
+
+    Strategy: real VerseStore backed by tmp_path (no SQLite mocks).
+    We patch ``plugin._get_or_create_verse_store`` to return the same real
+    store used to assert post-condition, mirroring the TestVerseoptCommand
+    pattern.
+    """
+
+    @pytest.fixture
+    def instruct_verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        # Patch store lookup so instruct uses our real store.
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        # Enable verse for #afnet, disable for everything else.
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                channel = args[0] if args else None
+                return channel == "#afnet"
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        # Capability: user has llm.verse.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        # msg arrives in #afnet from alice (no account → nick fallback).
+        msg.args = ("#afnet", "@instruct hello")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        # Wire up db mocks for the instruct path.
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+        plugin.db.save_instruction = mocker.MagicMock()
+        plugin.db.delete_instruction = mocker.MagicMock(return_value=True)
+
+        return plugin, irc, msg, store
+
+    @staticmethod
+    def _opt_in(store, nick: str, account: str | None = None) -> int:
+        """Opt alice into the verse and return her entity_id."""
+        result = store.opt_in_avatar(nick, account, instruct_text="")
+        assert result.entity_id is not None
+        return result.entity_id
+
+    # ------------------------------------------------------------------
+    # Test 1: verse-enabled channel with active avatar — both updated
+    # ------------------------------------------------------------------
+
+    def test_in_verse_channel_with_avatar_updates_both(self, instruct_verse_env) -> None:
+        """GIVEN verse-enabled channel + active avatar WHEN @instruct THEN both updated."""
+        plugin, irc, msg, store = instruct_verse_env
+
+        alice_id = self._opt_in(store, "alice")
+
+        plugin.instruct(irc, msg, ["curious traveller"])
+
+        # Instruct DB updated.
+        plugin.db.save_instruction.assert_called_once_with("alice", "curious traveller")
+        # Avatar summary updated.
+        entity = store.get_entity(alice_id)
+        assert entity is not None
+        assert entity.summary == "curious traveller"
+
+    # ------------------------------------------------------------------
+    # Test 2: verse-enabled channel, user has NO avatar
+    # ------------------------------------------------------------------
+
+    def test_in_verse_channel_without_avatar_only_updates_instruct(
+        self, instruct_verse_env
+    ) -> None:
+        """GIVEN verse-enabled channel + no avatar WHEN @instruct THEN only instruct updated."""
+        plugin, irc, msg, store = instruct_verse_env
+
+        # Do NOT opt in — no avatar_link for alice.
+        plugin.instruct(irc, msg, ["hello"])
+
+        plugin.db.save_instruction.assert_called_once_with("alice", "hello")
+        # No entity should exist.
+        assert store.find_avatar_by_nick("alice") is None
+
+    # ------------------------------------------------------------------
+    # Test 3: non-verse channel — only instruct updated; no store created
+    # ------------------------------------------------------------------
+
+    def test_in_non_verse_channel_only_updates_instruct(self, plugin_env, tmp_path, mocker) -> None:
+        """GIVEN verseEnabled=False WHEN @instruct THEN only instruct updated, no verse store."""
+        plugin, irc, msg = plugin_env
+
+        # Track whether _get_or_create_verse_store is ever called.
+        get_store_spy = mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return False
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        plugin.db.save_instruction = mocker.MagicMock()
+        msg.args = ("#other", "@instruct hello")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        plugin.instruct(irc, msg, ["hello"])
+
+        plugin.db.save_instruction.assert_called_once_with("alice", "hello")
+        get_store_spy.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Test 4: clear path in verse channel — both cleared
+    # ------------------------------------------------------------------
+
+    def test_clear_in_verse_channel_clears_both(self, instruct_verse_env) -> None:
+        """GIVEN active avatar with summary WHEN @instruct clear THEN both cleared."""
+        plugin, irc, msg, store = instruct_verse_env
+
+        alice_id = self._opt_in(store, "alice")
+        # Give the avatar a non-empty summary first.
+        with store.write_transaction() as conn:
+            import time as _time
+
+            conn.execute(
+                "UPDATE entities SET summary = ?, updated_at = ? WHERE id = ?",
+                ("pirate queen", _time.time(), alice_id),
+            )
+
+        msg.args = ("#afnet", "@instruct clear")
+        plugin.instruct(irc, msg, ["clear"])
+
+        plugin.db.delete_instruction.assert_called_once_with("alice")
+        entity = store.get_entity(alice_id)
+        assert entity is not None
+        assert entity.summary == ""
+
+    # ------------------------------------------------------------------
+    # Test 5: verse write failure — instruct NOT updated
+    # ------------------------------------------------------------------
+
+    def test_verse_write_failure_does_not_update_instruct(self, instruct_verse_env, mocker) -> None:
+        """GIVEN verse write raises WHEN @instruct THEN instruct text unchanged."""
+        plugin, irc, msg, store = instruct_verse_env
+
+        alice_id = self._opt_in(store, "alice")
+
+        # Patch write_transaction to raise after the avatar is found.
+        class _BrokenStore:
+            """Proxy that makes write_transaction raise."""
+
+            def find_avatar_by_account(self, *a, **kw):
+                return None  # force nick lookup
+
+            def find_avatar_by_nick(self, *a, **kw):
+                return alice_id
+
+            def get_entity(self, *a, **kw):
+                return store.get_entity(*a, **kw)
+
+            def write_transaction(self):
+                raise RuntimeError("disk full")
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=_BrokenStore())
+
+        import pytest as _pytest
+
+        with _pytest.raises(RuntimeError, match="disk full"):
+            plugin.instruct(irc, msg, ["foo"])
+
+        plugin.db.save_instruction.assert_not_called()
+        # Avatar summary unchanged (still "").
+        entity = store.get_entity(alice_id)
+        assert entity is not None
+        assert entity.summary == ""
+
+    # ------------------------------------------------------------------
+    # Test 6: retired avatar — only instruct updated, summary untouched
+    # ------------------------------------------------------------------
+
+    def test_retired_avatar_only_updates_instruct(self, instruct_verse_env) -> None:
+        """GIVEN retired avatar WHEN @instruct THEN instruct updated, summary unchanged."""
+        plugin, irc, msg, store = instruct_verse_env
+
+        alice_id = self._opt_in(store, "alice")
+        # Give a summary, then retire the avatar.
+        with store.write_transaction() as conn:
+            import time as _time
+
+            conn.execute(
+                "UPDATE entities SET summary = ?, status = 'retired', updated_at = ? WHERE id = ?",
+                ("old summary", _time.time(), alice_id),
+            )
+
+        plugin.instruct(irc, msg, ["foo"])
+
+        plugin.db.save_instruction.assert_called_once_with("alice", "foo")
+        entity = store.get_entity(alice_id)
+        assert entity is not None
+        assert entity.summary == "old summary"

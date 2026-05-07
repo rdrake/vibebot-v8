@@ -3526,7 +3526,28 @@ class LLM(callbacks.Plugin):
                 irc.reply("No instruction set. Use %instruct <text> to set one.", prefixNick=False)
             return
 
-        if text.strip().lower() == "clear":
+        channel = msg.args[0] if msg.args else None
+        is_clear = text.strip().lower() == "clear"
+        new_summary = "" if is_clear else text
+
+        # C6: If in a verse-enabled channel with an active avatar, update the
+        # avatar's summary *first*. Only proceed to the instruct write if the
+        # verse write succeeds (or there is no verse / no active avatar).
+        if channel and self.registryValue("verseEnabled", channel):
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = (
+                store.find_avatar_by_account(caller.account) if caller.account else None
+            ) or store.find_avatar_by_nick(caller.raw_nick)
+            if avatar_id is not None:
+                entity = store.get_entity(avatar_id)
+                if entity is not None and entity.status == "active":
+                    with store.write_transaction() as conn:
+                        conn.execute(
+                            "UPDATE entities SET summary = ?, updated_at = ? WHERE id = ?",
+                            (new_summary, time.time(), avatar_id),
+                        )
+
+        if is_clear:
             if self.db.delete_instruction(caller.key):
                 irc.reply("Instruction cleared.", prefixNick=False)
             else:
