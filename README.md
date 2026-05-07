@@ -10,7 +10,6 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 - **Code generation**: Smart HTTP link generation for long code
 - **Image generation**: Text-to-image via Vertex AI Imagen and xAI grok-imagine
 - **Non-volatile memory**: Automatically extracts and remembers facts about users across conversations
-- **Spontaneous participation**: Optionally joins channel conversations based on probability and cooldown (disabled by default)
 - **Reminders & scheduled tasks**: Natural-language reminders plus recurring `schedule_llm_task` agentic flows
 - **Abuse controls**: Capability checks, account gating, tiered rate limiting, bounded LLM concurrency
 - **NickInMiddle plugin**: Companion plugin that injects the speaker's nick into the middle of bot replies for AfterNet readability
@@ -180,16 +179,6 @@ supybot.plugins.LLM.memoryMaxPerUser: 50
 Memory extraction and cleanup share the configured `assistantModel` / `assistantApiKey`.
 
 Facts are automatically extracted from `@ask` and `@code` conversations. Users manage non-volatile memory with `@memories`.
-
-### Spontaneous Participation
-
-```
-supybot.plugins.LLM.spontaneousEnabled: False
-supybot.plugins.LLM.spontaneousChance: 15
-supybot.plugins.LLM.spontaneousCooldown: 2
-```
-
-When enabled, the bot has a configurable chance (%) to join channel conversations. Cooldown is in minutes between spontaneous replies per channel. Disabled by default.
 
 ### Abuse Controls
 

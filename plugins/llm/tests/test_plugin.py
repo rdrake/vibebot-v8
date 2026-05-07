@@ -962,9 +962,6 @@ class TestDoPrivmsg:
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
         plugin._migrated_nicks = set()
-        plugin._spontaneous_cooldowns = {}
-        plugin._spontaneous_events = set()
-        plugin._spontaneous_events_lock = threading.Lock()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
 
         try:
@@ -1545,33 +1542,6 @@ class TestMemoryExtractionMigration:
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_memory_extraction("alice", "#chan", "user msg", "bot reply")
-        callback = add_event.call_args[0][0]
-        callback()
-        plugin._llm_executor.submit.assert_not_called()
-
-
-class TestSpontaneousMigration:
-    def test_add_event_callback_is_shim_not_evaluate(self, plugin_env, mocker) -> None:
-        plugin, irc, _msg = plugin_env
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
-        plugin._llm_executor = mocker.MagicMock()
-        plugin._llm_executor.closing = False
-
-        plugin._schedule_spontaneous(irc, "#chan", "alice", "hi")
-
-        callback = add_event.call_args[0][0]
-        callback()
-        plugin._llm_executor.submit.assert_called_once()
-        label = plugin._llm_executor.submit.call_args[0][0]
-        assert label.startswith("spontaneous:")
-
-    def test_shim_short_circuits_when_closing(self, plugin_env, mocker) -> None:
-        plugin, irc, _msg = plugin_env
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
-        plugin._llm_executor = mocker.MagicMock()
-        plugin._llm_executor.closing = True
-
-        plugin._schedule_spontaneous(irc, "#chan", "alice", "hi")
         callback = add_event.call_args[0][0]
         callback()
         plugin._llm_executor.submit.assert_not_called()

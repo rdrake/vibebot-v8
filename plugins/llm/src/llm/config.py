@@ -128,7 +128,7 @@ conf.registerChannelValue(
     registry.String(
         "",
         _("""API key for assistant text+tool work (chat, planner loop, memory
-        extraction/cleanup, spontaneous participation, reminder parsing,
+        extraction/cleanup, reminder parsing,
         image-prompt rewrite, scheduled tasks)."""),
         private=True,
     ),
@@ -203,7 +203,7 @@ conf.registerChannelValue(
     ValidatedModelName(
         "gemini/gemini-flash-latest",
         _("""Model used for all assistant text+tool work (chat, planner loop,
-        memory, spontaneous, reminder parsing, scheduled tasks). Must support
+        memory, reminder parsing, scheduled tasks). Must support
         vision if image URLs in chat should work."""),
     ),
 )
@@ -314,43 +314,6 @@ conf.registerGlobalValue(
         14,
         _("""Days a candidate fact may sit unreinforced before it is pruned.
         Set to 0 to disable TTL pruning."""),
-    ),
-)
-
-# ============================================================================
-# Spontaneous Participation
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "spontaneousEnabled",
-    registry.Boolean(
-        False,
-        _("""Enable spontaneous channel participation. Requires contextTrackAllMessages."""),
-    ),
-)
-conf.registerChannelValue(
-    LLM,
-    "spontaneousChance",
-    registry.PositiveInteger(
-        15, _("""Percent chance (1-100) of evaluating a spontaneous reply per message.""")
-    ),
-)
-conf.registerChannelValue(
-    LLM,
-    "spontaneousCooldown",
-    registry.PositiveInteger(2, _("""Minimum minutes between spontaneous replies per channel.""")),
-)
-conf.registerChannelValue(
-    LLM,
-    "spontaneousSystemPrompt",
-    registry.String(
-        "You are a regular in this IRC channel. You see the recent conversation "
-        "and can jump in if you have something useful, funny, or relevant to add. "
-        "Keep it brief — one or two sentences max. Match the tone of the channel. "
-        "If the conversation is dead or you have nothing to add, respond with exactly PASS. "
-        "You're a channel regular, not an assistant — be natural, have opinions, be yourself.",
-        _("""System prompt for spontaneous channel participation."""),
     ),
 )
 
@@ -489,23 +452,6 @@ conf.registerChannelValue(
     ),
 )
 
-
-conf.registerChannelValue(
-    LLM,
-    "forestNicks",
-    registry.SpaceSeparatedListOfStrings(
-        [],
-        _("""Space-separated nicks opted into "forest mode" in this
-        channel. Their @ask traffic skips the 3-line length cap and
-        runs against a long-form system prompt. The plain-text and
-        no-markdown rules and tool-behavior rules still apply. If the
-        nick has set a personal @instruct, that becomes the sole
-        personality overlay (the channel's assistantSystemPrompt is
-        bypassed for them). Match is case-insensitive against the
-        account-resolved identity, so use the account name when the
-        user is identified."""),
-    ),
-)
 
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
@@ -743,9 +689,9 @@ conf.registerGlobalValue(
     registry.PositiveInteger(
         16,
         _("""Maximum number of simultaneous outbound LLM calls (across the
-        command path and background work — spontaneous replies, memory
-        extraction, watch-mode reminders, scheduled tasks). Lower this on
-        small hosts or when the provider rate-limits aggressively."""),
+        command path and background work — memory extraction, watch-mode
+        reminders, scheduled tasks). Lower this on small hosts or when the
+        provider rate-limits aggressively."""),
     ),
 )
 
