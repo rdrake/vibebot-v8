@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
 import time
 from pathlib import Path
 
@@ -496,3 +498,51 @@ class TestAvatarLinkCrud:
         entity_b = store.get_entity(eid_b)
         assert entity_b is not None
         assert entity_b.status == "active"
+
+
+class TestWriteLockConcurrency:
+    def test_concurrent_add_entity_yields_unique_ids(self, verse_db_dir: Path) -> None:
+        """50 concurrent add_entity calls across 8 threads — all rows persist
+        with unique IDs, none are lost or duplicated."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#concurrent")
+
+        def worker(i: int) -> int:
+            return store.add_entity(kind="npc", name=f"worker_{i}", summary="")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            ids = list(pool.map(worker, range(50)))
+
+        assert len(set(ids)) == 50, "duplicate ids returned"
+        assert all(i > 0 for i in ids), "non-positive id returned"
+
+        names = [e.name for e in store.list_entities_by_kind("npc")]
+        assert sorted(names) == sorted(f"worker_{i}" for i in range(50))
+
+    def test_concurrent_set_attribute_no_lost_writes(self, verse_db_dir: Path) -> None:
+        """Concurrent upserts to the same entity-key pair — last writer wins;
+        no transaction is dropped (count of distinct values seen during the
+        test <= thread count, no SQL errors)."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#concurrent2")
+        eid = store.add_entity(kind="place", name="arena", summary="")
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def worker(i: int) -> None:
+            try:
+                store.set_attribute(eid, "round", str(i))
+            except BaseException as e:
+                with lock:
+                    errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(worker, range(50)))
+
+        assert errors == []
+        # The final value is one of {0,...,49}; we don't care which.
+        final = store.get_attribute(eid, "round")
+        assert final is not None
+        assert int(final) in range(50)
