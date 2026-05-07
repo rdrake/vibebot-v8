@@ -401,6 +401,28 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         plugin = mocker.Mock()
         plugin.log = mocker.Mock()
         plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect(overrides or None))
+
+        # Service tests dispatch scheduled-task fires synchronously to
+        # assert downstream effects; with the executor migration the
+        # real fire() submits the worker via plugin._llm_executor.submit.
+        # Run the worker inline here so existing tests behave as before.
+        plugin._llm_executor.closing = False
+
+        def _sync_submit(_label, fn, *args, **kwargs):
+            fn(*args, **kwargs)
+            return mocker.Mock()
+
+        plugin._llm_executor.submit.side_effect = _sync_submit
+
+        # _safe_queue is the worker-side wrapper around irc.queueMsg.
+        # Existing tests assert directly on irc.queueMsg, so make
+        # _safe_queue a passthrough that calls queueMsg.
+        def _passthrough_safe_queue(irc, msg):
+            irc.queueMsg(msg)
+            return True
+
+        plugin._safe_queue.side_effect = _passthrough_safe_queue
+
         return LLMService(plugin), plugin
 
     return _make

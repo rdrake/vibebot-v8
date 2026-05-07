@@ -4534,11 +4534,17 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         db = self.plugin.db
 
         def fire() -> None:
+            if self.plugin._llm_executor.closing:
+                return
             row = db.get_scheduled_llm_task(event_name)
             if row is None:
                 self.log.info("scheduled_llm_task fire: %s cancelled", event_name)
                 return
 
+            # Resolve irc on the main (scheduler) thread. The captured
+            # connection may go stale if IRC reconnects between fire()
+            # and worker dispatch — `_safe_queue` will silently drop
+            # writes through the dead connection rather than crash.
             irc = world.getIrc(row.network) or (world.ircs[0] if world.ircs else None)
             if irc is None:
                 self.log.warning(
@@ -4547,14 +4553,19 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 )
                 return
 
-            try:
-                msg = row.rehydrate_msg()
-                msg.tag("llm_schedule_depth", 1)
-                self._dispatch_scheduled_task(irc, msg, row)
-            except Exception:
-                self.log.exception("scheduled_llm_task fire failed: %s", event_name)
+            msg = row.rehydrate_msg()
+            msg.tag("llm_schedule_depth", 1)
 
-            self._maybe_reschedule_or_clean(row, db)
+            def _worker() -> None:
+                try:
+                    self._dispatch_scheduled_task(irc, msg, row)
+                except Exception:
+                    self.log.exception("scheduled_llm_task fire failed: %s", event_name)
+                finally:
+                    if not self.plugin._llm_executor.closing:
+                        self._maybe_reschedule_or_clean(row, db)
+
+            self.plugin._llm_executor.submit(f"scheduled_task:{event_name}", _worker)
 
         return fire
 
@@ -4591,12 +4602,13 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 row.creator_nick,
             )
             try:
-                irc.queueMsg(
+                self.plugin._safe_queue(
+                    irc,
                     ircmsgs.privmsg(
                         target,
                         f"{row.creator_nick}: Scheduled task auto-cancelled — "
                         "you no longer have permission to use @ask.",
-                    )
+                    ),
                 )
             except Exception:
                 self.log.exception(
@@ -4617,11 +4629,12 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             silent=True,
             now=now,
         ):
-            irc.queueMsg(
+            self.plugin._safe_queue(
+                irc,
                 ircmsgs.privmsg(
                     target,
                     f"{row.creator_nick}: Scheduled task skipped — daily ask limit reached.",
-                )
+                ),
             )
             return
 
@@ -4677,26 +4690,27 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         )
 
         response = (result.content or "").strip()
-        try:
-            plugin.db.log_usage(
-                row.account or row.creator_nick,
-                row.channel,
-                "scheduled_llm_task",
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-                prompt=row.prompt,
-                status=("silent" if row.watch_mode and response == "[silent]" else "success"),
-                error_detail=(result.error or "")[:200],
-            )
-        except Exception:
-            self.log.exception("scheduled_llm_task usage log failed: %s", row.event_name)
+        if not plugin._llm_executor.closing:
+            try:
+                plugin.db.log_usage(
+                    row.account or row.creator_nick,
+                    row.channel,
+                    "scheduled_llm_task",
+                    result.model,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    result.cost,
+                    prompt=row.prompt,
+                    status=("silent" if row.watch_mode and response == "[silent]" else "success"),
+                    error_detail=(result.error or "")[:200],
+                )
+            except Exception:
+                self.log.exception("scheduled_llm_task usage log failed: %s", row.event_name)
 
         if not response or (row.watch_mode and response == "[silent]"):
             return
         safe_response = self.sanitize_output(response)
-        irc.queueMsg(ircmsgs.privmsg(target, safe_response))
+        self.plugin._safe_queue(irc, ircmsgs.privmsg(target, safe_response))
 
     def _maybe_reschedule_or_clean(
         self,
