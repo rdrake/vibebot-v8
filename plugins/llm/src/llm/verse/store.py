@@ -8,10 +8,11 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
@@ -47,6 +48,22 @@ class Event(NamedTuple):
     summary: str
     entity_ids: tuple[int, ...]
     source: str
+
+
+class Proposal(NamedTuple):
+    id: str
+    created_at: float
+    cycle_id: str
+    op: str
+    payload: dict[str, Any]
+    confidence: float
+    provenance: str
+    status: str
+    reviewer: str | None
+    reviewed_at: float | None
+
+
+_VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
 
 
 SCHEMA_VERSION = 1
@@ -504,3 +521,53 @@ class VerseStore:
             scene_text=scene_text,
             was_already_opted_in=was_already_opted_in,
         )
+
+    # ------------------------------------------------------------------
+    # Proposals CRUD
+    # ------------------------------------------------------------------
+
+    def add_proposal(
+        self,
+        *,
+        cycle_id: str,
+        op: str,
+        payload: dict[str, Any],
+        confidence: float,
+        provenance: str = "",
+        status: str = "pending",
+        reviewer: str | None = None,
+    ) -> str:
+        """Insert a proposal and return its uuid id.
+
+        When *status* is 'approved' or 'rejected', *reviewer* must be
+        supplied and reviewed_at is set to now (this is how auto-apply
+        records its audit row inside the same write_transaction as the
+        mutation it just applied).
+        """
+        if status not in _VALID_PROPOSAL_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        if status != "pending" and not reviewer:
+            raise ValueError("reviewer required when status != pending")
+        pid = uuid.uuid4().hex
+        now = time.time()
+        reviewed_at = now if status != "pending" else None
+        with self.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals "
+                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
+                " status, reviewer, reviewed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    pid,
+                    now,
+                    cycle_id,
+                    op,
+                    json.dumps(payload),
+                    confidence,
+                    provenance,
+                    status,
+                    reviewer,
+                    reviewed_at,
+                ),
+            )
+        return pid

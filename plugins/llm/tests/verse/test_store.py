@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from llm.verse.store import db_path_for_channel
 
 
@@ -646,6 +647,69 @@ class TestOptInAvatar:
         result = store.opt_in_avatar("alice", None, "curious traveller")
         assert result.place_name == "Place B"
         assert store.get_attribute(result.entity_id, "location") == "Place B"
+
+
+class TestProposalsCRUD:
+    def test_add_proposal_pending_default(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "the bell rang", "entity_ids": []},
+            confidence=0.9,
+            provenance="line-3",
+        )
+        assert isinstance(pid, str) and len(pid) > 0
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id, op, status, confidence, reviewer, reviewed_at "
+                "FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+            assert row[0] == pid
+            assert row[1] == "add_event"
+            assert row[2] == "pending"
+            assert row[3] == 0.9
+            assert row[4] is None
+            assert row[5] is None
+
+    def test_add_proposal_with_preset_status(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "auto", "entity_ids": []},
+            confidence=0.95,
+            provenance="line-1",
+            status="approved",
+            reviewer="loom",
+        )
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT status, reviewer, reviewed_at FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+            assert row[0] == "approved"
+            assert row[1] == "loom"
+            assert row[2] is not None and row[2] > 0
+
+    def test_add_proposal_rejects_invalid_status(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(ValueError):
+            store.add_proposal(
+                cycle_id="c-1",
+                op="add_event",
+                payload={"summary": "x", "entity_ids": []},
+                confidence=0.9,
+                provenance="x",
+                status="weird",
+            )
 
 
 class TestWriteLockConcurrency:
