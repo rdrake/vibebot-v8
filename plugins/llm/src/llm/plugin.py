@@ -983,6 +983,21 @@ class LLM(callbacks.Plugin):
             # Explicit command — Limnoria's dispatcher handles it.
             return
 
+        # Forest-verse loom transcript hook (PR 2). Runs *after* the
+        # prefix-char early-out so @verseapprove etc. aren't captured as
+        # improv. The four caches are initialised in __init__ so this
+        # never AttributeErrors even before _wire_loom_if_enabled has run.
+        loom = self._loom
+        if loom is not None and getattr(irc, "network", None) == self._loom_network_cache:
+            try:
+                target_arg = msg.args[0] if msg.args else ""
+                if target_arg == self._loom_channel_cache:
+                    allowlist = self._loom_bot_nicks_cache or ()
+                    if not allowlist or any(ircutils.strEqual(n, msg.nick) for n in allowlist):
+                        loom.observe_transcript(msg.nick, text)
+            except Exception:
+                self.log.exception("loom transcript capture failed (non-fatal)")
+
         target = msg.args[0]
         is_pm = ircutils.nickEqual(target, irc.nick)
         addressed_text = text.strip() if is_pm else self._strip_nick_prefix(irc.nick, text)
