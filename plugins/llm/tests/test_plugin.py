@@ -5961,3 +5961,42 @@ class TestInstructVerseSync:
         entity = store.get_entity(alice_id)
         assert entity is not None
         assert entity.summary == "old summary"
+
+
+class TestVerseRouteForStub:
+    """_verse_route_for always returns None in C7a (wired to logic in C7b/c/d)."""
+
+    def test_returns_none_for_any_inputs(self, plugin_env) -> None:
+        """GIVEN any combination of inputs WHEN _verse_route_for called THEN None."""
+        plugin, _irc, _msg = plugin_env
+
+        assert plugin._verse_route_for("#chan", "alice", "alice@network", "hello") is None
+        assert plugin._verse_route_for("#chan", "alice", None, "!OOC whisper") is None
+        assert plugin._verse_route_for("", "bob", None, "") is None
+        assert plugin._verse_route_for("#lobby", "eve", "eve@irc", "a long message") is None
+
+    def test_ask_dispatch_still_reaches_chat_path(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN _verse_route_for returns None WHEN @ask sent THEN chat path fires unchanged.
+
+        This is a regression guard: the dispatch hook introduced in C7a must be
+        a no-op — the existing assistant_request call must still happen exactly once.
+        """
+        from llm.service import AssistantResult
+
+        plugin, mock_irc, mock_msg = plugin_env
+
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="normal reply",
+            grounding_used=False,
+            prompt_tokens=5,
+            completion_tokens=3,
+            cost=0.0,
+            model="test-model",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        # The chat path must have fired.
+        plugin.llm_service.assistant_request.assert_called_once()

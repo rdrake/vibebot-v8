@@ -151,6 +151,17 @@ class PreflightResult(NamedTuple):
     account: str | None  # NickServ account, or None if unidentified
 
 
+class VerseRoute(NamedTuple):
+    """Result of _verse_route_for.  Populated in C7c with avatar_id,
+    system_prompt, tools, and store.  C7a defines only the shape so the
+    helper's return type type-checks; it always returns None until C7c."""
+
+    avatar_id: int
+    system_prompt: str
+    tools: list  # type: list[dict] in C7c
+    store: object  # type: VerseStore in C7c
+
+
 @dataclass(frozen=True)
 class CommandInfo:
     """Metadata for a user-facing command, used to generate help."""
@@ -2372,6 +2383,20 @@ class LLM(callbacks.Plugin):
             return False
         return any(ircutils.strEqual(entry, nick) for entry in forest)
 
+    def _verse_route_for(
+        self,
+        channel: str,
+        nick: str,
+        account: str | None,
+        message_text: str,
+    ) -> VerseRoute | None:
+        """Return a VerseRoute when the message should be handled by the verse
+        engine, or None to fall through to the normal chat path.
+
+        Always returns None in C7a; gating logic is added in C7b/c/d.
+        """
+        return None  # Wired in C7b/c/d.
+
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
     ) -> ToolCallbackResult:
@@ -3092,7 +3117,15 @@ class LLM(callbacks.Plugin):
         if pf.blocked:
             return
 
-        self._ask_impl(irc, msg, text, pf, entry_route="ask")
+        route = self._verse_route_for(pf.channel, pf.nick, pf.account, text)
+        if route is None:
+            self._ask_impl(irc, msg, text, pf, entry_route="ask")
+            return
+        # Route handling added in C7c/d.  _verse_route_for always returns None
+        # until C7c; this branch is dead code and errors loudly if ever reached.
+        raise RuntimeError(  # pragma: no cover
+            f"verse route returned non-None before C7c: {route!r}"
+        )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
