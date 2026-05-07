@@ -1312,6 +1312,82 @@ class TestPluginInitialization:
         assert plugin._http_callback is not None
 
 
+class TestLoomWiring:
+    """C2: plugin wires Loom + bridge via _wire_loom_if_enabled()."""
+
+    def _build(self, mocker: MockerFixture, overrides: dict[str, object]):
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect(overrides)
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        return LLM(mock_irc)
+
+    def test_loom_disabled_when_loom_channel_empty(self, mocker: MockerFixture) -> None:
+        plugin = self._build(mocker, {"loomNetwork": "afternet", "loomChannel": ""})
+        assert plugin._loom is None
+        assert plugin._loom_channel_cache is None
+
+    def test_loom_disabled_when_loom_network_empty(self, mocker: MockerFixture) -> None:
+        plugin = self._build(mocker, {"loomNetwork": "", "loomChannel": "#forest"})
+        assert plugin._loom is None
+        assert plugin._loom_network_cache is None
+
+    def test_loom_wired_when_both_set(self, mocker: MockerFixture) -> None:
+        plugin = self._build(
+            mocker,
+            {
+                "loomNetwork": "afternet",
+                "loomChannel": "#forest",
+                "loomModel": "gemini/x",
+                "loomCycleInterval": 5,
+                "loomVerseCooldown": 20,
+                "loomBeatWindow": 90,
+                "loomTranscriptMaxLines": 40,
+                "loomTranscriptMaxChars": 8000,
+                "loomBotNicks": "botA, botB",
+                "verseAutoApplyThreshold": 0.85,
+            },
+        )
+        assert plugin._loom is not None
+        assert plugin._loom_channel_cache == "#forest"
+        assert plugin._loom_network_cache == "afternet"
+        assert plugin._loom_bot_nicks_cache == ("botA", "botB")
+
+    def test_rewire_after_disabling_clears_caches(self, mocker: MockerFixture) -> None:
+        plugin = self._build(
+            mocker,
+            {
+                "loomNetwork": "afternet",
+                "loomChannel": "#forest",
+                "loomModel": "gemini/x",
+                "loomCycleInterval": 5,
+                "loomVerseCooldown": 20,
+                "loomBeatWindow": 90,
+                "loomTranscriptMaxLines": 40,
+                "loomTranscriptMaxChars": 8000,
+                "loomBotNicks": "",
+                "verseAutoApplyThreshold": 0.85,
+            },
+        )
+        assert plugin._loom is not None
+        # Now flip loomChannel to empty and re-wire.
+        new_side = make_registry_side_effect({"loomNetwork": "afternet", "loomChannel": ""})
+        plugin.registryValue = mocker.MagicMock(side_effect=new_side)
+        plugin._wire_loom_if_enabled()
+        assert plugin._loom is None
+        assert plugin._loom_channel_cache is None
+        assert plugin._loom_bot_nicks_cache == ()
+
+
 class TestPluginLifecycle:
     """Test plugin initialization and cleanup."""
 

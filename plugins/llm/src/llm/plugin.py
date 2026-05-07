@@ -558,6 +558,15 @@ class LLM(callbacks.Plugin):
         # Resets on plugin reload/bot restart (by design; documented in operator guide).
         self._versepurge_tokens: dict[str, tuple[str, float]] = {}
 
+        # Forest-verse loom orchestrator (PR 2). All four caches must be
+        # initialised before doPrivmsg can run so the transcript hook never
+        # reads an unset attribute.
+        self._loom = None
+        self._loom_bridge = None
+        self._loom_channel_cache: str | None = None
+        self._loom_network_cache: str | None = None
+        self._loom_bot_nicks_cache: tuple[str, ...] = ()
+
         # Reload persisted reminders from database
         self._reload_reminders(irc)
 
@@ -610,6 +619,10 @@ class LLM(callbacks.Plugin):
         # Register callback for live log level changes
         conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
 
+        # Wire the loom orchestrator if loomNetwork + loomChannel are set.
+        # Safe to call on every init/reload — idempotent.
+        self._wire_loom_if_enabled()
+
     def _apply_log_level(self) -> None:
         """Set plugin logger levels from the logLevel config value."""
         level_name = self.registryValue("logLevel")
@@ -649,6 +662,13 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_queue_wakeup")
+        # Loom orchestrator teardown (PR 2).
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_loom_cycle")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_loom_after_beat1")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_loom_after_beat2")
 
         # Remove all reminder events (guard for tests that mock __init__)
         if hasattr(self, "_reminders"):
@@ -4513,6 +4533,91 @@ class LLM(callbacks.Plugin):
     # Verse subsystem
     # =========================================================================
 
+    # -------------------------------------------------------------------------
+    # Loom orchestrator wiring (PR 2)
+    # -------------------------------------------------------------------------
+
+    def _all_known_channels(self) -> set[str]:
+        """Channels seen on any connected Irc. Used by ``_verse_enabled_channels``."""
+        seen: set[str] = set()
+        for irc_conn in world.ircs:
+            seen.update(irc_conn.state.channels.keys())
+        return seen
+
+    def _verse_enabled_channels(self) -> list[str]:
+        """All channels with verseEnabled=True. Read from registry every call
+        (callers are not in hot paths)."""
+        out: list[str] = []
+        for ch in self._all_known_channels():
+            if self.registryValue("verseEnabled", ch):
+                out.append(ch)
+        return out
+
+    def _wire_loom_if_enabled(self) -> None:
+        """Build the Loom + bridge when loomNetwork + loomChannel are set.
+
+        Idempotent: re-wires only when the (network, channel) pair changes.
+        Tears down cleanly when either is unset.
+        """
+        network = self.registryValue("loomNetwork") or ""
+        channel = self.registryValue("loomChannel") or ""
+        if not network or not channel:
+            if self._loom is not None:
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent("llm_loom_cycle")
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent("llm_loom_after_beat1")
+                with contextlib.suppress(KeyError):
+                    schedule.removeEvent("llm_loom_after_beat2")
+            self._loom = None
+            self._loom_bridge = None
+            self._loom_channel_cache = None
+            self._loom_network_cache = None
+            self._loom_bot_nicks_cache = ()
+            return
+        if (
+            self._loom is not None
+            and self._loom_channel_cache == channel
+            and self._loom_network_cache == network
+        ):
+            return
+
+        from .verse.loom import LiteLLMLoomClient, Loom, LoomConfig
+
+        bot_nicks_raw = self.registryValue("loomBotNicks") or ""
+        cfg = LoomConfig(
+            network=network,
+            loom_channel=channel,
+            bot_nicks=tuple(n.strip() for n in bot_nicks_raw.split(",") if n.strip()),
+            model=self.registryValue("loomModel"),
+            cycle_interval_s=self.registryValue("loomCycleInterval") * 60,
+            verse_cooldown_s=self.registryValue("loomVerseCooldown") * 60,
+            beat_window_s=self.registryValue("loomBeatWindow"),
+            transcript_max_lines=self.registryValue("loomTranscriptMaxLines"),
+            transcript_max_chars=self.registryValue("loomTranscriptMaxChars"),
+            auto_apply_threshold=self.registryValue("verseAutoApplyThreshold"),
+        )
+        self._loom_bridge = _PluginLoomBridge(self, network, channel)
+        self._loom = Loom(cfg=cfg, bridge=self._loom_bridge, client=LiteLLMLoomClient())
+        self._loom_channel_cache = channel
+        self._loom_network_cache = network
+        self._loom_bot_nicks_cache = cfg.bot_nicks
+        self._schedule_loom_tick()
+
+    def _schedule_loom_tick(self) -> None:
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_loom_cycle")
+        interval = self.registryValue("loomCycleInterval") * 60
+        schedule.addPeriodicEvent(self._loom_tick, interval, name="llm_loom_cycle")
+
+    def _loom_tick(self) -> None:
+        if self._loom is None:
+            return
+        try:
+            self._loom.tick()
+        except Exception:
+            self.log.exception("loom tick failed")
+
     def _get_or_create_verse_store(self, channel: str) -> VerseStore:
         """Return the VerseStore for *channel*, creating it lazily on first access.
 
@@ -4974,6 +5079,93 @@ class LLM(callbacks.Plugin):
             )
 
     versepurge = wrap(versepurge, [optional("text")])
+
+
+class _PluginLoomBridge:
+    """Plugin-side adapter for Loom. One instance per active loom config."""
+
+    def __init__(self, plugin: LLM, network: str, channel: str) -> None:
+        self._plugin = plugin
+        self._network = network
+        self._channel = channel
+        self._verse_data_dir = Path(conf.supybot.directories.data()) / "verse"
+
+    def list_candidate_channels(self) -> list[str]:
+        """Channels with verseEnabled=True that have a DB on disk AND are
+        joined on the loom's network. Filtering on network avoids
+        cross-network channel-name collisions reaching the loom queue
+        (the SQLite store key is channel-name-only — see Open follow-ups)."""
+        from .verse.store import db_path_for_channel, list_active_verses
+
+        on_disk_paths = set(list_active_verses(self._verse_data_dir))
+        irc = world.getIrc(self._network)
+        if irc is None:
+            return []
+        joined = set(irc.state.channels.keys())
+        out: list[str] = []
+        for ch in self._plugin._verse_enabled_channels():
+            if ch not in joined:
+                continue
+            expected = db_path_for_channel(self._verse_data_dir, ch)
+            if expected in on_disk_paths:
+                out.append(ch)
+        return out
+
+    def candidate_weight(self, channel: str) -> int:
+        store = self._plugin._get_or_create_verse_store(channel)
+        active_avatars = len(store.list_entities_by_kind("avatar", status="active"))
+        recent = len(store.recent_events(limit=20))
+        return 2 * active_avatars + recent
+
+    def snapshot(self, channel: str):
+        from .verse.loom import VerseSnapshot
+
+        store = self._plugin._get_or_create_verse_store(channel)
+        avatars = store.list_entities_by_kind("avatar", status="active")[:5]
+        places = store.list_entities_by_kind("place")[:5]
+        events = store.recent_events(limit=10)
+        return VerseSnapshot(
+            channel=channel,
+            summary=f"{len(avatars)} active avatars, {len(places)} places",
+            top_entities=[(e.kind, e.name) for e in (*avatars, *places)],
+            recent_events=[e.summary for e in events],
+        )
+
+    def post_to_loom_channel(self, text: str) -> bool:
+        irc = world.getIrc(self._network)
+        if irc is None:
+            return False
+        irc.queueMsg(ircmsgs.privmsg(self._channel, text))
+        return True
+
+    def schedule_after(self, delay_s: float, fn, name: str) -> None:
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(name)
+        schedule.addEvent(fn, time.time() + delay_s, name=name)
+
+    def submit(self, label: str, fn) -> None:
+        # _llm_executor is on the plugin (not on llm_service).
+        # LLMExecutor.submit signature is (label, fn, *args, **kwargs) ->
+        # Future. The future is intentionally discarded; the loom phase
+        # swallows its own exceptions.
+        self._plugin._llm_executor.submit(label, fn)
+
+    def now(self) -> float:
+        return time.time()
+
+    def store_for(self, channel: str):
+        return self._plugin._get_or_create_verse_store(channel)
+
+    def log_usage(self, *, channel: str, op: str, model: str, usage) -> None:
+        self._plugin.db.log_usage(
+            nick="loom",
+            channel=channel,
+            command=f"loom:{op}",
+            model=model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cost=usage.cost,
+        )
 
 
 Class = LLM
