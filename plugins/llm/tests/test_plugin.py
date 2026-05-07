@@ -3333,6 +3333,9 @@ class TestCommandRegistry:
             "remind",
             "usage",
             "verseopt",
+            "verse",
+            "look",
+            "who",
         }
         assert names == expected
 
@@ -4852,3 +4855,496 @@ class TestVerseoptCommand:
         if irc.reply.called:
             reply_text = irc.reply.call_args[0][0]
             assert "step into" not in reply_text
+
+
+# =============================================================================
+# TestVerseCommand
+# =============================================================================
+
+
+class TestVerseCommand:
+    """Tests for the @verse command (C4).
+
+    Uses the same verse_env fixture pattern as TestVerseoptCommand.
+    """
+
+    PLACE_NAME = "The Clearing"
+    NO_VERSE_REPLY = "This channel doesn't have a verse. Ask the operator to set verseEnabled."
+    NO_AVATAR_REPLY = "You don't have an avatar in this channel. Use @verseopt in to join."
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@verse")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    @staticmethod
+    def _opt_in(plugin, irc, msg, store) -> int:
+        """Opt alice in and return her entity_id."""
+        msg.args = ("#afnet", "@verseopt in")
+        plugin.verseopt(irc, msg, ["in"])
+        irc.reply.reset_mock()
+        msg.args = ("#afnet", "@verse")
+        entity_id = store.find_avatar_by_nick("alice")
+        assert entity_id is not None
+        return entity_id
+
+    # ------------------------------------------------------------------
+    # Branch 1: avatar present, location set → scene one-liner
+    # ------------------------------------------------------------------
+
+    def test_verse_with_location_returns_scene_oneliner(self, verse_env) -> None:
+        """GIVEN avatar with location WHEN @verse THEN 'You are at <place>.' reply."""
+        plugin, irc, msg, store = verse_env
+        entity_id = self._opt_in(plugin, irc, msg, store)
+
+        # Add a place and set avatar's location attribute.
+        place_id = store.add_entity("place", self.PLACE_NAME, "A sunlit glade.")
+        store.set_attribute(entity_id, "location", str(place_id))
+
+        plugin.verse(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert f"You are at {self.PLACE_NAME}." in reply_text
+        assert "A sunlit glade." in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 2: avatar present, no location → "nowhere in particular"
+    # ------------------------------------------------------------------
+
+    def test_verse_no_location_returns_nowhere(self, verse_env) -> None:
+        """GIVEN avatar with no location WHEN @verse THEN 'nowhere in particular' reply."""
+        plugin, irc, msg, store = verse_env
+        self._opt_in(plugin, irc, msg, store)
+
+        plugin.verse(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "You are nowhere in particular."
+
+    # ------------------------------------------------------------------
+    # Branch 3: no avatar → no-avatar message
+    # ------------------------------------------------------------------
+
+    def test_verse_no_avatar_replies_no_avatar(self, verse_env) -> None:
+        """GIVEN no avatar WHEN @verse THEN no-avatar message."""
+        plugin, irc, msg, store = verse_env
+
+        plugin.verse(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == self.NO_AVATAR_REPLY
+
+    # ------------------------------------------------------------------
+    # Branch 4: channel without verseEnabled → "no verse" message
+    # ------------------------------------------------------------------
+
+    def test_verse_disabled_channel_replies_no_verse(self, plugin_env, mocker) -> None:
+        """GIVEN channel without verse WHEN @verse THEN no-verse message."""
+        plugin, irc, msg = plugin_env
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": False})
+        )
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@verse")
+        plugin.verse(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == self.NO_VERSE_REPLY
+
+    # ------------------------------------------------------------------
+    # Branch 5: lacking llm.verse capability → Limnoria denial
+    # ------------------------------------------------------------------
+
+    def test_verse_no_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse WHEN @verse THEN Limnoria capability denial."""
+        plugin, irc, msg = plugin_env
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+
+        msg.args = ("#afnet", "@verse")
+        plugin.verse(irc, msg, [])
+
+        # Limnoria's wrap gate blocks execution — no scene reply.
+        if irc.reply.called:
+            reply_text = irc.reply.call_args[0][0]
+            assert "You are at" not in reply_text
+
+
+# =============================================================================
+# TestLookCommand
+# =============================================================================
+
+
+class TestLookCommand:
+    """Tests for the @look [target] command (C4)."""
+
+    PLACE_NAME = "The Clearing"
+    NO_VERSE_REPLY = "This channel doesn't have a verse. Ask the operator to set verseEnabled."
+    NO_AVATAR_REPLY = "You don't have an avatar in this channel. Use @verseopt in to join."
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@look")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    @staticmethod
+    def _opt_in(plugin, irc, msg, store) -> int:
+        """Opt alice in and return her entity_id."""
+        msg.args = ("#afnet", "@verseopt in")
+        plugin.verseopt(irc, msg, ["in"])
+        irc.reply.reset_mock()
+        msg.args = ("#afnet", "@look")
+        entity_id = store.find_avatar_by_nick("alice")
+        assert entity_id is not None
+        return entity_id
+
+    # ------------------------------------------------------------------
+    # Branch 6: no target, avatar present → scene one-liner
+    # ------------------------------------------------------------------
+
+    def test_look_no_target_with_avatar_returns_scene(self, verse_env) -> None:
+        """GIVEN avatar with location, no target WHEN @look THEN scene one-liner."""
+        plugin, irc, msg, store = verse_env
+        entity_id = self._opt_in(plugin, irc, msg, store)
+
+        place_id = store.add_entity("place", self.PLACE_NAME, "A sunlit glade.")
+        store.set_attribute(entity_id, "location", str(place_id))
+
+        # Wrapped: args=[] means no optional target → target=None inside handler.
+        plugin.look(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert f"You are at {self.PLACE_NAME}." in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 7: no target, no avatar → no-avatar message
+    # ------------------------------------------------------------------
+
+    def test_look_no_target_no_avatar_replies_no_avatar(self, verse_env) -> None:
+        """GIVEN no avatar, no target WHEN @look THEN no-avatar message."""
+        plugin, irc, msg, store = verse_env
+
+        plugin.look(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == self.NO_AVATAR_REPLY
+
+    # ------------------------------------------------------------------
+    # Branch 8: target matches → entity description
+    # ------------------------------------------------------------------
+
+    def test_look_target_matches_returns_description(self, verse_env) -> None:
+        """GIVEN named entity, target given WHEN @look <name> THEN entity description."""
+        plugin, irc, msg, store = verse_env
+        store.add_entity("place", self.PLACE_NAME, "A sunlit glade.")
+
+        # Wrapped: target string goes into args list.
+        plugin.look(irc, msg, [self.PLACE_NAME])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert self.PLACE_NAME in reply_text
+        assert "A sunlit glade." in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 9: target doesn't match → "Nothing matches."
+    # ------------------------------------------------------------------
+
+    def test_look_target_no_match_replies_nothing_matches(self, verse_env) -> None:
+        """GIVEN target with no matching entity WHEN @look <name> THEN 'Nothing matches.'"""
+        plugin, irc, msg, store = verse_env
+
+        plugin.look(irc, msg, ["Atlantis"])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "Nothing matches."
+
+    # ------------------------------------------------------------------
+    # Branch 10: channel without verseEnabled → "no verse" message
+    # ------------------------------------------------------------------
+
+    def test_look_disabled_channel_replies_no_verse(self, plugin_env, mocker) -> None:
+        """GIVEN channel without verse WHEN @look THEN no-verse message."""
+        plugin, irc, msg = plugin_env
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": False})
+        )
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@look")
+        plugin.look(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == self.NO_VERSE_REPLY
+
+    # ------------------------------------------------------------------
+    # Branch 11: lacking capability → denial
+    # ------------------------------------------------------------------
+
+    def test_look_no_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse WHEN @look THEN Limnoria capability denial."""
+        plugin, irc, msg = plugin_env
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+
+        msg.args = ("#afnet", "@look")
+        plugin.look(irc, msg, [])
+
+        if irc.reply.called:
+            reply_text = irc.reply.call_args[0][0]
+            assert "You are at" not in reply_text
+
+
+# =============================================================================
+# TestWhoCommand
+# =============================================================================
+
+
+class TestWhoCommand:
+    """Tests for the @who command (C4)."""
+
+    NO_VERSE_REPLY = "This channel doesn't have a verse. Ask the operator to set verseEnabled."
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@who")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    # ------------------------------------------------------------------
+    # Branch 12: multiple active avatars with locations → comma-joined list
+    # ------------------------------------------------------------------
+
+    def test_who_multiple_avatars_returns_list(self, verse_env) -> None:
+        """GIVEN two active avatars with locations WHEN @who THEN comma-joined list."""
+        plugin, irc, msg, store = verse_env
+
+        # Create two avatars and a place.
+        place_id = store.add_entity("place", "The Clearing", "A sunlit glade.")
+        alice_id = store.add_entity("avatar", "alice")
+        bob_id = store.add_entity("avatar", "bob")
+        store.link_avatar(alice_id, "alice")
+        store.link_avatar(bob_id, "bob")
+        store.set_attribute(alice_id, "location", str(place_id))
+        store.set_attribute(bob_id, "location", str(place_id))
+
+        plugin.who(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert "alice (at The Clearing)" in reply_text
+        assert "bob (at The Clearing)" in reply_text
+        # Comma-joined format.
+        assert ", " in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 13: no avatars → "Nobody is opted in here yet."
+    # ------------------------------------------------------------------
+
+    def test_who_no_avatars_replies_empty(self, verse_env) -> None:
+        """GIVEN no active avatars WHEN @who THEN 'Nobody is opted in here yet.'"""
+        plugin, irc, msg, store = verse_env
+
+        plugin.who(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "Nobody is opted in here yet."
+
+    # ------------------------------------------------------------------
+    # Branch 14: retired avatars excluded
+    # ------------------------------------------------------------------
+
+    def test_who_retired_avatar_excluded(self, verse_env) -> None:
+        """GIVEN one active and one retired avatar WHEN @who THEN only active shown."""
+        plugin, irc, msg, store = verse_env
+
+        active_id = store.add_entity("avatar", "alice")
+        store.link_avatar(active_id, "alice")
+
+        retired_id = store.add_entity("avatar", "bob")
+        store.link_avatar(retired_id, "bob")
+        store.set_status(retired_id, "retired")
+
+        plugin.who(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert "alice" in reply_text
+        assert "bob" not in reply_text
+
+    # ------------------------------------------------------------------
+    # Branch 15: channel without verseEnabled → "no verse" message
+    # ------------------------------------------------------------------
+
+    def test_who_disabled_channel_replies_no_verse(self, plugin_env, mocker) -> None:
+        """GIVEN channel without verse WHEN @who THEN no-verse message."""
+        plugin, irc, msg = plugin_env
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": False})
+        )
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@who")
+        plugin.who(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == self.NO_VERSE_REPLY
+
+    # ------------------------------------------------------------------
+    # Branch 16: lacking capability → denial
+    # ------------------------------------------------------------------
+
+    def test_who_no_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse WHEN @who THEN Limnoria capability denial."""
+        plugin, irc, msg = plugin_env
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        from tests.conftest import make_registry_side_effect
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+
+        msg.args = ("#afnet", "@who")
+        plugin.who(irc, msg, [])
+
+        if irc.reply.called:
+            reply_text = irc.reply.call_args[0][0]
+            assert "Nobody" not in reply_text
+            assert "alice" not in reply_text

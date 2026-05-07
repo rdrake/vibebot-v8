@@ -271,6 +271,36 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%verseopt in", "%verseopt out"),
         category="utility",
     ),
+    CommandInfo(
+        name="verse",
+        args="",
+        description=(
+            "Show your current scene one-liner in the verse. "
+            "Requires the llm.verse capability and a verse-enabled channel."
+        ),
+        examples=("%verse",),
+        category="utility",
+    ),
+    CommandInfo(
+        name="look",
+        args="[<target>]",
+        description=(
+            "Show your current scene, or describe a named entity in the verse. "
+            "Requires the llm.verse capability and a verse-enabled channel."
+        ),
+        examples=("%look", "%look The Clearing", "%look alice"),
+        category="utility",
+    ),
+    CommandInfo(
+        name="who",
+        args="",
+        description=(
+            "List active avatars and their locations in the verse. "
+            "Requires the llm.verse capability and a verse-enabled channel."
+        ),
+        examples=("%who",),
+        category="utility",
+    ),
 )
 
 
@@ -4542,6 +4572,165 @@ class LLM(callbacks.Plugin):
             )
 
     verseopt = wrap(verseopt, [("checkCapability", "llm.verse"), ("literal", ("in", "out"))])
+
+    # ------------------------------------------------------------------
+    # Helpers shared by @verse / @look / @who
+    # ------------------------------------------------------------------
+
+    _NO_VERSE_REPLY = "This channel doesn't have a verse. Ask the operator to set verseEnabled."
+    _NO_AVATAR_REPLY = "You don't have an avatar in this channel. Use @verseopt in to join."
+
+    def _check_verse_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
+        """Return the channel name if verse is enabled, else reply and return None."""
+        channel = msg.args[0] if msg.args else None
+        if not channel or not ircutils.isChannel(channel):
+            irc.error(_("This command must be used in a channel."), prefixNick=False)
+            return None
+        if not self.registryValue("verseEnabled", channel):
+            irc.reply(self._NO_VERSE_REPLY, prefixNick=False)
+            return None
+        return channel
+
+    def _avatar_scene_oneliner(self, store: VerseStore, entity_id: int) -> str:
+        """Build an IRC-friendly one-liner for the avatar's current location."""
+        location_id_str = store.get_attribute(entity_id, "location")
+        if location_id_str is None:
+            return "You are nowhere in particular."
+        try:
+            place = store.get_entity(int(location_id_str))
+        except (ValueError, TypeError):
+            place = None
+        if place is None:
+            return "You are nowhere in particular."
+        return f"You are at {place.name}. {place.summary}".rstrip()
+
+    # ------------------------------------------------------------------
+    # @verse — show caller's current scene one-liner
+    # ------------------------------------------------------------------
+
+    def verse(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """(takes no arguments)
+
+        Show your current scene one-liner in the verse.
+
+          @verse — display where your avatar currently is.
+
+        Requires the llm.verse capability and a verse-enabled channel.
+        """
+        channel = self._check_verse_channel(irc, msg)
+        if channel is None:
+            return
+
+        caller = self._resolve_identity(irc, msg)
+        store = self._get_or_create_verse_store(channel)
+        account = caller.account
+        entity_id = store.find_avatar_by_account(account) if account else None
+        if entity_id is None:
+            entity_id = store.find_avatar_by_nick(caller.raw_nick)
+        if entity_id is None:
+            irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
+            return
+
+        irc.reply(self._avatar_scene_oneliner(store, entity_id), prefixNick=False)
+
+    verse = wrap(verse, [("checkCapability", "llm.verse")])
+
+    # ------------------------------------------------------------------
+    # @look [target] — scene or entity description
+    # ------------------------------------------------------------------
+
+    def look(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        target: str | None = None,
+    ) -> None:
+        """[<target>]
+
+        Show your current scene, or describe a named entity in the verse.
+
+          @look          — show where you are (same as @verse).
+          @look <name>   — describe an entity by name.
+
+        Requires the llm.verse capability and a verse-enabled channel.
+        """
+        channel = self._check_verse_channel(irc, msg)
+        if channel is None:
+            return
+
+        store = self._get_or_create_verse_store(channel)
+
+        if target is None:
+            # No target: show caller's scene (avatar required).
+            caller = self._resolve_identity(irc, msg)
+            account = caller.account
+            entity_id = store.find_avatar_by_account(account) if account else None
+            if entity_id is None:
+                entity_id = store.find_avatar_by_nick(caller.raw_nick)
+            if entity_id is None:
+                irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
+                return
+            irc.reply(self._avatar_scene_oneliner(store, entity_id), prefixNick=False)
+        else:
+            # Target given: look up entity by name.
+            entity = store.find_entity_by_name(target)
+            if entity is None:
+                irc.reply("Nothing matches.", prefixNick=False)
+                return
+            irc.reply(f"{entity.name}: {entity.summary}", prefixNick=False)
+
+    look = wrap(look, [("checkCapability", "llm.verse"), optional("text")])
+
+    # ------------------------------------------------------------------
+    # @who — list active avatars and their locations
+    # ------------------------------------------------------------------
+
+    def who(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+    ) -> None:
+        """(takes no arguments)
+
+        List active avatars and their current locations in the verse.
+
+          @who — roster of opted-in avatars.
+
+        Requires the llm.verse capability and a verse-enabled channel.
+        """
+        channel = self._check_verse_channel(irc, msg)
+        if channel is None:
+            return
+
+        store = self._get_or_create_verse_store(channel)
+        avatars = store.list_entities_by_kind("avatar", status="active")
+        if not avatars:
+            irc.reply("Nobody is opted in here yet.", prefixNick=False)
+            return
+
+        parts: list[str] = []
+        for avatar in avatars:
+            location_id_str = store.get_attribute(avatar.id, "location")
+            if location_id_str is not None:
+                try:
+                    place = store.get_entity(int(location_id_str))
+                except (ValueError, TypeError):
+                    place = None
+                if place is not None:
+                    parts.append(f"{avatar.name} (at {place.name})")
+                    continue
+            parts.append(avatar.name)
+
+        irc.reply(", ".join(parts), prefixNick=False)
+
+    who = wrap(who, [("checkCapability", "llm.verse")])
 
 
 Class = LLM
