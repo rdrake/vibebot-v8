@@ -8,7 +8,6 @@ This file contains repository-specific guidance for Codex and other coding agent
 
 Primary workspace members:
 - `plugins/llm/` - main LLM plugin (LiteLLM, assistant, scheduler, persistence)
-- `plugins/rpg/` - RPG plugin
 - `plugins/nickinmiddle/` - companion `inFilter` plugin that promotes the bot's nick when it appears mid-message so Limnoria's normal addressing logic fires
 
 Core documentation and tooling:
@@ -74,7 +73,6 @@ Keep those boundaries intact:
 
 - Add or update tests for behavior changes.
 - LLM plugin tests live under `plugins/llm/tests/`.
-- RPG plugin tests live under `plugins/rpg/tests/`.
 - nickinmiddle plugin tests live under `plugins/nickinmiddle/tests/`.
 - Maintain the existing **93%** coverage floor (enforced by `pyproject.toml` and `make test`).
 - Follow existing test style, including BDD-style docstrings where that pattern is already used.
@@ -105,7 +103,6 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/limnoria_bridge.py` - Limnoria → LLM tool bridge (Phase 1 shipped; Phase 2 mutation gating + curated default allowlist tracked in `docs/plans/2026-05-02-limnoria-bridge-phase-2-plan.md`)
 - `plugins/llm/src/llm/{service,plugin,assistant,persistence}.py` - native `schedule_llm_task` plus the unified `list_pending_tasks` / `cancel_pending_task` / `cancel_all_pending_tasks` tool surface (`_pending_task_fns` helper)
 - `plugins/llm/src/llm/executor.py` - global LLM concurrency gate; tune via `supybot.plugins.LLM.maxConcurrentLLMCalls`
-- `plugins/rpg/src/rpg/` - RPG plugin implementation
 - `plugins/nickinmiddle/src/nickinmiddle/` - nick-in-middle inFilter plugin
 - `README.md` - setup and operator-facing documentation
 - `mkdocs.yml` and `docs/guide/` - published guide source
