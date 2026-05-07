@@ -370,6 +370,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "bridgeDebugInChannel": False,
         # Async LLM concurrency cap
         "maxConcurrentLLMCalls": 16,
+        # Verse subsystem
+        "verseEnabled": False,
     }
     if overrides:
         defaults.update(overrides)

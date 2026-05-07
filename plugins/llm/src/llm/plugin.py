@@ -53,6 +53,7 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
+from .verse.store import VerseStore
 
 if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
@@ -258,6 +259,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="[nick | #channel]",
         description="Show API usage statistics.",
         examples=("%usage", "%usage someone", "%usage #channel"),
+        category="utility",
+    ),
+    CommandInfo(
+        name="verseopt",
+        args="<in|out>",
+        description=(
+            "Opt your avatar in or out of the verse for this channel. "
+            "Requires the llm.verse capability."
+        ),
+        examples=("%verseopt in", "%verseopt out"),
         category="utility",
     ),
 )
@@ -478,6 +489,10 @@ class LLM(callbacks.Plugin):
 
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
+
+        # Per-channel VerseStore cache (keyed by channel name).
+        self._verse_stores: dict[str, VerseStore] = {}
+        self._verse_stores_lock = threading.Lock()
 
         # Reload persisted reminders from database
         self._reload_reminders(irc)
@@ -4452,6 +4467,81 @@ class LLM(callbacks.Plugin):
             irc.error(_("Usage: remind admin <list|del|clear> <nick> [<id>...]"))
 
     remind = wrap(remind, [optional("text")])
+
+    # =========================================================================
+    # Verse subsystem
+    # =========================================================================
+
+    def _get_or_create_verse_store(self, channel: str) -> VerseStore:
+        """Return the VerseStore for *channel*, creating it lazily on first access.
+
+        Thread-safe: guarded by ``_verse_stores_lock``.  The store itself is
+        safe to use outside the lock — it carries its own write lock.
+        """
+        with self._verse_stores_lock:
+            store = self._verse_stores.get(channel)
+            if store is None:
+                base = Path(conf.supybot.directories.data()) / "verse"
+                store = VerseStore(base, channel)
+                self._verse_stores[channel] = store
+            return store
+
+    def verseopt(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        mode: str,
+    ) -> None:
+        """<in|out>
+
+        Opt your avatar in or out of the verse for this channel.
+
+          @verseopt in   — create or reactivate your avatar; shows the opening scene.
+          @verseopt out  — retire your avatar until you opt back in.
+
+        Requires the llm.verse capability and a verse-enabled channel.
+        """
+        channel = msg.args[0] if msg.args else None
+        if not channel or not ircutils.isChannel(channel):
+            irc.error(_("This command must be used in a channel."), prefixNick=False)
+            return
+
+        if not self.registryValue("verseEnabled", channel):
+            irc.reply(
+                "This channel doesn't have a verse. Ask the operator to set verseEnabled.",
+                prefixNick=False,
+            )
+            return
+
+        caller = self._resolve_identity(irc, msg)
+        nick = caller.raw_nick
+        account = caller.account
+
+        if mode == "in":
+            instruct_text = self.db.get_instruction(caller.key) or ""
+            store = self._get_or_create_verse_store(channel)
+            result = store.opt_in_avatar(nick, account, instruct_text)
+            reply = result.scene_text
+            if result.was_already_opted_in:
+                reply = "You are already opted in. " + reply
+            irc.reply(reply, prefixNick=False)
+
+        else:  # mode == "out"
+            store = self._get_or_create_verse_store(channel)
+            entity_id = store.find_avatar_by_account(account) if account else None
+            if entity_id is None:
+                entity_id = store.find_avatar_by_nick(nick)
+            if entity_id is None:
+                irc.reply("You don't have an avatar in this channel.", prefixNick=False)
+                return
+            store.unlink_avatar(entity_id)
+            irc.reply(
+                "Avatar retired. Use @verseopt in to rejoin.",
+                prefixNick=False,
+            )
+
+    verseopt = wrap(verseopt, [("checkCapability", "llm.verse"), ("literal", ("in", "out"))])
 
 
 Class = LLM
