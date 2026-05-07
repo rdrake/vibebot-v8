@@ -3469,6 +3469,10 @@ class LLM(callbacks.Plugin):
             f" {ctx_global['total_messages']} messages"
         )
 
+        # LLM executor utilization (running/queued/max).
+        ex = self._llm_executor
+        parts.append(f"executor: {ex.running()}/{ex.queued()}/{ex.max_concurrency}")
+
         irc.reply(" | ".join(parts), private=True)
 
     def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:

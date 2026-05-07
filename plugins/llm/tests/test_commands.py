@@ -1438,6 +1438,58 @@ class TestForgetCommand:
 # ---------------------------------------------------------------------------
 
 
+class TestUsageExecutorField:
+    """Verify the global %usage output exposes executor running/queued/max."""
+
+    def test_global_usage_includes_executor(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, irc, msg = plugin_env
+        msg.channel = None
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
+        plugin.db.get_usage_summary.return_value = UsageSummary(
+            total_requests=0, total_prompt_tokens=0, total_completion_tokens=0, total_cost=0.0
+        )
+        plugin.db.get_usage_by_nick.return_value = []
+        plugin.db.get_usage_by_channel.return_value = []
+        plugin.usage(irc, msg, [])
+        replies = " ".join(str(call.args[0]) for call in irc.reply.call_args_list)
+        # running/queued/max — at construction time both are 0.
+        assert "executor: 0/0/16" in replies
+
+    def test_global_usage_executor_field_under_load(
+        self, plugin_env, mocker: MockerFixture
+    ) -> None:
+        """Field reflects actual executor counters."""
+        import threading
+        import time
+
+        plugin, irc, msg = plugin_env
+        msg.channel = None
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
+        plugin.db.get_usage_summary.return_value = UsageSummary(
+            total_requests=0, total_prompt_tokens=0, total_completion_tokens=0, total_cost=0.0
+        )
+        plugin.db.get_usage_by_nick.return_value = []
+        plugin.db.get_usage_by_channel.return_value = []
+
+        release = threading.Event()
+        plugin._llm_executor.submit("hold", release.wait, 5)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and plugin._llm_executor.running() < 1:
+            time.sleep(0.02)
+        try:
+            plugin.usage(irc, msg, [])
+            replies = " ".join(str(call.args[0]) for call in irc.reply.call_args_list)
+            assert "executor: 1/0/16" in replies
+        finally:
+            release.set()
+
+
 class TestUsageCommand:
     """Tests for the real LLM.usage method (dual-mode: channel + PM)."""
 
