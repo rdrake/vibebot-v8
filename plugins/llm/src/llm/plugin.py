@@ -658,6 +658,23 @@ class LLM(callbacks.Plugin):
         # Safe to call on every init/reload — idempotent.
         self._wire_loom_if_enabled()
 
+        # Re-wire the loom on live config changes. Without this, an operator
+        # who sets loomNetwork + loomChannel via @config has to @reload LLM
+        # before the orchestrator notices.
+        for _key in (
+            "loomNetwork",
+            "loomChannel",
+            "loomModel",
+            "loomCycleInterval",
+            "loomVerseCooldown",
+            "loomBeatWindow",
+            "loomTranscriptMaxLines",
+            "loomTranscriptMaxChars",
+            "loomBotNicks",
+            "verseAutoApplyThreshold",
+        ):
+            getattr(conf.supybot.plugins.LLM, _key).addCallback(self._on_loom_config_change)
+
     def _apply_log_level(self) -> None:
         """Set plugin logger levels from the logLevel config value."""
         level_name = self.registryValue("logLevel")
@@ -668,6 +685,23 @@ class LLM(callbacks.Plugin):
     def _on_log_level_change(self, *args: object) -> None:
         """Called when logLevel config changes at runtime."""
         self._apply_log_level()
+
+    def _on_loom_config_change(self, *args: object) -> None:
+        """Re-wire the loom when any loom-* registry value changes at runtime.
+
+        ``_wire_loom_if_enabled`` is idempotent: if the (network, channel)
+        tuple is unchanged it short-circuits, so callbacks for
+        ``loomBotNicks`` etc. correctly tear down + rebuild only when the
+        target identity flips.
+        """
+        # Force a rebuild even when (network, channel) didn't change so
+        # bot-nicks / cycle-interval changes take effect.
+        self._loom_channel_cache = None
+        self._loom_network_cache = None
+        try:
+            self._wire_loom_if_enabled()
+        except Exception:
+            self.log.exception("loom re-wire failed (non-fatal)")
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""

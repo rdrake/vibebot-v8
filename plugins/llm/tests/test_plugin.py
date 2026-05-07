@@ -1957,6 +1957,42 @@ class TestLoomWiring:
         assert plugin._loom_channel_cache is None
         assert plugin._loom_bot_nicks_cache == ()
 
+    def test_on_loom_config_change_rewires_after_live_config(self, mocker: MockerFixture) -> None:
+        # Boot with loom disabled (defaults).
+        plugin = self._build(mocker, {})
+        assert plugin._loom is None
+
+        # Operator runs @config plugins.LLM.loomNetwork / loomChannel ...
+        # — the callback fires _on_loom_config_change which re-runs
+        # _wire_loom_if_enabled with the new registry values.
+        new_side = make_registry_side_effect(
+            {
+                "loomNetwork": "afternet",
+                "loomChannel": "#cybercafe",
+                "loomModel": "gemini/x",
+                "loomCycleInterval": 5,
+                "loomVerseCooldown": 20,
+                "loomBeatWindow": 90,
+                "loomTranscriptMaxLines": 40,
+                "loomTranscriptMaxChars": 8000,
+                "loomBotNicks": "",
+                "verseAutoApplyThreshold": 0.85,
+            }
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=new_side)
+
+        plugin._on_loom_config_change()
+
+        assert plugin._loom is not None
+        assert plugin._loom_channel_cache == "#cybercafe"
+        assert plugin._loom_network_cache == "afternet"
+
+    def test_on_loom_config_change_swallows_exceptions(self, mocker: MockerFixture) -> None:
+        plugin = self._build(mocker, {})
+        mocker.patch.object(plugin, "_wire_loom_if_enabled", side_effect=RuntimeError("boom"))
+        # Must not raise — non-fatal, logged only.
+        plugin._on_loom_config_change()
+
 
 class TestPluginLifecycle:
     """Test plugin initialization and cleanup."""
