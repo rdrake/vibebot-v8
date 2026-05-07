@@ -40,6 +40,7 @@ from .assistant import (
     PROFILE_REMIND_ACTION,
 )
 from .context import ContextConfig, ConversationContext, Role
+from .executor import LLMExecutor
 from .persistence import LLMDatabase, ReminderRow
 from .service import (
     AssistantRequestContext,
@@ -438,8 +439,6 @@ class LLM(callbacks.Plugin):
 
         # Global concurrency cap for all LLM I/O. See
         # docs/plans/2026-05-06-async-llm-concurrency.md
-        from .executor import LLMExecutor
-
         self._llm_executor = LLMExecutor(
             max_concurrency=self.registryValue("maxConcurrentLLMCalls"),
             log=self.log,
@@ -1269,8 +1268,8 @@ class LLM(callbacks.Plugin):
                 search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                 fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                 code_fn=lambda p: self._code_for_assistant(p, channel),
-                draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: (
-                    self._draw_for_assistant(_irc, _msg, p)
+                draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: self._draw_for_assistant(
+                    _irc, _msg, p
                 ),
                 cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                 exclude_tools=exclude_tools,

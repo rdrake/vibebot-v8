@@ -442,6 +442,11 @@ def plugin_init_patches(
     and schedule.removeEvent. Optionally patches LLMDatabase.  All patches are
     automatically reverted at the end of the test by pytest-mock.
 
+    Also stubs LLMExecutor with a synchronous, deterministic test double so
+    background-work tests (spontaneous, reminder action, scheduled task)
+    can assert on side effects immediately after the schedule callback
+    fires — no thread-pool race.
+
     Args:
         mocker: The pytest-mock fixture.
         mock_database: If True (default), also patches LLMDatabase.
@@ -457,4 +462,71 @@ def plugin_init_patches(
     patches["httpserver_hook"] = mocker.patch("llm.plugin.httpserver.hook")
     patches["addPeriodicEvent"] = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
     patches["removeEvent"] = mocker.patch("llm.plugin.schedule.removeEvent")
+
+    # LLMExecutor stub: submit runs the function synchronously so tests
+    # that callback() and immediately assert on queueMsg / db writes
+    # don't race a worker thread.
+    sync_stub = _SyncLLMExecutor()
+    patches["LLMExecutor"] = mocker.patch("llm.plugin.LLMExecutor", return_value=sync_stub)
     return patches
+
+
+class _SyncLLMExecutor:
+    """Synchronous test double for LLMExecutor used by plugin_init_patches.
+
+    `submit(label, fn, ...)` runs `fn` inline and returns a completed
+    `Future` carrying its result. Counters track in-flight tasks so
+    `running()` and `queued()` look correct mid-call. Drain/shutdown
+    are no-ops.
+    """
+
+    def __init__(self, max_concurrency: int = 16) -> None:
+        from concurrent.futures import Future
+
+        self._max = max_concurrency
+        self._running = 0
+        self._queued = 0
+        self.closing = False
+        self._Future = Future
+
+    @property
+    def max_concurrency(self) -> int:
+        return self._max
+
+    def running(self) -> int:
+        return self._running
+
+    def queued(self) -> int:
+        return self._queued
+
+    def permit(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self._running += 1
+            try:
+                yield
+            finally:
+                self._running -= 1
+
+        return _cm()
+
+    def submit(self, _label, fn, *args, **kwargs):
+        fut = self._Future()
+        self._running += 1
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as e:  # noqa: BLE001
+            fut.set_exception(e)
+        else:
+            fut.set_result(result)
+        finally:
+            self._running -= 1
+        return fut
+
+    def drain(self, timeout: float) -> bool:  # noqa: ARG002
+        return True
+
+    def shutdown(self) -> None:
+        self.closing = True
