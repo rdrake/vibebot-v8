@@ -572,6 +572,18 @@ class VerseStore:
             )
         return pid
 
+    def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
+        """Flip *proposal_id*'s status (audit fields written together)."""
+        if status not in _VALID_PROPOSAL_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status=?, reviewer=?, reviewed_at=? WHERE id=?",
+                (status, reviewer, time.time(), proposal_id),
+            )
+            if cur.rowcount == 0:
+                raise LookupError(f"no proposal: {proposal_id!r}")
+
     def get_proposal(self, proposal_id: str) -> Proposal | None:
         """Return the Proposal with *proposal_id*, or None."""
         with self.read_connection() as conn:

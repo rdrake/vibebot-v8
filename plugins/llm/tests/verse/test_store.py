@@ -759,6 +759,43 @@ class TestProposalsCRUD:
         assert p.confidence == 0.4
         assert p.status == "pending"
 
+    def test_update_proposal_status_records_reviewer(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.9,
+        )
+        store.update_proposal_status(pid, status="approved", reviewer="alice")
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer == "alice"
+        assert p.reviewed_at is not None and p.reviewed_at > 0
+
+    def test_update_proposal_status_rejects_invalid(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError):
+            store.update_proposal_status(pid, status="weird", reviewer="alice")
+
+    def test_update_proposal_status_unknown_id_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(LookupError):
+            store.update_proposal_status("nope", status="approved", reviewer="alice")
+
     def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
