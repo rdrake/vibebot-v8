@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
+from collections.abc import Callable
 from enum import Enum
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from .store import Event, VerseStore
+
+_log = logging.getLogger(__name__)
 
 
 def make_verse_tool_specs() -> list[dict]:
@@ -362,3 +367,96 @@ def build_verse_system_prompt(
         other_bullets,
     ]
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# C7d: verse tool dispatch
+# ---------------------------------------------------------------------------
+
+
+#: ToolResult-like namedtuple for verse handlers returning to assistant loop.
+#: Mirrors the shape expected by assistant_request's extra_handlers callables.
+class _VerseToolResult(NamedTuple):
+    content: str
+
+
+def dispatch_verse_tool_call(
+    store: VerseStore,
+    avatar_id: int,
+    name: str,
+    args: dict[str, Any],
+    *,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Dispatch a single verse tool call, swallowing all exceptions.
+
+    Applies the side effect (event write, attribute update, etc.) to
+    ``store``.  If the tool raises for any reason — including retired avatar,
+    OperationalError (DB deleted mid-session), or missing required args —
+    logs at WARNING and returns without raising.  Call order is the
+    caller's responsibility.
+
+    This function is the core of C7d's failure-handling contract:
+    - B2-level business failures (bad move target) are handled INSIDE
+      verse_act and return normally (event row written).
+    - Exception-level failures (retired avatar, DB gone) are caught here
+      and logged at WARNING; no event row is written.
+    """
+    log = logger or _log
+    try:
+        if name == "verse_act":
+            verb = args.get("verb")
+            if not verb:
+                log.warning("verse_act missing 'verb' arg (avatar=%s)", avatar_id)
+                return
+            verse_act(store, avatar_id, verb, args.get("target"), args.get("details"))
+        elif name == "verse_move":
+            place = args.get("place_name")
+            if not place:
+                log.warning("verse_move missing 'place_name' arg (avatar=%s)", avatar_id)
+                return
+            verse_move(store, avatar_id, place)
+        elif name == "verse_look":
+            verse_look(store, avatar_id, args.get("target"))
+        elif name == "verse_recall":
+            q = args.get("query")
+            if q is None:
+                log.warning("verse_recall missing 'query' arg (avatar=%s)", avatar_id)
+                return
+            verse_recall(store, q)
+        else:
+            log.warning("unknown verse tool: %s (avatar=%s)", name, avatar_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "verse tool dispatch failed: name=%s avatar=%s err=%s",
+            name,
+            avatar_id,
+            exc,
+        )
+
+
+def make_verse_extra_handlers(
+    store: VerseStore,
+    avatar_id: int,
+    logger: logging.Logger | None = None,
+) -> dict[str, Callable[[dict[str, Any]], Any]]:
+    """Return an extra_handlers dict for the four verse tools.
+
+    Each handler calls ``dispatch_verse_tool_call`` (which swallows failures)
+    then returns a JSON-encoded ToolResult-compatible object so the
+    assistant_request loop can continue normally.  The return value uses
+    ``_VerseToolResult`` which has a ``content`` attribute matching the
+    ``ToolResult`` duck-type expected by the loop.
+    """
+    log = logger or _log
+    _verse_names = {"verse_act", "verse_move", "verse_look", "verse_recall"}
+
+    def _handler(name: str) -> Callable[[dict[str, Any]], _VerseToolResult]:
+        def _call(args: dict[str, Any]) -> _VerseToolResult:
+            dispatch_verse_tool_call(store, avatar_id, name, args, logger=log)
+            return _VerseToolResult(content=json.dumps({"status": "ok", "tool": name}))
+
+        _call.__name__ = f"_verse_handler_{name}"
+        return _call
+
+    return {name: _handler(name) for name in _verse_names}

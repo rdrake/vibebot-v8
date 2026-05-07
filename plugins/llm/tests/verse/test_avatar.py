@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -12,7 +13,9 @@ from llm.verse.avatar import (
     ActResult,
     VerbEffect,
     build_verse_system_prompt,
+    dispatch_verse_tool_call,
     is_ooc,
+    make_verse_extra_handlers,
     make_verse_tool_specs,
     verse_act,
     verse_look,
@@ -481,3 +484,143 @@ class TestMakeVerseToolSpecs:
         specs = make_verse_tool_specs()
         look_spec = next(s for s in specs if s["function"]["name"] == "verse_look")
         assert look_spec["function"]["parameters"]["required"] == []
+
+
+# ---------------------------------------------------------------------------
+# TestVerseToolDispatch (C7d)
+# ---------------------------------------------------------------------------
+
+
+class TestVerseToolDispatch:
+    """Tests for dispatch_verse_tool_call and make_verse_extra_handlers (C7d)."""
+
+    def test_successful_verse_act_writes_event(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN opted-in avatar WHEN verse_act speak dispatched THEN event row written, no WARNING."""
+        alice_id = _opt_in(store)
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+
+        events = store.recent_events(limit=10)
+        # opt_in_avatar writes a "joins" event; speak adds a second
+        speak_events = [e for e in events if "speak" in e.summary]
+        assert len(speak_events) == 1
+        assert not caplog.records
+
+    def test_verse_act_business_logic_failure_writes_event_no_exception(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN move to nonexistent place WHEN verse_act dispatched THEN event row written (failure narrative), no exception."""
+        alice_id = _opt_in(store)
+        events_before = len(store.recent_events(limit=100))
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            # move to "Nowhere" — no such place exists → verse_act writes a
+            # "tries to move to Nowhere" event row (B2 business-logic failure)
+            dispatch_verse_tool_call(
+                store, alice_id, "verse_act", {"verb": "move", "target": "Nowhere"}
+            )
+
+        events_after = store.recent_events(limit=100)
+        # exactly one new event row
+        assert len(events_after) == events_before + 1
+        assert not caplog.records
+
+    def test_verse_act_on_retired_avatar_logs_warning(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN retired avatar WHEN verse_act dispatched THEN WARNING logged, no event row written."""
+        alice_id = _opt_in(store)
+        store.unlink_avatar(alice_id)
+        events_before = len(store.recent_events(limit=100))
+
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+
+        events_after = store.recent_events(limit=100)
+        assert len(events_after) == events_before  # no new event
+        assert any("verse tool dispatch failed" in r.message for r in caplog.records)
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_db_deleted_mid_dispatch_logs_warning_no_raise(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN OperationalError on write WHEN dispatch called THEN WARNING logged, no raise."""
+        import sqlite3
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        alice_id = _opt_in(store)
+
+        # Simulate the DB becoming unavailable mid-session by making
+        # write_transaction raise OperationalError (mirrors DB deletion / disk full).
+        @contextmanager
+        def _boom():  # type: ignore[return]
+            raise sqlite3.OperationalError("disk I/O error")
+            yield  # pragma: no cover
+
+        with (
+            caplog.at_level(logging.WARNING, logger="llm.verse.avatar"),
+            patch.object(store, "write_transaction", _boom),
+        ):
+            # Should not raise
+            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_multiple_tool_calls_one_fails_others_apply(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN 3 dispatches (good, bad-retired, good) THEN 2 events written, 1 WARNING."""
+        alice_id = _opt_in(store)
+        bob_id = _opt_in(store, nick="bob")
+
+        # Retire alice so her dispatch fails
+        store.unlink_avatar(alice_id)
+        events_before = len(store.recent_events(limit=100))
+
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            # bob speak — succeeds
+            dispatch_verse_tool_call(store, bob_id, "verse_act", {"verb": "speak"})
+            # alice speak — fails (retired)
+            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+            # bob whisper — succeeds
+            dispatch_verse_tool_call(store, bob_id, "verse_act", {"verb": "whisper"})
+
+        events_after = store.recent_events(limit=100)
+        new_events = len(events_after) - events_before
+        assert new_events == 2  # only bob's two succeed
+        warning_count = sum(1 for r in caplog.records if r.levelno == logging.WARNING)
+        assert warning_count == 1
+
+    def test_unknown_tool_name_logged_and_skipped(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN unknown tool name WHEN dispatched THEN WARNING about unknown tool, no raise."""
+        alice_id = _opt_in(store)
+        events_before = len(store.recent_events(limit=100))
+
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            dispatch_verse_tool_call(store, alice_id, "hallucinated_tool", {"param": "value"})
+
+        events_after = store.recent_events(limit=100)
+        assert len(events_after) == events_before  # no event written
+        assert any("unknown verse tool" in r.message for r in caplog.records)
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_make_verse_extra_handlers_returns_four_handlers_with_content(
+        self, store: VerseStore
+    ) -> None:
+        """GIVEN make_verse_extra_handlers THEN returns dict of 4 callables that return .content."""
+        alice_id = _opt_in(store)
+        handlers = make_verse_extra_handlers(store, alice_id)
+        assert set(handlers.keys()) == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+
+        # Each handler is callable and returns an object with a .content attribute
+        result = handlers["verse_act"]({"verb": "speak"})
+        assert hasattr(result, "content")
+        import json
+
+        payload = json.loads(result.content)
+        assert payload["status"] == "ok"
+        assert payload["tool"] == "verse_act"
