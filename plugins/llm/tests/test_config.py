@@ -245,6 +245,25 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.verseEventRetentionDays() == 30
 
+    def test_loom_registry_defaults(self) -> None:
+        """PR 2 / C1: loom orchestrator registry defaults match the operator
+        guide. Defaults are empty / disabled — wiring is gated on
+        loomNetwork + loomChannel both being set."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        cfg = conf.supybot.plugins.LLM
+        assert cfg.loomNetwork() == ""
+        assert cfg.loomChannel() == ""
+        assert cfg.loomModel() == "gemini/gemini-flash-lite-latest"
+        assert cfg.loomCycleInterval() == 5
+        assert cfg.loomVerseCooldown() == 20
+        assert cfg.loomBeatWindow() == 90
+        assert cfg.loomTranscriptMaxLines() == 40
+        assert cfg.loomTranscriptMaxChars() == 8000
+        assert cfg.loomBotNicks() == ""
+        assert cfg.verseAutoApplyThreshold() == 0.85
+
 
 class TestRateLimitDefaults:
     """Pin the 18 rate-limit (key, default) pairs produced by _register_rate_limit_block."""
