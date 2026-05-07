@@ -25,6 +25,14 @@ class Entity(NamedTuple):
     updated_at: float
 
 
+class Relation(NamedTuple):
+    id: int
+    from_id: int
+    to_id: int
+    kind: str
+    note: str
+
+
 SCHEMA_VERSION = 1
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -155,3 +163,68 @@ class VerseStore:
         with self.read_connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [Entity(*row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Attribute CRUD
+    # ------------------------------------------------------------------
+
+    def set_attribute(self, entity_id: int, key: str, value: str) -> None:
+        """Upsert an attribute key/value for the given entity."""
+        with self.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?)"
+                " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
+                (entity_id, key, value),
+            )
+
+    def get_attribute(self, entity_id: int, key: str) -> str | None:
+        """Return the attribute value for key, or None if not set."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM attributes WHERE entity_id = ? AND key = ?",
+                (entity_id, key),
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_attributes(self, entity_id: int) -> dict[str, str]:
+        """Return all attributes for entity as a dict. Empty dict if none."""
+        with self.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM attributes WHERE entity_id = ?",
+                (entity_id,),
+            ).fetchall()
+        return dict(rows)
+
+    # ------------------------------------------------------------------
+    # Relation CRUD
+    # ------------------------------------------------------------------
+
+    def add_relation(self, from_id: int, to_id: int, kind: str, note: str = "") -> int:
+        """Insert a relation and return its id."""
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO relations (from_id, to_id, kind, note) VALUES (?, ?, ?, ?)",
+                (from_id, to_id, kind, note),
+            )
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+
+    def list_relations(
+        self,
+        from_id: int | None = None,
+        to_id: int | None = None,
+        kind: str | None = None,
+    ) -> list[Relation]:
+        """Return relations matching all provided filters, ordered by id ASC."""
+        clauses_params = [
+            ("from_id = ?", from_id),
+            ("to_id = ?", to_id),
+            ("kind = ?", kind),
+        ]
+        active = [(c, p) for c, p in clauses_params if p is not None]
+        where = (" WHERE " + " AND ".join(c for c, _ in active)) if active else ""
+        params = tuple(p for _, p in active)
+        sql = f"SELECT id, from_id, to_id, kind, note FROM relations{where} ORDER BY id ASC"
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [Relation(*row) for row in rows]
