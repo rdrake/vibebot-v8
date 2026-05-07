@@ -25,6 +25,66 @@ class _StubResp:
     usage = _StubUsage()
 
 
+class TestApplyOrQueue:
+    def test_high_confidence_event_auto_applies_and_records_audit_row(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        prop = ParsedProposal(
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.95,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "applied"
+        assert len(store.recent_events()) == 1
+        rows = store.list_proposals(cycle_id="c1")
+        assert len(rows) == 1
+        assert rows[0].status == "approved"
+        assert rows[0].reviewer == "loom"
+
+    def test_low_confidence_queues_pending(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        prop = ParsedProposal(
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "queued"
+        assert store.recent_events() == []
+        rows = store.list_proposals(cycle_id="c1")
+        assert len(rows) == 1
+        assert rows[0].status == "pending"
+
+    def test_add_entity_always_queues_regardless_of_confidence(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        prop = ParsedProposal(
+            op="add_entity",
+            payload={"kind": "place", "name": "Hollow Oak"},
+            confidence=0.99,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "queued"
+        assert store.list_entities_by_kind("place") == []
+        rows = store.list_proposals(cycle_id="c1")
+        assert len(rows) == 1
+        assert rows[0].status == "pending"
+
+
 class TestLoomCycle:
     def test_append_grows_transcript_in_order(self) -> None:
         from llm.verse.loom import LoomCycle

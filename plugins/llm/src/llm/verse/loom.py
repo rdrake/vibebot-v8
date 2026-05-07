@@ -195,6 +195,39 @@ def parse_digest(text: str) -> list[ParsedProposal]:
     return out
 
 
+def apply_or_queue(
+    store: Any,
+    prop: ParsedProposal,
+    *,
+    cycle_id: str,
+    threshold: float,
+) -> str:
+    """Always insert a proposal row. Returns 'applied' or 'queued'.
+
+    Auto-apply uses ``apply_and_record_proposal`` so the mutation and
+    the audit row are written in one ``write_transaction``.
+    """
+    auto = prop.op != "add_entity" and prop.confidence >= threshold
+    if auto:
+        store.apply_and_record_proposal(
+            cycle_id=cycle_id,
+            op=prop.op,
+            payload=prop.payload,
+            confidence=prop.confidence,
+            provenance=prop.provenance,
+            reviewer="loom",
+        )
+        return "applied"
+    store.add_proposal(
+        cycle_id=cycle_id,
+        op=prop.op,
+        payload=prop.payload,
+        confidence=prop.confidence,
+        provenance=prop.provenance,
+    )
+    return "queued"
+
+
 def truncate_transcript(
     lines: list[tuple[str, str]],
     *,
