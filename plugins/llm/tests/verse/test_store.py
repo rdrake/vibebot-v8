@@ -301,3 +301,99 @@ class TestRelationsCrud:
         b = store.add_entity("npc", "Bob", "")
         store.add_relation(a, b, "allied_with")
         assert store.list_relations(kind="nonexistent_kind") == []
+
+
+class TestEventsCrud:
+    def test_add_returns_id_and_persists(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_event("A dragon appeared", [1, 2], "avatar")
+        assert isinstance(eid, int)
+        assert eid > 0
+        events = store.recent_events()
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.id == eid
+        assert ev.summary == "A dragon appeared"
+        assert ev.source == "avatar"
+        assert ev.entity_ids == (1, 2)
+        assert isinstance(ev.ts, float)
+
+    def test_entity_ids_round_trip(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("Test event", [3, 5, 11], "avatar")
+        events = store.recent_events()
+        assert events[0].entity_ids == (3, 5, 11)
+
+    def test_entity_ids_empty_default(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("Empty entity event", [], "loom")
+        events = store.recent_events()
+        assert events[0].entity_ids == ()
+
+    def test_recent_events_newest_first(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        id1 = store.add_event("First", [], "avatar")
+        time.sleep(0.01)
+        id2 = store.add_event("Second", [], "avatar")
+        time.sleep(0.01)
+        id3 = store.add_event("Third", [], "avatar")
+        events = store.recent_events(limit=10)
+        assert [ev.id for ev in events] == [id3, id2, id1]
+
+    def test_recent_events_limit(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(5):
+            store.add_event(f"Event {i}", [], "loom")
+        events = store.recent_events(limit=2)
+        assert len(events) == 2
+
+    def test_recent_events_exclude_sources_single(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("Avatar event", [], "avatar")
+        store.add_event("Loom event", [], "loom")
+        store.add_event("Crosspoll event", [], "crosspoll")
+        events = store.recent_events(exclude_sources=("crosspoll",))
+        assert len(events) == 2
+        sources = {ev.source for ev in events}
+        assert "crosspoll" not in sources
+
+    def test_recent_events_exclude_sources_multiple(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("Avatar event", [], "avatar")
+        store.add_event("Loom event", [], "loom")
+        store.add_event("Crosspoll event", [], "crosspoll")
+        events = store.recent_events(exclude_sources=("crosspoll", "loom"))
+        assert len(events) == 1
+        assert events[0].source == "avatar"
+
+    def test_recent_events_exclude_sources_empty_default_includes_all(
+        self, verse_db_dir: Path
+    ) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("Avatar event", [], "avatar")
+        store.add_event("Loom event", [], "loom")
+        store.add_event("Crosspoll event", [], "crosspoll")
+        events = store.recent_events()
+        assert len(events) == 3
+
+    def test_recent_events_empty_db_returns_empty_list(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        assert store.recent_events() == []

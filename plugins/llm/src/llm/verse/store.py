@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
@@ -31,6 +32,14 @@ class Relation(NamedTuple):
     to_id: int
     kind: str
     note: str
+
+
+class Event(NamedTuple):
+    id: int
+    ts: float
+    summary: str
+    entity_ids: tuple[int, ...]
+    source: str
 
 
 SCHEMA_VERSION = 1
@@ -228,3 +237,57 @@ class VerseStore:
         with self.read_connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [Relation(*row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Event CRUD
+    # ------------------------------------------------------------------
+
+    def add_event(
+        self,
+        summary: str,
+        entity_ids: Sequence[int],
+        source: str,
+    ) -> int:
+        """Insert an event and return its id."""
+        ts = time.time()
+        encoded = json.dumps(list(entity_ids))
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+                (ts, summary, encoded, source),
+            )
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+
+    def recent_events(
+        self,
+        limit: int = 10,
+        exclude_sources: Sequence[str] = (),
+    ) -> list[Event]:
+        """Return events newest-first, optionally excluding given sources."""
+        if exclude_sources:
+            placeholders = ",".join("?" * len(exclude_sources))
+            sql = (
+                f"SELECT id, ts, summary, entity_ids, source FROM events"
+                f" WHERE source NOT IN ({placeholders})"
+                f" ORDER BY ts DESC, id DESC LIMIT ?"
+            )
+            params: tuple = (*exclude_sources, limit)
+        else:
+            sql = (
+                "SELECT id, ts, summary, entity_ids, source FROM events"
+                " ORDER BY ts DESC, id DESC LIMIT ?"
+            )
+            params = (limit,)
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            Event(
+                id=row[0],
+                ts=row[1],
+                summary=row[2],
+                entity_ids=tuple(int(x) for x in json.loads(row[3])),
+                source=row[4],
+            )
+            for row in rows
+        ]
