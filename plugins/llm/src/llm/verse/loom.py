@@ -512,5 +512,59 @@ class Loom:
         )
 
     def after_beat1(self) -> None:
-        """Stub; populated in B10b."""
+        with self._lock:
+            cycle = self._active
+            if cycle is None:
+                return
+        self._bridge.submit("loom:beat", lambda: self._beat_phase(cycle))
+
+    def _beat_phase(self, cycle: LoomCycle) -> None:
+        with self._lock:
+            transcript = truncate_transcript(
+                cycle.snapshot_transcript(),
+                max_lines=self._cfg.transcript_max_lines,
+                max_chars=self._cfg.transcript_max_chars,
+            )
+        if not transcript:
+            self._log.warning(
+                "loom_idle: empty transcript after beat 1; finalizing cycle %s",
+                cycle.cycle_id,
+            )
+            with self._lock:
+                self._active = None
+            return
+        messages = [
+            {"role": "system", "content": LOOM_STATIC_PREFIX},
+            {"role": "system", "content": cycle.verse_stable_block},
+            {
+                "role": "user",
+                "content": build_beat_tail(loom_transcript_so_far=transcript),
+            },
+        ]
+        try:
+            content, usage = self._client.call(op="beat", model=self._cfg.model, messages=messages)
+        except Exception:
+            self._log.exception("loom beat call failed; finalizing cycle")
+            with self._lock:
+                self._active = None
+            return
+        self._bridge.log_usage(
+            channel=cycle.channel,
+            op="beat",
+            model=self._cfg.model,
+            usage=usage,
+        )
+        line = (content.strip().splitlines() or [""])[0]
+        if line:
+            self._bridge.post_to_loom_channel(line)
+            with self._lock:
+                cycle.beats_posted = 2
+        self._bridge.schedule_after(
+            self._cfg.beat_window_s,
+            self.after_beat2,
+            "llm_loom_after_beat2",
+        )
+
+    def after_beat2(self) -> None:
+        """Stub; populated in B10c."""
         raise NotImplementedError

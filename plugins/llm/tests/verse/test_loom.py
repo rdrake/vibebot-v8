@@ -116,6 +116,52 @@ class TestLoomTick:
         assert loom._active is None
 
 
+class TestLoomAfterBeat1:
+    def test_idle_short_circuit_finalizes_cycle(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
+        )
+        client = StubClient({"seed": "a faint hum"})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        bridge.scheduled[0][1]()
+        assert client.calls == ["seed"]
+        assert len(bridge.posts) == 1
+        assert loom._active is None
+        assert [s[2] for s in bridge.scheduled] == ["llm_loom_after_beat1"]
+
+    def test_with_transcript_posts_beat_and_schedules_digest(self, verse_db_dir) -> None:
+        from llm.verse.loom import Loom, VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        from ._fakes import FakeBridge, StubClient
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        bridge = FakeBridge(
+            channels=["#afnet"],
+            weights={"#afnet": 5},
+            store=store,
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
+        )
+        client = StubClient({"seed": "ring", "beat": "shadows lengthen"})
+        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+        loom.tick()
+        loom.observe_transcript("botB", "I hear it")
+        bridge.scheduled[0][1]()
+        assert bridge.posts[-1] == "shadows lengthen"
+        assert bridge.scheduled[-1][2] == "llm_loom_after_beat2"
+        assert client.calls == ["seed", "beat"]
+
+
 class TestApplyOrQueue:
     def test_high_confidence_event_auto_applies_and_records_audit_row(self, verse_db_dir) -> None:
         from llm.verse.loom import ParsedProposal, apply_or_queue
