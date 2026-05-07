@@ -8,7 +8,7 @@ message as addressed without any core changes.
 Example (bot nick = ``vibebot``):
 
     can you, vibebot, tell me the weather
-    →  vibebot tell me the weather
+    →  vibebot can you tell me the weather
 
 The rewrite only fires when:
 

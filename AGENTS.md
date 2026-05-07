@@ -7,8 +7,9 @@ This file contains repository-specific guidance for Codex and other coding agent
 **VibeBot v8** is a Limnoria-based IRC bot workspace with AI features powered by LiteLLM.
 
 Primary workspace members:
-- `plugins/llm/` - main LLM plugin
+- `plugins/llm/` - main LLM plugin (LiteLLM, assistant, scheduler, persistence)
 - `plugins/rpg/` - RPG plugin
+- `plugins/nickinmiddle/` - companion `inFilter` plugin that promotes the bot's nick when it appears mid-message so Limnoria's normal addressing logic fires
 
 Core documentation and tooling:
 - `README.md` - operator and contributor overview
@@ -43,14 +44,20 @@ make docs
 For `plugins/llm/src/llm/`:
 - `plugin.py` - IRC protocol layer, command routing, and command wrappers
 - `service.py` - LiteLLM integration and business logic
+- `assistant.py` - tool-using chat profile and tool wrappers
+- `executor.py` - `LLMExecutor` (BoundedSemaphore + ThreadPoolExecutor) — every blocking LLM call goes through `permit()` or `submit()`
+- `persistence.py` - SQLite store for memories, reminders, scheduled tasks, and usage; uses `_write_txn` context manager for atomic writes
+- `limnoria_bridge.py` - allowlisted Limnoria-as-tool surface (mutation gating + curated default allowlist)
 - `config.py` - Limnoria registry configuration definitions (capability-based keys: `assistantModel`, `assistantApiKey`, `assistantSystemPrompt`, `imageModel`, `imageApiKey`, `codeModel`, `codeApiKey`, `codeSystemPrompt`, `searchModel`, `searchApiKey`)
 - `context.py` - conversation history and thread-safe state
+- `tracing.py` - structured trace severity helpers
 
 Keep those boundaries intact:
 - IRC command parsing and reply flow belong in `plugin.py`.
 - Provider calls, sanitization, and output shaping belong in `service.py`.
 - Registry options belong in `config.py`.
 - Shared mutable state must remain thread-safe because `Plugin.threaded = True`.
+- All blocking LLM calls must go through `LLMExecutor` (no direct `litellm.*` from the IRC main thread).
 
 ## Security Invariants
 
@@ -68,8 +75,10 @@ Keep those boundaries intact:
 - Add or update tests for behavior changes.
 - LLM plugin tests live under `plugins/llm/tests/`.
 - RPG plugin tests live under `plugins/rpg/tests/`.
-- Maintain the existing 80% coverage floor.
+- nickinmiddle plugin tests live under `plugins/nickinmiddle/tests/`.
+- Maintain the existing **93%** coverage floor (enforced by `pyproject.toml` and `make test`).
 - Follow existing test style, including BDD-style docstrings where that pattern is already used.
+- Property-based tests (Hypothesis) live as `test_*_properties.py` alongside example tests; prefer extending a property test over a new example when the invariant generalizes.
 - Include security and concurrency coverage when touching those areas.
 
 ## Common Tasks
@@ -93,11 +102,14 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/service.py` - main LLM execution path
 - `plugins/llm/src/llm/plugin.py` - command surface and IRC integration
 - `plugins/llm/src/llm/context.py` - volatile memory implementation
-- `plugins/llm/src/llm/limnoria_bridge.py` - Limnoria → LLM tool bridge (Phase 1; Phase 2 mutation gate + curated default allowlist; see docs/plans/2026-05-02-limnoria-bridge-phase-2-plan.md, docs/plans/archive/2026-05-02-limnoria-tool-bridge-plan.md, and docs/plans/archive/2026-05-02-limnoria-bridge-task-1-implementation-plan.md)
-- `plugins/llm/src/llm/{service,plugin,assistant,persistence}.py` - Phase 2 Task 3 native scheduling (`schedule_llm_task`). List/cancel for both reminders and scheduled tasks ride the unified `list_pending_tasks` / `cancel_pending_task` / `cancel_all_pending_tasks` tool surface (`_pending_task_fns` helper). See docs/plans/archive/2026-05-02-task-3-schedule-llm-task-implementation-plan.md.
+- `plugins/llm/src/llm/limnoria_bridge.py` - Limnoria → LLM tool bridge (Phase 1 shipped; Phase 2 mutation gating + curated default allowlist tracked in `docs/plans/2026-05-02-limnoria-bridge-phase-2-plan.md`)
+- `plugins/llm/src/llm/{service,plugin,assistant,persistence}.py` - native `schedule_llm_task` plus the unified `list_pending_tasks` / `cancel_pending_task` / `cancel_all_pending_tasks` tool surface (`_pending_task_fns` helper)
+- `plugins/llm/src/llm/executor.py` - global LLM concurrency gate; tune via `supybot.plugins.LLM.maxConcurrentLLMCalls`
 - `plugins/rpg/src/rpg/` - RPG plugin implementation
+- `plugins/nickinmiddle/src/nickinmiddle/` - nick-in-middle inFilter plugin
 - `README.md` - setup and operator-facing documentation
 - `mkdocs.yml` and `docs/guide/` - published guide source
+- `docs/plans/` - active design/implementation plans; archived plans live under `docs/plans/archive/`
 
 ## Legacy Claude Files
 

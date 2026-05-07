@@ -4,16 +4,18 @@ Modern IRC bot with AI capabilities powered by LiteLLM.
 
 ## Features
 
-- **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and more via LiteLLM
+- **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, xAI Grok, and more via LiteLLM
 - **Volatile memory**: Conversation context for natural follow-up questions (expires after timeout)
 - **Vision support**: Automatically detects image URLs in prompts
 - **Code generation**: Smart HTTP link generation for long code
-- **Image generation**: Text-to-image via Vertex AI Imagen
+- **Image generation**: Text-to-image via Vertex AI Imagen and xAI grok-imagine
 - **Non-volatile memory**: Automatically extracts and remembers facts about users across conversations
 - **Spontaneous participation**: Optionally joins channel conversations based on probability and cooldown (disabled by default)
-- **Abuse controls**: Capability checks, NickServ gating, tiered rate limiting
-- **Modern Python**: Python 3.12+ with full type hints
-- **Quality tools**: Ruff for linting/formatting, ty for type checking
+- **Reminders & scheduled tasks**: Natural-language reminders plus recurring `schedule_llm_task` agentic flows
+- **Abuse controls**: Capability checks, account gating, tiered rate limiting, bounded LLM concurrency
+- **NickInMiddle plugin**: Companion plugin that injects the speaker's nick into the middle of bot replies for AfterNet readability
+- **Modern Python**: Python 3.12–3.14 with full type hints
+- **Quality tools**: Ruff for linting/formatting, ty for type checking, Hypothesis property tests, prek pre-commit hooks
 
 ## Quick Start
 
@@ -27,7 +29,7 @@ make run
 
 Configure API keys via bot commands:
 ```
-%config plugins.LLM.assistantApiKey YOUR_KEY
+@config plugins.LLM.assistantApiKey YOUR_KEY
 ```
 
 ## Docker
@@ -78,13 +80,53 @@ make uninstall-timer
 
 ## Static Assets (Reverse Proxy)
 
-When serving code/images via Nginx or Apache, set the public URL:
+When serving generated code snippets and images via Nginx or Apache, set the
+public URL the bot should advertise:
 
 ```
-%config supybot.servers.http.publicUrl https://example.com
+@config supybot.servers.http.publicUrl https://example.com
 ```
 
 The bot will generate URLs like `https://example.com/llm/filename.py`.
+
+### Nginx example
+
+If you let Limnoria's built-in HTTP server handle requests, proxy `/llm`
+through Nginx so users hit a clean public hostname:
+
+```nginx
+location /llm/ {
+    proxy_pass         http://127.0.0.1:8080/llm/;
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Forwarded-For $remote_addr;
+    proxy_read_timeout 30s;
+
+    # Generated artifacts are immutable (filenames are content-hashed).
+    add_header Cache-Control "public, max-age=31536000, immutable";
+}
+```
+
+If you instead point `httpRoot` at a directory served directly by Nginx,
+serve the directory and skip the proxy:
+
+```nginx
+location /llm/ {
+    alias       /var/www/llm/;
+    autoindex   off;
+    add_header  Cache-Control "public, max-age=31536000, immutable";
+}
+```
+
+### Caddy example
+
+```caddyfile
+example.com {
+    handle /llm/* {
+        reverse_proxy 127.0.0.1:8080
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+}
+```
 
 ## Commands
 
@@ -92,14 +134,14 @@ The bot will generate URLs like `https://example.com/llm/filename.py`.
 
 | Command | Description |
 |---------|-------------|
-| `%ask <question>` | Ask with context, vision, and optional instructions |
-| `%code <request>` | Generate code with HTTP link output |
-| `%draw <prompt>` | Generate image (account required) |
-| `%forget [channel]` | Clear volatile memory (conversation context) |
-| `%memories [subcommand]` | Manage non-volatile memory (stored facts) |
-| `%instruct [text \| clear]` | Set persistent instructions for ask |
-| `%remind [text \| list \| del \| clear]` | Set and manage reminders |
-| `%usage [nick \| #channel]` | View API usage statistics |
+| `@ask <question>` | Ask with context, vision, and optional instructions |
+| `@code <request>` | Generate code with HTTP link output |
+| `@draw <prompt>` | Generate image (account required) |
+| `@forget [channel]` | Clear volatile memory (conversation context) |
+| `@memories [subcommand]` | Manage non-volatile memory (stored facts) |
+| `@instruct [text \| clear]` | Set persistent instructions for ask |
+| `@remind [text \| list \| del \| clear]` | Set and manage reminders |
+| `@usage [nick \| #channel]` | View API usage statistics |
 
 ## Configuration
 
@@ -126,7 +168,7 @@ supybot.plugins.LLM.contextMaxMessages: 20
 supybot.plugins.LLM.contextTimeoutMinutes: 5
 ```
 
-Volatile memory is per-user per-channel. Cleared by `%forget`, after the configured idle timeout (default 5 minutes), or when max messages exceeded.
+Volatile memory is per-user per-channel. Cleared by `@forget`, after the configured idle timeout (default 5 minutes), or when max messages exceeded.
 
 ### Non-volatile Memory (Stored Facts)
 
@@ -137,7 +179,7 @@ supybot.plugins.LLM.memoryMaxPerUser: 50
 
 Memory extraction and cleanup share the configured `assistantModel` / `assistantApiKey`.
 
-Facts are automatically extracted from `%ask` and `%code` conversations. Users manage non-volatile memory with `%memories`.
+Facts are automatically extracted from `@ask` and `@code` conversations. Users manage non-volatile memory with `@memories`.
 
 ### Spontaneous Participation
 
@@ -154,16 +196,16 @@ When enabled, the bot has a configurable chance (%) to join channel conversation
 The plugin layers several protections:
 
 - Capability checks on command wrappers
-- NickServ account requirement for expensive commands (`draw`)
+- Authenticated-account requirement for expensive commands (`draw`)
 - Tiered per-account rate limiting (registered, trusted, unregistered) for all commands
 
 Protection matrix:
 
-| Command | Capability | NickServ Required | Rate Limited |
+| Command | Capability | Authenticated Required | Rate Limited |
 |---------|------------|-------------------|--------------|
-| `%ask` | `llm.ask` | No | Yes (optional) |
-| `%code` | `llm.code` | No | Yes (optional) |
-| `%draw` | `llm.draw` | Yes | Yes (optional) |
+| `@ask` | `llm.ask` | No | Yes (optional) |
+| `@code` | `llm.code` | No | Yes (optional) |
+| `@draw` | `llm.draw` | Yes | Yes (optional) |
 
 Rate-limit config (per-command, per-tier):
 
@@ -236,24 +278,32 @@ This project uses:
 - **Ruff**: Fast Python linter and formatter
 - **deptry**: Dependency issue detection
 - **ty**: Astral's static type checker
-- **pytest**: Testing framework with 80% coverage threshold
+- **pytest**: Testing framework with 93% coverage floor
+- **Hypothesis**: Property-based tests for invariants (`test_*_properties.py`)
 - **Dependabot**: Automated dependency updates (weekly)
 
-All code must pass linting, formatting, type checking, and tests with ≥80% coverage.
+All code must pass linting, formatting, type checking, and tests with ≥93% coverage.
 
 ## Architecture
 
 ```
 vibebot-v8/
-├── plugins/llm/
+├── plugins/llm/             # Main AI plugin (LiteLLM + assistant tooling)
 │   ├── src/llm/
-│   │   ├── plugin.py       # IRC command handlers
-│   │   ├── service.py      # LiteLLM business logic
-│   │   ├── config.py       # Configuration definitions
-│   │   └── context.py      # Conversation history
-│   └── tests/              # Unit tests
-├── bot.conf                # Bot configuration
-└── pyproject.toml          # Dependencies and tools
+│   │   ├── plugin.py        # IRC command handlers
+│   │   ├── service.py       # LiteLLM business logic
+│   │   ├── assistant.py     # Tool-using chat profile
+│   │   ├── executor.py      # Bounded LLM concurrency executor
+│   │   ├── persistence.py   # SQLite store (memories, reminders, schedules)
+│   │   ├── limnoria_bridge.py  # Allowlisted Limnoria-as-tool surface
+│   │   ├── tracing.py       # Structured trace severity helpers
+│   │   ├── config.py        # Registry options
+│   │   └── context.py       # Conversation history
+│   └── tests/               # Unit + Hypothesis property tests
+├── plugins/rpg/             # Lightweight RPG plugin
+├── plugins/nickinmiddle/    # Inserts speaker's nick mid-reply (AfterNet UX)
+├── bot.conf                 # Bot configuration
+└── pyproject.toml           # Workspace + dependencies
 ```
 
 ### Design Principles
@@ -277,9 +327,9 @@ vibebot-v8/
 
 ### API Key Not Working
 
-Check configuration via `%config`:
+Check configuration via `@config`:
 ```
-%config plugins.LLM.assistantApiKey
+@config plugins.LLM.assistantApiKey
 ```
 
 Should show the key is set (value is private and not displayed in full).
@@ -288,8 +338,8 @@ Should show the key is set (value is private and not displayed in full).
 
 Clear and retry:
 ```
-%forget
-%ask Your new question here
+@forget
+@ask Your new question here
 ```
 
 ### Code Not Saving to HTTP
