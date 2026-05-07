@@ -485,3 +485,4 @@ Three PRs.
 - **Combat / inventory return as verse mechanics.** Only if anyone asks
   after rpg removal lands. Would extend `verse_act` verbs and add an
   optional `inventory` attribute convention. Not v1.
+- **Embedding-based `verse_recall`.** PR 1 ships substring matching.

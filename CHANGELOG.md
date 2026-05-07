@@ -6,6 +6,24 @@ own conventional-commit history (`type(scope): summary`).
 
 ## Unreleased
 
+### Breaking
+
+- Removed `plugins/rpg/` and all its registry keys. Existing rpg state is
+  **discarded, not migrated**. See `docs/guide/operator/forest-verse.md`.
+- Removed Forest mode (`plugins.LLM.forestNicks`). Existing rosters are
+  discarded; users opt in fresh via `@verseopt in` in a channel where
+  `verseEnabled=True`.
+- Removed Spontaneous mode (`plugins.LLM.spontaneousEnabled` and friends).
+  Replacement is the upcoming loom orchestrator (PR 2 of the forest-verse
+  rollout); per-channel chatty-bot behaviour is no longer available in the
+  interim.
+
+### Added
+
+- Forest-verse: per-channel SQLite entity graph + avatar shim. New commands
+  `@verseopt`, `@verse`, `@look`, `@who`, plus owner commands `@versedump`,
+  `@versepurge`. New capabilities `llm.verse` and `llm.verse.gm`.
+
 ### Bug Fixes
 
 - Route nick-addressed text through assistant, not Limnoria dispatch (`llm`)
