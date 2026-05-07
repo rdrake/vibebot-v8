@@ -7,6 +7,90 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+class TestParseDigest:
+    def test_parses_valid_array(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"add_event",'
+            '"payload":{"summary":"x","entity_ids":[]},'
+            '"confidence":0.9,"provenance":"l-1","rationale":"y"}]'
+        )
+        out = parse_digest(text)
+        assert len(out) == 1
+        assert out[0].op == "add_event"
+        assert out[0].confidence == 0.9
+
+    def test_strips_json_code_fence(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = "```json\n[]\n```"
+        assert parse_digest(text) == []
+
+    def test_drops_proposals_missing_required_fields(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            "["
+            '{"op":"add_event","payload":{},"confidence":0.9,'
+            '"provenance":"x","rationale":"y"},'
+            '{"op":"BOGUS","payload":{},"confidence":0.5,'
+            '"provenance":"x","rationale":"y"},'
+            '{"op":"add_event","payload":{"summary":"k","entity_ids":[]},'
+            '"confidence":0.7,"provenance":"x","rationale":"y"}'
+            "]"
+        )
+        out = parse_digest(text)
+        assert len(out) == 1
+        assert out[0].payload["summary"] == "k"
+
+    def test_clamps_confidence_to_unit_interval(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"add_event",'
+            '"payload":{"summary":"x","entity_ids":[]},'
+            '"confidence":2.5,"provenance":"x","rationale":"y"}]'
+        )
+        out = parse_digest(text)
+        assert out[0].confidence == 1.0
+
+    def test_returns_empty_on_hard_parse_error(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        assert parse_digest("not json at all") == []
+
+    def test_drops_when_required_payload_value_wrong_type(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"add_event",'
+            '"payload":{"summary":"x","entity_ids":"not-a-list"},'
+            '"confidence":0.9,"provenance":"x","rationale":"y"}]'
+        )
+        assert parse_digest(text) == []
+
+    def test_drops_when_entity_ids_element_not_int(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"add_event",'
+            '"payload":{"summary":"x","entity_ids":["bad"]},'
+            '"confidence":0.9,"provenance":"x","rationale":"y"}]'
+        )
+        assert parse_digest(text) == []
+
+    def test_rejects_bool_as_int_for_entity_id(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = (
+            '[{"op":"set_attribute",'
+            '"payload":{"entity_id":true,"key":"k","value":"v"},'
+            '"confidence":0.9,"provenance":"x","rationale":"y"}]'
+        )
+        assert parse_digest(text) == []
+
+
 class TestPromptBuilders:
     def test_static_prefix_is_constant(self) -> None:
         from llm.verse.loom import LOOM_STATIC_PREFIX

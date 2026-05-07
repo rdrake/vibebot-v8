@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 
 
 class VerseCandidate(NamedTuple):
@@ -85,6 +89,110 @@ def build_digest_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
         "Now emit a JSON array of proposals derived from this transcript. "
         "If nothing notable happened, emit []."
     )
+
+
+_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE)
+
+_VALID_OPS = ("add_event", "set_attribute", "add_relation", "add_entity")
+
+
+def _is_strict_int(v: Any) -> bool:
+    """Reject bool, accept int. (bool is a subclass of int in Python.)"""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_int_list(v: Any) -> bool:
+    return isinstance(v, list) and all(_is_strict_int(x) for x in v)
+
+
+_PAYLOAD_SCHEMA: dict[str, tuple[tuple[str, Callable[[Any], bool], str], ...]] = {
+    "add_event": (
+        ("summary", lambda v: isinstance(v, str), "str"),
+        ("entity_ids", _is_int_list, "list[int]"),
+    ),
+    "set_attribute": (
+        ("entity_id", _is_strict_int, "int"),
+        ("key", lambda v: isinstance(v, str), "str"),
+        ("value", lambda v: isinstance(v, str), "str"),
+    ),
+    "add_relation": (
+        ("from_id", _is_strict_int, "int"),
+        ("to_id", _is_strict_int, "int"),
+        ("kind", lambda v: isinstance(v, str), "str"),
+    ),
+    "add_entity": (
+        ("kind", lambda v: isinstance(v, str), "str"),
+        ("name", lambda v: isinstance(v, str), "str"),
+    ),
+}
+
+
+class ParsedProposal(NamedTuple):
+    op: str
+    payload: dict[str, Any]
+    confidence: float
+    provenance: str
+    rationale: str
+
+
+def parse_digest(text: str) -> list[ParsedProposal]:
+    """Parse a digest-call response into ParsedProposal instances.
+
+    Strips an optional ``json`` code fence, parses JSON, validates each
+    proposal's shape, and drops bad proposals with a warning. Returns
+    ``[]`` on hard parse error.
+    """
+    cleaned = _FENCE_RE.sub("", text).strip()
+    log = logging.getLogger("llm.verse.loom")
+    try:
+        raw = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        log.warning("loom digest hard parse error: %s", exc)
+        return []
+    if not isinstance(raw, list):
+        log.warning("loom digest top-level was %s, expected list", type(raw).__name__)
+        return []
+
+    out: list[ParsedProposal] = []
+    for i, raw_item in enumerate(raw):
+        if not isinstance(raw_item, dict):
+            log.warning("loom proposal %d not a dict; dropped", i)
+            continue
+        item = cast("dict[str, Any]", raw_item)
+        op = item.get("op")
+        if op not in _VALID_OPS:
+            log.warning("loom proposal %d bad op %r; dropped", i, op)
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            log.warning("loom proposal %d payload not dict; dropped", i)
+            continue
+        bad_field: str | None = None
+        for key, predicate, label in _PAYLOAD_SCHEMA[op]:
+            if key not in payload:
+                bad_field = f"missing {key}"
+                break
+            if not predicate(payload[key]):
+                bad_field = f"{key} not {label}"
+                break
+        if bad_field is not None:
+            log.warning("loom proposal %d %s; dropped", i, bad_field)
+            continue
+        try:
+            conf = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        conf = max(0.0, min(1.0, conf))
+        out.append(
+            ParsedProposal(
+                op=op,
+                payload=payload,
+                confidence=conf,
+                provenance=str(item.get("provenance", "")),
+                rationale=str(item.get("rationale", "")),
+            )
+        )
+    return out
 
 
 def pick_focus_verse(
