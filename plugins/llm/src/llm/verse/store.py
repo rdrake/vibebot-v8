@@ -572,6 +572,30 @@ class VerseStore:
             )
         return pid
 
+    def get_proposal(self, proposal_id: str) -> Proposal | None:
+        """Return the Proposal with *proposal_id*, or None."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at "
+                "FROM proposals WHERE id = ?",
+                (proposal_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Proposal(
+            id=row[0],
+            created_at=row[1],
+            cycle_id=row[2],
+            op=row[3],
+            payload=json.loads(row[4]),
+            confidence=row[5],
+            provenance=row[6],
+            status=row[7],
+            reviewer=row[8],
+            reviewed_at=row[9],
+        )
+
     def list_proposals(
         self,
         *,

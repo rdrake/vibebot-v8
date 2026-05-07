@@ -735,6 +735,30 @@ class TestProposalsCRUD:
         assert [r.id for r in store.list_proposals(status="pending")] == [p2, p1]
         assert [r.id for r in store.list_proposals(cycle_id="c-1")] == [p1]
 
+    def test_get_proposal_unknown_returns_none(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        assert store.get_proposal("nope") is None
+
+    def test_get_proposal_known_returns_proposal(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import Proposal, VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": [1]},
+            confidence=0.4,
+            provenance="line-2",
+        )
+        p = store.get_proposal(pid)
+        assert isinstance(p, Proposal)
+        assert p.id == pid
+        assert p.payload == {"summary": "x", "entity_ids": [1]}
+        assert p.confidence == 0.4
+        assert p.status == "pending"
+
     def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
