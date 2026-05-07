@@ -572,6 +572,44 @@ class VerseStore:
             )
         return pid
 
+    def apply_proposal(
+        self,
+        *,
+        op: str,
+        payload: dict[str, Any],
+        source: str = "loom",
+    ) -> int | None:
+        """Convert a proposal payload into rows.
+
+        Returns the new entity id for ``add_entity``, the new event id for
+        ``add_event``, the new relation id for ``add_relation``, or
+        ``None`` for ``set_attribute``. Raises ``ValueError`` for unknown
+        ops or ``KeyError`` for missing payload keys.
+        """
+        if op == "add_event":
+            return self.add_event(
+                summary=payload["summary"],
+                entity_ids=payload.get("entity_ids", []),
+                source=source,
+            )
+        if op == "set_attribute":
+            self.set_attribute(payload["entity_id"], payload["key"], payload["value"])
+            return None
+        if op == "add_relation":
+            return self.add_relation(
+                from_id=payload["from_id"],
+                to_id=payload["to_id"],
+                kind=payload["kind"],
+                note=payload.get("note", ""),
+            )
+        if op == "add_entity":
+            return self.add_entity(
+                kind=payload["kind"],
+                name=payload["name"],
+                summary=payload.get("summary", ""),
+            )
+        raise ValueError(f"unknown op: {op!r}")
+
     def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
         """Flip *proposal_id*'s status (audit fields written together)."""
         if status not in _VALID_PROPOSAL_STATUSES:
