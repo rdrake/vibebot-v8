@@ -7,6 +7,56 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+class TestPickFocusVerse:
+    def test_returns_none_if_all_in_cooldown(self) -> None:
+        from llm.verse.loom import VerseCandidate, pick_focus_verse
+
+        now = 1000.0
+        candidates = [
+            VerseCandidate(channel="#a", weight=10, last_cycle_at=now - 5.0),
+            VerseCandidate(channel="#b", weight=10, last_cycle_at=now - 5.0),
+        ]
+        assert pick_focus_verse(candidates, now=now, cooldown_s=20, pointer=0) is None
+
+    def test_picks_highest_weight_outside_cooldown(self) -> None:
+        from llm.verse.loom import VerseCandidate, pick_focus_verse
+
+        now = 1000.0
+        candidates = [
+            VerseCandidate(channel="#a", weight=2, last_cycle_at=now - 60.0),
+            VerseCandidate(channel="#b", weight=8, last_cycle_at=now - 60.0),
+            VerseCandidate(channel="#c", weight=5, last_cycle_at=now - 5.0),
+        ]
+        result = pick_focus_verse(candidates, now=now, cooldown_s=20, pointer=0)
+        assert result is not None
+        assert result.channel == "#b"
+
+    def test_round_robin_with_three_tied_candidates(self) -> None:
+        from llm.verse.loom import VerseCandidate, pick_focus_verse
+
+        now = 1000.0
+        candidates = [
+            VerseCandidate(channel="#a", weight=5, last_cycle_at=now - 60.0),
+            VerseCandidate(channel="#b", weight=5, last_cycle_at=now - 60.0),
+            VerseCandidate(channel="#c", weight=5, last_cycle_at=now - 60.0),
+        ]
+        picks = []
+        for p in range(6):
+            choice = pick_focus_verse(candidates, now=now, cooldown_s=20, pointer=p)
+            assert choice is not None
+            picks.append(choice.channel)
+        assert picks == ["#a", "#b", "#c", "#a", "#b", "#c"]
+
+    def test_never_cycled_treated_as_eligible(self) -> None:
+        from llm.verse.loom import VerseCandidate, pick_focus_verse
+
+        now = 1000.0
+        candidates = [VerseCandidate(channel="#a", weight=1, last_cycle_at=None)]
+        result = pick_focus_verse(candidates, now=now, cooldown_s=20, pointer=0)
+        assert result is not None
+        assert result.channel == "#a"
+
+
 def test_loomconfig_holds_all_settings() -> None:
     from llm.verse.loom import LoomConfig
 
