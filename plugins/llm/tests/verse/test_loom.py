@@ -577,6 +577,39 @@ class TestLiteLLMLoomClient:
         assert usage.completion_tokens == 3
         assert any("op=loom:seed" in rec.message for rec in caplog.records)
 
+    def test_threads_api_key_to_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import litellm
+        from llm.verse.loom import LiteLLMLoomClient
+
+        captured: dict[str, object] = {}
+
+        def _fake_completion(**kwargs):
+            captured.update(kwargs)
+            return _StubResp()
+
+        monkeypatch.setattr(litellm, "completion", _fake_completion)
+        monkeypatch.setattr(litellm, "completion_cost", lambda **_: 0.0)
+        client = LiteLLMLoomClient(api_key="sk-test-123")
+        client.call(op="seed", model="gemini/x", messages=[])
+        assert captured.get("api_key") == "sk-test-123"
+
+    def test_omits_api_key_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import litellm
+        from llm.verse.loom import LiteLLMLoomClient
+
+        captured: dict[str, object] = {}
+
+        def _fake_completion(**kwargs):
+            captured.update(kwargs)
+            return _StubResp()
+
+        monkeypatch.setattr(litellm, "completion", _fake_completion)
+        monkeypatch.setattr(litellm, "completion_cost", lambda **_: 0.0)
+        # Empty string treated as "no key" — falls back to env-var auth.
+        client = LiteLLMLoomClient(api_key="")
+        client.call(op="seed", model="gemini/x", messages=[])
+        assert "api_key" not in captured
+
 
 class TestTruncateTranscript:
     def test_caps_lines(self) -> None:

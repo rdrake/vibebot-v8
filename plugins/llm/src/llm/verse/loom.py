@@ -296,8 +296,14 @@ class LiteLLMLoomClient:
     ``LoomCallUsage``. Errors propagate to the caller.
     """
 
-    def __init__(self, log: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        log: logging.Logger | None = None,
+        *,
+        api_key: str | None = None,
+    ) -> None:
         self._log = log or logging.getLogger("llm.verse.loom")
+        self._api_key = api_key or None
 
     def call(
         self, *, op: str, model: str, messages: list[dict[str, str]]
@@ -307,7 +313,10 @@ class LiteLLMLoomClient:
         import litellm
 
         t0 = time.monotonic()
-        response = litellm.completion(model=model, messages=messages)
+        kwargs: dict[str, Any] = {}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        response = litellm.completion(model=model, messages=messages, **kwargs)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         try:
             content = response.choices[0].message.content or ""

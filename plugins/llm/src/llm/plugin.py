@@ -4682,7 +4682,16 @@ class LLM(callbacks.Plugin):
             auto_apply_threshold=self.registryValue("verseAutoApplyThreshold"),
         )
         self._loom_bridge = _PluginLoomBridge(self, network, channel)
-        self._loom = Loom(cfg=cfg, bridge=self._loom_bridge, client=LiteLLMLoomClient())
+        # Loom shares the assistant's API key — both sides hit Gemini and
+        # there's no operational benefit to running them on separate keys
+        # today. (If someone wants split keys later, add ``loomApiKey`` and
+        # default it to ``assistantApiKey``.)
+        loom_api_key = self.registryValue("assistantApiKey") or None
+        self._loom = Loom(
+            cfg=cfg,
+            bridge=self._loom_bridge,
+            client=LiteLLMLoomClient(api_key=loom_api_key),
+        )
         self._loom_channel_cache = channel
         self._loom_network_cache = network
         self._loom_bot_nicks_cache = cfg.bot_nicks
