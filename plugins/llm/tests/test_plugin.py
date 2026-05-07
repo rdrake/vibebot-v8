@@ -957,6 +957,7 @@ class TestDoPrivmsg:
         plugin._migrated_nicks = set()
         plugin._spontaneous_cooldowns = {}
         plugin._spontaneous_events = set()
+        plugin._spontaneous_events_lock = threading.Lock()
 
         return plugin, mock_irc, mock_msg
 
