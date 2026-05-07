@@ -13,6 +13,7 @@ from llm.verse.avatar import (
     VerbEffect,
     build_verse_system_prompt,
     is_ooc,
+    make_verse_tool_specs,
     verse_act,
     verse_look,
     verse_move,
@@ -434,3 +435,49 @@ class TestOOC:
     def test_constants_exported(self) -> None:
         assert OOC_PREFIX == "(("
         assert OOC_SUFFIX == "))"
+
+
+class TestMakeVerseToolSpecs:
+    """Tests for make_verse_tool_specs() (C7c)."""
+
+    def test_lists_four_tools_with_correct_names(self) -> None:
+        """GIVEN make_verse_tool_specs() THEN exactly 4 tool specs with the right names."""
+        specs = make_verse_tool_specs()
+        assert len(specs) == 4
+        names = {s["function"]["name"] for s in specs}
+        assert names == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+
+    def test_each_spec_is_function_type(self) -> None:
+        """Each spec must have type='function' at the top level."""
+        specs = make_verse_tool_specs()
+        for spec in specs:
+            assert spec["type"] == "function"
+
+    def test_verse_act_required_params(self) -> None:
+        """verse_act must require only 'verb'; target and details are optional."""
+        specs = make_verse_tool_specs()
+        act_spec = next(s for s in specs if s["function"]["name"] == "verse_act")
+        required = act_spec["function"]["parameters"]["required"]
+        assert required == ["verb"]
+        props = act_spec["function"]["parameters"]["properties"]
+        assert "verb" in props
+        assert "target" in props
+        assert "details" in props
+
+    def test_verse_move_required_params(self) -> None:
+        """verse_move must require 'place_name'."""
+        specs = make_verse_tool_specs()
+        move_spec = next(s for s in specs if s["function"]["name"] == "verse_move")
+        assert move_spec["function"]["parameters"]["required"] == ["place_name"]
+
+    def test_verse_recall_required_params(self) -> None:
+        """verse_recall must require 'query'."""
+        specs = make_verse_tool_specs()
+        recall_spec = next(s for s in specs if s["function"]["name"] == "verse_recall")
+        assert recall_spec["function"]["parameters"]["required"] == ["query"]
+
+    def test_verse_look_no_required_params(self) -> None:
+        """verse_look has no required params (target is optional)."""
+        specs = make_verse_tool_specs()
+        look_spec = next(s for s in specs if s["function"]["name"] == "verse_look")
+        assert look_spec["function"]["parameters"]["required"] == []
