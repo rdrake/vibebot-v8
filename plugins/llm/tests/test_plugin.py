@@ -1486,7 +1486,7 @@ class TestVerseproposalsCommand:
         )
         plugin.verseproposals(irc, msg, [])
         replies = [c.args[0] for c in irc.reply.call_args_list]
-        assert any("conf=0.50" in r for r in replies)
+        assert any("0.50" in r and "add_event" in r for r in replies)
 
     def test_explicit_channel_and_status(self, verse_env) -> None:
         plugin, irc, msg, store = verse_env
@@ -1500,13 +1500,60 @@ class TestVerseproposalsCommand:
         )
         plugin.verseproposals(irc, msg, ["#afnet", "approved"])
         replies = [c.args[0] for c in irc.reply.call_args_list]
-        assert any("conf=0.95" in r for r in replies)
+        assert any("0.95" in r and "add_event" in r for r in replies)
 
     def test_empty_list_message(self, verse_env) -> None:
         plugin, irc, msg, _store = verse_env
         plugin.verseproposals(irc, msg, [])
         replies = [c.args[0] for c in irc.reply.call_args_list]
         assert any("No pending proposals" in r for r in replies)
+
+    def test_default_caps_at_three_with_more_footer(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        for i in range(7):
+            store.add_proposal(
+                cycle_id=f"c-{i}",
+                op="add_event",
+                payload={"summary": f"line {i}"},
+                confidence=0.5,
+            )
+        plugin.verseproposals(irc, msg, [])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        # 3 proposal rows + 1 "more pending" footer = 4 IRC lines max
+        assert len(replies) == 4
+        assert any("more pending" in r for r in replies)
+
+    def test_explicit_limit_overrides_default(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        for i in range(7):
+            store.add_proposal(
+                cycle_id=f"c-{i}",
+                op="add_event",
+                payload={"summary": f"line {i}"},
+                confidence=0.5,
+            )
+        # Wrap parses positional args; limit must come after channel + status.
+        plugin.verseproposals(irc, msg, ["#afnet", "pending", "10"])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        # 7 rows shown, no footer (because limit > total)
+        assert len(replies) == 7
+        assert not any("more pending" in r for r in replies)
+
+    def test_limit_clamped_to_max(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        for i in range(3):
+            store.add_proposal(
+                cycle_id=f"c-{i}",
+                op="add_event",
+                payload={"summary": f"line {i}"},
+                confidence=0.5,
+            )
+        # Pass an absurd limit; the implementation clamps to MAX_LIMIT (50)
+        # which still happily fits 3 rows without a footer.
+        plugin.verseproposals(irc, msg, ["#afnet", "pending", "10000"])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert len(replies) == 3
+        assert not any("more pending" in r for r in replies)
 
 
 class TestVerseapproveRejectCommands:

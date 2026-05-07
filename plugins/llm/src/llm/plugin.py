@@ -5222,6 +5222,9 @@ class LLM(callbacks.Plugin):
         rows = [x for x in store.list_proposals(limit=200) if x.id.startswith(raw_id)]
         return rows[0] if len(rows) == 1 else None
 
+    _VERSEPROPOSALS_DEFAULT_LIMIT = 3
+    _VERSEPROPOSALS_MAX_LIMIT = 50
+
     def verseproposals(
         self,
         irc: callbacks.Irc,
@@ -5229,24 +5232,37 @@ class LLM(callbacks.Plugin):
         args: list,
         channel: str | None = None,
         status: str | None = None,
+        limit: int | None = None,
     ) -> None:
-        """[<channel>] [<status>]
+        """[<channel>] [<status>] [<limit>]
 
-        List up to 10 recent loom proposals for the given channel
+        List recent loom proposals for the given channel
         (default: current). Status: pending|approved|rejected (default pending).
+        Default 3 rows; pass a limit (max 50) to see more.
         """
         channel, store = self._proposal_target_store(irc, msg, channel)
         if store is None:
             return
         status = status or "pending"
-        rows = store.list_proposals(status=status, limit=10)
+        shown_limit = limit or self._VERSEPROPOSALS_DEFAULT_LIMIT
+        shown_limit = max(1, min(shown_limit, self._VERSEPROPOSALS_MAX_LIMIT))
+        # Pull one extra row so we can tell whether there's more without a
+        # separate count query. Cap pulled rows at MAX_LIMIT.
+        rows = store.list_proposals(
+            status=status, limit=min(shown_limit + 1, self._VERSEPROPOSALS_MAX_LIMIT)
+        )
         if not rows:
             irc.reply(f"No {status} proposals for {channel}.", prefixNick=False)
             return
-        for r in rows:
+        for r in rows[:shown_limit]:
             snippet = self._proposal_snippet(r)
             irc.reply(
-                f"{r.id[:8]} {r.op} conf={r.confidence:.2f} {snippet}",
+                f"{r.id[:8]} {r.op} {r.confidence:.2f} {snippet}",
+                prefixNick=False,
+            )
+        if len(rows) > shown_limit:
+            irc.reply(
+                f"… more pending. Use @verseproposals {channel} {status} <N>.",
                 prefixNick=False,
             )
 
@@ -5256,6 +5272,7 @@ class LLM(callbacks.Plugin):
             ("checkCapability", "llm.verse.gm"),
             optional("channel"),
             optional(("literal", ("pending", "approved", "rejected"))),
+            optional("positiveInt"),
         ],
     )
 

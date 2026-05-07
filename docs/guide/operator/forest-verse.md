@@ -174,13 +174,15 @@ both the beat and the digest.
 ### Proposal moderation
 
 ```
-@verseproposals [#chan] [pending|approved|rejected]
+@verseproposals [#chan] [pending|approved|rejected] [<limit>]
 @verseapprove <id> [#chan]
 @versereject <id> [#chan]
 ```
 
-Default channel = current; default status = `pending`. Auto-applied
-proposals carry `status='approved' reviewer='loom'` and appear under
+Default channel = current; default status = `pending`; default limit = 3
+(footer says `… more pending` when there are more). Pass an explicit
+limit up to 50 to scroll the queue. Auto-applied proposals carry
+`status='approved' reviewer='loom'` and appear under
 `@verseproposals #chan approved`. `<id>` accepts unique-prefix matches.
 Both `@verseapprove` and `@versereject` require `llm.verse.gm`.
 
