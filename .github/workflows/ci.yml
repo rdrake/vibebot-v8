@@ -28,9 +28,6 @@ jobs:
       - name: Pre-commit hooks (ruff, ruff-format, ty, gitleaks, hygiene)
         run: uv run prek run --all-files
 
-      - name: Type check (full plugin set)
-        run: make typecheck
-
       - name: Syntax compatibility (3.12-3.14)
         run: make syntax-check
 

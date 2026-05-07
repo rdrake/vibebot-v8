@@ -1,0 +1,54 @@
+# git-cliff configuration for VibeBot v8
+# Generates CHANGELOG.md from conventional commits.
+# Run via `make changelog` (requires git-cliff on PATH).
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to VibeBot v8 are recorded here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project's
+own conventional-commit history (`type(scope): summary`).
+
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first | trim }}\
+{% if commit.scope %} (`{{ commit.scope }}`){% endif %}\
+{% endfor %}
+{% endfor %}\n
+"""
+footer = """
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactor" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^test", group = "Tests" },
+    { message = "^ci", group = "CI" },
+    { message = "^build", group = "Build" },
+    { message = "^deps", group = "Dependencies" },
+    { message = "^chore", group = "Chores" },
+    { message = "^style", skip = true },
+    { message = "^revert", group = "Reverts" },
+    { message = "^debug", skip = true },
+    { message = "^Merge", skip = true },
+]
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "newest"

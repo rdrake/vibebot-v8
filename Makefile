@@ -1,6 +1,6 @@
-.PHONY: install run test test-all lint format format-check typecheck syntax-check check preflight ci clean deep-clean setup-http help \
+.PHONY: install run test test-all lint format format-check typecheck syntax-check check check-fast preflight ci clean clean-logs clean-runtime deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
-       install-deploy worktree-create worktree-remove wait-ci push-and-wait deploy rebase-pr docs docs-serve
+       install-deploy worktree-create worktree-remove wait-ci push-and-wait deploy rebase-pr docs docs-serve changelog
 
 install:
 	uv sync
@@ -37,6 +37,10 @@ syntax-check:
 	uv run python scripts/check_python_syntax_compat.py --versions 3.12 3.13 3.14
 
 check: lint format-check typecheck syntax-check test
+
+# Same as `check` minus the test suite — used by the pre-push hook so
+# pushes stay fast and CI owns full test coverage.
+check-fast: lint format-check typecheck syntax-check
 
 preflight: format check
 
@@ -124,7 +128,21 @@ clean:
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.pyo" -delete
 
-deep-clean: clean
+clean-logs:
+	@echo "Wiping local log artifacts (gitignored)…"
+	rm -f messages.log
+	rm -rf logs/
+	rm -rf plugins/llm/logs/
+	@echo "Logs cleared."
+
+clean-runtime: clean-logs
+	@echo "Wiping local runtime artifacts (gitignored)…"
+	rm -f bot.conf.bak
+	rm -rf tmp/ plugins/llm/tmp/
+	rm -rf backup/ plugins/llm/backup/
+	@echo "Runtime artifacts cleared. (bot.conf and conf/ left untouched)"
+
+deep-clean: clean clean-runtime
 	rm -rf .venv
 	uv cache clean
 
@@ -154,6 +172,7 @@ help:
 	@echo "  typecheck       - Run ty type checker"
 	@echo "  syntax-check    - Validate Python grammar compatibility (3.12-3.14)"
 	@echo "  check           - Run all checks (lint, format-check, typecheck, syntax-check, test)"
+	@echo "  check-fast      - Same as check minus tests (used by the pre-push hook)"
 	@echo "  preflight       - Auto-format then run all checks"
 	@echo "  ci              - Run CI checks (sync --locked, pre-commit, test with coverage)"
 	@echo "  worktree-create - Create isolated worktree (BRANCH=name required)"
@@ -162,8 +181,11 @@ help:
 	@echo "  push-and-wait   - Push current branch, then wait for CI + Docker image build"
 	@echo "  deploy          - push-and-wait, then restart the bot via SSH (VIBEBOT_HOST=...)"
 	@echo "  rebase-pr       - Ask dependabot to rebase a PR (PR=number required)"
-	@echo "  clean           - Remove cache files"
-	@echo "  deep-clean      - Remove venv and uv cache (full reset)"
+	@echo "  clean           - Remove cache files (__pycache__, .pytest_cache, .ruff_cache)"
+	@echo "  clean-logs      - Remove local logs/ and messages.log artifacts"
+	@echo "  clean-runtime   - Remove logs, tmp/, backup/, bot.conf.bak (keeps bot.conf)"
+	@echo "  deep-clean      - Remove venv, uv cache, runtime artifacts (full reset)"
+	@echo "  changelog       - Regenerate CHANGELOG.md from git history (requires git-cliff)"
 	@echo "  setup-http      - Create HTTP directory for code/image output"
 	@echo "  docs            - Build MkDocs site"
 	@echo "  docs-serve      - Serve docs locally with live reload"
@@ -181,6 +203,12 @@ docs:
 
 docs-serve:
 	uv run mkdocs serve
+
+# Changelog (requires `git-cliff` on PATH; brew install git-cliff)
+changelog:
+	@command -v git-cliff >/dev/null 2>&1 || { echo "git-cliff not installed (brew install git-cliff)"; exit 1; }
+	git-cliff --output CHANGELOG.md
+	@echo "CHANGELOG.md updated."
 
 # Docker
 IMAGE_NAME ?= ghcr.io/rdrake/vibebot-v8

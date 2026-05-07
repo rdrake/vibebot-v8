@@ -24,14 +24,14 @@ repos:
     hooks:
       - id: ty
         name: ty type checker
-        entry: uv run ty check plugins/llm/src/ plugins/rpg/src/
+        entry: uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/ plugins/rpg/src/
         language: system
         pass_filenames: false
         types: [python]
 
-      - id: full-check
-        name: full quality check
-        entry: make check
+      - id: pre-push-check
+        name: pre-push lint, format-check, typecheck, syntax-check (CI owns the test suite)
+        entry: make check-fast
         language: system
         pass_filenames: false
         stages: [pre-push]

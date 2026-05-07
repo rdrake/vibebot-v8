@@ -1,0 +1,70 @@
+name: Release
+
+# Creates a GitHub Release with auto-generated notes whenever a semver
+# tag (vX.Y.Z[-suffix]) is pushed. The Docker build/push is handled
+# separately by docker.yml; this workflow only attaches release notes
+# and opens a follow-up PR to refresh CHANGELOG.md on main.
+#
+# Why a PR (not a direct push)? A direct push would be rejected by any
+# branch-protection rule that requires status checks (see
+# docs/guide/operator/branch-protection.md). The PR flow works in both
+# unprotected and protected configurations.
+#
+# Trigger is `on: push: tags: …` only — commits do not create tags, so
+# the PR-merge that lands the refreshed CHANGELOG cannot loop back into
+# this workflow.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes (this tag only)
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Refresh full CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --output CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
+          files: CHANGELOG.md
+
+      - name: Open PR with refreshed CHANGELOG
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/changelog-${{ github.ref_name }}
+          base: main
+          commit-message: "docs(changelog): regenerate for ${{ github.ref_name }}"
+          title: "docs(changelog): regenerate for ${{ github.ref_name }}"
+          body: |
+            Automated by `.github/workflows/release.yml` after tag `${{ github.ref_name }}` was pushed.
+
+            Refreshes `CHANGELOG.md` from git-cliff. No code changes.
+          add-paths: CHANGELOG.md
+          delete-branch: true
