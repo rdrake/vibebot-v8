@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, cast
 
 
@@ -316,3 +316,50 @@ class LoomConfig:
     transcript_max_lines: int
     transcript_max_chars: int
     auto_apply_threshold: float
+
+
+@dataclass
+class LoomCycle:
+    cycle_id: str
+    channel: str
+    started_at: float
+    verse_stable_block: str
+    transcript: list[tuple[str, str]] = field(default_factory=list)
+    beats_posted: int = 0
+
+    def append_transcript(self, nick: str, text: str) -> None:
+        self.transcript.append((nick, text))
+
+    def snapshot_transcript(self) -> list[tuple[str, str]]:
+        return list(self.transcript)
+
+
+class LoomBridge(Protocol):
+    """Adapter the plugin implements. The driver only talks to this."""
+
+    def list_candidate_channels(self) -> list[str]: ...
+    def candidate_weight(self, channel: str) -> int: ...
+    def snapshot(self, channel: str) -> VerseSnapshot: ...
+    def post_to_loom_channel(self, text: str) -> bool:
+        """Return True if posted; False if the loom Irc is not available."""
+        ...
+
+    def schedule_after(self, delay_s: float, fn: Callable[[], None], name: str) -> None: ...
+    def submit(self, label: str, fn: Callable[[], None]) -> None:
+        """Run *fn* on the LLM worker thread pool. Returns immediately.
+
+        *label* is forwarded to ``LLMExecutor.submit`` for telemetry; loom
+        phases pass ``loom:seed`` / ``loom:beat`` / ``loom:digest``.
+        """
+        ...
+
+    def now(self) -> float: ...
+    def store_for(self, channel: str) -> Any: ...
+    def log_usage(
+        self,
+        *,
+        channel: str,
+        op: str,
+        model: str,
+        usage: LoomCallUsage,
+    ) -> None: ...

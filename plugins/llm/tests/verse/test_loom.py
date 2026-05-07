@@ -25,6 +25,35 @@ class _StubResp:
     usage = _StubUsage()
 
 
+class TestLoomCycle:
+    def test_append_grows_transcript_in_order(self) -> None:
+        from llm.verse.loom import LoomCycle
+
+        c = LoomCycle(
+            cycle_id="c1",
+            channel="#afnet",
+            started_at=0.0,
+            verse_stable_block="block",
+        )
+        c.append_transcript("botA", "hi")
+        c.append_transcript("botB", "yo")
+        assert c.transcript == [("botA", "hi"), ("botB", "yo")]
+
+    def test_snapshot_transcript_returns_a_copy(self) -> None:
+        from llm.verse.loom import LoomCycle
+
+        c = LoomCycle(
+            cycle_id="c1",
+            channel="#afnet",
+            started_at=0.0,
+            verse_stable_block="block",
+        )
+        c.append_transcript("botA", "hi")
+        snap = c.snapshot_transcript()
+        c.append_transcript("botB", "yo")
+        assert snap == [("botA", "hi")]
+
+
 class TestLiteLLMLoomClient:
     def test_returns_content_and_usage(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
