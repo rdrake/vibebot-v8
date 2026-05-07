@@ -77,7 +77,6 @@ Candidates have no user-facing surface. Operators with database access can inspe
 The bot runs memory extraction after these events:
 
 - Successful `@ask` responses, on the user who asked.
-- Successful spontaneous replies, on the user who triggered the spontaneous evaluation.
 - Tool-driven memory writes from the assistant's `remember` tool, which bypass the candidate stage and go straight to durable.
 
 The candidate path runs only on automatic extraction. Anything the assistant chooses to remember through its own tool surface skips the candidate stage so the model can record explicit user preferences in one shot.
@@ -88,7 +87,6 @@ The candidate path runs only on automatic extraction. Anything the assistant cho
 |---------|-------------|
 | `assistantApiKey` | Memory extraction uses the assistant key. Without one, extraction fails silently and no candidates accumulate. |
 | `memoryEnabled` | Per-channel. A `False` value blocks both candidate insertion and durable promotion for traffic in that channel. |
-| `spontaneousEnabled` | Spontaneous replies still trigger memory extraction on the trigger user, so opting a channel into spontaneous mode also opens that user's memory store to writes from passive listening. |
 
 ## Operational notes
 

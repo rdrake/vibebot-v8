@@ -20,7 +20,7 @@ API keys are stored as private values -- they are never displayed or logged by L
 
 | Setting | Description |
 |---------|-------------|
-| `assistantApiKey` | API key for all assistant work: `@ask`, planner loop, memory, spontaneous, reminder parsing, scheduled tasks |
+| `assistantApiKey` | API key for all assistant work: `@ask`, planner loop, memory, reminder parsing, scheduled tasks |
 | `codeApiKey` | API key for `@code` |
 | `imageApiKey` | API key for `@draw`. Does not auto-fall-back to `assistantApiKey` (image providers usually use a separate account) |
 | `searchApiKey` | API key for web search/URL fetch tools. Falls back to `assistantApiKey` if empty |
@@ -37,7 +37,7 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `assistantModel` | `gemini/gemini-flash-latest` | All assistant text+tool work (chat, planner, memory, spontaneous, reminders, scheduled tasks). Must support vision if image URLs in chat should work. |
+| `assistantModel` | `gemini/gemini-flash-latest` | All assistant text+tool work (chat, planner, memory, reminders, scheduled tasks). Must support vision if image URLs in chat should work. |
 | `codeModel` | `gemini/gemini-1.5-flash` | Model for `@code` |
 | `imageModel` | `vertex_ai/imagen-4.0-generate-001` | Model for `@draw` |
 | `searchModel` | (empty, falls back to `assistantModel`) | Model for web search and URL fetching |
@@ -59,7 +59,6 @@ System prompts define the bot's personality and behavior. They are channel-overr
 |---------|-------------|
 | `assistantSystemPrompt` | Personality and constraints for all assistant work |
 | `codeSystemPrompt` | Instructions for `@code` output format |
-| `spontaneousSystemPrompt` | Personality for spontaneous channel participation |
 
 Example -- give a channel a specialized personality:
 
@@ -75,7 +74,7 @@ Most settings support per-channel values. Channel values override the global def
 @config channel #channel plugins.LLM.<settingName> <value>
 ```
 
-Most settings support per-channel overrides: API keys, model selection, system prompts, context settings, memory, and spontaneous participation. Rate limits are global only.
+Most settings support per-channel overrides: API keys, model selection, system prompts, context settings, memory, and forest-verse. Rate limits are global only.
 
 ## Other settings
 

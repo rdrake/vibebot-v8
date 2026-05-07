@@ -30,6 +30,12 @@ Use the following commands when you want direct, predictable behavior.
 | `@instruct` | `[<instruction> \| clear]` | Set persistent instructions |
 | `@remind` | `[<text> \| list \| del <id> \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Set and manage reminders (admin subcommand is owner-only) |
 | `@usage` | `[nick \| #channel]` | Show API usage stats |
+| `@verseopt` | `in \| out` | Opt in or out of the forest-verse for this channel (requires `llm.verse`) |
+| `@verse` | | One-line scene summary for this channel's verse (requires `llm.verse`) |
+| `@look` | `[target]` | Describe an entity or current location in the verse (requires `llm.verse`) |
+| `@who` | | List active avatars in this channel's verse (requires `llm.verse`) |
+| `@versedump` | `#chan` | Dump verse state as JSON (requires `llm.verse.gm`) |
+| `@versepurge` | `#chan [token]` | Irreversibly purge verse state; two-step token confirmation (requires `llm.verse.gm`) |
 
 ## Command details
 
@@ -140,5 +146,5 @@ See [Reminders & Usage -- usage](../user/reminders-usage.md#usage) for full deta
 - **Non-volatile memory** -- Store facts about yourself that persist across conversations and sessions.
 - **Vision** -- Include image URLs in your `@ask` messages and the bot will describe or reason about them.
 - **Syntax-highlighted code** -- `@code` responses are served as HTTP links with syntax highlighting, keeping IRC clean.
-- **Spontaneous participation** -- When enabled by the operator, the bot can join channel conversations naturally without being addressed directly.
+- **[Forest-Verse](../operator/forest-verse.md)** -- Per-channel structured world model with user-driven roleplay, avatars, and a persistent entity graph. Users opt in with `@verseopt in`.
 - **Multi-provider AI** -- Powered by LiteLLM, supporting OpenAI, Anthropic, Google Gemini, and Vertex AI models behind a unified interface.
