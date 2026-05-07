@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from llm.verse.store import db_path_for_channel
 
 
@@ -646,6 +647,360 @@ class TestOptInAvatar:
         result = store.opt_in_avatar("alice", None, "curious traveller")
         assert result.place_name == "Place B"
         assert store.get_attribute(result.entity_id, "location") == "Place B"
+
+
+class TestProposalsCRUD:
+    def test_add_proposal_pending_default(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "the bell rang", "entity_ids": []},
+            confidence=0.9,
+            provenance="line-3",
+        )
+        assert isinstance(pid, str) and len(pid) > 0
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id, op, status, confidence, reviewer, reviewed_at "
+                "FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+            assert row[0] == pid
+            assert row[1] == "add_event"
+            assert row[2] == "pending"
+            assert row[3] == 0.9
+            assert row[4] is None
+            assert row[5] is None
+
+    def test_add_proposal_with_preset_status(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "auto", "entity_ids": []},
+            confidence=0.95,
+            provenance="line-1",
+            status="approved",
+            reviewer="loom",
+        )
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT status, reviewer, reviewed_at FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+            assert row[0] == "approved"
+            assert row[1] == "loom"
+            assert row[2] is not None and row[2] > 0
+
+    def test_add_proposal_rejects_invalid_status(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(ValueError):
+            store.add_proposal(
+                cycle_id="c-1",
+                op="add_event",
+                payload={"summary": "x", "entity_ids": []},
+                confidence=0.9,
+                provenance="x",
+                status="weird",
+            )
+
+    def test_list_proposals_filters_and_decodes(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import Proposal, VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        p1 = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "first"},
+            confidence=0.9,
+        )
+        time.sleep(0.005)
+        p2 = store.add_proposal(
+            cycle_id="c-2",
+            op="add_event",
+            payload={"summary": "second"},
+            confidence=0.5,
+        )
+        rows = store.list_proposals()
+        assert [r.id for r in rows] == [p2, p1]
+        assert isinstance(rows[0], Proposal)
+        assert rows[0].payload == {"summary": "second"}
+        assert [r.id for r in store.list_proposals(status="pending")] == [p2, p1]
+        assert [r.id for r in store.list_proposals(cycle_id="c-1")] == [p1]
+
+    def test_get_proposal_unknown_returns_none(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        assert store.get_proposal("nope") is None
+
+    def test_get_proposal_known_returns_proposal(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import Proposal, VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": [1]},
+            confidence=0.4,
+            provenance="line-2",
+        )
+        p = store.get_proposal(pid)
+        assert isinstance(p, Proposal)
+        assert p.id == pid
+        assert p.payload == {"summary": "x", "entity_ids": [1]}
+        assert p.confidence == 0.4
+        assert p.status == "pending"
+
+    def test_update_proposal_status_records_reviewer(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.9,
+        )
+        store.update_proposal_status(pid, status="approved", reviewer="alice")
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer == "alice"
+        assert p.reviewed_at is not None and p.reviewed_at > 0
+
+    def test_update_proposal_status_rejects_invalid(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError):
+            store.update_proposal_status(pid, status="weird", reviewer="alice")
+
+    def test_update_proposal_status_unknown_id_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(LookupError):
+            store.update_proposal_status("nope", status="approved", reviewer="alice")
+
+    def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "p"},
+            confidence=0.9,
+        )
+        approved = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "a"},
+            confidence=0.9,
+            status="approved",
+            reviewer="loom",
+        )
+        rows = store.list_proposals(status="approved")
+        assert [r.id for r in rows] == [approved]
+
+
+class TestApplyProposal:
+    def test_apply_add_event_inserts_event(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Forest")
+        store.apply_proposal(
+            op="add_event",
+            payload={"summary": "Forest enters the clearing", "entity_ids": [eid]},
+            source="loom",
+        )
+        events = store.recent_events()
+        assert len(events) == 1
+        assert events[0].summary == "Forest enters the clearing"
+        assert events[0].source == "loom"
+        assert events[0].entity_ids == (eid,)
+
+    def test_apply_set_attribute_writes_kv(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Forest")
+        store.apply_proposal(
+            op="set_attribute",
+            payload={"entity_id": eid, "key": "mood", "value": "wary"},
+            source="loom",
+        )
+        assert store.get_attribute(eid, "mood") == "wary"
+
+    def test_apply_add_relation(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("avatar", "Forest")
+        b = store.add_entity("npc", "Owl")
+        store.apply_proposal(
+            op="add_relation",
+            payload={"from_id": a, "to_id": b, "kind": "allied_with", "note": ""},
+            source="loom",
+        )
+        rels = store.list_relations(from_id=a)
+        assert len(rels) == 1
+        assert rels[0].kind == "allied_with"
+        assert rels[0].to_id == b
+
+    def test_apply_add_entity_creates_with_summary(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        new_id = store.apply_proposal(
+            op="add_entity",
+            payload={
+                "kind": "place",
+                "name": "Hollow Oak",
+                "summary": "A leaning trunk on the path.",
+            },
+            source="loom",
+        )
+        assert isinstance(new_id, int)
+        e = store.get_entity(new_id)
+        assert e is not None
+        assert e.kind == "place"
+        assert e.name == "Hollow Oak"
+
+    def test_apply_unknown_op_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(ValueError):
+            store.apply_proposal(op="nuke", payload={}, source="loom")
+
+    def test_apply_missing_payload_field_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(KeyError):
+            store.apply_proposal(op="add_event", payload={}, source="loom")
+
+
+class TestApplyAndRecordProposal:
+    def test_one_transaction_event_plus_audit(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Forest")
+        pid = store.apply_and_record_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": [eid]},
+            confidence=0.95,
+            provenance="line-1",
+            reviewer="loom",
+        )
+        assert isinstance(pid, str) and len(pid) > 0
+        events = store.recent_events()
+        assert len(events) == 1
+        assert events[0].summary == "x"
+        rows = store.list_proposals()
+        assert len(rows) == 1
+        assert rows[0].status == "approved"
+        assert rows[0].reviewer == "loom"
+
+    def test_failure_inside_op_rolls_back_audit(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(Exception):  # noqa: B017,PT011
+            store.apply_and_record_proposal(
+                cycle_id="c-1",
+                op="set_attribute",
+                payload={"entity_id": 9999, "key": "k", "value": "v"},
+                confidence=0.95,
+                provenance="x",
+                reviewer="loom",
+            )
+        assert store.list_proposals() == []
+
+
+class TestApplyProposalAndMark:
+    def test_pending_to_approved_atomically(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        store.apply_proposal_and_mark(pid, reviewer="alice")
+        events = store.recent_events()
+        assert len(events) == 1
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer == "alice"
+
+    def test_unknown_id_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(LookupError):
+            store.apply_proposal_and_mark("nope", reviewer="alice")
+
+    def test_already_terminal_status_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+            status="approved",
+            reviewer="bob",
+        )
+        with pytest.raises(ValueError):
+            store.apply_proposal_and_mark(pid, reviewer="alice")
+
+
+class TestListActiveVerses:
+    def test_returns_paths_for_existing_dbs(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore, list_active_verses
+
+        VerseStore(verse_db_dir, "#afnet")
+        VerseStore(verse_db_dir, "#forest")
+        result = list_active_verses(verse_db_dir)
+        assert len(result) == 2
+        for path in result:
+            assert path.suffix == ".db"
+            assert path.exists()
+
+    def test_empty_dir_returns_empty_list(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import list_active_verses
+
+        assert list_active_verses(verse_db_dir) == []
+
+    def test_missing_dir_returns_empty_list(self, tmp_path: Path) -> None:
+        from llm.verse.store import list_active_verses
+
+        assert list_active_verses(tmp_path / "nope") == []
 
 
 class TestWriteLockConcurrency:

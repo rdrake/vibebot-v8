@@ -963,6 +963,13 @@ class TestDoPrivmsg:
         plugin.db = mocker.MagicMock()
         plugin._migrated_nicks = set()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
+        # Loom caches (PR 2). Tests that exercise the loom hook set _loom
+        # explicitly; default state here is "loom not wired".
+        plugin._loom = None
+        plugin._loom_bridge = None
+        plugin._loom_channel_cache = None
+        plugin._loom_network_cache = None
+        plugin._loom_bot_nicks_cache = ()
 
         try:
             yield plugin, mock_irc, mock_msg
@@ -1310,6 +1317,645 @@ class TestPluginInitialization:
         # Should hook HTTP callback when httpRoot is not set
         mock_hook.assert_called_once()
         assert plugin._http_callback is not None
+
+
+class _FakeLoom:
+    """Tiny test double for the Loom orchestrator."""
+
+    def __init__(self) -> None:
+        self.observed: list[tuple[str, str]] = []
+
+    def observe_transcript(self, nick: str, text: str) -> None:
+        self.observed.append((nick, text))
+
+
+class TestDoPrivmsgLoomHook:
+    """C3: doPrivmsg captures loom-channel chatter on the loom network."""
+
+    def _build_loom_plugin(self, mocker: MockerFixture):
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.network = "afternet"
+        mock_irc.nick = "vibebot"
+        mock_irc.state = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        return plugin
+
+    def _make_msg(
+        self,
+        mocker: MockerFixture,
+        *,
+        target: str,
+        nick: str,
+        text: str,
+    ):
+        msg = mocker.MagicMock()
+        msg.prefix = f"{nick}!u@h"
+        msg.nick = nick
+        msg.args = (target, text)
+        msg.time = time.time() + 100  # not ZNC playback
+        msg.channel = target
+        msg.server_tags = {}
+        return msg
+
+    def _make_irc(self, mocker: MockerFixture, *, network: str):
+        irc = mocker.MagicMock()
+        irc.network = network
+        irc.nick = "vibebot"
+        irc.state = mocker.MagicMock()
+        irc.state.channels = {}
+        return irc
+
+    def test_doprivmsg_appends_loom_transcript(self, mocker: MockerFixture) -> None:
+        plugin = self._build_loom_plugin(mocker)
+        plugin._loom = _FakeLoom()
+        plugin._loom_channel_cache = "#forest"
+        plugin._loom_network_cache = "afternet"
+        plugin._loom_bot_nicks_cache = ()
+        irc = self._make_irc(mocker, network="afternet")
+        msg = self._make_msg(mocker, target="#forest", nick="botB", text="the bell")
+        plugin.doPrivmsg(irc, msg)
+        assert plugin._loom.observed == [("botB", "the bell")]
+
+    def test_doprivmsg_ignores_other_networks(self, mocker: MockerFixture) -> None:
+        plugin = self._build_loom_plugin(mocker)
+        plugin._loom = _FakeLoom()
+        plugin._loom_channel_cache = "#forest"
+        plugin._loom_network_cache = "afternet"
+        plugin._loom_bot_nicks_cache = ()
+        irc = self._make_irc(mocker, network="freenode")
+        msg = self._make_msg(mocker, target="#forest", nick="botB", text="hi")
+        plugin.doPrivmsg(irc, msg)
+        assert plugin._loom.observed == []
+
+    def test_doprivmsg_filters_by_bot_allowlist_when_set(self, mocker: MockerFixture) -> None:
+        plugin = self._build_loom_plugin(mocker)
+        plugin._loom = _FakeLoom()
+        plugin._loom_channel_cache = "#forest"
+        plugin._loom_network_cache = "afternet"
+        plugin._loom_bot_nicks_cache = ("botB",)
+        irc = self._make_irc(mocker, network="afternet")
+        plugin.doPrivmsg(irc, self._make_msg(mocker, target="#forest", nick="alice", text="hi"))
+        plugin.doPrivmsg(irc, self._make_msg(mocker, target="#forest", nick="botB", text="hi"))
+        assert plugin._loom.observed == [("botB", "hi")]
+
+    def test_doprivmsg_does_not_capture_prefix_commands(self, mocker: MockerFixture) -> None:
+        # @verseapprove or @versereject in the loom channel must NOT land
+        # in the loom transcript — they're commands, not improv. The
+        # supybot default for whenAddressedBy.chars() is empty in tests, so
+        # we set it to the operator-configured "@" used in production.
+        import supybot.conf as conf
+
+        prefix_value = conf.supybot.reply.whenAddressedBy.chars
+        original = prefix_value()
+        prefix_value.setValue("@")
+        try:
+            plugin = self._build_loom_plugin(mocker)
+            plugin._loom = _FakeLoom()
+            plugin._loom_channel_cache = "#forest"
+            plugin._loom_network_cache = "afternet"
+            plugin._loom_bot_nicks_cache = ()
+            irc = self._make_irc(mocker, network="afternet")
+            msg = self._make_msg(
+                mocker, target="#forest", nick="alice", text="@verseapprove abc123"
+            )
+            plugin.doPrivmsg(irc, msg)
+            assert plugin._loom.observed == []
+        finally:
+            prefix_value.setValue(original)
+
+    def test_doprivmsg_ignores_other_channels_on_loom_network(self, mocker: MockerFixture) -> None:
+        plugin = self._build_loom_plugin(mocker)
+        plugin._loom = _FakeLoom()
+        plugin._loom_channel_cache = "#forest"
+        plugin._loom_network_cache = "afternet"
+        plugin._loom_bot_nicks_cache = ()
+        irc = self._make_irc(mocker, network="afternet")
+        msg = self._make_msg(mocker, target="#other", nick="botB", text="hi")
+        plugin.doPrivmsg(irc, msg)
+        assert plugin._loom.observed == []
+
+
+class TestVerseproposalsCommand:
+    """D1: @verseproposals listing command."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        msg.args = ("#afnet", "@verseproposals")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        return plugin, irc, msg, store
+
+    def test_default_status_pending_in_current_channel(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.5,
+        )
+        plugin.verseproposals(irc, msg, [])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("conf=0.50" in r for r in replies)
+
+    def test_explicit_channel_and_status(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "y"},
+            confidence=0.95,
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.verseproposals(irc, msg, ["#afnet", "approved"])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("conf=0.95" in r for r in replies)
+
+    def test_empty_list_message(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.verseproposals(irc, msg, [])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("No pending proposals" in r for r in replies)
+
+
+class TestVerseapproveRejectCommands:
+    """D2: @verseapprove + @versereject moderation commands."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        msg.args = ("#afnet", "")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        return plugin, irc, msg, store
+
+    def test_approve_applies_and_flips_status(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        plugin.verseapprove(irc, msg, [pid[:8]])
+        events = store.recent_events()
+        assert len(events) == 1
+        assert events[0].source == "loom"
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer != "loom"
+
+    def test_approve_short_id_prefix(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        plugin.verseapprove(irc, msg, [pid[:6]])
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+
+    def test_approve_unknown_id_errors_cleanly(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.verseapprove(irc, msg, ["deadbeef"])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("No proposal" in e for e in errors)
+
+    def test_approve_already_approved_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.95,
+            provenance="line-1",
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.verseapprove(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already approved" in r for r in replies)
+
+    def test_approve_already_rejected_blocked(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        store.update_proposal_status(pid, status="rejected", reviewer="bob")
+        plugin.verseapprove(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("rejected" in r for r in replies)
+
+    def test_reject_flips_status_and_does_not_apply(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        plugin.versereject(irc, msg, [pid[:8]])
+        assert store.recent_events() == []
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "rejected"
+
+    def test_reject_unknown_id_errors(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.versereject(irc, msg, ["deadbeef"])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("No proposal" in e for e in errors)
+
+    def test_reject_already_approved_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.95,
+            provenance="x",
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.versereject(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already approved" in r for r in replies)
+
+    def test_approve_apply_exception_reports_error(self, verse_env, mocker) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        mocker.patch.object(store, "apply_proposal_and_mark", side_effect=RuntimeError("boom"))
+        plugin.verseapprove(irc, msg, [pid])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("Apply failed" in e for e in errors)
+
+    def test_proposal_target_store_no_channel_errors(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        msg.args = ("",)  # No channel context
+        channel, store = plugin._proposal_target_store(irc, msg, None)
+        assert channel is None
+        assert store is None
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("Specify a channel" in e for e in errors)
+
+    def test_proposal_snippet_covers_all_ops(self, verse_env) -> None:
+        from llm.verse.store import Proposal
+
+        plugin, _irc, _msg, _store = verse_env
+        sa = Proposal(
+            id="x",
+            created_at=0.0,
+            cycle_id="c",
+            op="set_attribute",
+            payload={"entity_id": 1, "key": "k", "value": "v"},
+            confidence=0.5,
+            provenance="",
+            status="pending",
+            reviewer=None,
+            reviewed_at=None,
+        )
+        ar = sa._replace(
+            op="add_relation",
+            payload={"from_id": 1, "to_id": 2, "kind": "k", "note": ""},
+        )
+        ae = sa._replace(op="add_entity", payload={"kind": "place", "name": "Oak"})
+        unknown = sa._replace(op="weird", payload={})
+        assert "entity_id=1" in plugin._proposal_snippet(sa)
+        assert "1-[k]->2" in plugin._proposal_snippet(ar)
+        assert "place 'Oak'" in plugin._proposal_snippet(ae)
+        assert plugin._proposal_snippet(unknown) == ""
+
+    def test_reject_already_rejected_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        store.update_proposal_status(pid, status="rejected", reviewer="bob")
+        plugin.versereject(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already rejected" in r for r in replies)
+
+
+class TestPluginLoomBridge:
+    """Cover _PluginLoomBridge methods + _loom_tick path."""
+
+    def _make_bridge(self, mocker: MockerFixture, tmp_path):
+        from llm.plugin import LLM, _PluginLoomBridge
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        bridge = _PluginLoomBridge(plugin, "afternet", "#forest")
+        bridge._verse_data_dir = tmp_path
+        return plugin, bridge
+
+    def test_list_candidate_channels_no_irc_returns_empty(
+        self, mocker: MockerFixture, tmp_path
+    ) -> None:
+        _plugin, bridge = self._make_bridge(mocker, tmp_path)
+        mocker.patch("llm.plugin.world.getIrc", return_value=None)
+        assert bridge.list_candidate_channels() == []
+
+    def test_list_candidate_channels_intersects_enabled_joined_ondisk(
+        self, mocker: MockerFixture, tmp_path
+    ) -> None:
+        from llm.verse.store import VerseStore
+
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        VerseStore(tmp_path, "#forest")
+        VerseStore(tmp_path, "#noverse")
+
+        plugin._verse_enabled_channels = lambda: ["#forest", "#unjoined"]
+
+        irc_stub = mocker.MagicMock()
+        irc_stub.state.channels = {"#forest": object()}
+        mocker.patch("llm.plugin.world.getIrc", return_value=irc_stub)
+
+        out = bridge.list_candidate_channels()
+        assert out == ["#forest"]
+
+    def test_candidate_weight_combines_avatars_and_events(
+        self, mocker: MockerFixture, tmp_path
+    ) -> None:
+        from llm.verse.store import VerseStore
+
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        verse_dir = tmp_path / "stores"
+        verse_dir.mkdir()
+        store = VerseStore(verse_dir, "#forest")
+        store.add_entity("avatar", "Forest")
+        store.add_entity("avatar", "Owl")
+        store.add_event("a chime", [], "loom")
+        plugin._get_or_create_verse_store = lambda ch: store
+        assert bridge.candidate_weight("#forest") == 2 * 2 + 1
+
+    def test_snapshot_returns_versesnapshot(self, mocker: MockerFixture, tmp_path) -> None:
+        from llm.verse.loom import VerseSnapshot
+        from llm.verse.store import VerseStore
+
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        verse_dir = tmp_path / "stores"
+        verse_dir.mkdir()
+        store = VerseStore(verse_dir, "#forest")
+        store.add_entity("avatar", "Forest")
+        store.add_entity("place", "Grove")
+        store.add_event("a chime", [], "loom")
+        plugin._get_or_create_verse_store = lambda ch: store
+
+        snap = bridge.snapshot("#forest")
+        assert isinstance(snap, VerseSnapshot)
+        assert snap.channel == "#forest"
+        assert ("avatar", "Forest") in snap.top_entities
+        assert ("place", "Grove") in snap.top_entities
+        assert "a chime" in snap.recent_events
+
+    def test_post_to_loom_channel_returns_false_without_irc(
+        self, mocker: MockerFixture, tmp_path
+    ) -> None:
+        _plugin, bridge = self._make_bridge(mocker, tmp_path)
+        mocker.patch("llm.plugin.world.getIrc", return_value=None)
+        assert bridge.post_to_loom_channel("hello") is False
+
+    def test_post_to_loom_channel_queues_when_irc_present(
+        self, mocker: MockerFixture, tmp_path
+    ) -> None:
+        _plugin, bridge = self._make_bridge(mocker, tmp_path)
+        irc_stub = mocker.MagicMock()
+        mocker.patch("llm.plugin.world.getIrc", return_value=irc_stub)
+        assert bridge.post_to_loom_channel("ring") is True
+        irc_stub.queueMsg.assert_called_once()
+
+    def test_schedule_after_replaces_existing_event(self, mocker: MockerFixture, tmp_path) -> None:
+        _plugin, bridge = self._make_bridge(mocker, tmp_path)
+        rm = mocker.patch("llm.plugin.schedule.removeEvent")
+        add = mocker.patch("llm.plugin.schedule.addEvent")
+        bridge.schedule_after(5.0, lambda: None, "n")
+        rm.assert_called_with("n")
+        add.assert_called_once()
+
+    def test_submit_routes_to_executor(self, mocker: MockerFixture, tmp_path) -> None:
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        plugin._llm_executor = mocker.MagicMock()
+        bridge.submit("loom:seed", lambda: None)
+        plugin._llm_executor.submit.assert_called_once()
+
+    def test_now_returns_float(self, mocker: MockerFixture, tmp_path) -> None:
+        _plugin, bridge = self._make_bridge(mocker, tmp_path)
+        assert isinstance(bridge.now(), float)
+
+    def test_store_for_delegates(self, mocker: MockerFixture, tmp_path) -> None:
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        sentinel = object()
+        plugin._get_or_create_verse_store = lambda ch: sentinel
+        assert bridge.store_for("#x") is sentinel
+
+    def test_log_usage_routes_to_db(self, mocker: MockerFixture, tmp_path) -> None:
+        from llm.verse.loom import LoomCallUsage
+
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        plugin.db = mocker.MagicMock()
+        bridge.log_usage(
+            channel="#forest",
+            op="seed",
+            model="gemini/x",
+            usage=LoomCallUsage(7, 3, 0.0),
+        )
+        plugin.db.log_usage.assert_called_once()
+        kwargs = plugin.db.log_usage.call_args.kwargs
+        assert kwargs["nick"] == "loom"
+        assert kwargs["command"] == "loom:seed"
+        assert kwargs["prompt_tokens"] == 7
+
+    def test_loom_tick_no_loom_is_noop(self, mocker: MockerFixture) -> None:
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin._loom_tick()
+
+    def test_loom_tick_swallows_loom_exceptions(self, mocker: MockerFixture) -> None:
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect()
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        plugin._loom = mocker.MagicMock()
+        plugin._loom.tick.side_effect = RuntimeError("boom")
+        plugin._loom_tick()
+
+
+class TestLoomWiring:
+    """C2: plugin wires Loom + bridge via _wire_loom_if_enabled()."""
+
+    def _build(self, mocker: MockerFixture, overrides: dict[str, object]):
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        registry = make_registry_side_effect(overrides)
+        mocker.patch.object(LLM, "registryValue", side_effect=registry)
+        mocker.patch("llm.plugin.LLMService")
+        mocker.patch("llm.plugin.LLMDatabase")
+        mocker.patch("llm.plugin.log")
+        mocker.patch("llm.plugin.httpserver")
+        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+        mocker.patch("llm.plugin.schedule.addEvent")
+        return LLM(mock_irc)
+
+    def test_loom_disabled_when_loom_channel_empty(self, mocker: MockerFixture) -> None:
+        plugin = self._build(mocker, {"loomNetwork": "afternet", "loomChannel": ""})
+        assert plugin._loom is None
+        assert plugin._loom_channel_cache is None
+
+    def test_loom_disabled_when_loom_network_empty(self, mocker: MockerFixture) -> None:
+        plugin = self._build(mocker, {"loomNetwork": "", "loomChannel": "#forest"})
+        assert plugin._loom is None
+        assert plugin._loom_network_cache is None
+
+    def test_loom_wired_when_both_set(self, mocker: MockerFixture) -> None:
+        plugin = self._build(
+            mocker,
+            {
+                "loomNetwork": "afternet",
+                "loomChannel": "#forest",
+                "loomModel": "gemini/x",
+                "loomCycleInterval": 5,
+                "loomVerseCooldown": 20,
+                "loomBeatWindow": 90,
+                "loomTranscriptMaxLines": 40,
+                "loomTranscriptMaxChars": 8000,
+                "loomBotNicks": "botA, botB",
+                "verseAutoApplyThreshold": 0.85,
+            },
+        )
+        assert plugin._loom is not None
+        assert plugin._loom_channel_cache == "#forest"
+        assert plugin._loom_network_cache == "afternet"
+        assert plugin._loom_bot_nicks_cache == ("botA", "botB")
+
+    def test_rewire_after_disabling_clears_caches(self, mocker: MockerFixture) -> None:
+        plugin = self._build(
+            mocker,
+            {
+                "loomNetwork": "afternet",
+                "loomChannel": "#forest",
+                "loomModel": "gemini/x",
+                "loomCycleInterval": 5,
+                "loomVerseCooldown": 20,
+                "loomBeatWindow": 90,
+                "loomTranscriptMaxLines": 40,
+                "loomTranscriptMaxChars": 8000,
+                "loomBotNicks": "",
+                "verseAutoApplyThreshold": 0.85,
+            },
+        )
+        assert plugin._loom is not None
+        # Now flip loomChannel to empty and re-wire.
+        new_side = make_registry_side_effect({"loomNetwork": "afternet", "loomChannel": ""})
+        plugin.registryValue = mocker.MagicMock(side_effect=new_side)
+        plugin._wire_loom_if_enabled()
+        assert plugin._loom is None
+        assert plugin._loom_channel_cache is None
+        assert plugin._loom_bot_nicks_cache == ()
 
 
 class TestPluginLifecycle:
@@ -3308,6 +3954,9 @@ class TestCommandRegistry:
             "who",
             "versedump",
             "versepurge",
+            "verseproposals",
+            "verseapprove",
+            "versereject",
         }
         assert names == expected
 

@@ -1,0 +1,22 @@
+[
+  {"nick": "botA", "text": "the bell echoes through the grove"},
+  {"nick": "botB", "text": "Forest stirs from her seat under the oak"},
+  {"nick": "botC", "text": "an owl calls from the branches"},
+  {"nick": "botA", "text": "she lifts the lantern; it sputters in the damp"},
+  {"nick": "botB", "text": "Forest follows the path north"},
+  {"nick": "botC", "text": "moss swallows the sound of her steps"},
+  {"nick": "botA", "text": "a crow lights on the leaning trunk ahead"},
+  {"nick": "botB", "text": "she pauses, regarding it"},
+  {"nick": "botC", "text": "the crow tips its head and croaks once"},
+  {"nick": "botA", "text": "Forest mutters: still the same omen"},
+  {"nick": "botB", "text": "the wind picks up; lantern goes out"},
+  {"nick": "botC", "text": "she relights it, hands shielded"},
+  {"nick": "botA", "text": "shadows stretch across the path"},
+  {"nick": "botB", "text": "Forest pushes deeper into the wood"},
+  {"nick": "botC", "text": "somewhere ahead, water moves over stone"},
+  {"nick": "botA", "text": "she thinks of the brook by the Hollow Oak"},
+  {"nick": "botB", "text": "the air goes colder, sudden"},
+  {"nick": "botC", "text": "her breath fogs the lantern glass"},
+  {"nick": "botA", "text": "Forest whispers: who's there?"},
+  {"nick": "botB", "text": "no answer; only the stream's small voice"}
+]

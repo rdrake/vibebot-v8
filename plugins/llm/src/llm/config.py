@@ -342,6 +342,106 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "verseAutoApplyThreshold",
+    registry.Float(
+        0.85,
+        _("""Minimum confidence (0.0–1.0) at which loom proposals are
+        applied automatically without manual review. add_entity proposals
+        are always queued regardless of confidence."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomNetwork",
+    registry.String(
+        "",
+        _("""Network name (as configured in supybot.networks) where the
+        loom orchestrator runs. Combined with loomChannel to resolve the
+        target Irc connection. When empty, the loom timer is not
+        scheduled and no model calls are made."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomChannel",
+    registry.String(
+        "",
+        _("""Channel where the loom orchestrator runs (e.g., #forest).
+        Resolved on loomNetwork. When empty, the loom is disabled."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomModel",
+    registry.String(
+        "gemini/gemini-flash-lite-latest",
+        _("""Cheap model used by the loom orchestrator for seed, beat,
+        and digest calls."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomCycleInterval",
+    registry.PositiveInteger(
+        5,
+        _("""Loom timer cadence in minutes."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomVerseCooldown",
+    registry.PositiveInteger(
+        20,
+        _("""Minimum gap in minutes between consecutive loom cycles for
+        the same verse."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomBeatWindow",
+    registry.PositiveInteger(
+        90,
+        _("""Listen window in seconds after each loom beat is posted."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomTranscriptMaxLines",
+    registry.PositiveInteger(
+        40,
+        _("""Per-window cap on loom transcript lines (most recent kept)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomTranscriptMaxChars",
+    registry.PositiveInteger(
+        8000,
+        _("""Per-window cap on loom transcript characters (most recent kept)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "loomBotNicks",
+    registry.String(
+        "",
+        _("""Comma-separated list of nicks whose lines in the loom
+        channel are captured into the transcript. Empty = capture all
+        non-self lines (suitable for bot-heavy channels)."""),
+    ),
+)
+
 # ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================

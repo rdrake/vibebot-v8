@@ -8,10 +8,11 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
@@ -49,6 +50,22 @@ class Event(NamedTuple):
     source: str
 
 
+class Proposal(NamedTuple):
+    id: str
+    created_at: float
+    cycle_id: str
+    op: str
+    payload: dict[str, Any]
+    confidence: float
+    provenance: str
+    status: str
+    reviewer: str | None
+    reviewed_at: float | None
+
+
+_VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
+
+
 SCHEMA_VERSION = 1
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -59,6 +76,17 @@ def db_path_for_channel(base_dir: Path, channel: str) -> Path:
     safe = _SAFE_RE.sub("_", lowered)
     digest = hashlib.sha256(channel.encode("utf-8")).hexdigest()[:8]
     return base_dir / f"{safe}_{digest}.db"
+
+
+def list_active_verses(base_dir: Path) -> list[Path]:
+    """Return paths of all verse DB files in *base_dir*, sorted.
+
+    The caller maps these back to channel names via the same
+    db_path_for_channel sanitizer used at construction time.
+    """
+    if not base_dir.exists():
+        return []
+    return sorted(base_dir.glob("*.db"))
 
 
 class VerseStore:
@@ -504,3 +532,290 @@ class VerseStore:
             scene_text=scene_text,
             was_already_opted_in=was_already_opted_in,
         )
+
+    # ------------------------------------------------------------------
+    # Proposals CRUD
+    # ------------------------------------------------------------------
+
+    def add_proposal(
+        self,
+        *,
+        cycle_id: str,
+        op: str,
+        payload: dict[str, Any],
+        confidence: float,
+        provenance: str = "",
+        status: str = "pending",
+        reviewer: str | None = None,
+    ) -> str:
+        """Insert a proposal and return its uuid id.
+
+        When *status* is 'approved' or 'rejected', *reviewer* must be
+        supplied and reviewed_at is set to now (this is how auto-apply
+        records its audit row inside the same write_transaction as the
+        mutation it just applied).
+        """
+        if status not in _VALID_PROPOSAL_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        if status != "pending" and not reviewer:
+            raise ValueError("reviewer required when status != pending")
+        pid = uuid.uuid4().hex
+        now = time.time()
+        reviewed_at = now if status != "pending" else None
+        with self.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals "
+                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
+                " status, reviewer, reviewed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    pid,
+                    now,
+                    cycle_id,
+                    op,
+                    json.dumps(payload),
+                    confidence,
+                    provenance,
+                    status,
+                    reviewer,
+                    reviewed_at,
+                ),
+            )
+        return pid
+
+    def _apply_op_inline(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        op: str,
+        payload: dict[str, Any],
+        source: str,
+    ) -> int | None:
+        """Run the op-specific INSERT on *conn*. The caller owns the txn."""
+        now = time.time()
+        if op == "add_event":
+            cur = conn.execute(
+                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+                (
+                    now,
+                    payload["summary"],
+                    json.dumps(list(payload.get("entity_ids", []))),
+                    source,
+                ),
+            )
+            return cur.lastrowid
+        if op == "set_attribute":
+            eid = payload["entity_id"]
+            row = conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                raise LookupError(f"entity_id {eid} does not exist")
+            conn.execute(
+                "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(entity_id, key) DO UPDATE SET value=excluded.value",
+                (eid, payload["key"], payload["value"]),
+            )
+            return None
+        if op == "add_relation":
+            cur = conn.execute(
+                "INSERT INTO relations (from_id, to_id, kind, note) VALUES (?, ?, ?, ?)",
+                (
+                    payload["from_id"],
+                    payload["to_id"],
+                    payload["kind"],
+                    payload.get("note", ""),
+                ),
+            )
+            return cur.lastrowid
+        if op == "add_entity":
+            cur = conn.execute(
+                "INSERT INTO entities (kind, name, summary, status, "
+                "                       created_at, updated_at) "
+                "VALUES (?, ?, ?, 'active', ?, ?)",
+                (
+                    payload["kind"],
+                    payload["name"],
+                    payload.get("summary", ""),
+                    now,
+                    now,
+                ),
+            )
+            return cur.lastrowid
+        raise ValueError(f"unknown op: {op!r}")
+
+    def apply_and_record_proposal(
+        self,
+        *,
+        cycle_id: str,
+        op: str,
+        payload: dict[str, Any],
+        confidence: float,
+        provenance: str,
+        reviewer: str,
+        source: str = "loom",
+    ) -> str:
+        """Atomically apply *op* and insert an approved proposal row.
+
+        Returns the new proposal id. Either both rows are written or
+        neither (the lock + write_transaction guarantee SQLite atomicity).
+        """
+        pid = uuid.uuid4().hex
+        now = time.time()
+        with self.write_transaction() as conn:
+            self._apply_op_inline(conn, op=op, payload=payload, source=source)
+            conn.execute(
+                "INSERT INTO proposals "
+                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
+                " status, reviewer, reviewed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
+                (
+                    pid,
+                    now,
+                    cycle_id,
+                    op,
+                    json.dumps(payload),
+                    confidence,
+                    provenance,
+                    reviewer,
+                    now,
+                ),
+            )
+        return pid
+
+    def apply_proposal_and_mark(self, proposal_id: str, *, reviewer: str) -> None:
+        """Atomically apply a pending proposal and flip its status to approved.
+
+        Raises ``LookupError`` if no such id, ``ValueError`` if already
+        terminal.
+        """
+        with self.write_transaction() as conn:
+            row = conn.execute(
+                "SELECT op, payload, status FROM proposals WHERE id=?",
+                (proposal_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"no proposal: {proposal_id!r}")
+            op, payload_json, status = row
+            if status != "pending":
+                raise ValueError(f"proposal {proposal_id!r} already {status}; cannot apply")
+            payload = json.loads(payload_json)
+            self._apply_op_inline(conn, op=op, payload=payload, source="loom")
+            conn.execute(
+                "UPDATE proposals SET status='approved', reviewer=?, reviewed_at=? WHERE id=?",
+                (reviewer, time.time(), proposal_id),
+            )
+
+    def apply_proposal(
+        self,
+        *,
+        op: str,
+        payload: dict[str, Any],
+        source: str = "loom",
+    ) -> int | None:
+        """Convert a proposal payload into rows.
+
+        Returns the new entity id for ``add_entity``, the new event id for
+        ``add_event``, the new relation id for ``add_relation``, or
+        ``None`` for ``set_attribute``. Raises ``ValueError`` for unknown
+        ops or ``KeyError`` for missing payload keys.
+        """
+        if op == "add_event":
+            return self.add_event(
+                summary=payload["summary"],
+                entity_ids=payload.get("entity_ids", []),
+                source=source,
+            )
+        if op == "set_attribute":
+            self.set_attribute(payload["entity_id"], payload["key"], payload["value"])
+            return None
+        if op == "add_relation":
+            return self.add_relation(
+                from_id=payload["from_id"],
+                to_id=payload["to_id"],
+                kind=payload["kind"],
+                note=payload.get("note", ""),
+            )
+        if op == "add_entity":
+            return self.add_entity(
+                kind=payload["kind"],
+                name=payload["name"],
+                summary=payload.get("summary", ""),
+            )
+        raise ValueError(f"unknown op: {op!r}")
+
+    def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
+        """Flip *proposal_id*'s status (audit fields written together)."""
+        if status not in _VALID_PROPOSAL_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status=?, reviewer=?, reviewed_at=? WHERE id=?",
+                (status, reviewer, time.time(), proposal_id),
+            )
+            if cur.rowcount == 0:
+                raise LookupError(f"no proposal: {proposal_id!r}")
+
+    def get_proposal(self, proposal_id: str) -> Proposal | None:
+        """Return the Proposal with *proposal_id*, or None."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at "
+                "FROM proposals WHERE id = ?",
+                (proposal_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Proposal(
+            id=row[0],
+            created_at=row[1],
+            cycle_id=row[2],
+            op=row[3],
+            payload=json.loads(row[4]),
+            confidence=row[5],
+            provenance=row[6],
+            status=row[7],
+            reviewer=row[8],
+            reviewed_at=row[9],
+        )
+
+    def list_proposals(
+        self,
+        *,
+        status: str | None = None,
+        cycle_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Proposal]:
+        """Return proposals newest-first, optionally filtered by status/cycle."""
+        sql = (
+            "SELECT id, created_at, cycle_id, op, payload, confidence, "
+            "provenance, status, reviewer, reviewed_at FROM proposals"
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if cycle_id is not None:
+            clauses.append("cycle_id = ?")
+            params.append(cycle_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            Proposal(
+                id=r[0],
+                created_at=r[1],
+                cycle_id=r[2],
+                op=r[3],
+                payload=json.loads(r[4]),
+                confidence=r[5],
+                provenance=r[6],
+                status=r[7],
+                reviewer=r[8],
+                reviewed_at=r[9],
+            )
+            for r in rows
+        ]
