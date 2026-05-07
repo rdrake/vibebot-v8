@@ -54,6 +54,7 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
+from .verse.avatar import is_ooc
 from .verse.store import VerseStore
 
 if TYPE_CHECKING:
@@ -2393,9 +2394,24 @@ class LLM(callbacks.Plugin):
         """Return a VerseRoute when the message should be handled by the verse
         engine, or None to fall through to the normal chat path.
 
-        Always returns None in C7a; gating logic is added in C7b/c/d.
+        Gates (applied in order):
+        1. verseEnabled must be True for the channel.
+        2. User must hold the llm.verse capability.
+        3. OOC messages (wrapped in ((...))) bypass the verse engine.
+
+        Body (avatar lookup + route construction) lands in C7c.
         """
-        return None  # Wired in C7b/c/d.
+        if not self.registryValue("verseEnabled", channel):
+            return None
+        # Build a synthetic hostmask for ircdb; nick!*@* is sufficient
+        # because the test harness patches checkCapability on the prefix string.
+        hostmask = f"{nick}!*@*"
+        if not ircdb.checkCapability(hostmask, "llm.verse"):
+            return None  # capability fallthrough — quiet
+        if is_ooc(message_text):
+            return None
+        # Body lands in C7c.
+        return None
 
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str

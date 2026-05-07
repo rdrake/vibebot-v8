@@ -5963,23 +5963,99 @@ class TestInstructVerseSync:
         assert entity.summary == "old summary"
 
 
-class TestVerseRouteForStub:
-    """_verse_route_for always returns None in C7a (wired to logic in C7b/c/d)."""
+class TestVerseRouteForGating:
+    """_verse_route_for gating logic (C7b): verseEnabled, llm.verse cap, OOC short-circuit."""
 
-    def test_returns_none_for_any_inputs(self, plugin_env) -> None:
-        """GIVEN any combination of inputs WHEN _verse_route_for called THEN None."""
+    # ------------------------------------------------------------------
+    # Gate 1: verseEnabled=False
+    # ------------------------------------------------------------------
+
+    def test_verse_disabled_returns_none(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN verseEnabled=False WHEN _verse_route_for called THEN returns None (gate fires).
+
+        We spy on registryValue to confirm the verseEnabled check is the gate that fires
+        rather than the stub unconditionally returning None.
+        """
         plugin, _irc, _msg = plugin_env
 
-        assert plugin._verse_route_for("#chan", "alice", "alice@network", "hello") is None
-        assert plugin._verse_route_for("#chan", "alice", None, "!OOC whisper") is None
-        assert plugin._verse_route_for("", "bob", None, "") is None
-        assert plugin._verse_route_for("#lobby", "eve", "eve@irc", "a long message") is None
+        # verseEnabled=False (default in plugin_env) — spy to confirm it is consulted.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: False if key == "verseEnabled" else ""
+        )
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        result = plugin._verse_route_for("#afnet", "alice", "alice", "hello world")
+
+        assert result is None
+        plugin.registryValue.assert_any_call("verseEnabled", "#afnet")
+
+    # ------------------------------------------------------------------
+    # Gate 2: no llm.verse capability
+    # ------------------------------------------------------------------
+
+    def test_no_capability_returns_none(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN verseEnabled=True but user lacks llm.verse WHEN called THEN None (quiet fallthrough)."""
+        plugin, _irc, _msg = plugin_env
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else ""
+        )
+        cap_check = mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+
+        result = plugin._verse_route_for("#afnet", "alice", "alice", "hello world")
+
+        assert result is None
+        cap_check.assert_called_once_with("alice!*@*", "llm.verse")
+
+    # ------------------------------------------------------------------
+    # Gate 3: OOC message
+    # ------------------------------------------------------------------
+
+    def test_ooc_message_returns_none(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN verseEnabled=True and cap granted WHEN message is OOC THEN None."""
+        plugin, _irc, _msg = plugin_env
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else ""
+        )
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        result = plugin._verse_route_for("#afnet", "alice", "alice", "((this is OOC))")
+
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # Gate 4: all preconditions satisfied — body still None until C7c
+    # ------------------------------------------------------------------
+
+    def test_all_preconditions_satisfied_still_returns_none(
+        self, plugin_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN verseEnabled=True, cap granted, plain message WHEN called THEN None.
+
+        NOTE: This test will break in C7c when the body is filled in with avatar
+        lookup + route construction. That is expected and acceptable.
+        """
+        plugin, _irc, _msg = plugin_env
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else ""
+        )
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+        result = plugin._verse_route_for("#afnet", "alice", "alice", "just a plain message")
+
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # Regression: @ask dispatch still hits chat path (carried from C7a)
+    # ------------------------------------------------------------------
 
     def test_ask_dispatch_still_reaches_chat_path(self, plugin_env, mocker: MockerFixture) -> None:
         """GIVEN _verse_route_for returns None WHEN @ask sent THEN chat path fires unchanged.
 
-        This is a regression guard: the dispatch hook introduced in C7a must be
-        a no-op — the existing assistant_request call must still happen exactly once.
+        Regression guard: the dispatch hook must be a no-op — assistant_request
+        must still be called exactly once (verseEnabled=False in plugin_env default).
         """
         from llm.service import AssistantResult
 
