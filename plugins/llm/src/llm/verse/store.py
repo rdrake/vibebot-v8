@@ -26,6 +26,13 @@ class Entity(NamedTuple):
     updated_at: float
 
 
+class AvatarOptInResult(NamedTuple):
+    entity_id: int
+    place_name: str
+    scene_text: str
+    was_already_opted_in: bool
+
+
 class Relation(NamedTuple):
     id: int
     from_id: int
@@ -336,3 +343,164 @@ class VerseStore:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Avatar opt-in
+    # ------------------------------------------------------------------
+
+    def opt_in_avatar(
+        self,
+        nick: str,
+        account: str | None,
+        instruct_text: str,
+    ) -> AvatarOptInResult:
+        """Opt a user into the verse, creating or reactivating their avatar.
+
+        All DB work happens inside a single write_transaction to avoid
+        re-entrant lock acquisition (threading.Lock is not reentrant).
+        """
+        now = time.time()
+
+        with self.write_transaction() as conn:
+            # ----------------------------------------------------------
+            # 1. Find existing avatar: prefer account lookup, fall back to nick.
+            # ----------------------------------------------------------
+            entity_id: int | None = None
+            entity_status: str | None = None
+
+            if account is not None:
+                row = conn.execute(
+                    "SELECT al.entity_id, e.status"
+                    " FROM avatar_link al"
+                    " JOIN entities e ON e.id = al.entity_id"
+                    " WHERE al.account = ?",
+                    (account,),
+                ).fetchone()
+                if row:
+                    entity_id, entity_status = int(row[0]), row[1]
+
+            if entity_id is None:
+                row = conn.execute(
+                    "SELECT al.entity_id, e.status"
+                    " FROM avatar_link al"
+                    " JOIN entities e ON e.id = al.entity_id"
+                    " WHERE LOWER(al.nick) = LOWER(?)",
+                    (nick,),
+                ).fetchone()
+                if row:
+                    entity_id, entity_status = int(row[0]), row[1]
+
+            # ----------------------------------------------------------
+            # 2. Determine avatar state and act accordingly.
+            # ----------------------------------------------------------
+            was_already_opted_in = False
+
+            if entity_id is not None and entity_status == "active":
+                # Active: return existing. Update nick in link in case IRC renamed.
+                was_already_opted_in = True
+                conn.execute(
+                    "UPDATE avatar_link SET nick = ?, account = ? WHERE entity_id = ?",
+                    (nick, account, entity_id),
+                )
+
+            elif entity_id is not None and entity_status == "retired":
+                # Retired (soft pause): reactivate and update the link.
+                conn.execute(
+                    "UPDATE entities SET status = 'active', updated_at = ? WHERE id = ?",
+                    (now, entity_id),
+                )
+                conn.execute(
+                    "UPDATE avatar_link SET nick = ?, account = ? WHERE entity_id = ?",
+                    (nick, account, entity_id),
+                )
+
+            else:
+                # New avatar.
+                cur = conn.execute(
+                    "INSERT INTO entities (kind, name, summary, status, created_at, updated_at)"
+                    " VALUES ('avatar', ?, ?, 'active', ?, ?)",
+                    (nick, instruct_text, now, now),
+                )
+                assert cur.lastrowid is not None
+                entity_id = cur.lastrowid
+                conn.execute(
+                    "INSERT INTO avatar_link (entity_id, nick, account) VALUES (?, ?, ?)"
+                    " ON CONFLICT(entity_id) DO UPDATE SET nick = excluded.nick,"
+                    " account = excluded.account",
+                    (entity_id, nick, account),
+                )
+
+            # ----------------------------------------------------------
+            # 3. Pick or create the starter place.
+            #    Pull all active places in Python — small count in early-PR1
+            #    use, avoids json_each complexity, and keeps SQL surface small.
+            # ----------------------------------------------------------
+            place_rows = conn.execute(
+                "SELECT id, name, summary, updated_at FROM entities"
+                " WHERE kind = 'place' AND status = 'active'",
+            ).fetchall()
+
+            if not place_rows:
+                # Create default clearing.
+                cur2 = conn.execute(
+                    "INSERT INTO entities (kind, name, summary, status, created_at, updated_at)"
+                    " VALUES ('place', 'The Clearing',"
+                    " 'A quiet woodland clearing where new stories begin.',"
+                    " 'active', ?, ?)",
+                    (now, now),
+                )
+                assert cur2.lastrowid is not None
+                place_name = "The Clearing"
+                place_summary = "A quiet woodland clearing where new stories begin."
+            else:
+                # For each active place, find the max event ts that references it.
+                # Fetch event rows once; iterate in Python to find best place.
+                event_rows = conn.execute(
+                    "SELECT entity_ids, ts FROM events ORDER BY ts DESC",
+                ).fetchall()
+
+                # Build map: place_id -> latest_event_ts
+                place_ids = {row[0] for row in place_rows}
+                latest_ts: dict[int, float] = dict.fromkeys(place_ids, 0.0)
+                for ev_entity_ids_json, ev_ts in event_rows:
+                    try:
+                        ev_entity_ids = json.loads(ev_entity_ids_json)
+                    except (ValueError, TypeError):
+                        continue
+                    for eid_val in ev_entity_ids:
+                        pid = int(eid_val)
+                        if pid in latest_ts and ev_ts > latest_ts[pid]:
+                            latest_ts[pid] = ev_ts
+
+                # Sort: latest_event_ts DESC, updated_at DESC, id DESC
+                best = sorted(
+                    place_rows,
+                    key=lambda r: (latest_ts[r[0]], r[3], r[0]),
+                    reverse=True,
+                )[0]
+                place_name = best[1]
+                place_summary = best[2]
+
+            # ----------------------------------------------------------
+            # 4. Upsert avatar's location attribute.
+            # ----------------------------------------------------------
+            conn.execute(
+                "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'location', ?)"
+                " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
+                (entity_id, place_name),
+            )
+
+            # ----------------------------------------------------------
+            # 5. Build scene text.
+            # ----------------------------------------------------------
+            scene_text = (
+                f"You step into {place_name}. {place_summary}"
+                " Use @look to inspect things or @ask … to act."
+            )
+
+        return AvatarOptInResult(
+            entity_id=entity_id,
+            place_name=place_name,
+            scene_text=scene_text,
+            was_already_opted_in=was_already_opted_in,
+        )
