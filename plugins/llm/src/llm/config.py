@@ -355,6 +355,31 @@ conf.registerChannelValue(
 )
 
 # ============================================================================
+# Verse (forest-verse avatar/event subsystem)
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "verseEnabled",
+    registry.Boolean(
+        False,
+        _("""Enable the verse avatar/event subsystem in this channel.
+        When False, @verse commands are disabled and no verse events are
+        recorded regardless of other verse settings."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseEventRetentionDays",
+    registry.Integer(
+        30,
+        _("""Number of days to retain verse events before pruning.
+        Older events are removed during housekeeping runs."""),
+    ),
+)
+
+# ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================
 
