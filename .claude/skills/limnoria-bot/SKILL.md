@@ -34,7 +34,6 @@ Pick the reference for the task at hand. Read only what is relevant — these re
 | Harden SSL/TLS, owner access, shell-exec risk, error disclosure, and public command surface | [references/security.md](references/security.md) |
 | Back up or restore config, user DB, channel DB, plugin data, and sanitized config exports | [references/backup_and_recovery.md](references/backup_and_recovery.md) |
 | "Bot doesn't recognise me", missing `owner`, brackets-in-nick, common FAQ | [references/troubleshooting.md](references/troubleshooting.md) |
-| Validate whether this skill guides agents correctly under realistic operator tasks | [references/pressure_scenarios.md](references/pressure_scenarios.md) |
 
 ## Hard rules
 
