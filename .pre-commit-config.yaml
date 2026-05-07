@@ -24,7 +24,7 @@ repos:
     hooks:
       - id: ty
         name: ty type checker
-        entry: uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/ plugins/rpg/src/
+        entry: uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/
         language: system
         pass_filenames: false
         types: [python]

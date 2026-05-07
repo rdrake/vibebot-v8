@@ -289,7 +289,6 @@ vibebot-v8/
 │   │   ├── config.py        # Registry options
 │   │   └── context.py       # Conversation history
 │   └── tests/               # Unit + Hypothesis property tests
-├── plugins/rpg/             # Lightweight RPG plugin
 ├── plugins/nickinmiddle/    # Inserts speaker's nick mid-reply (AfterNet UX)
 ├── bot.conf                 # Bot configuration
 └── pyproject.toml           # Workspace + dependencies
