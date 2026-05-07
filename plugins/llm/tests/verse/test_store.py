@@ -148,3 +148,156 @@ class TestEntityCrud:
         assert len(results) == 2
         assert results[0].id == id_b
         assert results[1].id == id_a
+
+
+class TestAttributesCrud:
+    def test_set_and_get(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        store.set_attribute(eid, "color", "red")
+        assert store.get_attribute(eid, "color") == "red"
+
+    def test_get_missing_returns_none(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        assert store.get_attribute(eid, "nonexistent") is None
+
+    def test_set_overwrites_existing(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        store.set_attribute(eid, "color", "red")
+        store.set_attribute(eid, "color", "blue")
+        assert store.get_attribute(eid, "color") == "blue"
+        attrs = store.list_attributes(eid)
+        assert list(attrs.keys()).count("color") == 1
+
+    def test_list_attributes_returns_dict(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        store.set_attribute(eid, "color", "red")
+        store.set_attribute(eid, "mood", "cheerful")
+        store.set_attribute(eid, "weapon", "staff")
+        attrs = store.list_attributes(eid)
+        assert attrs == {"color": "red", "mood": "cheerful", "weapon": "staff"}
+
+    def test_list_attributes_empty(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        assert store.list_attributes(eid) == {}
+
+    def test_attributes_cascade_on_entity_delete(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Alice", "Test npc")
+        store.set_attribute(eid, "color", "red")
+        store.set_attribute(eid, "mood", "happy")
+        # manually delete the entity to trigger ON DELETE CASCADE
+        with store.write_transaction() as conn:
+            conn.execute("DELETE FROM entities WHERE id = ?", (eid,))
+        assert store.list_attributes(eid) == {}
+
+
+class TestRelationsCrud:
+    def test_add_returns_id(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        rid = store.add_relation(a, b, "allied_with")
+        assert isinstance(rid, int)
+        assert rid > 0
+
+    def test_list_no_filter_returns_all(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        c = store.add_entity("npc", "Carol", "")
+        store.add_relation(a, b, "allied_with")
+        store.add_relation(a, c, "hates")
+        store.add_relation(b, c, "allied_with")
+        rels = store.list_relations()
+        assert len(rels) == 3
+        # ordered by id ASC
+        assert rels[0].id < rels[1].id < rels[2].id
+
+    def test_list_filtered_by_from_id(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        c = store.add_entity("npc", "Carol", "")
+        store.add_relation(a, b, "allied_with")
+        store.add_relation(a, c, "hates")
+        store.add_relation(b, c, "allied_with")
+        rels = store.list_relations(from_id=a)
+        assert len(rels) == 2
+        assert all(r.from_id == a for r in rels)
+
+    def test_list_filtered_by_to_id(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        c = store.add_entity("npc", "Carol", "")
+        store.add_relation(a, b, "allied_with")
+        store.add_relation(a, c, "hates")
+        store.add_relation(b, c, "allied_with")
+        rels = store.list_relations(to_id=c)
+        assert len(rels) == 2
+        assert all(r.to_id == c for r in rels)
+
+    def test_list_filtered_by_kind(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        c = store.add_entity("npc", "Carol", "")
+        store.add_relation(a, b, "allied_with")
+        store.add_relation(a, c, "hates")
+        store.add_relation(b, c, "allied_with")
+        allied = store.list_relations(kind="allied_with")
+        assert len(allied) == 2
+        hates = store.list_relations(kind="hates")
+        assert len(hates) == 1
+
+    def test_list_filtered_by_combo(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        c = store.add_entity("npc", "Carol", "")
+        store.add_relation(a, b, "allied_with")
+        store.add_relation(a, c, "hates")
+        store.add_relation(b, c, "allied_with")
+        rels = store.list_relations(from_id=a, kind="allied_with")
+        assert len(rels) == 1
+        assert rels[0].from_id == a
+        assert rels[0].to_id == b
+        assert rels[0].kind == "allied_with"
+
+    def test_list_relations_empty_when_no_match(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("npc", "Alice", "")
+        b = store.add_entity("npc", "Bob", "")
+        store.add_relation(a, b, "allied_with")
+        assert store.list_relations(kind="nonexistent_kind") == []
