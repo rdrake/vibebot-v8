@@ -442,6 +442,21 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "loomCaptureTranscript",
+    registry.Boolean(
+        True,
+        _("""When True (default), the loom captures non-self lines from
+        loomChannel into its transcript and drives beat + digest calls
+        from that content. When False, the loom still posts seed lines
+        (for ambient flavor) but ignores all channel chatter — every
+        cycle finalizes via the empty-transcript short-circuit, no
+        proposals are generated. Useful when the venue is too noisy or
+        too off-topic to feed the model."""),
+    ),
+)
+
 # ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================

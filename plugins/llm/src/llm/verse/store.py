@@ -170,6 +170,22 @@ class VerseStore:
             ).fetchone()
         return Entity(*row) if row else None
 
+    def entity_exists(self, entity_id: object) -> bool:
+        """True iff *entity_id* coerces to int and a row with that id exists.
+
+        Tolerates non-int input (returns False for None, strings, etc.) so
+        callers validating LLM-emitted payloads don't have to pre-check
+        types. ``add_relation`` and ``set_attribute`` payloads use this to
+        drop proposals referencing nonexistent ids before they reach the
+        operator queue.
+        """
+        if isinstance(entity_id, bool) or not isinstance(entity_id, int):
+            return False
+        eid = entity_id
+        with self.read_connection() as conn:
+            row = conn.execute("SELECT 1 FROM entities WHERE id = ?", (eid,)).fetchone()
+        return row is not None
+
     def find_entity_by_name(self, name: str, kind: str | None = None) -> Entity | None:
         """Case-insensitive name lookup. Optional kind filter. Returns first match by id."""
         kind_filter = "AND kind = ?" if kind is not None else ""

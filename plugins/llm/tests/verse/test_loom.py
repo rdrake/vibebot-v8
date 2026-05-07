@@ -528,6 +528,79 @@ class TestApplyOrQueue:
         assert len(rows) == 1
         assert rows[0].status == "pending"
 
+    def test_add_relation_with_bogus_ids_auto_rejected(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        prop = ParsedProposal(
+            op="add_relation",
+            payload={"from_id": 0, "to_id": 3, "kind": "previously_owned"},
+            confidence=0.95,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "rejected_invalid_refs"
+        # No relation was applied (0 and 3 don't exist).
+        assert store.list_relations() == []
+        # Proposal row is rejected with the auto-validator reviewer.
+        rows = store.list_proposals(cycle_id="c1", status="rejected")
+        assert len(rows) == 1
+        assert rows[0].reviewer == "auto-validator"
+
+    def test_add_event_with_orphan_entity_id_auto_rejected(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_entity("avatar", "Forest")  # id=1
+        prop = ParsedProposal(
+            op="add_event",
+            payload={"summary": "x", "entity_ids": [1, 99]},
+            confidence=0.95,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "rejected_invalid_refs"
+        assert store.recent_events() == []
+        rows = store.list_proposals(cycle_id="c1", status="rejected")
+        assert len(rows) == 1
+
+    def test_set_attribute_with_orphan_entity_id_auto_rejected(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        prop = ParsedProposal(
+            op="set_attribute",
+            payload={"entity_id": 99, "key": "k", "value": "v"},
+            confidence=0.95,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "rejected_invalid_refs"
+
+    def test_relation_with_existing_ids_still_works(self, verse_db_dir) -> None:
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.add_entity("avatar", "Forest")
+        b = store.add_entity("npc", "Owl")
+        prop = ParsedProposal(
+            op="add_relation",
+            payload={"from_id": a, "to_id": b, "kind": "allied_with"},
+            confidence=0.95,
+            provenance="l-1",
+            rationale="r",
+        )
+        result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
+        assert result == "applied"
+        assert len(store.list_relations(from_id=a)) == 1
+
 
 class TestLoomCycle:
     def test_append_grows_transcript_in_order(self) -> None:

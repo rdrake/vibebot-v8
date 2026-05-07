@@ -601,6 +601,7 @@ class LLM(callbacks.Plugin):
         self._loom_channel_cache: str | None = None
         self._loom_network_cache: str | None = None
         self._loom_bot_nicks_cache: tuple[str, ...] = ()
+        self._loom_capture_transcript_cache: bool = True
 
         # Reload persisted reminders from database
         self._reload_reminders(irc)
@@ -671,6 +672,7 @@ class LLM(callbacks.Plugin):
             "loomTranscriptMaxLines",
             "loomTranscriptMaxChars",
             "loomBotNicks",
+            "loomCaptureTranscript",
             "verseAutoApplyThreshold",
         ):
             getattr(conf.supybot.plugins.LLM, _key).addCallback(self._on_loom_config_change)
@@ -1061,7 +1063,7 @@ class LLM(callbacks.Plugin):
         # and supybot/server may emit a different case than what the
         # operator typed into @config.
         loom = self._loom
-        if loom is not None:
+        if loom is not None and self._loom_capture_transcript_cache:
             try:
                 irc_network = getattr(irc, "network", None) or ""
                 cache_network = self._loom_network_cache or ""
@@ -4667,12 +4669,16 @@ class LLM(callbacks.Plugin):
             self._loom_channel_cache = None
             self._loom_network_cache = None
             self._loom_bot_nicks_cache = ()
+            self._loom_capture_transcript_cache = True
             return
         if (
             self._loom is not None
             and self._loom_channel_cache == channel
             and self._loom_network_cache == network
         ):
+            # Identity unchanged but auxiliary caches may have flipped via
+            # @config (e.g. loomCaptureTranscript). Refresh them.
+            self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
             return
 
         from .verse.loom import LiteLLMLoomClient, Loom, LoomConfig
@@ -4704,6 +4710,7 @@ class LLM(callbacks.Plugin):
         self._loom_channel_cache = channel
         self._loom_network_cache = network
         self._loom_bot_nicks_cache = cfg.bot_nicks
+        self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
         self._schedule_loom_tick()
 
     def _schedule_loom_tick(self) -> None:

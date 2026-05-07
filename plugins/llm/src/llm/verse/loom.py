@@ -197,6 +197,30 @@ def parse_digest(text: str) -> list[ParsedProposal]:
     return out
 
 
+def _proposal_entity_refs_resolve(store: Any, prop: ParsedProposal) -> bool:
+    """True iff every entity id the proposal references resolves to a row.
+
+    The model occasionally emits relations and events with ids it never
+    saw in the verse snapshot (e.g. ``from_id=0`` when no entity 0
+    exists). We drop those before they reach the operator queue.
+    ``add_entity`` creates new rows so it's exempt.
+    """
+    op = prop.op
+    payload = prop.payload
+    if op == "add_entity":
+        return True
+    if op == "set_attribute":
+        return store.entity_exists(payload.get("entity_id"))
+    if op == "add_relation":
+        return store.entity_exists(payload.get("from_id")) and store.entity_exists(
+            payload.get("to_id")
+        )
+    if op == "add_event":
+        ids = payload.get("entity_ids") or []
+        return all(store.entity_exists(eid) for eid in ids)
+    return True
+
+
 def apply_or_queue(
     store: Any,
     prop: ParsedProposal,
@@ -204,11 +228,25 @@ def apply_or_queue(
     cycle_id: str,
     threshold: float,
 ) -> str:
-    """Always insert a proposal row. Returns 'applied' or 'queued'.
+    """Always insert a proposal row. Returns 'applied', 'queued', or
+    'rejected_invalid_refs'.
 
-    Auto-apply uses ``apply_and_record_proposal`` so the mutation and
-    the audit row are written in one ``write_transaction``.
+    Proposals referencing nonexistent entity ids get auto-rejected with
+    ``reviewer='auto-validator'`` so the operator's pending queue stays
+    clean. Otherwise auto-apply uses ``apply_and_record_proposal`` so
+    mutation + audit row land in one ``write_transaction``.
     """
+    if not _proposal_entity_refs_resolve(store, prop):
+        store.add_proposal(
+            cycle_id=cycle_id,
+            op=prop.op,
+            payload=prop.payload,
+            confidence=prop.confidence,
+            provenance=prop.provenance,
+            status="rejected",
+            reviewer="auto-validator",
+        )
+        return "rejected_invalid_refs"
     auto = prop.op != "add_entity" and prop.confidence >= threshold
     if auto:
         store.apply_and_record_proposal(

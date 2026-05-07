@@ -262,6 +262,7 @@ class TestConfigValues:
         assert cfg.loomTranscriptMaxLines() == 40
         assert cfg.loomTranscriptMaxChars() == 8000
         assert cfg.loomBotNicks() == ""
+        assert cfg.loomCaptureTranscript() is True
         assert cfg.verseAutoApplyThreshold() == 0.85
 
 

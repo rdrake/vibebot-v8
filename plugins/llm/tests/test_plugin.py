@@ -1447,6 +1447,18 @@ class TestDoPrivmsgLoomHook:
         plugin.doPrivmsg(irc, msg)
         assert plugin._loom.observed == []
 
+    def test_doprivmsg_skips_capture_when_flag_disabled(self, mocker: MockerFixture) -> None:
+        plugin = self._build_loom_plugin(mocker)
+        plugin._loom = _FakeLoom()
+        plugin._loom_channel_cache = "#forest"
+        plugin._loom_network_cache = "afternet"
+        plugin._loom_bot_nicks_cache = ()
+        plugin._loom_capture_transcript_cache = False
+        irc = self._make_irc(mocker, network="afternet")
+        msg = self._make_msg(mocker, target="#forest", nick="botB", text="hi there")
+        plugin.doPrivmsg(irc, msg)
+        assert plugin._loom.observed == []
+
 
 class TestVerseproposalsCommand:
     """D1: @verseproposals listing command."""
