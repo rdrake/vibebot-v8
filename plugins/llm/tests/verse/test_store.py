@@ -28,3 +28,24 @@ class TestDbPathForChannel:
         a = db_path_for_channel(verse_db_dir, "#afnet")
         b = db_path_for_channel(verse_db_dir, "#afnet")
         assert a == b
+
+
+class TestVerseStoreInit:
+    def test_creates_db_with_schema(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT version FROM schema_version").fetchone()
+            assert row is not None
+            assert row[0] >= 1
+
+    def test_idempotent_init(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        VerseStore(verse_db_dir, "#afnet")
+        VerseStore(verse_db_dir, "#afnet")
+        store = VerseStore(verse_db_dir, "#afnet")
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
+            assert count == 1
