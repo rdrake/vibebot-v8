@@ -1,4 +1,4 @@
-# Forest-verse PR 1 Implementation Plan
+# Forest-verse PR 1 Implementation Plan (v2)
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -6,9 +6,9 @@
 
 **Architecture:**
 - New package `plugins/llm/src/llm/verse/` with `store.py`, `avatar.py`, `schema.sql`.
-- Verse store mirrors the thread-local + WAL + per-DB write-lock pattern from `plugins/llm/src/llm/persistence.py:160-216`.
+- Verse store mirrors the thread-local + WAL pattern from `plugins/llm/src/llm/persistence.py:160–229`. The per-channel `threading.Lock` is a *new* addition on top of that pattern (the existing persistence layer doesn't have it; the verse store needs it because writes can race across IRC commands and the loom callback in PR 2).
 - Avatar shim wraps `@ask` for opted-in users. Verb whitelist enumerated; off-list verbs land as event-only.
-- `plugins/rpg/` is deleted in the same PR. `forestNicks` and spontaneous registry keys are deleted with their code paths.
+- `plugins/rpg/` is deleted in the same PR. `forestNicks` and spontaneous registry keys are deleted only in the same commit that removes their call sites.
 
 **Tech Stack:**
 - Python 3.13+ via `uv`, `pytest`, `ruff`, `ty`.
@@ -25,6 +25,20 @@
 - `uv run pytest …` not bare `pytest`.
 - Frequent atomic commits; one task → one commit (or two: test+impl can be one commit when they belong together).
 
+**Scope guard for PR 1 (per design v3 Rollout):**
+
+PR 1 ships **only**:
+- `verse/` package: store + avatar + verb whitelist + tools.
+- New commands: `@verseopt`, `@verse`, `@look`, `@who`, `@versedump`, `@versepurge`.
+- New capabilities: `llm.verse`, `llm.verse.gm`.
+- New registry keys: **only** `verseEnabled` (per-channel bool) and `verseEventRetentionDays` (per-channel int). Nothing else.
+- Removal of `plugins/rpg/`, `forestNicks`, and spontaneous code paths.
+
+PR 1 does **not** ship:
+- `loomChannel`, `loomModel`, `loomCycleInterval`, `loomVerseCooldown`, `loomBeatWindow`, `loomTranscriptMaxLines`, `loomTranscriptMaxChars` — all reserved for PR 2.
+- `verseAutoApplyThreshold`, `verseCrosspollAllowSend`, `verseCrosspollAllowReceive`, `verseCrosspollPerCycleLimit` — reserved for PR 2/3.
+- The `proposals` table is created by PR 1's schema (so PR 2 doesn't need a migration), but no code path in PR 1 writes to it.
+
 ---
 
 ## Phase A — Verse store
@@ -32,12 +46,12 @@
 ### Task A1: Create the package skeleton
 
 **Files:**
-- Create: `plugins/llm/src/llm/verse/__init__.py` (empty module docstring)
-- Create: `plugins/llm/src/llm/verse/schema.sql` (placeholder; populated in A3)
-- Create: `plugins/llm/src/llm/verse/store.py` (placeholder)
-- Create: `plugins/llm/src/llm/verse/avatar.py` (placeholder)
-- Create: `plugins/llm/src/llm/verse/tests/__init__.py` (empty)
-- Create: `plugins/llm/src/llm/verse/tests/conftest.py`
+- Create: `plugins/llm/src/llm/verse/__init__.py` (one-line module docstring).
+- Create: `plugins/llm/src/llm/verse/schema.sql` (placeholder; populated in A3).
+- Create: `plugins/llm/src/llm/verse/store.py` (placeholder).
+- Create: `plugins/llm/src/llm/verse/avatar.py` (placeholder).
+- Create: `plugins/llm/src/llm/verse/tests/__init__.py` (empty).
+- Create: `plugins/llm/src/llm/verse/tests/conftest.py`.
 
 **Step 1: write `__init__.py`:**
 
@@ -65,7 +79,9 @@ def verse_db_dir(tmp_path: Path) -> Path:
     return d
 ```
 
-**Step 3: commit**
+**Step 3: run** `make check` to confirm empty modules pass `ruff` and `ty` (they do; verified — `pyproject.toml`'s ruff/ty configs tolerate empty modules). If anything trips, fix tooling before adding feature code.
+
+**Step 4: commit**
 
 ```bash
 git add plugins/llm/src/llm/verse/
@@ -77,8 +93,8 @@ git commit -m "feat(verse): scaffold package skeleton"
 ### Task A2: db filename sanitization helper
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py`
-- Test: `plugins/llm/src/llm/verse/tests/test_store.py` (new)
+- Modify: `plugins/llm/src/llm/verse/store.py`.
+- Test: `plugins/llm/src/llm/verse/tests/test_store.py` (new).
 
 **Step 1: write the failing test** in `test_store.py`:
 
@@ -102,7 +118,6 @@ class TestDbPathForChannel:
         assert result.suffix == ".db"
 
     def test_distinguishes_case_variants(self, verse_db_dir: Path) -> None:
-        # #Foo and #foo must NOT collide on case-insensitive filesystems.
         upper = db_path_for_channel(verse_db_dir, "#Foo")
         lower = db_path_for_channel(verse_db_dir, "#foo")
         assert upper != lower
@@ -118,7 +133,7 @@ class TestDbPathForChannel:
         assert a == b
 ```
 
-**Step 2: run** `uv run pytest plugins/llm/src/llm/verse/tests/test_store.py -v` — should fail with ImportError.
+**Step 2: run** `uv run pytest plugins/llm/src/llm/verse/tests/test_store.py -v` — should fail with `ImportError`.
 
 **Step 3: implement** in `store.py`:
 
@@ -135,40 +150,31 @@ _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
 
 def db_path_for_channel(base_dir: Path, channel: str) -> Path:
-    """Return the per-channel SQLite path under ``base_dir``.
-
-    Lowercases the channel name, replaces non-``[a-z0-9_-]`` with ``_``,
-    and appends an 8-char SHA-256 prefix of the *original* channel string
-    to disambiguate collisions on case-insensitive filesystems.
-    """
+    """Return the per-channel SQLite path under ``base_dir``."""
     lowered = channel.lower()
     safe = _SAFE_RE.sub("_", lowered)
     digest = hashlib.sha256(channel.encode("utf-8")).hexdigest()[:8]
     return base_dir / f"{safe}_{digest}.db"
 ```
 
-**Step 4: run tests** — should pass.
+**Step 4: run tests** — pass.
 
-**Step 5: commit**
-
-```bash
-git add plugins/llm/src/llm/verse/store.py plugins/llm/src/llm/verse/tests/test_store.py
-git commit -m "feat(verse): db_path_for_channel sanitizer"
-```
+**Step 5: commit** — `feat(verse): db_path_for_channel sanitizer`.
 
 ---
 
-### Task A3: schema.sql + initial connection
+### Task A3: schema.sql + connection / migration
+
+**IMPORTANT pattern note:** SQLite's `executescript()` issues an implicit `COMMIT` before running the script, which **breaks** any surrounding `write_transaction` context. The existing pattern at `plugins/llm/src/llm/persistence.py:225–229` runs `executescript` directly off `_connect()`, *not* inside a write transaction. Mirror that pattern exactly.
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/schema.sql`
-- Modify: `plugins/llm/src/llm/verse/store.py`
-- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`
+- Modify: `plugins/llm/src/llm/verse/schema.sql`.
+- Modify: `plugins/llm/src/llm/verse/store.py`.
+- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`.
 
-**Step 1: write `schema.sql`** with the full data model from the design doc:
+**Step 1: write `schema.sql`** with the full data model (entities, attributes, relations, events, avatar_link, proposals, schema_version). The proposals table is created here even though PR 1 has no writer for it — this avoids a migration in PR 2. Schema body is the same as v1 of this plan; reproduced here for completeness:
 
 ```sql
--- Forest-verse per-channel schema.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -185,7 +191,6 @@ CREATE TABLE IF NOT EXISTS entities (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
-
 CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind, status);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
 
@@ -195,7 +200,6 @@ CREATE TABLE IF NOT EXISTS attributes (
     value     TEXT NOT NULL,
     PRIMARY KEY (entity_id, key)
 );
-
 CREATE INDEX IF NOT EXISTS idx_attributes_kv ON attributes(key, value);
 
 CREATE TABLE IF NOT EXISTS relations (
@@ -205,7 +209,6 @@ CREATE TABLE IF NOT EXISTS relations (
     kind    TEXT NOT NULL,
     note    TEXT NOT NULL DEFAULT ''
 );
-
 CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_id, kind);
 CREATE INDEX IF NOT EXISTS idx_relations_to   ON relations(to_id, kind);
 
@@ -213,10 +216,9 @@ CREATE TABLE IF NOT EXISTS events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         REAL NOT NULL,
     summary    TEXT NOT NULL,
-    entity_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    entity_ids TEXT NOT NULL DEFAULT '[]',
     source     TEXT NOT NULL CHECK (source IN ('avatar','loom','crosspoll'))
 );
-
 CREATE INDEX IF NOT EXISTS idx_events_ts     ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
 
@@ -225,35 +227,33 @@ CREATE TABLE IF NOT EXISTS avatar_link (
     nick      TEXT NOT NULL,
     account   TEXT
 );
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_avatar_link_nick    ON avatar_link(nick);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_avatar_link_account ON avatar_link(account) WHERE account IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS proposals (
-    id          TEXT PRIMARY KEY,           -- UUID
+    id          TEXT PRIMARY KEY,
     created_at  REAL NOT NULL,
     cycle_id    TEXT NOT NULL,
     op          TEXT NOT NULL CHECK (op IN ('add_event','set_attribute','add_relation','add_entity')),
-    payload     TEXT NOT NULL,              -- JSON
+    payload     TEXT NOT NULL,
     confidence  REAL NOT NULL,
     provenance  TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
     reviewer    TEXT,
     reviewed_at REAL
 );
-
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, created_at);
 ```
 
-**Step 2: write the failing test**:
+(Partial index on `account IS NOT NULL` requires SQLite ≥ 3.8; project already targets 3.x stdlib so this is fine.)
+
+**Step 2: write the failing test:**
 
 ```python
 class TestVerseStoreInit:
     def test_creates_db_with_schema(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
-
         store = VerseStore(verse_db_dir, "#afnet")
-        # Should be able to open and check schema_version exists
         with store.read_connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             assert row is not None
@@ -261,23 +261,15 @@ class TestVerseStoreInit:
 
     def test_idempotent_init(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
-
         VerseStore(verse_db_dir, "#afnet")
-        VerseStore(verse_db_dir, "#afnet")  # second open must not double-apply migrations
+        VerseStore(verse_db_dir, "#afnet")
         store = VerseStore(verse_db_dir, "#afnet")
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
             assert count == 1
 ```
 
-**Step 3: implement `VerseStore.__init__`, `_connect`, `_migrate`, `read_connection`** in `store.py`. Follow the pattern at `plugins/llm/src/llm/persistence.py:160-216` exactly:
-- Thread-local connection (`threading.local()`).
-- `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON` on first connect.
-- `_migrate` applies `schema.sql` only when `schema_version` is empty.
-- `read_connection()` is a context manager that yields the thread-local conn (no commit).
-- `SCHEMA_VERSION = 1`.
-
-Sketch:
+**Step 3: implement** in `store.py`:
 
 ```python
 import sqlite3
@@ -329,100 +321,55 @@ class VerseStore:
                 raise
 
     def _migrate(self) -> None:
-        with self.write_transaction() as conn:
-            conn.executescript(_SCHEMA_SQL)
-            existing = conn.execute("SELECT version FROM schema_version").fetchone()
-            if existing is None:
-                conn.execute(
+        # executescript() implicitly commits; do NOT wrap in write_transaction.
+        # Mirrors plugins/llm/src/llm/persistence.py:225-229.
+        conn = self._connect()
+        conn.executescript(_SCHEMA_SQL)
+        existing = conn.execute("SELECT version FROM schema_version").fetchone()
+        if existing is None:
+            with self.write_transaction() as wconn:
+                wconn.execute(
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, time.time()),
                 )
 ```
 
-**Step 4: run tests** — should pass.
+**Step 4: run tests** — pass.
 
-**Step 5: commit**
-
-```bash
-git add plugins/llm/src/llm/verse/
-git commit -m "feat(verse): store init with schema + WAL + thread-local conn"
-```
+**Step 5: commit** — `feat(verse): store init with schema + WAL + thread-local conn`.
 
 ---
 
 ### Task A4: entity CRUD
 
-**Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py`
-- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`
+**Files:** as A3.
 
-**Step 1: write failing tests** for `add_entity`, `get_entity`, `find_entity_by_name`, `set_status`, `list_entities_by_kind`.
+Tests for `add_entity`, `get_entity`, `find_entity_by_name` (case-insensitive), `set_status`, `list_entities_by_kind` (with status filter).
 
-```python
-class TestEntities:
-    def test_add_and_get(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity(kind="avatar", name="alice", summary="a curious traveller")
-        e = store.get_entity(eid)
-        assert e.name == "alice"
-        assert e.kind == "avatar"
-        assert e.status == "active"
+`Entity` as a `NamedTuple`. All writes through `write_transaction`. `find_entity_by_name` uses `LOWER(name) = LOWER(?)`.
 
-    def test_find_by_name_case_insensitive(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-        store = VerseStore(verse_db_dir, "#afnet")
-        store.add_entity(kind="place", name="The Clearing", summary="")
-        e = store.find_entity_by_name("the clearing")
-        assert e is not None
-        assert e.name == "The Clearing"
-
-    def test_retire_soft_deletes(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity(kind="avatar", name="bob", summary="")
-        store.set_status(eid, "retired")
-        e = store.get_entity(eid)
-        assert e.status == "retired"
-
-    def test_list_entities_by_kind_filters_status(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-        store = VerseStore(verse_db_dir, "#afnet")
-        active = store.add_entity(kind="avatar", name="active", summary="")
-        retired = store.add_entity(kind="avatar", name="retired", summary="")
-        store.set_status(retired, "retired")
-        names = [e.name for e in store.list_entities_by_kind("avatar", status="active")]
-        assert names == ["active"]
-```
-
-**Step 2: run** — fails (no methods).
-
-**Step 3: implement.** Add an `Entity` NamedTuple and the methods. Names map directly to columns. Use `lower(name) = lower(?)` for case-insensitive lookup. All writes through `write_transaction`.
-
-**Step 4: run tests** — pass.
-
-**Step 5: commit** — `feat(verse): entity CRUD`
+Commit: `feat(verse): entity CRUD`.
 
 ---
 
 ### Task A5: attributes + relations CRUD
 
-**Files:** same as A4.
+**Files:** as A3.
 
-Tests to add:
-- `set_attribute(eid, key, value)` upserts.
-- `get_attribute(eid, key)` returns value or None.
+Tests:
+- `set_attribute(eid, key, value)` upserts (use `INSERT … ON CONFLICT DO UPDATE`).
+- `get_attribute(eid, key)` returns value or `None`.
 - `list_attributes(eid)` returns dict.
 - `add_relation(from_id, to_id, kind, note="")` returns rel id.
 - `list_relations(from_id=None, to_id=None, kind=None)` filters.
 
-Implement the methods. Commit: `feat(verse): attributes + relations`.
+Commit: `feat(verse): attributes + relations`.
 
 ---
 
 ### Task A6: events append + retrieval
 
-**Files:** same.
+**Files:** as A3.
 
 Tests:
 - `add_event(summary, entity_ids, source)` returns id, sets `ts` to current time.
@@ -435,73 +382,55 @@ Implement. JSON-encode `entity_ids`. Commit: `feat(verse): events append + retri
 
 ### Task A7: avatar_link CRUD + soft-delete avatar
 
-**Files:** same.
+**Files:** as A3.
 
 Tests:
 - `link_avatar(entity_id, nick, account=None)` upserts.
 - `find_avatar_by_nick(nick)` returns entity_id or None (case-insensitive).
 - `find_avatar_by_account(account)` returns entity_id or None.
-- `unlink_avatar(entity_id)` removes link AND retires the entity.
+- `unlink_avatar(entity_id)` removes link AND retires the entity (atomic, in one `write_transaction`).
 
-Implement. Commit: `feat(verse): avatar_link CRUD`.
+Commit: `feat(verse): avatar_link CRUD`.
 
 ---
 
 ### Task A8: write-lock concurrency test
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`
+- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`.
 
-**Step 1: write a real-threads concurrency test.**
+Real-threads test with `ThreadPoolExecutor(max_workers=8)` writing 50 entities; assert all unique IDs and all rows present.
 
-```python
-class TestConcurrency:
-    def test_parallel_writers_serialize(self, verse_db_dir: Path) -> None:
-        from concurrent.futures import ThreadPoolExecutor
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        N = 50
-
-        def writer(i: int) -> int:
-            return store.add_entity(kind="npc", name=f"npc{i}", summary="")
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            ids = list(pool.map(writer, range(N)))
-
-        assert len(set(ids)) == N
-        rows = store.list_entities_by_kind("npc")
-        assert len(rows) == N
-```
-
-**Step 2: run** — should pass given the existing `_lock` in `write_transaction`.
-
-**Step 3: commit** — `test(verse): write-lock concurrency`.
+Commit: `test(verse): write-lock concurrency`.
 
 ---
 
 ### Task A9: opt-in starter scene helper
 
-**Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py`
-- Modify: `plugins/llm/src/llm/verse/tests/test_store.py`
-
-Add a high-level helper:
+**Files:** as A3.
 
 ```python
 def opt_in_avatar(self, nick: str, account: str | None, instruct_text: str) -> AvatarOptInResult:
-    """Atomically: ensure a starter place exists, create the avatar entity,
-    set its location attribute to the place, link the IRC user, and return
-    a one-paragraph scene description for the caller to send back."""
+    """Atomically: ensure a starter place exists, create or revive the avatar
+    entity, set its location attribute to the place, link the IRC user, and
+    return a one-paragraph scene description."""
 ```
 
-**`AvatarOptInResult`** = NamedTuple of `entity_id`, `place_name`, `scene_text`, `was_already_opted_in: bool`.
+`AvatarOptInResult` = `NamedTuple(entity_id: int, place_name: str, scene_text: str, was_already_opted_in: bool)`.
 
-**Starter place:** if no entity of `kind='place'` and `status='active'` exists, create one named `"The Clearing"` with summary `"A quiet woodland clearing where new stories begin."`. Subsequent users land at the active place with the most events recently.
+**Behavior table:**
 
-**Scene text format:** `"You step into <place name>. <place summary> Try `verse_act look around` to begin."`
+| State | Effect |
+|---|---|
+| No avatar exists for nick/account | Create new avatar entity, link, set location, return `was_already_opted_in=False`. |
+| Active avatar exists for nick/account | Return existing avatar with `was_already_opted_in=True`. |
+| Retired avatar exists for nick/account | Reactivate (`status='active'`), update link, return `was_already_opted_in=False`. |
+| No active place exists | Create a default `place` entity named `"The Clearing"`, summary `"A quiet woodland clearing where new stories begin."`. |
+| At least one active place exists | New avatar lands at the active place with the most recent `events` row referencing it; tie-break on most recent `updated_at`. |
 
-Tests cover: first-user case (creates clearing), second-user case (lands in same place, no duplicate), idempotent re-opt-in (returns existing avatar with `was_already_opted_in=True`).
+**Concurrency test (real threads):** two threads call `opt_in_avatar` for distinct nicks at the same time on a brand-new store; assert exactly one place entity gets created and both avatars share its id.
+
+**Scene text format:** `"You step into <place name>. <place summary> Use @look to inspect things or @ask … to act."` (Avoid mentioning `verse_act` — that's a model-callable tool, not a user-typeable command.)
 
 Commit: `feat(verse): opt-in starter scene`.
 
@@ -512,27 +441,19 @@ Commit: `feat(verse): opt-in starter scene`.
 ### Task B1: verb whitelist + dispatch
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/avatar.py`
-- Test: `plugins/llm/src/llm/verse/tests/test_avatar.py` (new)
+- Modify: `plugins/llm/src/llm/verse/avatar.py`.
+- Test: `plugins/llm/src/llm/verse/tests/test_avatar.py` (new).
 
-**Step 1: define the whitelist.**
+Whitelist collapses `SEARCH` into `EVENT_ONLY` (no separate flag — the design doc's "re-render scene" note is a model-side hint, not a store-side flag).
 
 ```python
-"""Verse-aware @ask shim: tools, system prompt builder, verb dispatch."""
-
-from __future__ import annotations
-
-from enum import Enum
-
 class VerbEffect(Enum):
     EVENT_ONLY = "event_only"
-    MOVE = "move"          # updates location attribute
-    ITEM = "item"          # records take/drop/give event linking item
-    SEARCH = "search"      # event_only but flagged to re-render scene
+    MOVE = "move"
+    ITEM = "item"
 
 
 VERB_TABLE: dict[str, VerbEffect] = {
-    # event-only
     "whisper": VerbEffect.EVENT_ONLY,
     "speak":   VerbEffect.EVENT_ONLY,
     "listen":  VerbEffect.EVENT_ONLY,
@@ -540,62 +461,51 @@ VERB_TABLE: dict[str, VerbEffect] = {
     "wait":    VerbEffect.EVENT_ONLY,
     "signal":  VerbEffect.EVENT_ONLY,
     "gesture": VerbEffect.EVENT_ONLY,
-    # movement
+    "search":  VerbEffect.EVENT_ONLY,
     "move":    VerbEffect.MOVE,
     "flee":    VerbEffect.MOVE,
     "follow":  VerbEffect.MOVE,
-    # items (event only — no inventory ledger in v1)
     "take":    VerbEffect.ITEM,
     "drop":    VerbEffect.ITEM,
     "give":    VerbEffect.ITEM,
-    # search
-    "search":  VerbEffect.SEARCH,
 }
 ```
 
-**Step 2: write tests.**
-
-```python
-def test_whitelisted_verb_returns_effect():
-    from llm.verse.avatar import VERB_TABLE, VerbEffect
-    assert VERB_TABLE["whisper"] == VerbEffect.EVENT_ONLY
-    assert VERB_TABLE["move"] == VerbEffect.MOVE
-
-def test_unlisted_verb_not_in_table():
-    from llm.verse.avatar import VERB_TABLE
-    assert "teleport" not in VERB_TABLE
-```
-
-**Step 3: implement** (above).
-
-**Step 4: run + commit** — `feat(verse): verb whitelist`.
+Tests assert each verb maps correctly, off-list verbs are absent. Commit: `feat(verse): verb whitelist`.
 
 ---
 
 ### Task B2: `verse_act` handler
 
-**Files:** same.
+**Files:** as B1.
 
 Behaviour:
 - Inputs: `store: VerseStore`, `avatar_id: int`, `verb: str`, `target: str | None`, `details: str | None`.
 - Always writes an `events` row with `source='avatar'`, `entity_ids=[avatar_id, target_id?]`.
-- If verb is `MOVE` and target resolves to a place (or to another avatar's current place): update avatar's `location` attribute.
-- If verb is `ITEM`: resolve target as existing item entity; record event linking; do NOT create new item entities.
-- Off-list verbs: just write the event row, no side effects.
-- Returns `ActResult(event_id, scene_shift_text)` — one short paragraph of "what happens next" for the model to narrate.
+- `MOVE` verb: target must resolve to a `place` (or to another avatar's current `place`). On success, update avatar's `location` attribute. **On target-not-found**: write the event row anyway with no side effect, return `ActResult(event_id, scene_shift_text="You can't find that place.")`.
+- `ITEM` verb: resolve target as existing item entity. On not-found: event written, no side effect, scene_shift acknowledges absence.
+- Off-list verbs: event row only, no side effects, generic acknowledgement.
+- Returns `ActResult(event_id: int, scene_shift_text: str)`.
 
-Tests cover each verb type with a real store. Commit: `feat(verse): verse_act handler`.
+**Failure-path tests (required):**
+- `verse_act(store, avatar_id, "move", target="Nowhere")` — target doesn't exist → event row written, no `location` attribute change, scene_shift indicates failure.
+- `verse_act(store, avatar_id, "give", target="Phantom Sword")` — item doesn't exist → event row written, no relation added.
+- `verse_act(store, avatar_id, "teleport", target="moon")` — off-list verb → event row written, no side effect.
+- `verse_act` on a retired avatar → `ValueError("avatar retired")` raised before any write.
+
+Commit: `feat(verse): verse_act handler with failure paths`.
 
 ---
 
 ### Task B3: `verse_move`, `verse_look`, `verse_recall` handlers
 
-**Files:** same.
+**Files:** as B1.
 
-Each is small:
-- `verse_move(store, avatar_id, place_name)`: sets `location` attribute to the matching place. Errors if no such place.
-- `verse_look(store, target=None)`: returns avatar's current location summary if target is None; else returns the entity's summary.
-- `verse_recall(store, query)`: returns up to 5 recent events whose summary contains any token of `query` (case-insensitive substring match — RAG-lite, no embedding in v1).
+- `verse_move(store, avatar_id, place_name)`: sets `location` attribute to the matching place. Raises `ValueError("no such place")` if no match.
+- `verse_look(store, target=None)`: returns avatar's current location summary if target is None; else returns the entity's summary; `None` if not found.
+- `verse_recall(store, query)`: returns up to 5 recent events whose summary contains any token of `query` (case-insensitive substring match).
+
+**Note:** the design doc describes `verse_recall` as "RAG over events." PR 1 ships substring matching; embedding-based retrieval is a documented follow-up (`docs/plans/2026-05-07-forest-verse-design.md` §"Open follow-ups" — add a bullet for it as part of E2).
 
 Tests + commit: `feat(verse): verse_move / verse_look / verse_recall`.
 
@@ -603,29 +513,19 @@ Tests + commit: `feat(verse): verse_move / verse_look / verse_recall`.
 
 ### Task B4: system prompt builder + OOC escape detector
 
-**Files:** same.
+**Files:** as B1.
 
 ```python
 def build_verse_system_prompt(
     store: VerseStore,
     avatar_id: int,
     instruct_text: str,
-) -> str:
-    """Compose the avatar's per-request system prompt."""
+) -> str: ...
 ```
 
-Returns a string with sections:
+Composes sections: avatar name, persona (`instruct_text` or `"no persona set"`), current scene, last 5 events involving the avatar, other avatars present.
 
-```
-You are <avatar.name>. Persona: <instruct_text or "no persona set">.
-Scene: <current location summary>.
-Recent events involving you (last 5):
-- <event 1>
-- ...
-Other avatars present: <names or "none">.
-```
-
-Plus an OOC escape detector:
+**OOC detector:**
 
 ```python
 OOC_PREFIX = "(("
@@ -642,50 +542,36 @@ Tests + commit: `feat(verse): system prompt + OOC escape`.
 
 ## Phase C — Plugin wiring
 
-### Task C1: registry — add new keys, remove forestNicks/spontaneous
+**Critical ordering rule for Phase C:** `forestNicks` and `spontaneous*` registry keys are *not* removed until C9 (the same task that removes their call sites). C1 only adds new keys. This avoids the startup crash from removing a registry key while its caller still tries to read it.
+
+### Task C1: registry — add new keys ONLY
 
 **Files:**
-- Modify: `plugins/llm/src/llm/config.py`
-- Test: `plugins/llm/tests/test_config.py`
+- Modify: `plugins/llm/src/llm/config.py`.
+- Test: `plugins/llm/tests/test_config.py`.
 
-**Step 1: read** `config.py` around line 470 to find the `forestNicks` registration. Remove it.
-
-**Step 2: search for spontaneous keys.** Grep `grep -n "spontaneous" plugins/llm/src/llm/config.py`. Remove `spontaneousEnabled`, `spontaneousChance`, `spontaneousCooldown`, `spontaneousSystemPrompt` registrations.
-
-**Step 3: add new registry keys** per design doc §"Configuration":
+**Step 1: add only these two registry keys:**
 
 | Key | Scope | Default |
 |---|---|---|
 | `verseEnabled` | per-channel bool | `False` |
 | `verseEventRetentionDays` | per-channel int | `30` |
-| `verseAutoApplyThreshold` | global float | `0.85` |
-| `verseCrosspollAllowSend` | per-channel bool | `False` |
-| `verseCrosspollAllowReceive` | per-channel bool | `False` |
-| `verseCrosspollPerCycleLimit` | global int | `1` |
-| `loomChannel` | global string | `""` |
-| `loomModel` | global string | `gemini/gemini-flash-lite-latest` |
-| `loomCycleInterval` | global int | `5` |
-| `loomVerseCooldown` | global int | `20` |
-| `loomBeatWindow` | global int | `90` |
-| `loomTranscriptMaxLines` | global int | `40` |
-| `loomTranscriptMaxChars` | global int | `8000` |
 
-(Loom keys land here in PR 1 even though the orchestrator is PR 2 — that way operator config can be set up before PR 2 ships.)
+Loom keys, crosspoll keys, and the auto-apply threshold do **not** ship in PR 1.
 
-**Step 4: update tests.** Any existing test that asserts on `forestNicks` or `spontaneous*` registry presence needs updating or removal. Add a test that the new keys exist with the documented defaults.
+**Step 2: add tests** asserting both new keys exist with documented defaults.
 
-**Step 5: run** `uv run pytest plugins/llm/tests/test_config.py -v`. Fix until green.
+**Step 3: do NOT remove** any existing keys yet. `forestNicks` and `spontaneous*` stay until C9.
 
-**Step 6: commit** — `refactor(llm): swap forestNicks/spontaneous registry for verse/loom keys`.
+**Step 4: commit** — `feat(verse): add verseEnabled and verseEventRetentionDays registry`.
 
 ---
 
 ### Task C2: capability registration
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` (search for existing capability declarations — `llm.ask`, `llm.draw`, `llm.code` — and add `llm.verse`, `llm.verse.gm` alongside).
-
-Test: a unit test that asserts the plugin declares both new capabilities.
+- Modify: `plugins/llm/src/llm/plugin.py` (search for existing capability declarations alongside `llm.ask`, `llm.draw`, `llm.code` and add `llm.verse`, `llm.verse.gm`).
+- Test: `plugins/llm/tests/test_plugin.py` — assert both new capabilities are declared.
 
 Commit: `feat(verse): register llm.verse and llm.verse.gm capabilities`.
 
@@ -694,18 +580,18 @@ Commit: `feat(verse): register llm.verse and llm.verse.gm capabilities`.
 ### Task C3: `@verseopt in/out` command
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py`
-- Test: `plugins/llm/tests/test_plugin.py` (add)
+- Modify: `plugins/llm/src/llm/plugin.py`.
+- Test: `plugins/llm/tests/test_plugin.py`.
 
 Behaviour:
-- `@verseopt in` (in a channel where `verseEnabled=True`, capability `llm.verse`): call `store.opt_in_avatar(nick, account, instruct_text)`; reply with `result.scene_text` (split into lines if > `longReplyLineThreshold`). If `was_already_opted_in`, reply `"You are already opted in. Current scene: <scene>"`.
+- `@verseopt in` (channel with `verseEnabled=True`, capability `llm.verse`): call `store.opt_in_avatar(nick, account, instruct_text)`; reply with `result.scene_text`. If `was_already_opted_in`, prefix `"You are already opted in. "`.
 - `@verseopt out`: call `store.unlink_avatar`; reply `"Avatar retired. Use @verseopt in to rejoin."`.
 - `@verseopt in` in a channel without `verseEnabled`: reply `"This channel doesn't have a verse. Ask the operator to set verseEnabled."`.
 - Lacking capability: standard Limnoria capability denial.
 
-Where to put the verse store: lazily-constructed `dict[channel, VerseStore]` on the plugin instance; `get_or_create_store(channel)` helper.
+Where to put the verse store: lazily-constructed `dict[channel, VerseStore]` on the plugin instance; `_get_or_create_verse_store(channel)` helper. `data/verse/` directory used as `base_dir`.
 
-Tests for each branch using `pytest`-driven plugin instantiation (see how `test_plugin.py` does it for other commands).
+Tests for each branch.
 
 Commit: `feat(verse): @verseopt in/out command`.
 
@@ -713,146 +599,227 @@ Commit: `feat(verse): @verseopt in/out command`.
 
 ### Task C4: `@verse`, `@look`, `@who` commands
 
-**Files:** same.
+**Files:** as C3.
 
 - `@verse` → returns avatar's current scene one-liner.
-- `@look [target]` → no-target shows scene; with target shows entity description.
-- `@who` → list of active avatars in the channel's verse with their current locations.
+- `@look [target]` → no-target shows scene; with target shows entity description; `"Nothing matches."` if not found.
+- `@who` → list of active avatars in the channel's verse with their current locations; `"Nobody is opted in here yet."` if empty.
 
-Tests + commit: `feat(verse): @verse / @look / @who commands`.
+Commit: `feat(verse): @verse / @look / @who commands`.
 
 ---
 
 ### Task C5: owner commands `@versedump`, `@versepurge`
 
-**Files:** same.
+**Files:** as C3.
 
-- `@versedump #chan [--format=json|yaml]` — capability `llm.verse.gm`. JSON/YAML dump of all entities/attributes/relations/events. YAML is optional; JSON default.
-- `@versepurge #chan` — first call: store a 60-second token, reply `"Confirm with @versepurge #chan <token>"`. Second call with matching token: delete the verse DB file. Token TTL enforced by timestamp comparison.
+**`@versedump #chan [--format=json|yaml]`** — capability `llm.verse.gm`. JSON default (yaml optional via `pyyaml` if it's already a dependency; if not, JSON-only is fine).
 
-Tests cover happy path + token expiry. Commit: `feat(verse): owner commands versedump/versepurge`.
+**`@versepurge #chan`** — token storage spec:
+
+- Tokens live in `self._versepurge_tokens: dict[str, tuple[str, float]]` on the plugin instance — keyed by `channel`, value is `(token, expires_at)`. **In-memory only**; resets on plugin reload or bot restart. Documented as such in the operator guide.
+- First call: generates a 6-character token (`secrets.token_hex(3)`), stores `(token, time.time() + 60.0)`, replies `"Confirm with @versepurge <chan> <token> within 60s."`.
+- Second call with `<chan> <token>`: if a current token exists for that channel, hasn't expired, and matches → close the verse store, delete the DB file, drop the token from the dict. Reply `"Verse for <chan> purged."`.
+- If the second-call token doesn't match (or is expired): reply `"Token expired or invalid. Run @versepurge <chan> again to start over."` and clear any expired entry.
+- If a first call comes in while an unexpired token already exists for the same channel: replace it (issue a fresh token, expire the old one). Replies note that the old token is now invalid.
+
+**Tests:**
+- Happy path (issue token, confirm within 60s, file deleted).
+- Token expiry (issue, sleep past 60s, confirm fails — use a freezable clock fixture or pass an injectable `now()`).
+- Mismatched token rejected.
+- Re-issuing token within window invalidates the old one.
+- Reload safety: clear the dict on plugin construction (already implicit since the plugin instance is fresh).
+
+Commit: `feat(verse): owner commands versedump/versepurge with token spec`.
 
 ---
 
 ### Task C6: `@instruct` integration
 
-**Files:** same.
+**Files:** as C3, plus wherever `@instruct` is currently implemented (grep `def _instruct` or `class Instruct`).
 
-When a user runs `@instruct <text>` in a verse-enabled channel where they have an avatar, atomically update both their stored `@instruct` text AND the avatar's `summary`. If they don't have an avatar (or aren't in a verse channel), `@instruct` keeps existing behaviour.
-
-Remove `@avatar persona` if it was added — it isn't (per design v3 it doesn't exist).
+When a user runs `@instruct <text>` in a verse-enabled channel where they have an active avatar, atomically update both their stored `@instruct` text AND the avatar's `summary` (single `write_transaction` covering both writes; if the verse write fails, the `@instruct` update should also roll back to keep them in sync — implement by writing instruct second after verse update succeeds, or use a sentinel on the way out). If they don't have an avatar (or aren't in a verse channel), `@instruct` keeps existing behaviour.
 
 Tests + commit: `feat(verse): @instruct double-writes avatar summary`.
 
 ---
 
-### Task C7: route `@ask` through avatar shim
+### Task C7a: introduce `_verse_route_for` returning None always
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` (the `_is_forest_nick` site at line 2290 is going away; the dispatch site at line 3040 changes).
-- Modify: `plugins/llm/src/llm/assistant.py` if needed (route profile selection).
-- Tests: `plugins/llm/tests/test_assistant.py`, `plugins/llm/tests/test_plugin.py`.
+- Modify: `plugins/llm/src/llm/plugin.py`.
+- Test: `plugins/llm/tests/test_plugin.py`.
 
-Replace the old forest-nick check at line 3040 with verse routing:
+Add the helper that always returns `None` for now. Wire it into the `@ask` path **without changing any existing behavior** — every existing test must still pass.
 
 ```python
 def _verse_route_for(self, channel, nick, account, message_text) -> VerseRoute | None:
-    """Return a VerseRoute (avatar_id, system_prompt, tools, store) or None."""
+    return None  # Wired in C7b/c/d.
+```
+
+Step: write test asserting that with `_verse_route_for` always returning None, the existing chat path is unchanged for an opted-in user. Then add the dispatch hook that consults `_verse_route_for` — if it returns None, call the existing chat path.
+
+Commit: `refactor(llm): hook _verse_route_for stub into @ask dispatch`.
+
+---
+
+### Task C7b: gating logic
+
+**Files:** as C7a.
+
+Replace the stub body with the real gating:
+
+```python
+def _verse_route_for(self, channel, nick, account, message_text) -> VerseRoute | None:
     if not self.registryValue("verseEnabled", channel):
         return None
     if not _user_has_capability(self, "llm.verse", nick, account):
         return None  # capability fallthrough
     if is_ooc(message_text):
         return None
-    store = self._get_or_create_verse_store(channel)
-    avatar_id = store.find_avatar_by_account(account) or store.find_avatar_by_nick(nick)
-    if avatar_id is None:
-        return None
-    instruct = self._get_user_instruct(nick, account)
-    system_prompt = build_verse_system_prompt(store, avatar_id, instruct)
-    tools = make_verse_tool_specs()
-    return VerseRoute(avatar_id, system_prompt, tools, store)
+    # Body in C7c.
+    return None
 ```
 
-When `_verse_route_for` returns a route:
-- Bypass `assistantSystemPrompt` (channel persona).
-- Bypass the line cap (set `forest`-style flag, mirroring whatever the old code did at line 3040 — borrow the bypass behaviour, drop the `forestNicks` lookup).
+Tests:
+- `verseEnabled=False` → returns `None`, `@ask` runs chat path.
+- User without `llm.verse` → returns `None`, no error.
+- OOC `((...))` → returns `None`.
+- All three preconditions satisfied → still returns `None` (until C7c).
+
+Commit: `feat(verse): _verse_route_for gating logic`.
+
+---
+
+### Task C7c: system prompt + tool list assembly
+
+**Files:** as C7a, plus `plugins/llm/src/llm/assistant.py` if a new profile is needed.
+
+After the gating in C7b passes, look up the avatar:
+
+```python
+store = self._get_or_create_verse_store(channel)
+avatar_id = store.find_avatar_by_account(account) or store.find_avatar_by_nick(nick)
+if avatar_id is None:
+    return None  # User opted into the channel but isn't in the verse → chat path.
+instruct = self._get_user_instruct(nick, account)
+system_prompt = build_verse_system_prompt(store, avatar_id, instruct)
+tools = make_verse_tool_specs()
+return VerseRoute(avatar_id, system_prompt, tools, store)
+```
+
+When a route is returned, the call site (in C7a's hook) must:
+- Bypass `assistantSystemPrompt` (channel persona) — set system_prompt to verse_route's value.
+- Set route profile to bypass the line cap (use the same plumbing the old `forest` profile used; this profile is renamed/redirected, not re-invented).
 - Append the verse tools to the chat tool list.
-- Run the completion with `assistantModel`.
-- After reply rendered, dispatch any `verse_act`/`verse_move` tool calls.
+- Run completion with `assistantModel`.
 
 Tests:
-- `verseEnabled=False` → falls through to chat path.
-- User without `llm.verse` → falls through to chat path (no error, no warning).
-- OOC `((...))` → falls through to chat path.
-- User with avatar → verse system prompt used, tools exposed, reply not line-capped.
-- Tool call `verse_act` → mutation applied after reply.
+- User with avatar → verse system prompt used.
+- **`assistantSystemPrompt` is bypassed** — set a unique sentinel string in `assistantSystemPrompt`, run `@ask`, assert sentinel is *absent* from the prompt the LLM saw.
+- Long reply not line-capped (mirror behavior of old forest profile in tests).
+- Tools list includes verse tools.
 
-Commit: `feat(verse): wire @ask through avatar shim`.
-
----
-
-### Task C8: remove `_is_forest_nick` and the old forest path
-
-**Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` (remove `_is_forest_nick` at line 2290, remove `is_forest` usage at line 3040, remove any FOREST_SYSTEM_PROMPT or `forest` route profile).
-- Modify: `plugins/llm/src/llm/assistant.py` (remove forest profile if present).
-- Modify: `plugins/llm/tests/test_*.py` (delete or rewrite tests that asserted the old behavior).
-
-Use `grep -nE "forest|FOREST" plugins/llm/src/llm/` to find every remaining reference. Remove. Keep the long-reply-line-cap-bypass behaviour, but drive it from `verseRoute is not None` rather than `is_forest`.
-
-Run full test suite. Fix until green.
-
-Commit: `refactor(llm): drop _is_forest_nick and old forest path`.
+Commit: `feat(verse): _verse_route_for system prompt + tools`.
 
 ---
 
-### Task C9: remove spontaneous mode
+### Task C7d: post-reply tool-call dispatch + failure handling
+
+**Files:** as C7a.
+
+After the model reply is rendered, dispatch any `verse_act`/`verse_move`/`verse_look`/`verse_recall` tool calls.
+
+**Order of operations on tool-call errors:**
+1. Reply text is rendered to the user *first*, regardless of mutation outcome.
+2. Each tool call is applied in sequence.
+3. If a tool call raises (validation error, `ValueError("avatar retired")`, target-not-found etc.), log at WARNING with the avatar id and verb, *do not* halt subsequent tool calls — continue applying the rest. Failed mutations leave no event row.
+4. **Race with `@versepurge`:** if the verse store / DB file is gone by the time a tool call lands, log at WARNING and drop the call silently. The user's `@ask` reply still landed; the next `@ask` will return a "verse not initialized" error from `_get_or_create_verse_store` (which auto-recreates).
+
+Tests:
+- Successful `verse_act` → event row written.
+- `verse_act` with bad target → reply still sent, no event, WARNING logged (use `caplog`).
+- `verse_act` on a verse whose DB was just deleted → reply still sent, no exception bubbles up.
+- Multiple tool calls in one reply, one fails mid-sequence → others still apply.
+
+Commit: `feat(verse): post-reply tool-call dispatch with failure handling`.
+
+---
+
+### Task C8: drop `_is_forest_nick` and the full forest path
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` (lines 473–590 — `_spontaneous_*` state; line 932 — registry check; any scheduled-event cancellation tied to spontaneous; the spontaneous evaluator method).
+- Modify: `plugins/llm/src/llm/plugin.py` — remove `_is_forest_nick` (currently `:2290`, definition); remove `is_forest` usage at the dispatch site (currently `:3040`); search for any other `forest` references.
+- Modify: `plugins/llm/src/llm/assistant.py` — remove `PROFILE_FOREST` (`:30`), the `_IRC_OUTPUT_FORMAT_FOREST` block (`:148–170`), `FOREST_SYSTEM_PROMPT`, and every `PROFILE_FOREST` membership in `visible_in` sets (`:730, :758, :763, :768, :774`).
+- Modify: `plugins/llm/src/llm/service.py` — remove the `PROFILE_FOREST` import (`:38`), the `FOREST_SYSTEM_PROMPT` reference (`:3083`), the profile→prompt mapping entry (`:3117`), and the `forest`-related comment in the token-cap routing (`:3162–3163`).
+- Modify: `plugins/llm/tests/test_plugin.py` — drop or rewrite tests asserting old forest behavior. Search hits: around `:4001–4104` (per reviewer; verify with grep).
+- Modify: `plugins/llm/tests/test_assistant.py` — drop or rewrite tests at `:1003–1034, 2364–2423, 2528–2538`.
+- Modify: `plugins/llm/tests/test_service.py` — drop or rewrite tests at `:5380–5397`.
+- Modify: `plugins/llm/tests/conftest.py` — drop the forest fixture at `:332` (verify with grep).
+
+**Process:**
+1. `grep -rnE "is_forest|forest|FOREST|PROFILE_FOREST" plugins/llm/src/ plugins/llm/tests/` — produce the actual list. Do not trust the line numbers above blindly; verify with grep in the worktree.
+2. Remove definitions first.
+3. Compile errors will identify every remaining call site; fix them by either deleting the call or routing it through `_verse_route_for`.
+4. Replace the line-cap-bypass plumbing the old forest profile used: the verse route should set the same flag that disabled the line cap. Do not invent a new mechanism; reuse the existing one.
+5. Run `make check` until green.
+
+Commit: `refactor(llm): drop _is_forest_nick and PROFILE_FOREST plumbing`.
+
+---
+
+### Task C9: remove spontaneous mode AND the now-orphaned registry keys
+
+**Files:**
+- Modify: `plugins/llm/src/llm/plugin.py` — remove `_spontaneous_*` state and methods (`:473–590`), the registry check (`:932`), and any scheduled-event cancellation tied to spontaneous.
+- Modify: `plugins/llm/src/llm/config.py` — remove `forestNicks` (`:470`), `spontaneousEnabled` (`:326`), `spontaneousChance` (`:334`), `spontaneousCooldown` (`:341`), `spontaneousSystemPrompt` (`:346`). Also clean up references in module docstrings at `:131, :206, :721`.
 - Delete: `plugins/llm/tests/test_spontaneous.py`.
-- Modify: `plugins/llm/tests/conftest.py` — remove spontaneous fixtures if any.
+- Modify: `plugins/llm/tests/conftest.py` — remove spontaneous fixtures at `:319–323, :445–448` (verify with grep).
+- Modify: `plugins/llm/tests/test_plugin.py` — remove spontaneous tests at `:965–967, :1553–1577` (verify with grep).
+- Modify: `README.md` — remove the spontaneous-mode block at `:184–192` (and the rpg block at `:303` if not already done in D1).
 
-Use `grep -nE "spontaneous|Spontaneous|SPONTANEOUS" plugins/llm/src/llm/` to find every reference. Remove.
+**Process:**
+1. `grep -rnE "spontaneous|Spontaneous|SPONTANEOUS|forestNicks" plugins/llm/src/ plugins/llm/tests/ README.md` — produce the actual list.
+2. Removal order: tests first (they depend on the code), then code, then registry. The registry must be removed *last* in this task to avoid temporarily-orphaned references.
+3. Run `make check`. Coverage may dip — investigate before lowering the threshold. The cause is almost always a real loss; either restore a representative test in `test_plugin.py` against the new verse path, or accept that the floor needs a small targeted bump (don't lower the global gate).
 
-Run full test suite. Fix until green. Coverage may dip; if `--cov-fail-under=93` trips, that's a real signal — likely some real code branch lost coverage when its test was deleted. Investigate before lowering the threshold.
+**Coverage contingency:** if `make test` trips `--cov-fail-under=93` after this task and the cause is genuinely "verse code isn't yet exercised because some C7 branches are uncovered," add focused tests in `test_plugin.py` that hit those branches. Do **not** lower the threshold.
 
-Commit: `refactor(llm): remove spontaneous mode (superseded by loom in PR 2)`.
+Commit: `refactor(llm): remove spontaneous mode and orphaned registry keys`.
 
 ---
 
 ## Phase D — RPG plugin removal
 
-### Task D1: delete `plugins/rpg/` and update Makefile
+### Task D1: delete `plugins/rpg/` and update every reference
 
-**Files:**
-- Delete: `plugins/rpg/` (entire directory).
-- Modify: `Makefile` — remove `plugins/rpg/tests/` from `test:` and `test-all:` targets; remove `plugins/rpg/src/` from `typecheck:`.
-- Modify: `pyproject.toml` if it lists `rpg` as a package or workspace member.
-- Modify: `bot.conf` — remove any `plugins.RPG.*` lines (if present).
-- Modify: any plugin loader / `botname.conf` that references RPG plugin loading.
+**Files to update (verified in the current worktree):**
 
-```bash
-git rm -r plugins/rpg/
-```
+| File | Change |
+|---|---|
+| `plugins/rpg/` | `git rm -r` |
+| `pyproject.toml:9` | Remove `"rpg",` from `dependencies` |
+| `pyproject.toml:15` | Remove `plugins/rpg` from `members = [...]` |
+| `pyproject.toml:20` | Remove `rpg = { workspace = true }` |
+| `pyproject.toml:47` | Remove `plugins/rpg/tests` from `testpaths` |
+| `pyproject.toml:73` | Remove `plugins/rpg/src` from coverage `source` |
+| `Makefile` | Remove `plugins/rpg/tests/` from `test:` and `test-all:`; remove `plugins/rpg/src/` from `typecheck:` |
+| `Dockerfile:10` | Remove `COPY plugins/rpg/pyproject.toml plugins/rpg/` line |
+| `.pre-commit-config.yaml:27` | Remove `plugins/rpg/src/` from the ty hook entry |
+| `.github/dependabot.yml:20–22` | Remove the `rpg` dependency-name entry from the ignore list |
+| `mkdocs.yml:56` | Remove `- RPG: plugins/rpg.md` from nav |
+| `docs/guide/plugins/rpg.md` | `git rm` |
+| `docs/guide/plugins/index.md:9–14` | Remove the rpg paragraph (verify with grep) |
+| `AGENTS.md:11, 77, 108` | Remove the three rpg lines (verify with grep) |
+| `README.md:303` | Remove the `plugins/rpg/` directory tree line |
+| `bot.conf` | Remove any `plugins.RPG.*` lines and any `load RPG` line (use `grep -n "RPG\|rpg" bot.conf`); leave `bot.conf.bak` alone (it's a backup of an older state) |
+| `uv.lock` | Will be regenerated on `uv sync`; commit the regenerated lockfile |
 
-**Update Makefile lines:**
-
-```make
-test:
-	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ -v -m "not slow" --cov --cov-report=term-missing --cov-fail-under=93
-
-test-all:
-	uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ -v --cov --cov-report=term-missing --cov-fail-under=93
-
-typecheck:
-	uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/
-```
-
-Also check `scripts/` for any references to `plugins/rpg/`.
-
-Run `make check`. Fix until green.
+**Process:**
+1. `grep -rln "plugins/rpg\|^rpg\| rpg\b\|RPG" --include="*.toml" --include="*.yml" --include="*.yaml" --include="*.md" --include="Dockerfile" --include="Makefile" --include="*.conf"` to verify the list above is exhaustive.
+2. Apply the removals.
+3. `uv sync` to regenerate the lockfile.
+4. `make check` until green. If `make ci` in CI uses different paths, double-check those too.
 
 Commit: `chore: remove plugins/rpg/ (superseded by forest-verse)`.
 
@@ -862,33 +829,36 @@ Commit: `chore: remove plugins/rpg/ (superseded by forest-verse)`.
 
 ### Task E1: collapse docs into `forest-verse.md`
 
-**Files:**
-- Delete: `docs/guide/operator/forest-mode.md`, `docs/guide/operator/spontaneous.md`.
-- Create: `docs/guide/operator/forest-verse.md` (operator-facing: opt-in flow, capability gates, registry keys, `@verse*` commands, `@versedump`/`@versepurge`).
-- Modify: `mkdocs.yml` — update nav: drop the two old pages, add the new one. Remove any `rpg` nav entry if present.
-- Modify: `docs/guide/reference/commands.md` — remove rpg commands; add `@verse*` family.
-- Modify: `docs/guide/index.md` — fix any cross-refs.
-
-Keep the new doc to ~150 lines. Reference the design doc for deeper architecture details.
+**Process:**
+1. `grep -rln "spontaneous\|forestNicks\|forest-mode\|forest mode" docs/` — produce the list. Confirmed candidates as of the current worktree:
+   - `docs/guide/operator/forest-mode.md` (delete)
+   - `docs/guide/operator/spontaneous.md` (delete)
+   - `docs/guide/operator/configuration.md:23, 40, 62, 78` (update)
+   - `docs/guide/operator/tuning-monitoring.md:9, 36, 60–63, 224, 314–317` (update)
+   - `docs/guide/operator/memory-promotion.md:80, 91` (update)
+   - `docs/guide/index.md:28–29` (update — bullets for spontaneous + forest-mode)
+   - `docs/guide/reference/commands.md` (drop rpg + old forest commands; add `@verse*` family)
+   - `mkdocs.yml` nav (already touched in D1, but confirm `forest-mode.md`/`spontaneous.md` entries are gone and `forest-verse.md` is added).
+2. Create `docs/guide/operator/forest-verse.md` (~150 lines): opt-in flow, capability gates, the two new registry keys (verseEnabled, verseEventRetentionDays), `@verse*` commands, `@versedump`/`@versepurge` token semantics. Reference the design doc for architecture.
+3. Update each doc above to drop dead references and point to the new page.
 
 Commit: `docs: forest-verse operator guide; drop forest-mode and spontaneous docs`.
 
 ---
 
-### Task E2: CHANGELOG entry
+### Task E2: CHANGELOG + design-doc follow-up
 
 **Files:**
 - Modify: `CHANGELOG.md`.
+- Modify: `docs/plans/2026-05-07-forest-verse-design.md` — add a follow-up bullet under §"Open follow-ups": *"Embedding-based `verse_recall`. PR 1 ships substring matching."*
 
-Add an `### Breaking` section under unreleased:
+**CHANGELOG entry** under unreleased:
 
 ```markdown
 ### Breaking
 
-- Removed the `plugins/rpg/` plugin and all its registry keys (`plugins.RPG.*`).
-  Existing rpg state is **discarded, not migrated**. Users wanting structured
-  storytelling should use the new forest-verse: see
-  `docs/guide/operator/forest-verse.md`.
+- Removed `plugins/rpg/` and all its registry keys. Existing rpg state is
+  **discarded, not migrated**. See `docs/guide/operator/forest-verse.md`.
 - Removed Forest mode (`plugins.LLM.forestNicks`). Existing rosters are
   discarded; users opt in fresh via `@verseopt in` in a channel where
   `verseEnabled=True`.
@@ -912,34 +882,30 @@ Commit: `docs: changelog for forest-verse PR 1`.
 
 ### Task F1: full check
 
-Run:
-
 ```bash
 make lint
 make typecheck
-make test
+make format-check
 make syntax-check
+make test
 ```
 
-All four green. Coverage ≥ 93%. Commit anything that floated up (e.g. ruff format fixups).
+All green. Coverage ≥ 93%. Commit anything that floated up (e.g. ruff format fixups).
 
 ### Task F2: manual smoke
 
-Not strictly required for PR merge, but run the bot locally if convenient:
-
-```bash
-uv run limnoria bot.conf
-```
-
-In an IRC client:
+In an IRC client (after `uv run limnoria bot.conf`):
 - Set `verseEnabled=True` for a channel.
-- `@verseopt in` — should get a starter scene.
-- `@verse` — should show the scene.
-- `@ask hello` — should reply in-character (with avatar persona if `@instruct` set).
-- `((@ask hello))` — should reply in normal chat mode.
-- `@verseopt out` — should retire avatar.
-
-If anything's off, fix and recommit (small commits).
+- `@verseopt in` — get starter scene.
+- `@verse` — shows scene.
+- `@instruct You are a curious traveller` — sets persona AND avatar summary.
+- `@ask hello` — replies in-character with avatar persona; channel `assistantSystemPrompt` not visible in tone.
+- `@ask` as a user without `llm.verse` capability — replies as normal chat path (no error).
+- `((@ask hello))` — replies in normal chat mode, OOC bypass works.
+- `@look the clearing` — entity description.
+- `@who` — current avatar listed.
+- `@versepurge #chan` — token issued; `@versepurge #chan <wrong>` rejected; `@versepurge #chan <right>` purges; new `@verseopt in` recreates.
+- `@verseopt out` — retires avatar.
 
 ### Task F3: open the PR
 
@@ -949,7 +915,9 @@ gh pr create --title "feat: forest-verse PR 1 — store + avatar shim, drop rpg/
 ## Summary
 
 - Adds `plugins/llm/src/llm/verse/` with the entity-graph store and avatar shim.
-- Wires `@ask` through the avatar shim for opted-in users in verse-enabled channels.
+- Wires `@ask` through the avatar shim for opted-in users in verse-enabled channels (capability fallthrough + OOC `((...))` escape).
+- New commands: `@verseopt`, `@verse`, `@look`, `@who`, `@versedump`, `@versepurge`.
+- New capabilities: `llm.verse`, `llm.verse.gm`.
 - Removes `plugins/rpg/` (data discarded, no migration).
 - Removes `forestNicks` and spontaneous mode (data discarded).
 - See `docs/plans/2026-05-07-forest-verse-design.md` v3 for the design.
@@ -958,8 +926,7 @@ gh pr create --title "feat: forest-verse PR 1 — store + avatar shim, drop rpg/
 
 - [ ] `make check` green on CI
 - [ ] Coverage ≥ 93%
-- [ ] Manual smoke: opt in, scene shows, `@ask` in-character, OOC escape works, opt out
-- [ ] Owner commands: `@versedump`, `@versepurge` (token flow)
+- [ ] Manual smoke (see plan §F2)
 EOF
 )"
 ```
@@ -968,6 +935,6 @@ EOF
 
 ## Wrap-up
 
-Once merged, PR 2 follows: loom orchestrator + proposal queue. The verse will sit idle (mutated only by `verse_act`) until then.
+Once merged, PR 2 follows: loom orchestrator + proposal queue + the deferred `loom*` / crosspoll registry keys / `verseAutoApplyThreshold`. The verse will sit idle (mutated only by `verse_act`) until then.
 
 If a task uncovers a design gap, *stop and ask* — don't paper over it. Note it in the PR description as follow-up.
