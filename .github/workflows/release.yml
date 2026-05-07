@@ -47,7 +47,7 @@ jobs:
           args: --output CHANGELOG.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
@@ -55,7 +55,7 @@ jobs:
           files: CHANGELOG.md
 
       - name: Open PR with refreshed CHANGELOG
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: chore/changelog-${{ github.ref_name }}
