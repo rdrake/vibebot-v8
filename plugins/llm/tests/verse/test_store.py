@@ -897,6 +897,89 @@ class TestApplyProposal:
             store.apply_proposal(op="add_event", payload={}, source="loom")
 
 
+class TestApplyAndRecordProposal:
+    def test_one_transaction_event_plus_audit(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("avatar", "Forest")
+        pid = store.apply_and_record_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": [eid]},
+            confidence=0.95,
+            provenance="line-1",
+            reviewer="loom",
+        )
+        assert isinstance(pid, str) and len(pid) > 0
+        events = store.recent_events()
+        assert len(events) == 1
+        assert events[0].summary == "x"
+        rows = store.list_proposals()
+        assert len(rows) == 1
+        assert rows[0].status == "approved"
+        assert rows[0].reviewer == "loom"
+
+    def test_failure_inside_op_rolls_back_audit(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(Exception):  # noqa: B017,PT011
+            store.apply_and_record_proposal(
+                cycle_id="c-1",
+                op="set_attribute",
+                payload={"entity_id": 9999, "key": "k", "value": "v"},
+                confidence=0.95,
+                provenance="x",
+                reviewer="loom",
+            )
+        assert store.list_proposals() == []
+
+
+class TestApplyProposalAndMark:
+    def test_pending_to_approved_atomically(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        store.apply_proposal_and_mark(pid, reviewer="alice")
+        events = store.recent_events()
+        assert len(events) == 1
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer == "alice"
+
+    def test_unknown_id_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        with pytest.raises(LookupError):
+            store.apply_proposal_and_mark("nope", reviewer="alice")
+
+    def test_already_terminal_status_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+            status="approved",
+            reviewer="bob",
+        )
+        with pytest.raises(ValueError):
+            store.apply_proposal_and_mark(pid, reviewer="alice")
+
+
 class TestWriteLockConcurrency:
     def test_concurrent_add_entity_yields_unique_ids(self, verse_db_dir: Path) -> None:
         """50 concurrent add_entity calls across 8 threads — all rows persist

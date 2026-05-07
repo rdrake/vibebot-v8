@@ -572,6 +572,127 @@ class VerseStore:
             )
         return pid
 
+    def _apply_op_inline(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        op: str,
+        payload: dict[str, Any],
+        source: str,
+    ) -> int | None:
+        """Run the op-specific INSERT on *conn*. The caller owns the txn."""
+        now = time.time()
+        if op == "add_event":
+            cur = conn.execute(
+                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+                (
+                    now,
+                    payload["summary"],
+                    json.dumps(list(payload.get("entity_ids", []))),
+                    source,
+                ),
+            )
+            return cur.lastrowid
+        if op == "set_attribute":
+            eid = payload["entity_id"]
+            row = conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                raise LookupError(f"entity_id {eid} does not exist")
+            conn.execute(
+                "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(entity_id, key) DO UPDATE SET value=excluded.value",
+                (eid, payload["key"], payload["value"]),
+            )
+            return None
+        if op == "add_relation":
+            cur = conn.execute(
+                "INSERT INTO relations (from_id, to_id, kind, note) VALUES (?, ?, ?, ?)",
+                (
+                    payload["from_id"],
+                    payload["to_id"],
+                    payload["kind"],
+                    payload.get("note", ""),
+                ),
+            )
+            return cur.lastrowid
+        if op == "add_entity":
+            cur = conn.execute(
+                "INSERT INTO entities (kind, name, summary, status, "
+                "                       created_at, updated_at) "
+                "VALUES (?, ?, ?, 'active', ?, ?)",
+                (
+                    payload["kind"],
+                    payload["name"],
+                    payload.get("summary", ""),
+                    now,
+                    now,
+                ),
+            )
+            return cur.lastrowid
+        raise ValueError(f"unknown op: {op!r}")
+
+    def apply_and_record_proposal(
+        self,
+        *,
+        cycle_id: str,
+        op: str,
+        payload: dict[str, Any],
+        confidence: float,
+        provenance: str,
+        reviewer: str,
+        source: str = "loom",
+    ) -> str:
+        """Atomically apply *op* and insert an approved proposal row.
+
+        Returns the new proposal id. Either both rows are written or
+        neither (the lock + write_transaction guarantee SQLite atomicity).
+        """
+        pid = uuid.uuid4().hex
+        now = time.time()
+        with self.write_transaction() as conn:
+            self._apply_op_inline(conn, op=op, payload=payload, source=source)
+            conn.execute(
+                "INSERT INTO proposals "
+                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
+                " status, reviewer, reviewed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
+                (
+                    pid,
+                    now,
+                    cycle_id,
+                    op,
+                    json.dumps(payload),
+                    confidence,
+                    provenance,
+                    reviewer,
+                    now,
+                ),
+            )
+        return pid
+
+    def apply_proposal_and_mark(self, proposal_id: str, *, reviewer: str) -> None:
+        """Atomically apply a pending proposal and flip its status to approved.
+
+        Raises ``LookupError`` if no such id, ``ValueError`` if already
+        terminal.
+        """
+        with self.write_transaction() as conn:
+            row = conn.execute(
+                "SELECT op, payload, status FROM proposals WHERE id=?",
+                (proposal_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"no proposal: {proposal_id!r}")
+            op, payload_json, status = row
+            if status != "pending":
+                raise ValueError(f"proposal {proposal_id!r} already {status}; cannot apply")
+            payload = json.loads(payload_json)
+            self._apply_op_inline(conn, op=op, payload=payload, source="loom")
+            conn.execute(
+                "UPDATE proposals SET status='approved', reviewer=?, reviewed_at=? WHERE id=?",
+                (reviewer, time.time(), proposal_id),
+            )
+
     def apply_proposal(
         self,
         *,
