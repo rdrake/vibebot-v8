@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import random
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -301,6 +302,26 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%who",),
         category="utility",
     ),
+    CommandInfo(
+        name="versedump",
+        args="[#channel] [--format=json]",
+        description=(
+            "Dump the full verse state for a channel as JSON. Requires the llm.verse.gm capability."
+        ),
+        examples=("%versedump", "%versedump #afnet", "%versedump #afnet --format=json"),
+        category="utility",
+    ),
+    CommandInfo(
+        name="versepurge",
+        args="[#channel] [token]",
+        description=(
+            "Wipe the verse store for a channel. "
+            "First call issues a confirmation token; second call with the token performs the wipe. "
+            "Requires the llm.verse.gm capability."
+        ),
+        examples=("%versepurge #afnet", "%versepurge #afnet a1b2c3"),
+        category="utility",
+    ),
 )
 
 
@@ -523,6 +544,10 @@ class LLM(callbacks.Plugin):
         # Per-channel VerseStore cache (keyed by channel name).
         self._verse_stores: dict[str, VerseStore] = {}
         self._verse_stores_lock = threading.Lock()
+
+        # In-memory versepurge confirmation tokens: channel -> (token, expires_at).
+        # Resets on plugin reload/bot restart (by design; documented in operator guide).
+        self._versepurge_tokens: dict[str, tuple[str, float]] = {}
 
         # Reload persisted reminders from database
         self._reload_reminders(irc)
@@ -4731,6 +4756,238 @@ class LLM(callbacks.Plugin):
         irc.reply(", ".join(parts), prefixNick=False)
 
     who = wrap(who, [("checkCapability", "llm.verse")])
+
+    # ------------------------------------------------------------------
+    # @versedump #chan [--format=json]  — owner dump of full verse state
+    # ------------------------------------------------------------------
+
+    def versedump(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None = None,
+    ) -> None:
+        """[#channel] [--format=json]
+
+        Dump the full verse state for the given channel as JSON.
+
+          @versedump #chan           — dump in JSON (default).
+          @versedump #chan --format=json  — explicit JSON.
+
+        YAML is not supported (pyyaml is not a project dependency).
+        Requires the llm.verse.gm capability.
+        """
+        if not ircdb.checkCapability(msg.prefix, "llm.verse.gm"):
+            irc.error("You don't have the llm.verse.gm capability.", prefixNick=False)
+            return
+
+        # Parse channel and optional --format from the free-text args.
+        raw = (text or "").split()
+        channel: str | None = None
+        fmt = "json"
+        for token in raw:
+            if token.startswith("--format="):
+                fmt = token[len("--format=") :]
+            elif ircutils.isChannel(token):
+                channel = token
+
+        if channel is None:
+            # Fall back to the channel the command arrived in.
+            ch = msg.args[0] if msg.args else None
+            if ch and ircutils.isChannel(ch):
+                channel = ch
+            else:
+                irc.error("Specify a channel: @versedump #chan", prefixNick=False)
+                return
+
+        if fmt not in ("json",):
+            irc.reply(
+                "Unsupported format. Only --format=json is supported.",
+                prefixNick=False,
+            )
+            return
+
+        store = self._get_or_create_verse_store(channel)
+
+        # Collect all entities (all kinds, all statuses) with their attributes.
+        with store.read_connection() as conn:
+            entity_rows = conn.execute(
+                "SELECT id, kind, name, summary, status, created_at, updated_at"
+                " FROM entities ORDER BY id ASC"
+            ).fetchall()
+            avatar_link_rows = conn.execute(
+                "SELECT entity_id, nick, account FROM avatar_link ORDER BY entity_id ASC"
+            ).fetchall()
+
+        entities_out = []
+        for row in entity_rows:
+            eid = row[0]
+            entities_out.append(
+                {
+                    "id": eid,
+                    "kind": row[1],
+                    "name": row[2],
+                    "summary": row[3],
+                    "status": row[4],
+                    "created_at": row[5],
+                    "updated_at": row[6],
+                    "attributes": store.list_attributes(eid),
+                }
+            )
+
+        # Relations (all, no filter).
+        relations_raw = store.list_relations()
+        relations_out = [
+            {"id": r.id, "from_id": r.from_id, "to_id": r.to_id, "kind": r.kind, "note": r.note}
+            for r in relations_raw
+        ]
+
+        # Recent events (capped at 200 to keep IRC PMs manageable).
+        events_raw = store.recent_events(limit=200)
+        events_out = [
+            {
+                "id": ev.id,
+                "ts": ev.ts,
+                "summary": ev.summary,
+                "entity_ids": list(ev.entity_ids),
+                "source": ev.source,
+            }
+            for ev in events_raw
+        ]
+
+        avatar_links_out = [
+            {"entity_id": row[0], "nick": row[1], "account": row[2]} for row in avatar_link_rows
+        ]
+
+        # Proposals excluded (no writer for proposals in PR 1).
+        dump = {
+            "schema_version": 1,
+            "channel": channel,
+            "entities": entities_out,
+            "relations": relations_out,
+            "events": events_out,
+            "avatar_links": avatar_links_out,
+            "proposals": [],
+        }
+
+        irc.reply(json.dumps(dump, separators=(",", ":")), prefixNick=False)
+
+    versedump = wrap(versedump, [optional("text")])
+
+    # ------------------------------------------------------------------
+    # @versepurge #chan [token]  — wipe a channel's verse with 2-step confirm
+    # ------------------------------------------------------------------
+
+    def _versepurge_check_token(
+        self,
+        channel: str,
+        presented: str,
+        now_func: Callable[[], float] = time.time,
+    ) -> bool:
+        """Return True and clear token if presented token is valid and unexpired.
+
+        Clears expired tokens on False return.  Uses secrets.compare_digest
+        to avoid timing side-channels.
+        """
+        entry = self._versepurge_tokens.get(channel)
+        if entry is None:
+            return False
+        stored_token, expires_at = entry
+        if now_func() >= expires_at:
+            # Expired — clear stale entry.
+            del self._versepurge_tokens[channel]
+            return False
+        if secrets.compare_digest(stored_token, presented):
+            del self._versepurge_tokens[channel]
+            return True
+        return False
+
+    def versepurge(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None = None,
+    ) -> None:
+        """[#channel] [<token>]
+
+        Wipe the verse store for a channel. Two-step confirmation required.
+
+          Step 1: @versepurge #chan
+                  — issues a one-time 6-character token valid for 60 seconds.
+
+          Step 2: @versepurge #chan <token>
+                  — confirms; purges all verse data for the channel.
+
+        Tokens are per-channel and in-memory only; they reset on plugin
+        reload or bot restart. All times are approximate (IRC scheduler thread).
+        Requires the llm.verse.gm capability.
+        """
+        if not ircdb.checkCapability(msg.prefix, "llm.verse.gm"):
+            irc.error("You don't have the llm.verse.gm capability.", prefixNick=False)
+            return
+
+        # Parse channel and optional token from free-text args.
+        raw = (text or "").split()
+        channel: str | None = None
+        token_presented: str | None = None
+
+        for token in raw:
+            if ircutils.isChannel(token):
+                channel = token
+            elif channel is not None and token_presented is None:
+                token_presented = token
+
+        if channel is None:
+            ch = msg.args[0] if msg.args else None
+            if ch and ircutils.isChannel(ch):
+                channel = ch
+            else:
+                irc.error("Specify a channel: @versepurge #chan", prefixNick=False)
+                return
+
+        if token_presented is not None:
+            # Step 2: confirm purge.
+            if self._versepurge_check_token(channel, token_presented):
+                # Pop store from cache. Caller (IRC scheduler thread) is the
+                # only thread holding verse store conns; pop + unlink is safe.
+                with self._verse_stores_lock:
+                    store = self._verse_stores.pop(channel, None)
+                if store is not None:
+                    db_path = Path(store.path)
+                    db_path.unlink(missing_ok=True)
+                    db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+                    db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+                irc.reply(f"Verse for {channel} purged.", prefixNick=False)
+            else:
+                irc.reply(
+                    f"Token expired or invalid. Run @versepurge {channel} again to start over.",
+                    prefixNick=False,
+                )
+        else:
+            # Step 1: issue (or reissue) token.
+            new_token = secrets.token_hex(3)
+            existing = self._versepurge_tokens.get(channel)
+            if existing is not None:
+                _, exp = existing
+                if time.time() < exp:
+                    # Reissue while old token still valid — invalidate old one.
+                    self._versepurge_tokens[channel] = (new_token, time.time() + 60.0)
+                    irc.reply(
+                        f"Previous token invalidated. Confirm with @versepurge {channel}"
+                        f" {new_token} within 60s.",
+                        prefixNick=False,
+                    )
+                    return
+                # Old token expired — fall through to fresh issue.
+            self._versepurge_tokens[channel] = (new_token, time.time() + 60.0)
+            irc.reply(
+                f"Confirm with @versepurge {channel} {new_token} within 60s.",
+                prefixNick=False,
+            )
+
+    versepurge = wrap(versepurge, [optional("text")])
 
 
 Class = LLM
