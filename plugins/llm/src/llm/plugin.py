@@ -7,7 +7,6 @@ import contextlib
 import json
 import logging
 import mimetypes
-import random
 import re
 import secrets
 import subprocess
@@ -548,13 +547,6 @@ class LLM(callbacks.Plugin):
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
 
-        # Spontaneous participation cooldown tracking: channel -> last_fire_timestamp
-        self._spontaneous_cooldowns: dict[str, float] = {}
-
-        # Pending spontaneous schedule events (cancelled on unload)
-        self._spontaneous_events: set[str] = set()
-        self._spontaneous_events_lock = threading.Lock()
-
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
 
@@ -665,17 +657,6 @@ class LLM(callbacks.Plugin):
                     with contextlib.suppress(KeyError):
                         schedule.removeEvent(event_name)
                 self._reminders.clear()
-
-        # Cancel pending spontaneous events and clear cooldowns
-        if hasattr(self, "_spontaneous_events"):
-            with self._spontaneous_events_lock:
-                events = list(self._spontaneous_events)
-                self._spontaneous_events.clear()
-            for event_name in events:
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent(event_name)
-        if hasattr(self, "_spontaneous_cooldowns"):
-            self._spontaneous_cooldowns.clear()
 
         # Only unhook HTTP callback if we registered
         if self._http_callback is not None:
@@ -959,7 +940,7 @@ class LLM(callbacks.Plugin):
           ``_ask_impl``. The Limnoria command dispatcher is suppressed for
           these by ``inFilter``.
         - Other channel messages flow through the existing
-          ``contextTrackAllMessages`` capture and spontaneous-reply logic.
+          ``contextTrackAllMessages`` capture logic.
 
         Explicit prefix-char commands (e.g. ``@search`` or ``@later``) are
         handled entirely by Limnoria's dispatcher and short-circuit before
@@ -1014,109 +995,6 @@ class LLM(callbacks.Plugin):
         self.context.add_channel_message(
             channel, display_nick, Role.USER, message_text, config=ctx_cfg
         )
-
-        # Spontaneous participation
-        if self.registryValue("spontaneousEnabled", channel):
-            cooldown_minutes = self.registryValue("spontaneousCooldown", channel)
-            last_spontaneous = self._spontaneous_cooldowns.get(channel, 0)
-            if time.time() - last_spontaneous >= cooldown_minutes * 60:
-                chance = self.registryValue("spontaneousChance", channel)
-                if random.randint(1, 100) <= chance:
-                    self._spontaneous_cooldowns[channel] = time.time()
-                    self._schedule_spontaneous(irc, channel, caller.key, message_text)
-
-    def _schedule_spontaneous(
-        self, irc: callbacks.Irc, channel: str, trigger_nick: str, trigger_text: str
-    ) -> None:
-        """Schedule a spontaneous reply evaluation.
-
-        Queues a short-delayed event that reads channel history, asks the LLM
-        whether it wants to participate, and sends a message if the LLM does
-        not PASS.
-
-        Args:
-            irc: IRC connection object
-            channel: Channel to potentially respond in
-            trigger_nick: Identity of the user whose message triggered this
-            trigger_text: The message text that triggered this
-        """
-
-        def _evaluate() -> None:
-            try:
-                channel_msgs = self.context.get_channel_messages(channel)
-                if not channel_msgs:
-                    return
-
-                api_key = self.registryValue("assistantApiKey", channel)
-                if not api_key:
-                    return
-
-                model = self.registryValue("assistantModel", channel)
-                system_prompt = self.registryValue("spontaneousSystemPrompt", channel)
-
-                prompt = "Respond to the conversation above, or say PASS."
-                result = self.llm_service.completion(
-                    prompt,
-                    command="ask",
-                    channel_history=channel_msgs,
-                    system_prompt=system_prompt,
-                    api_key=api_key,
-                    model_override=model,
-                )
-
-                if result.error or result.content.strip().upper() == "PASS":
-                    return
-
-                # Closing-gate after PASS short-circuit: avoid worker-thread
-                # mutations (queueMsg, db.log_usage, memory-extraction) once
-                # die() has begun.
-                if self._llm_executor.closing:
-                    return
-
-                response = self.llm_service.sanitize_output(result.content)
-                action_text = self._extract_action(irc, response)
-                if action_text:
-                    self._safe_queue(irc, ircmsgs.action(channel, action_text))
-                else:
-                    # Spontaneous replies bypass _send_long_reply, so collapse
-                    # multi-line content here — raw \n on PRIVMSG triggers
-                    # Excess Flood disconnects on AfterNET.
-                    self._safe_queue(
-                        irc,
-                        ircmsgs.privmsg(channel, self._collapse_for_irc(response) or response),
-                    )
-
-                self.db.log_usage(
-                    irc.nick,
-                    channel,
-                    "spontaneous",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                    prompt="[spontaneous]",
-                    status="success",
-                )
-
-                # Extract memories from the triggering user's message
-                self._schedule_memory_extraction(trigger_nick, channel, trigger_text, response)
-            except Exception:
-                log.exception("Spontaneous evaluation failed for %s", channel)
-            finally:
-                if not self._llm_executor.closing:
-                    with self._spontaneous_events_lock:
-                        self._spontaneous_events.discard(event_name)
-
-        event_name = f"llm_spontaneous_{uuid.uuid4().hex[:8]}"
-        with self._spontaneous_events_lock:
-            self._spontaneous_events.add(event_name)
-
-        def _enqueue() -> None:
-            if self._llm_executor.closing:
-                return
-            self._llm_executor.submit(f"spontaneous:{channel}", _evaluate)
-
-        schedule.addEvent(_enqueue, time.time() + 0.5, name=event_name)
 
     def _will_skip_auto_who(self, irc: callbacks.Irc) -> bool:
         """Return True iff the auto-WHO on channel join should be suppressed.

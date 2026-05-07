@@ -316,11 +316,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "memoryCleanupInterval": 3,
         "memoryPromotionThreshold": 2,
         "memoryCandidateTTLDays": 14,
-        # Spontaneous participation
-        "spontaneousEnabled": False,
-        "spontaneousChance": 15,
-        "spontaneousCooldown": 2,
-        "spontaneousSystemPrompt": "You are a regular in this IRC channel.",
         # Shared
         "timeout": 30,
         "maxPromptLength": 10000,
@@ -329,7 +324,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "longReplyLineThreshold": 6,
         "longReplyTeaserMaxChars": 220,
         "longReplyLinkMode": "footer",
-        "forestNicks": [],
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
@@ -445,7 +439,7 @@ def plugin_init_patches(
     automatically reverted at the end of the test by pytest-mock.
 
     Also stubs LLMExecutor with a synchronous, deterministic test double so
-    background-work tests (spontaneous, reminder action, scheduled task)
+    background-work tests (reminder action, scheduled task)
     can assert on side effects immediately after the schedule callback
     fires — no thread-pool race.
 
