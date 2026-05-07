@@ -231,6 +231,20 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.bridgeScheduledTaskLimit() == 5
 
+    def test_verse_enabled_registered_default_false(self) -> None:
+        """C1: verseEnabled is a per-channel boolean that defaults to False."""
+        import llm.config  # noqa: F401 — import side effect registers the value
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseEnabled() is False
+
+    def test_verse_event_retention_days_registered_default_30(self) -> None:
+        """C1: verseEventRetentionDays is a per-channel integer that defaults to 30."""
+        import llm.config  # noqa: F401 — import side effect registers the value
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseEventRetentionDays() == 30
+
 
 class TestRateLimitDefaults:
     """Pin the 18 rate-limit (key, default) pairs produced by _register_rate_limit_block."""
