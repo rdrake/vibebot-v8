@@ -443,6 +443,17 @@ class Loom:
                 return
             self._active.append_transcript(nick, text)
 
+    def observe_transcript_diag(self, nick: str, text: str) -> str | None:
+        """Diagnostic variant of ``observe_transcript`` — appends and returns
+        the active cycle id, or ``None`` if no cycle was active when the
+        line arrived. Used by the doPrivmsg hook to log capture vs miss
+        decisions while we shake out the transcript pipeline."""
+        with self._lock:
+            if self._active is None:
+                return None
+            self._active.append_transcript(nick, text)
+            return self._active.cycle_id
+
     def tick(self) -> None:
         with self._lock:
             if self._active is not None:

@@ -1328,6 +1328,10 @@ class _FakeLoom:
     def observe_transcript(self, nick: str, text: str) -> None:
         self.observed.append((nick, text))
 
+    def observe_transcript_diag(self, nick: str, text: str) -> str | None:
+        self.observed.append((nick, text))
+        return "fake-cycle"
+
 
 class TestDoPrivmsgLoomHook:
     """C3: doPrivmsg captures loom-channel chatter on the loom network."""

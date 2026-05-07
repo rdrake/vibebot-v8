@@ -1056,14 +1056,42 @@ class LLM(callbacks.Plugin):
         # prefix-char early-out so @verseapprove etc. aren't captured as
         # improv. The four caches are initialised in __init__ so this
         # never AttributeErrors even before _wire_loom_if_enabled has run.
+        # Channel and network comparisons use ircutils.strEqual because IRC
+        # treats both as case-insensitive (per RFC 2812 lowercase mapping)
+        # and supybot/server may emit a different case than what the
+        # operator typed into @config.
         loom = self._loom
-        if loom is not None and getattr(irc, "network", None) == self._loom_network_cache:
+        if loom is not None:
             try:
+                irc_network = getattr(irc, "network", None) or ""
+                cache_network = self._loom_network_cache or ""
                 target_arg = msg.args[0] if msg.args else ""
-                if target_arg == self._loom_channel_cache:
+                cache_channel = self._loom_channel_cache or ""
+                net_match = ircutils.strEqual(irc_network, cache_network)
+                ch_match = ircutils.strEqual(target_arg, cache_channel)
+                if net_match and ch_match:
                     allowlist = self._loom_bot_nicks_cache or ()
                     if not allowlist or any(ircutils.strEqual(n, msg.nick) for n in allowlist):
-                        loom.observe_transcript(msg.nick, text)
+                        captured = loom.observe_transcript_diag(msg.nick, text)
+                        self.log.warning(
+                            "loom_capture nick=%s active=%s captured=%s text_len=%d",
+                            msg.nick,
+                            captured is not None,
+                            captured,
+                            len(text),
+                        )
+                else:
+                    self.log.warning(
+                        "loom_skip net_match=%s ch_match=%s "
+                        "irc_network=%r cache_network=%r "
+                        "target=%r cache_channel=%r",
+                        net_match,
+                        ch_match,
+                        irc_network,
+                        cache_network,
+                        target_arg,
+                        cache_channel,
+                    )
             except Exception:
                 self.log.exception("loom transcript capture failed (non-fatal)")
 
