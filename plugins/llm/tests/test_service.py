@@ -5377,12 +5377,13 @@ class TestAssistantRequestFacade:
         assert call_kwargs["route_profile"] == "code"
         assert call_kwargs["system_prompt"] is None
 
-    def test_forest_profile_forwards_route_profile(self) -> None:
-        """Forest profile forwards route_profile=forest so the planner picks
-        FOREST_SYSTEM_PROMPT (no length cap) as the structural framework."""
-        ctx = self._make_ctx(profile="forest")
+    def test_verse_profile_forwards_route_profile(self) -> None:
+        """Verse profile forwards route_profile=verse so the planner treats it
+        as an unknown profile (falls back to CHAT_SYSTEM_PROMPT framework) while
+        still bypassing the token cap (PROFILE_VERSE not in profile_max_output)."""
+        ctx = self._make_ctx(profile="verse")
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="long-form answer"),
+            return_value=AssistantResult(content="verse answer"),
         )
 
         self.service.assistant_request(
@@ -5394,7 +5395,7 @@ class TestAssistantRequestFacade:
         )
 
         call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "forest"
+        assert call_kwargs["route_profile"] == "verse"
         assert call_kwargs["system_prompt"] is None
 
     def test_draw_profile_forwards_route_profile(self) -> None:
