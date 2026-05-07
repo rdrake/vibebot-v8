@@ -1448,6 +1448,263 @@ class TestDoPrivmsgLoomHook:
         assert plugin._loom.observed == []
 
 
+class TestVerseproposalsCommand:
+    """D1: @verseproposals listing command."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        msg.args = ("#afnet", "@verseproposals")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        return plugin, irc, msg, store
+
+    def test_default_status_pending_in_current_channel(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x"},
+            confidence=0.5,
+        )
+        plugin.verseproposals(irc, msg, [])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("conf=0.50" in r for r in replies)
+
+    def test_explicit_channel_and_status(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "y"},
+            confidence=0.95,
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.verseproposals(irc, msg, ["#afnet", "approved"])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("conf=0.95" in r for r in replies)
+
+    def test_empty_list_message(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.verseproposals(irc, msg, [])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("No pending proposals" in r for r in replies)
+
+
+class TestVerseapproveRejectCommands:
+    """D2: @verseapprove + @versereject moderation commands."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        msg.args = ("#afnet", "")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        return plugin, irc, msg, store
+
+    def test_approve_applies_and_flips_status(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        plugin.verseapprove(irc, msg, [pid[:8]])
+        events = store.recent_events()
+        assert len(events) == 1
+        assert events[0].source == "loom"
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+        assert p.reviewer != "loom"
+
+    def test_approve_short_id_prefix(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="line-1",
+        )
+        plugin.verseapprove(irc, msg, [pid[:6]])
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "approved"
+
+    def test_approve_unknown_id_errors_cleanly(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.verseapprove(irc, msg, ["deadbeef"])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("No proposal" in e for e in errors)
+
+    def test_approve_already_approved_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.95,
+            provenance="line-1",
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.verseapprove(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already approved" in r for r in replies)
+
+    def test_approve_already_rejected_blocked(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        store.update_proposal_status(pid, status="rejected", reviewer="bob")
+        plugin.verseapprove(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("rejected" in r for r in replies)
+
+    def test_reject_flips_status_and_does_not_apply(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        plugin.versereject(irc, msg, [pid[:8]])
+        assert store.recent_events() == []
+        p = store.get_proposal(pid)
+        assert p is not None
+        assert p.status == "rejected"
+
+    def test_reject_unknown_id_errors(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        plugin.versereject(irc, msg, ["deadbeef"])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("No proposal" in e for e in errors)
+
+    def test_reject_already_approved_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.95,
+            provenance="x",
+            status="approved",
+            reviewer="loom",
+        )
+        plugin.versereject(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already approved" in r for r in replies)
+
+    def test_approve_apply_exception_reports_error(self, verse_env, mocker) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        mocker.patch.object(store, "apply_proposal_and_mark", side_effect=RuntimeError("boom"))
+        plugin.verseapprove(irc, msg, [pid])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("Apply failed" in e for e in errors)
+
+    def test_proposal_target_store_no_channel_errors(self, verse_env) -> None:
+        plugin, irc, msg, _store = verse_env
+        msg.args = ("",)  # No channel context
+        channel, store = plugin._proposal_target_store(irc, msg, None)
+        assert channel is None
+        assert store is None
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("Specify a channel" in e for e in errors)
+
+    def test_proposal_snippet_covers_all_ops(self, verse_env) -> None:
+        from llm.verse.store import Proposal
+
+        plugin, _irc, _msg, _store = verse_env
+        sa = Proposal(
+            id="x",
+            created_at=0.0,
+            cycle_id="c",
+            op="set_attribute",
+            payload={"entity_id": 1, "key": "k", "value": "v"},
+            confidence=0.5,
+            provenance="",
+            status="pending",
+            reviewer=None,
+            reviewed_at=None,
+        )
+        ar = sa._replace(
+            op="add_relation",
+            payload={"from_id": 1, "to_id": 2, "kind": "k", "note": ""},
+        )
+        ae = sa._replace(op="add_entity", payload={"kind": "place", "name": "Oak"})
+        unknown = sa._replace(op="weird", payload={})
+        assert "entity_id=1" in plugin._proposal_snippet(sa)
+        assert "1-[k]->2" in plugin._proposal_snippet(ar)
+        assert "place 'Oak'" in plugin._proposal_snippet(ae)
+        assert plugin._proposal_snippet(unknown) == ""
+
+    def test_reject_already_rejected_short_circuits(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.5,
+            provenance="x",
+        )
+        store.update_proposal_status(pid, status="rejected", reviewer="bob")
+        plugin.versereject(irc, msg, [pid])
+        replies = [c.args[0] for c in irc.reply.call_args_list]
+        assert any("already rejected" in r for r in replies)
+
+
 class TestPluginLoomBridge:
     """Cover _PluginLoomBridge methods + _loom_tick path."""
 
@@ -3697,6 +3954,9 @@ class TestCommandRegistry:
             "who",
             "versedump",
             "versepurge",
+            "verseproposals",
+            "verseapprove",
+            "versereject",
         }
         assert names == expected
 
