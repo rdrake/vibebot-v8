@@ -54,7 +54,12 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
-from .verse.avatar import build_verse_system_prompt, is_ooc, make_verse_tool_specs
+from .verse.avatar import (
+    build_verse_system_prompt,
+    is_ooc,
+    make_verse_extra_handlers,
+    make_verse_tool_specs,
+)
 from .verse.store import VerseStore
 
 if TYPE_CHECKING:
@@ -3157,6 +3162,7 @@ class LLM(callbacks.Plugin):
                 system_prompt_override=route.system_prompt,
                 extra_tools_override=route.tools,
                 profile_override=PROFILE_FOREST,
+                verse_route=route,
             )
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
@@ -3172,15 +3178,18 @@ class LLM(callbacks.Plugin):
         system_prompt_override: str | None = None,
         extra_tools_override: list[dict] | None = None,
         profile_override: str | None = None,
+        verse_route: VerseRoute | None = None,
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight.
 
-        Optional keyword-only overrides for verse routing (C7c):
+        Optional keyword-only overrides for verse routing (C7c/C7d):
         - ``system_prompt_override``: when set, replaces the normal
           ``assistantSystemPrompt`` personality overlay entirely.
         - ``extra_tools_override``: tool specs appended to the profile tool list.
         - ``profile_override``: when set, overrides the profile selection
           (e.g. PROFILE_FOREST to bypass the token cap).
+        - ``verse_route``: when set, verse tool handlers are built and merged
+          into extra_handlers so the assistant loop can dispatch them (C7d).
         """
         nick, channel = pf.nick, pf.channel
         is_forest = self._is_forest_nick(channel, nick)
@@ -3247,6 +3256,20 @@ class LLM(callbacks.Plugin):
                     bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
                 )
 
+                # C7d: merge verse handlers into extra_handlers so the
+                # assistant_request loop can dispatch verse tool calls
+                # in-flight rather than passing them to the generic executor.
+                if verse_route is not None:
+                    verse_handlers = make_verse_extra_handlers(
+                        verse_route.store, verse_route.avatar_id
+                    )
+                    combined_handlers: dict | None = {
+                        **(bridge_handlers or {}),
+                        **verse_handlers,
+                    }
+                else:
+                    combined_handlers = bridge_handlers
+
                 result = self.llm_service.assistant_request(
                     request_text,
                     request_context=request_context,
@@ -3266,7 +3289,7 @@ class LLM(callbacks.Plugin):
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
-                    extra_handlers=bridge_handlers,
+                    extra_handlers=combined_handlers,
                     **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
