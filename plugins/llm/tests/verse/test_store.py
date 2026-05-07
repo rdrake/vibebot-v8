@@ -500,6 +500,154 @@ class TestAvatarLinkCrud:
         assert entity_b.status == "active"
 
 
+class TestOptInAvatar:
+    def test_new_user_creates_avatar_and_default_place(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import AvatarOptInResult, VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        result = store.opt_in_avatar("alice", None, "curious traveller")
+
+        assert isinstance(result, AvatarOptInResult)
+        assert result.was_already_opted_in is False
+        assert result.place_name == "The Clearing"
+        assert result.scene_text.startswith("You step into The Clearing.")
+        assert "A quiet woodland clearing where new stories begin." in result.scene_text
+
+        entity = store.get_entity(result.entity_id)
+        assert entity is not None
+        assert entity.kind == "avatar"
+        assert entity.status == "active"
+        assert entity.name == "alice"
+        assert entity.summary == "curious traveller"
+
+        places = store.list_entities_by_kind("place")
+        assert len(places) == 1
+
+        assert store.find_avatar_by_nick("alice") == result.entity_id
+        assert store.get_attribute(result.entity_id, "location") == "The Clearing"
+
+    def test_second_user_lands_at_existing_place(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.opt_in_avatar("alice", None, "first in")
+        bob_result = store.opt_in_avatar("bob", None, "second in")
+
+        places = store.list_entities_by_kind("place")
+        assert len(places) == 1
+
+        assert bob_result.place_name == "The Clearing"
+        assert store.get_attribute(bob_result.entity_id, "location") == "The Clearing"
+
+    def test_already_opted_in_active_returns_existing(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("alice", None, "curious traveller")
+        second = store.opt_in_avatar("alice", None, "different text")
+
+        assert second.was_already_opted_in is True
+        assert second.entity_id == first.entity_id
+        assert second.place_name == "The Clearing"
+        assert "The Clearing" in second.scene_text
+
+        # Only one avatar entity
+        avatars = store.list_entities_by_kind("avatar")
+        assert len(avatars) == 1
+
+    def test_retired_avatar_reactivates(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("alice", None, "curious traveller")
+        eid = first.entity_id
+
+        # Soft pause: retire entity but leave link
+        store.set_status(eid, "retired")
+
+        result = store.opt_in_avatar("alice", None, "coming back")
+
+        assert result.was_already_opted_in is False
+        assert result.entity_id == eid
+
+        entity = store.get_entity(eid)
+        assert entity is not None
+        assert entity.status == "active"
+
+    def test_retired_avatar_via_unlink_then_reopt_creates_new(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("alice", None, "curious traveller")
+        old_eid = first.entity_id
+
+        # Hard goodbye: removes link AND retires
+        store.unlink_avatar(old_eid)
+
+        result = store.opt_in_avatar("alice", None, "starting fresh")
+
+        assert result.was_already_opted_in is False
+        assert result.entity_id != old_eid
+
+    def test_account_lookup_prefers_account_over_nick(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("alice", "alice@net", "curious traveller")
+        eid = first.entity_id
+
+        # Nick changed on IRC side, account stable
+        result = store.opt_in_avatar("aliceX", "alice@net", "new session")
+
+        assert result.was_already_opted_in is True
+        assert result.entity_id == eid
+
+        # Link nick should be updated
+        assert store.find_avatar_by_nick("aliceX") == eid
+
+    def test_concurrent_opt_in_distinct_nicks_one_place(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#concurrent-optin")
+
+        def do_opt_in(nick: str):  # type: ignore[return]
+            return store.opt_in_avatar(nick, None, f"{nick} instruct")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(do_opt_in, ["alice", "bob"]))
+
+        # Both succeed
+        assert all(r is not None for r in results)
+        # Only one place
+        assert len(store.list_entities_by_kind("place")) == 1
+        # Both land at same place
+        assert results[0].place_name == results[1].place_name
+        # Distinct entity ids
+        assert results[0].entity_id != results[1].entity_id
+
+    def test_scene_text_does_not_mention_verse_act(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        result = store.opt_in_avatar("alice", None, "curious traveller")
+        assert "verse_act" not in result.scene_text
+
+    def test_place_selection_uses_most_recent_event(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        # Pre-create two places
+        store.add_entity("place", "Place A", "Summary of A.")
+        place_b_id = store.add_entity("place", "Place B", "Summary of B.")
+
+        # Add event referencing place B — makes it the most recently referenced
+        store.add_event("Something happened at B", [place_b_id], "loom")
+
+        result = store.opt_in_avatar("alice", None, "curious traveller")
+        assert result.place_name == "Place B"
+        assert store.get_attribute(result.entity_id, "location") == "Place B"
+
+
 class TestWriteLockConcurrency:
     def test_concurrent_add_entity_yields_unique_ids(self, verse_db_dir: Path) -> None:
         """50 concurrent add_entity calls across 8 threads — all rows persist
