@@ -3336,6 +3336,8 @@ class TestCommandRegistry:
             "verse",
             "look",
             "who",
+            "versedump",
+            "versepurge",
         }
         assert names == expected
 
@@ -5348,3 +5350,388 @@ class TestWhoCommand:
             reply_text = irc.reply.call_args[0][0]
             assert "Nobody" not in reply_text
             assert "alice" not in reply_text
+
+
+# =============================================================================
+# TestVersepurgeCommand
+# =============================================================================
+
+
+class TestVersepurgeCommand:
+    """Tests for the @versepurge command (C5).
+
+    Strategy: direct method calls (bypassing wrap), with a real VerseStore
+    backed by tmp_path. Token logic is exercised via a ``now_func`` shim passed
+    to ``_versepurge_check_token`` so we can fake the clock without monkeypatching.
+    """
+
+    @pytest.fixture
+    def purge_env(self, plugin_env, tmp_path, mocker):
+        """plugin_env + real VerseStore wired for #afnet, with gm capability."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        # Wire the store into the cache so versepurge can pop it.
+        plugin._verse_stores["#afnet"] = store
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        # Grant llm.verse.gm.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@versepurge #afnet")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    # ------------------------------------------------------------------
+    # Test 1: first call issues token
+    # ------------------------------------------------------------------
+
+    def test_first_call_issues_token(self, purge_env) -> None:
+        """GIVEN no existing token WHEN @versepurge #afnet THEN 6-char token issued."""
+        plugin, irc, msg, store = purge_env
+
+        plugin.versepurge(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert "Confirm with @versepurge #afnet" in reply_text
+        assert "within 60s" in reply_text
+
+        assert "#afnet" in plugin._versepurge_tokens
+        stored_token, expires_at = plugin._versepurge_tokens["#afnet"]
+        assert len(stored_token) == 6  # token_hex(3) → 6 hex chars
+        import time as _time
+
+        assert expires_at > _time.time()
+
+    # ------------------------------------------------------------------
+    # Test 2: correct token purges
+    # ------------------------------------------------------------------
+
+    def test_second_call_correct_token_purges(self, purge_env, tmp_path) -> None:
+        """GIVEN valid token WHEN @versepurge #afnet <token> THEN purged reply, store gone."""
+        plugin, irc, msg, store = purge_env
+        db_path = store.path
+
+        # Step 1: issue token.
+        plugin.versepurge(irc, msg, ["#afnet"])
+        stored_token, _ = plugin._versepurge_tokens["#afnet"]
+        irc.reply.reset_mock()
+
+        # Step 2: confirm.
+        plugin.versepurge(irc, msg, [f"#afnet {stored_token}"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "Verse for #afnet purged."
+
+        # Store evicted from cache.
+        assert "#afnet" not in plugin._verse_stores
+
+        # DB file removed.
+        assert not db_path.exists()
+
+        # Token cleared.
+        assert "#afnet" not in plugin._versepurge_tokens
+
+    # ------------------------------------------------------------------
+    # Test 3: wrong token rejected
+    # ------------------------------------------------------------------
+
+    def test_second_call_wrong_token_rejected(self, purge_env) -> None:
+        """GIVEN valid token WHEN confirmed with garbage token THEN rejected."""
+        plugin, irc, msg, store = purge_env
+        db_path = store.path
+
+        plugin.versepurge(irc, msg, ["#afnet"])
+        irc.reply.reset_mock()
+
+        plugin.versepurge(irc, msg, ["#afnet garbage"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert "Token expired or invalid" in reply_text
+        assert "Run @versepurge #afnet again" in reply_text
+
+        # DB still exists; token NOT cleared (wrong token doesn't clear unexpired entry).
+        assert db_path.exists()
+        assert "#afnet" in plugin._versepurge_tokens
+
+    # ------------------------------------------------------------------
+    # Test 4: token expires after 60s
+    # ------------------------------------------------------------------
+
+    def test_token_expires_after_60s(self, purge_env) -> None:
+        """GIVEN token issued WHEN 60s pass and correct token presented THEN expired."""
+        plugin, irc, msg, store = purge_env
+        db_path = store.path
+
+        plugin.versepurge(irc, msg, ["#afnet"])
+        stored_token, _ = plugin._versepurge_tokens["#afnet"]
+        irc.reply.reset_mock()
+
+        # Use _versepurge_check_token directly with a fake clock past expiry.
+        import time as _time
+
+        future_now = _time.time() + 61.0
+        result = plugin._versepurge_check_token("#afnet", stored_token, now_func=lambda: future_now)
+        assert result is False
+
+        # Stale entry should be cleared.
+        assert "#afnet" not in plugin._versepurge_tokens
+
+        # DB still exists (no purge occurred).
+        assert db_path.exists()
+
+    # ------------------------------------------------------------------
+    # Test 5: reissue within window invalidates old token
+    # ------------------------------------------------------------------
+
+    def test_reissue_within_window_invalidates_old(self, purge_env) -> None:
+        """GIVEN unexpired T1 WHEN @versepurge #afnet called again THEN T2 issued, T1 invalid."""
+        plugin, irc, msg, store = purge_env
+
+        # Issue T1.
+        plugin.versepurge(irc, msg, ["#afnet"])
+        token_t1, _ = plugin._versepurge_tokens["#afnet"]
+        irc.reply.reset_mock()
+
+        # Issue T2 (while T1 still valid).
+        plugin.versepurge(irc, msg, ["#afnet"])
+        reply_text = irc.reply.call_args[0][0]
+        assert "Previous token invalidated" in reply_text or "invalidated" in reply_text
+
+        token_t2, _ = plugin._versepurge_tokens["#afnet"]
+        assert token_t2 != token_t1
+
+        # T1 no longer valid.
+        result = plugin._versepurge_check_token("#afnet", token_t1)
+        assert result is False
+
+    # ------------------------------------------------------------------
+    # Test 6: purge channel with no store yet is a no-op
+    # ------------------------------------------------------------------
+
+    def test_purge_for_channel_with_no_store_yet(self, purge_env) -> None:
+        """GIVEN channel never had a store WHEN confirmed THEN 'purged' reply, no error."""
+        plugin, irc, msg, store = purge_env
+
+        # Issue token for a channel that has no store in cache.
+        plugin._verse_stores.pop("#newchan", None)
+        plugin.versepurge(irc, msg, ["#newchan"])
+        token, _ = plugin._versepurge_tokens["#newchan"]
+        irc.reply.reset_mock()
+
+        plugin.versepurge(irc, msg, [f"#newchan {token}"])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text == "Verse for #newchan purged."
+        assert "#newchan" not in plugin._versepurge_tokens
+
+    # ------------------------------------------------------------------
+    # Test 7: lacking capability is denied
+    # ------------------------------------------------------------------
+
+    def test_lacking_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse.gm WHEN @versepurge THEN error, no token issued."""
+        plugin, irc, msg = plugin_env
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        plugin._versepurge_tokens.clear()
+        msg.args = ("#afnet", "@versepurge #afnet")
+        plugin.versepurge(irc, msg, ["#afnet"])
+
+        irc.error.assert_called_once()
+        assert "#afnet" not in plugin._versepurge_tokens
+
+    # ------------------------------------------------------------------
+    # Test 8: llm.verse (not gm) is denied
+    # ------------------------------------------------------------------
+
+    def test_purge_unrelated_to_versedump_capability(self, plugin_env, mocker) -> None:
+        """GIVEN user has llm.verse but NOT llm.verse.gm WHEN @versepurge THEN denied."""
+        plugin, irc, msg = plugin_env
+
+        # Only grant llm.verse (not llm.verse.gm).
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap == "llm.verse",
+        )
+
+        plugin._versepurge_tokens.clear()
+        msg.args = ("#afnet", "@versepurge #afnet")
+        plugin.versepurge(irc, msg, ["#afnet"])
+
+        irc.error.assert_called_once()
+        assert "#afnet" not in plugin._versepurge_tokens
+
+
+# =============================================================================
+# TestVersedumpCommand
+# =============================================================================
+
+
+class TestVersedumpCommand:
+    """Tests for the @versedump command (C5).
+
+    Strategy: real VerseStore via tmp_path; invoke plugin.versedump directly.
+    pyyaml is not installed → yaml branch returns unsupported message.
+    """
+
+    @pytest.fixture
+    def dump_env(self, plugin_env, tmp_path, mocker):
+        """plugin_env + real VerseStore for #afnet, gm capability granted."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        msg.args = ("#afnet", "@versedump #afnet")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    # ------------------------------------------------------------------
+    # Test 9: dump includes entities, attributes, relations, events, avatar_links
+    # ------------------------------------------------------------------
+
+    def test_dump_includes_entities_attributes_relations_events_avatar_link(self, dump_env) -> None:
+        """GIVEN populated verse WHEN @versedump THEN JSON contains all sections."""
+        import json as _json
+
+        plugin, irc, msg, store = dump_env
+
+        # Opt alice in (creates avatar + place + location attribute via opt_in_avatar).
+        alice_id = store.opt_in_avatar("alice", None, "").entity_id
+
+        # Add a relation.
+        store.add_relation(alice_id, alice_id, "self-aware", "test note")
+
+        # Add an event.
+        store.add_event("alice did something", [alice_id], "avatar")
+
+        plugin.versedump(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        data = _json.loads(reply_text)
+
+        assert "entities" in data
+        assert len(data["entities"]) >= 1
+
+        # Check attributes present on alice's entity.
+        alice_entity = next((e for e in data["entities"] if e["id"] == alice_id), None)
+        assert alice_entity is not None
+        assert "attributes" in alice_entity
+
+        assert "relations" in data
+        assert len(data["relations"]) >= 1
+
+        assert "events" in data
+        assert len(data["events"]) >= 1
+
+        assert "avatar_links" in data
+        assert any(row["nick"] == "alice" for row in data["avatar_links"])
+
+    # ------------------------------------------------------------------
+    # Test 10: default format is JSON
+    # ------------------------------------------------------------------
+
+    def test_dump_default_format_is_json(self, dump_env) -> None:
+        """WHEN @versedump #chan THEN reply is valid JSON."""
+        import json as _json
+
+        plugin, irc, msg, store = dump_env
+
+        plugin.versedump(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        data = _json.loads(reply_text)  # Raises if not valid JSON.
+        assert data["schema_version"] == 1
+        assert data["channel"] == "#afnet"
+
+    # ------------------------------------------------------------------
+    # Test 11: yaml format returns unsupported (pyyaml not installed)
+    # ------------------------------------------------------------------
+
+    def test_dump_yaml_format_or_unsupported(self, dump_env) -> None:
+        """WHEN @versedump #chan --format=yaml THEN unsupported message (pyyaml absent)."""
+        plugin, irc, msg, store = dump_env
+
+        # Pass --format=yaml in the text arg (space-separated from channel).
+        plugin.versedump(irc, msg, ["#afnet --format=yaml"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        # pyyaml is not a dependency → unsupported message.
+        assert "Unsupported format" in reply_text
+        assert "json" in reply_text.lower()
+
+    # ------------------------------------------------------------------
+    # Test 12: lacking capability is denied
+    # ------------------------------------------------------------------
+
+    def test_dump_lacking_capability_denied(self, plugin_env, mocker) -> None:
+        """GIVEN user lacks llm.verse.gm WHEN @versedump THEN error."""
+        plugin, irc, msg = plugin_env
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            return_value=False,
+        )
+
+        msg.args = ("#afnet", "@versedump #afnet")
+        plugin.versedump(irc, msg, ["#afnet"])
+
+        irc.error.assert_called_once()
