@@ -10,8 +10,20 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
+
+
+class Entity(NamedTuple):
+    id: int
+    kind: str
+    name: str
+    summary: str
+    status: str
+    created_at: float
+    updated_at: float
+
 
 SCHEMA_VERSION = 1
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
@@ -79,3 +91,67 @@ class VerseStore:
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, time.time()),
                 )
+
+    # ------------------------------------------------------------------
+    # Entity CRUD
+    # ------------------------------------------------------------------
+
+    def add_entity(self, kind: str, name: str, summary: str = "") -> int:
+        """Insert a new entity and return its id."""
+        now = time.time()
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO entities (kind, name, summary, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (kind, name, summary, now, now),
+            )
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+
+    def get_entity(self, entity_id: int) -> Entity | None:
+        """Return the Entity with the given id, or None."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id, kind, name, summary, status, created_at, updated_at"
+                " FROM entities WHERE id = ?",
+                (entity_id,),
+            ).fetchone()
+        return Entity(*row) if row else None
+
+    def find_entity_by_name(self, name: str, kind: str | None = None) -> Entity | None:
+        """Case-insensitive name lookup. Optional kind filter. Returns first match by id."""
+        kind_filter = "AND kind = ?" if kind is not None else ""
+        sql = (
+            "SELECT id, kind, name, summary, status, created_at, updated_at"
+            " FROM entities"
+            f" WHERE LOWER(name) = LOWER(?)"
+            f" {kind_filter}"
+            " ORDER BY id ASC LIMIT 1"
+        )
+        params = (name, kind) if kind is not None else (name,)
+        with self.read_connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return Entity(*row) if row else None
+
+    def set_status(self, entity_id: int, status: str) -> None:
+        """Update entity status and updated_at. Silent no-op if entity_id not found."""
+        now = time.time()
+        with self.write_transaction() as conn:
+            conn.execute(
+                "UPDATE entities SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, entity_id),
+            )
+
+    def list_entities_by_kind(self, kind: str, status: str | None = "active") -> list[Entity]:
+        """List entities of the given kind. Filter by status unless status is None."""
+        status_filter = "AND status = ?" if status is not None else ""
+        sql = (
+            "SELECT id, kind, name, summary, status, created_at, updated_at"
+            " FROM entities"
+            f" WHERE kind = ? {status_filter}"
+            " ORDER BY updated_at DESC, id DESC"
+        )
+        params = (kind, status) if status is not None else (kind,)
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [Entity(*row) for row in rows]
