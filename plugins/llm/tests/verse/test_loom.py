@@ -7,6 +7,37 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 
+class TestTruncateTranscript:
+    def test_caps_lines(self) -> None:
+        from llm.verse.loom import truncate_transcript
+
+        lines = [("a", f"x{i}") for i in range(100)]
+        out = truncate_transcript(lines, max_lines=10, max_chars=10_000)
+        assert len(out) == 10
+        assert out[-1] == ("a", "x99")
+
+    def test_caps_chars_after_lines(self) -> None:
+        from llm.verse.loom import truncate_transcript
+
+        lines = [("a", "x" * 100) for _ in range(50)]
+        out = truncate_transcript(lines, max_lines=40, max_chars=500)
+        total = sum(len(t) for _, t in out)
+        assert total <= 500
+        assert len(out) <= 5
+
+    def test_dedupes_consecutive_identical_tuples(self) -> None:
+        from llm.verse.loom import truncate_transcript
+
+        lines = [("a", "ping"), ("a", "ping"), ("b", "ping"), ("a", "ping")]
+        out = truncate_transcript(lines, max_lines=40, max_chars=10_000)
+        assert out == [("a", "ping"), ("b", "ping"), ("a", "ping")]
+
+    def test_empty_input_empty_output(self) -> None:
+        from llm.verse.loom import truncate_transcript
+
+        assert truncate_transcript([], max_lines=40, max_chars=8000) == []
+
+
 class TestParseDigest:
     def test_parses_valid_array(self) -> None:
         from llm.verse.loom import parse_digest

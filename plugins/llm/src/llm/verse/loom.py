@@ -195,6 +195,34 @@ def parse_digest(text: str) -> list[ParsedProposal]:
     return out
 
 
+def truncate_transcript(
+    lines: list[tuple[str, str]],
+    *,
+    max_lines: int,
+    max_chars: int,
+) -> list[tuple[str, str]]:
+    """Drop consecutive duplicates of the (nick, text) tuple, then cap.
+
+    Caps to ``max_lines`` (most recent kept) and ``max_chars`` (most
+    recent kept). Input is oldest-first.
+    """
+    deduped: list[tuple[str, str]] = []
+    for nick, text in lines:
+        if deduped and deduped[-1] == (nick, text):
+            continue
+        deduped.append((nick, text))
+    deduped = deduped[-max_lines:]
+    out: list[tuple[str, str]] = []
+    total = 0
+    for nick, text in reversed(deduped):
+        if total + len(text) > max_chars:
+            break
+        out.append((nick, text))
+        total += len(text)
+    out.reverse()
+    return out
+
+
 def pick_focus_verse(
     candidates: list[VerseCandidate],
     *,
