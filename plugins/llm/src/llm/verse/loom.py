@@ -606,7 +606,57 @@ class Loom:
             )
             self._active = cycle
             self._last_cycle_by_channel[choice.channel] = now
+        # Outside the cycle lock: a long DB write here must not block
+        # ``observe_transcript`` or other tick paths.
+        self._maybe_consume_one_seed_for(cycle.channel)
         self._bridge.submit("loom:seed", lambda: self._seed_phase(cycle))
+
+    def _maybe_consume_one_seed_for(self, channel: str) -> None:
+        """If this verse opts into receiving, atomically claim one pending
+        seed and insert it as a pending ``add_event`` proposal in the
+        receiver's table.
+
+        The consume flow is:
+          1. Pre-generate ``proposal_id`` (uuid).
+          2. ``claim_seed_for`` writes the consumption row in one TX. If
+             this caller wins the claim, it returns the seed; otherwise
+             ``None`` (no pending seed, or another receiver claimed it).
+          3. If we won, insert the local proposal with the pre-generated
+             id. If the proposal insert fails, the consumption row is
+             left dangling — that's a one-seed loss for this receiver,
+             logged at exception level but not retried.
+
+        Other failures are logged at WARNING and swallowed; a different
+        seed will be picked up on the next cycle.
+        """
+        cx = self._bridge.crosspoll_store()
+        if cx is None or not self._bridge.verse_allow_receive(channel):
+            return
+        proposal_id = uuid.uuid4().hex
+        try:
+            seed = cx.claim_seed_for(channel, proposal_id=proposal_id)
+        except Exception:
+            self._log.exception("crosspoll: claim_seed_for failed")
+            return
+        if seed is None:
+            return
+        store = self._bridge.store_for(channel)
+        try:
+            store.add_proposal(
+                cycle_id="crosspoll-recv",
+                op="add_event",
+                payload={"summary": seed.summary, "entity_ids": []},
+                confidence=0.0,
+                provenance=(f"crosspoll from {seed.source_channel} (seed-id={seed.id})"),
+                proposal_id=proposal_id,
+            )
+        except Exception:
+            self._log.exception(
+                "crosspoll: claimed seed %s but proposal insert failed; "
+                "consumption row at proposal_id=%s is now dangling",
+                seed.id,
+                proposal_id,
+            )
 
     def _seed_phase(self, cycle: LoomCycle) -> None:
         messages = [

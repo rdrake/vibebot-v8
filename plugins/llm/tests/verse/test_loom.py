@@ -1334,3 +1334,445 @@ class TestDigestPhaseRoutesCrosspoll:
         assert enqueued == ["first whisper"]
         # second seed was skipped, NOT silently re-enqueued
         assert "second whisper" not in enqueued
+
+
+class TestLoomTickConsumesSeed:
+    def test_receiver_pulls_one_seed_inserts_proposal(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeSeed:
+            id = 7
+            source_channel = "#other"
+            summary = "incoming whisper"
+            payload: dict[str, Any] = {}
+            created_at = 0.0
+
+        class FakeCross:
+            def __init__(self) -> None:
+                self._available: list[Any] = [FakeSeed()]
+                self.claims: list[tuple[int, str, str]] = []
+
+            def claim_seed_for(self, ch: str, *, proposal_id: str) -> Any | None:
+                if not self._available:
+                    return None
+                seed = self._available.pop(0)
+                self.claims.append((seed.id, ch, proposal_id))
+                return seed
+
+        cx = FakeCross()
+
+        class FakeClient:
+            def call(self, *, op, model, messages):
+                # Empty content — seed phase short-circuits and the cycle
+                # finalises before any beats get scheduled.
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self) -> list[str]:
+                return ["#afnet"]
+
+            def candidate_weight(self, channel: str) -> int:
+                return 1
+
+            def snapshot(self, channel: str) -> VerseSnapshot:
+                return VerseSnapshot(
+                    channel=channel,
+                    summary="x",
+                    top_entities=[],
+                    recent_events=[],
+                )
+
+            def post_to_loom_channel(self, text: str) -> bool:
+                return True
+
+            def schedule_after(self, delay_s, fn, name):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self) -> float:
+                return 1000.0
+
+            def store_for(self, channel: str) -> Any:
+                return store
+
+            def log_usage(self, *, channel, op, model, usage):
+                pass
+
+            def crosspoll_store(self) -> Any | None:
+                return cx
+
+            def verse_allow_send(self, channel: str) -> bool:
+                return False
+
+            def verse_allow_receive(self, channel: str) -> bool:
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="gemini/gemini-flash-lite-latest",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.tick()
+
+        assert cx.claims and cx.claims[0][1] == "#afnet"
+        assert cx.claims[0][0] == 7
+        proposal_id_claimed = cx.claims[0][2]
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT id, op, status, payload FROM proposals").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == proposal_id_claimed
+        assert rows[0][1] == "add_event"
+        assert rows[0][2] == "pending"
+        import json
+
+        assert json.loads(rows[0][3])["summary"] == "incoming whisper"
+
+    def test_no_pull_when_receive_disabled(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def claim_seed_for(self, ch, *, proposal_id):
+                raise AssertionError("must not be called when receive disabled")
+
+        cx = FakeCross()
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel,
+                    summary="x",
+                    top_entities=[],
+                    recent_events=[],
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return store
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return cx
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return False
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.tick()
+
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        assert count == 0
+
+    def test_claim_raises_is_swallowed(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class BoomCross:
+            def claim_seed_for(self, ch, *, proposal_id):
+                raise RuntimeError("db gone")
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return store
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return BoomCross()
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        # Must not raise — the loom-cycle continues despite the claim error.
+        loom.tick()
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        assert count == 0
+
+    def test_no_seed_available_is_noop(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class EmptyCross:
+            def claim_seed_for(self, ch, *, proposal_id):
+                return None
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return store
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return EmptyCross()
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.tick()
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        assert count == 0
+
+    def test_proposal_insert_failure_logs_dangling_row(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeSeed:
+            id = 99
+            source_channel = "#other"
+            summary = "doomed"
+            payload: dict[str, Any] = {}
+            created_at = 0.0
+
+        class FakeCross:
+            def claim_seed_for(self, ch, *, proposal_id):
+                return FakeSeed()
+
+        class BoomStore:
+            """Wraps real store but raises on add_proposal."""
+
+            def add_proposal(self, **kw):
+                raise RuntimeError("disk full")
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                # Return the boom-store so add_proposal blows up.
+                return BoomStore()
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return FakeCross()
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        # Must not raise — proposal insert failure is logged + swallowed.
+        loom.tick()
+        # Real store is untouched (we used BoomStore for the consume hook).
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        assert count == 0
