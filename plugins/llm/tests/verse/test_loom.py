@@ -298,7 +298,7 @@ class TestLoomTick:
             channels=["#afnet"],
             weights={"#afnet": 5},
             store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest", 1)], [])},
         )
         client = StubClient({"seed": "the bell rings"})
         loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
@@ -389,7 +389,7 @@ class TestLoomDigestPhase:
             channels=["#afnet"],
             weights={"#afnet": 5},
             store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest", 1)], [])},
         )
         client = StubClient(
             {
@@ -430,7 +430,7 @@ class TestLoomDigestPhase:
             channels=["#afnet"],
             weights={"#afnet": 5},
             store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest")], [])},
+            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest", 1)], [])},
         )
         captured: list[str] = []
 
@@ -458,7 +458,7 @@ class TestLoomDigestPhase:
         bridge.snapshots["#afnet"] = VerseSnapshot(
             "#afnet",
             "different summary",
-            [("avatar", "Different")],
+            [("avatar", "Different", 2)],
             ["a new event"],
         )
         loom.observe_transcript("botB", "I hear it")
@@ -814,7 +814,7 @@ class TestPromptBuilders:
         snap = VerseSnapshot(
             channel="#afnet",
             summary="Three avatars wander a moonlit grove.",
-            top_entities=[("avatar", "Forest"), ("place", "Hollow Oak")],
+            top_entities=[("avatar", "Forest", 1), ("place", "Hollow Oak", 2)],
             recent_events=["Forest entered the grove.", "Owl hooted thrice."],
         )
         a = build_verse_stable_block(snap)
@@ -845,6 +845,36 @@ class TestPromptBuilders:
         )
         assert "json" in out.lower()
         assert "array" in out.lower() or "list" in out.lower()
+
+
+class TestBuildVerseStableBlock:
+    def test_lists_entities_with_ids(self) -> None:
+        from llm.verse.loom import VerseSnapshot, build_verse_stable_block
+
+        snap = VerseSnapshot(
+            channel="#afnet",
+            summary="A wood at the edge of town.",
+            top_entities=[
+                ("place", "the brook", 4),
+                ("avatar", "rin", 7),
+            ],
+            recent_events=["someone whispered"],
+        )
+        out = build_verse_stable_block(snap)
+        assert "- place: the brook (id=4)" in out
+        assert "- avatar: rin (id=7)" in out
+
+    def test_recent_events_preserved(self) -> None:
+        from llm.verse.loom import VerseSnapshot, build_verse_stable_block
+
+        snap = VerseSnapshot(
+            channel="#afnet",
+            summary="x",
+            top_entities=[],
+            recent_events=["A", "B"],
+        )
+        out = build_verse_stable_block(snap)
+        assert "- A" in out and "- B" in out
 
 
 class TestPickFocusVerse:

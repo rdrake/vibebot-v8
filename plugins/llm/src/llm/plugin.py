@@ -5413,11 +5413,11 @@ class _PluginLoomBridge:
         store = self._plugin._get_or_create_verse_store(channel)
         avatars = store.list_entities_by_kind("avatar", status="active")[:5]
         places = store.list_entities_by_kind("place")[:5]
-        events = store.recent_events(limit=10)
+        events = store.recent_events(limit=10, exclude_sources=("crosspoll",))
         return VerseSnapshot(
             channel=channel,
             summary=f"{len(avatars)} active avatars, {len(places)} places",
-            top_entities=[(e.kind, e.name) for e in (*avatars, *places)],
+            top_entities=[(e.kind, e.name, e.id) for e in (*avatars, *places)],
             recent_events=[e.summary for e in events],
         )
 

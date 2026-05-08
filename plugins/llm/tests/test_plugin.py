@@ -1835,17 +1835,33 @@ class TestPluginLoomBridge:
         verse_dir = tmp_path / "stores"
         verse_dir.mkdir()
         store = VerseStore(verse_dir, "#forest")
-        store.add_entity("avatar", "Forest")
-        store.add_entity("place", "Grove")
+        forest_id = store.add_entity("avatar", "Forest")
+        grove_id = store.add_entity("place", "Grove")
         store.add_event("a chime", [], "loom")
         plugin._get_or_create_verse_store = lambda ch: store
 
         snap = bridge.snapshot("#forest")
         assert isinstance(snap, VerseSnapshot)
         assert snap.channel == "#forest"
-        assert ("avatar", "Forest") in snap.top_entities
-        assert ("place", "Grove") in snap.top_entities
+        assert ("avatar", "Forest", forest_id) in snap.top_entities
+        assert ("place", "Grove", grove_id) in snap.top_entities
         assert "a chime" in snap.recent_events
+
+    def test_snapshot_excludes_crosspoll_events(self, mocker: MockerFixture, tmp_path) -> None:
+        from llm.verse.store import VerseStore
+
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        verse_dir = tmp_path / "stores"
+        verse_dir.mkdir()
+        store = VerseStore(verse_dir, "#forest")
+        store.add_event("regular", [], "loom")
+        store.add_event("from elsewhere", [], "crosspoll")
+        plugin._get_or_create_verse_store = lambda ch: store
+
+        snap = bridge.snapshot("#forest")
+        joined = "\n".join(snap.recent_events)
+        assert "regular" in joined
+        assert "from elsewhere" not in joined
 
     def test_post_to_loom_channel_returns_false_without_irc(
         self, mocker: MockerFixture, tmp_path

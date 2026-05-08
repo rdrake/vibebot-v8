@@ -22,8 +22,8 @@ class VerseCandidate(NamedTuple):
 class VerseSnapshot(NamedTuple):
     channel: str
     summary: str
-    top_entities: list[tuple[str, str]]
-    """``(kind, name)`` pairs."""
+    top_entities: list[tuple[str, str, int]]
+    """``(kind, name, id)`` triples."""
     recent_events: list[str]
     """Newest-first."""
 
@@ -51,14 +51,18 @@ Always emit the proposal list as a single JSON array, no prose around it.
 
 
 def build_verse_stable_block(snap: VerseSnapshot) -> str:
-    """Per-cycle prompt block reused across seed/beat/digest calls."""
+    """Per-cycle prompt block reused across seed/beat/digest calls.
+
+    Each entity line carries its numeric id so the digest model can
+    reference real entities instead of inventing ids.
+    """
     parts = [
         f"# Focus verse: {snap.channel}",
         f"# Summary: {snap.summary}",
         "# Active entities:",
     ]
-    for kind, name in snap.top_entities:
-        parts.append(f"- {kind}: {name}")
+    for kind, name, eid in snap.top_entities:
+        parts.append(f"- {kind}: {name} (id={eid})")
     parts.append("# Recent events (newest first):")
     for ev in snap.recent_events:
         parts.append(f"- {ev}")

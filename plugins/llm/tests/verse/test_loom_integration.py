@@ -70,7 +70,7 @@ def test_full_cycle_then_operator_approval(verse_db_dir, tmp_path) -> None:
             "#forest": VerseSnapshot(
                 "#forest",
                 "1 active avatar",
-                [("avatar", "Forest")],
+                [("avatar", "Forest", forest_id)],
                 [],
             )
         },
