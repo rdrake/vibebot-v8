@@ -388,6 +388,51 @@ class VerseStore:
             for row in rows
         ]
 
+    def _replace_events_with_source(
+        self,
+        *,
+        delete_ids: Sequence[int],
+        summary: str,
+        entity_ids: Sequence[int],
+        ts: float,
+        source: str,
+    ) -> int:
+        """Atomic delete-then-insert. Returns the new event's id."""
+        with self.write_transaction() as conn:
+            if delete_ids:
+                placeholders = ",".join("?" for _ in delete_ids)
+                conn.execute(
+                    f"DELETE FROM events WHERE id IN ({placeholders})",
+                    tuple(delete_ids),
+                )
+            cur = conn.execute(
+                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+                (ts, summary, json.dumps(list(entity_ids)), source),
+            )
+            assert cur.lastrowid is not None
+            return int(cur.lastrowid)
+
+    def replace_events_with_lore_digest(
+        self,
+        *,
+        delete_ids: Sequence[int],
+        summary: str,
+        entity_ids: Sequence[int],
+        ts: float,
+    ) -> int:
+        """Replace ``delete_ids`` with a single ``source='loom'`` digest event.
+
+        All work happens inside one ``write_transaction``; on error the whole
+        operation rolls back and the originals survive.
+        """
+        return self._replace_events_with_source(
+            delete_ids=delete_ids,
+            summary=summary,
+            entity_ids=entity_ids,
+            ts=ts,
+            source="loom",
+        )
+
     def events_older_than(self, *, cutoff_ts: float) -> list[Event]:
         """All events with ``ts < cutoff_ts``, oldest-first.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import threading
 import time
 from pathlib import Path
@@ -1093,3 +1094,84 @@ class TestEventsOlderThan:
         insert_event_at(store, summary="c", entity_ids=[], source="crosspoll", ts=7.0)
         rows = store.events_older_than(cutoff_ts=10.0)
         assert {r.source for r in rows} == {"avatar", "loom", "crosspoll"}
+
+
+class TestReplaceEventsWithLoreDigest:
+    def test_replaces_atomically_and_returns_new_id(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        old_ids = [
+            insert_event_at(
+                store,
+                summary=f"e{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=float(i),
+            )
+            for i in range(5)
+        ]
+        new_id = store.replace_events_with_lore_digest(
+            delete_ids=old_ids,
+            summary="A digest of five small events.",
+            entity_ids=(),
+            ts=100.0,
+        )
+        assert new_id > 0
+        # surviving rows: only the new digest event
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT id, summary, source FROM events ORDER BY id ASC").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == new_id
+        assert rows[0][1] == "A digest of five small events."
+        assert rows[0][2] == "loom"
+
+    def test_rolls_back_on_invalid_source(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        oid = insert_event_at(store, summary="e", entity_ids=[], source="avatar", ts=1.0)
+        # Force a CHECK violation by exercising the inner helper with a
+        # source not in the events.source CHECK list.
+        with pytest.raises(Exception):  # noqa: B017,PT011
+            store._replace_events_with_source(  # type: ignore[attr-defined]
+                delete_ids=[oid],
+                summary="x",
+                entity_ids=(),
+                ts=2.0,
+                source="not_a_real_source",
+            )
+        # original event still present, no digest row created
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT id FROM events").fetchall()
+        assert [r[0] for r in rows] == [oid]
+
+    def test_no_delete_ids_still_inserts_digest(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        new_id = store.replace_events_with_lore_digest(
+            delete_ids=[],
+            summary="empty digest",
+            entity_ids=(),
+            ts=42.0,
+        )
+        assert new_id > 0
+
+    def test_entity_ids_are_json_encoded(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        new_id = store.replace_events_with_lore_digest(
+            delete_ids=[],
+            summary="d",
+            entity_ids=(1, 2, 3),
+            ts=10.0,
+        )
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT entity_ids FROM events WHERE id=?", (new_id,)).fetchone()
+        assert json.loads(row[0]) == [1, 2, 3]
