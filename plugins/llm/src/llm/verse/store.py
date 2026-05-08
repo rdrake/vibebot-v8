@@ -773,8 +773,18 @@ class VerseStore:
             )
         return pid
 
-    def apply_proposal_and_mark(self, proposal_id: str, *, reviewer: str) -> None:
+    def apply_proposal_and_mark(
+        self,
+        proposal_id: str,
+        *,
+        reviewer: str,
+        event_source: str = "loom",
+    ) -> None:
         """Atomically apply a pending proposal and flip its status to approved.
+
+        ``event_source`` is the value written into ``events.source`` (or any
+        other rows the op produces). Defaults to ``'loom'``; the crosspoll
+        receive path passes ``'crosspoll'``.
 
         Raises ``LookupError`` if no such id, ``ValueError`` if already
         terminal.
@@ -790,7 +800,7 @@ class VerseStore:
             if status != "pending":
                 raise ValueError(f"proposal {proposal_id!r} already {status}; cannot apply")
             payload = json.loads(payload_json)
-            self._apply_op_inline(conn, op=op, payload=payload, source="loom")
+            self._apply_op_inline(conn, op=op, payload=payload, source=event_source)
             conn.execute(
                 "UPDATE proposals SET status='approved', reviewer=?, reviewed_at=? WHERE id=?",
                 (reviewer, time.time(), proposal_id),

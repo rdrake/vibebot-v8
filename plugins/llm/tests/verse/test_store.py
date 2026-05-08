@@ -1237,3 +1237,72 @@ class TestAddProposalAcceptsId:
                 provenance="t",
                 proposal_id=pid,
             )
+
+
+class TestApplyProposalAndMarkEventSource:
+    def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.0,
+            provenance="t",
+        )
+        store.apply_proposal_and_mark(pid, reviewer="op")
+        with store.read_connection() as conn:
+            ev_row = conn.execute("SELECT source FROM events WHERE summary='x'").fetchone()
+            pr_row = conn.execute(
+                "SELECT status, reviewer, reviewed_at FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+        assert ev_row[0] == "loom"
+        # apply_proposal_and_mark contract: status flipped, reviewer
+        # recorded, reviewed_at populated.
+        assert pr_row[0] == "approved"
+        assert pr_row[1] == "op"
+        assert pr_row[2] is not None and pr_row[2] > 0
+
+    def test_event_source_crosspoll_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="crosspoll-recv",
+            op="add_event",
+            payload={"summary": "incoming", "entity_ids": []},
+            confidence=0.0,
+            provenance="crosspoll from #other",
+        )
+        store.apply_proposal_and_mark(pid, reviewer="op", event_source="crosspoll")
+        with store.read_connection() as conn:
+            ev_row = conn.execute("SELECT source FROM events WHERE summary='incoming'").fetchone()
+            pr_row = conn.execute(
+                "SELECT status, reviewer FROM proposals WHERE id=?",
+                (pid,),
+            ).fetchone()
+        assert ev_row[0] == "crosspoll"
+        assert pr_row[0] == "approved"
+        assert pr_row[1] == "op"
+
+    def test_already_approved_raises_and_does_not_double_apply(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "once", "entity_ids": []},
+            confidence=0.0,
+            provenance="t",
+        )
+        store.apply_proposal_and_mark(pid, reviewer="op")
+        with pytest.raises(ValueError):
+            store.apply_proposal_and_mark(pid, reviewer="op", event_source="crosspoll")
+        # Only one event row; no double-apply. The 'crosspoll' source
+        # was rejected because the proposal was already terminal.
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM events WHERE summary='once'").fetchone()[0]
+        assert count == 1
