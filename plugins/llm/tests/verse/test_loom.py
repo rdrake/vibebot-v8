@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -483,7 +485,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "applied"
+        assert result.outcome == "applied"
         assert len(store.recent_events()) == 1
         rows = store.list_proposals(cycle_id="c1")
         assert len(rows) == 1
@@ -503,7 +505,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "queued"
+        assert result.outcome == "queued"
         assert store.recent_events() == []
         rows = store.list_proposals(cycle_id="c1")
         assert len(rows) == 1
@@ -522,7 +524,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "queued"
+        assert result.outcome == "queued"
         assert store.list_entities_by_kind("place") == []
         rows = store.list_proposals(cycle_id="c1")
         assert len(rows) == 1
@@ -541,7 +543,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "rejected_invalid_refs"
+        assert result.outcome == "rejected_invalid_refs"
         # No relation was applied (0 and 3 don't exist).
         assert store.list_relations() == []
         # Proposal row is rejected with the auto-validator reviewer.
@@ -563,7 +565,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "rejected_invalid_refs"
+        assert result.outcome == "rejected_invalid_refs"
         assert store.recent_events() == []
         rows = store.list_proposals(cycle_id="c1", status="rejected")
         assert len(rows) == 1
@@ -581,7 +583,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "rejected_invalid_refs"
+        assert result.outcome == "rejected_invalid_refs"
 
     def test_relation_with_existing_ids_still_works(self, verse_db_dir) -> None:
         from llm.verse.loom import ParsedProposal, apply_or_queue
@@ -598,7 +600,7 @@ class TestApplyOrQueue:
             rationale="r",
         )
         result = apply_or_queue(store, prop, cycle_id="c1", threshold=0.85)
-        assert result == "applied"
+        assert result.outcome == "applied"
         assert len(store.list_relations(from_id=a)) == 1
 
 
@@ -1016,3 +1018,236 @@ class TestProposalEntityRefsResolveCrosspoll:
         )
         assert _proposal_entity_refs_resolve(store, ok) is True
         assert _proposal_entity_refs_resolve(store, bad) is False
+
+
+class TestApplyOrQueueCrosspollSeed:
+    def _seed(self, **over: Any) -> Any:
+        from llm.verse.loom import ParsedProposal
+
+        base: dict[str, Any] = {
+            "op": "crosspoll_seed",
+            "payload": {"summary": "rumour", "entity_ids": []},
+            "confidence": 0.6,
+            "provenance": "p",
+            "rationale": "r",
+        }
+        base.update(over)
+        return ParsedProposal(**base)
+
+    def test_disabled_send_returns_skipped(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def __init__(self) -> None:
+                self.enqueued: list[tuple[str, str]] = []
+
+            def enqueue_seed(self, *, source_channel, summary, payload):
+                self.enqueued.append((source_channel, summary))
+                return 1
+
+        cx = FakeCross()
+        result = apply_or_queue(
+            store,
+            self._seed(),
+            cycle_id="c-1",
+            threshold=0.85,
+            crosspoll_store=cx,
+            source_channel="#afnet",
+            allow_send=False,
+            per_cycle_limit=1,
+            already_emitted=0,
+        )
+        assert result.outcome == "crosspoll_skipped_disabled"
+        assert cx.enqueued == []
+
+    def test_at_limit_returns_skipped(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def enqueue_seed(self, **kw):
+                return 0
+
+        result = apply_or_queue(
+            store,
+            self._seed(),
+            cycle_id="c-1",
+            threshold=0.85,
+            crosspoll_store=FakeCross(),
+            source_channel="#afnet",
+            allow_send=True,
+            per_cycle_limit=1,
+            already_emitted=1,
+        )
+        assert result.outcome == "crosspoll_skipped_limit"
+
+    def test_emits_seed_writes_audit_event_and_increments(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            def enqueue_seed(self, *, source_channel, summary, payload):
+                self.calls.append(
+                    {
+                        "source_channel": source_channel,
+                        "summary": summary,
+                        "payload": payload,
+                    }
+                )
+                return 42
+
+        cx = FakeCross()
+        result = apply_or_queue(
+            store,
+            self._seed(),
+            cycle_id="c-1",
+            threshold=0.85,
+            crosspoll_store=cx,
+            source_channel="#afnet",
+            allow_send=True,
+            per_cycle_limit=2,
+            already_emitted=0,
+        )
+        assert result.outcome == "crosspoll_emitted"
+        assert result.seed_id == 42
+        assert cx.calls == [
+            {
+                "source_channel": "#afnet",
+                "summary": "rumour",
+                "payload": {"summary": "rumour", "entity_ids": []},
+            }
+        ]
+        # one audit event present, source='loom'
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT summary, source FROM events ORDER BY id ASC").fetchall()
+        assert len(rows) == 1
+        assert rows[0][1] == "loom"
+        assert "crosspoll" in rows[0][0].lower()
+
+    def test_invalid_refs_rejected_before_send_check(self, verse_db_dir: Path) -> None:
+        # entity_ids=[99] doesn't resolve in this verse; we must hit the
+        # rejected_invalid_refs branch even when allow_send=True. The
+        # existing proposals.op CHECK rejects 'crosspoll_seed', so this
+        # path must NOT call store.add_proposal.
+        from llm.verse.loom import apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def enqueue_seed(self, **kw):
+                raise AssertionError("must not be called")
+
+        result = apply_or_queue(
+            store,
+            self._seed(payload={"summary": "x", "entity_ids": [99]}),
+            cycle_id="c-1",
+            threshold=0.85,
+            crosspoll_store=FakeCross(),
+            source_channel="#afnet",
+            allow_send=True,
+            per_cycle_limit=1,
+            already_emitted=0,
+        )
+        assert result.outcome == "rejected_invalid_refs"
+        # No proposals row was written (CHECK would have rejected it).
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        assert count == 0
+
+    def test_no_outcome_writes_crosspoll_seed_to_proposals(self, verse_db_dir: Path) -> None:
+        """Schema-invariant regression test: across every apply_or_queue
+        outcome for op='crosspoll_seed', no proposals row with
+        op='crosspoll_seed' is ever written."""
+        from llm.verse.loom import apply_or_queue
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeCross:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def enqueue_seed(self, *, source_channel, summary, payload):
+                self.calls += 1
+                return self.calls
+
+        cx = FakeCross()
+        # Drive every outcome we care about: emit, skip-disabled,
+        # skip-limit, rejected-invalid-refs.
+        outcomes: list[str] = []
+        outcomes.append(
+            apply_or_queue(
+                store,
+                self._seed(),
+                cycle_id="c-1",
+                threshold=0.85,
+                crosspoll_store=cx,
+                source_channel="#afnet",
+                allow_send=True,
+                per_cycle_limit=1,
+                already_emitted=0,
+            ).outcome
+        )
+        outcomes.append(
+            apply_or_queue(
+                store,
+                self._seed(),
+                cycle_id="c-1",
+                threshold=0.85,
+                crosspoll_store=cx,
+                source_channel="#afnet",
+                allow_send=False,
+                per_cycle_limit=1,
+                already_emitted=0,
+            ).outcome
+        )
+        outcomes.append(
+            apply_or_queue(
+                store,
+                self._seed(),
+                cycle_id="c-1",
+                threshold=0.85,
+                crosspoll_store=cx,
+                source_channel="#afnet",
+                allow_send=True,
+                per_cycle_limit=1,
+                already_emitted=1,
+            ).outcome
+        )
+        outcomes.append(
+            apply_or_queue(
+                store,
+                self._seed(payload={"summary": "x", "entity_ids": [99]}),
+                cycle_id="c-1",
+                threshold=0.85,
+                crosspoll_store=cx,
+                source_channel="#afnet",
+                allow_send=True,
+                per_cycle_limit=1,
+                already_emitted=0,
+            ).outcome
+        )
+        # Sanity: we drove the four distinct branches.
+        assert set(outcomes) == {
+            "crosspoll_emitted",
+            "crosspoll_skipped_disabled",
+            "crosspoll_skipped_limit",
+            "rejected_invalid_refs",
+        }
+        # The schema-invariant assertion:
+        with store.read_connection() as conn:
+            bad = conn.execute(
+                "SELECT COUNT(*) FROM proposals WHERE op='crosspoll_seed'"
+            ).fetchone()[0]
+        assert bad == 0

@@ -241,22 +241,56 @@ def _proposal_entity_refs_resolve(store: Any, prop: ParsedProposal) -> bool:
     return True
 
 
+class ApplyOutcome(NamedTuple):
+    """Outcome of :func:`apply_or_queue`.
+
+    ``outcome`` is one of: ``applied``, ``queued``, ``rejected_invalid_refs``,
+    ``crosspoll_emitted``, ``crosspoll_skipped_disabled``,
+    ``crosspoll_skipped_limit``. ``seed_id`` is set only on
+    ``crosspoll_emitted``.
+    """
+
+    outcome: str
+    seed_id: int | None = None
+
+
 def apply_or_queue(
     store: Any,
     prop: ParsedProposal,
     *,
     cycle_id: str,
     threshold: float,
-) -> str:
-    """Always insert a proposal row. Returns 'applied', 'queued', or
-    'rejected_invalid_refs'.
+    crosspoll_store: Any | None = None,
+    source_channel: str | None = None,
+    allow_send: bool = False,
+    per_cycle_limit: int = 0,
+    already_emitted: int = 0,
+) -> ApplyOutcome:
+    """Always insert a proposal row OR enqueue a crosspoll seed.
 
-    Proposals referencing nonexistent entity ids get auto-rejected with
-    ``reviewer='auto-validator'`` so the operator's pending queue stays
-    clean. Otherwise auto-apply uses ``apply_and_record_proposal`` so
-    mutation + audit row land in one ``write_transaction``.
+    Crosspoll seeds bypass the per-channel proposals table and instead
+    go to the shared crosspoll queue. An audit event row with
+    ``source='loom'`` is written locally so the emit shows up in
+    ``@verse`` recents.
+
+    Note: the existing ``proposals.op`` CHECK constraint
+    (``schema.sql``: ``op IN ('add_event','set_attribute','add_relation','add_entity')``)
+    does **not** include ``'crosspoll_seed'``. We do not write a
+    ``proposals`` row for any ``crosspoll_seed`` outcome — auto-rejects,
+    skips, and successful emits all stay out of the proposals table.
+    The local ``events`` audit row covers the success case.
+
+    Non-crosspoll proposals referencing nonexistent entity ids get
+    auto-rejected with ``reviewer='auto-validator'`` so the operator's
+    pending queue stays clean. Otherwise auto-apply uses
+    ``apply_and_record_proposal`` so mutation + audit row land in one
+    ``write_transaction``.
     """
     if not _proposal_entity_refs_resolve(store, prop):
+        if prop.op == "crosspoll_seed":
+            # Cannot insert into proposals (CHECK constraint excludes
+            # crosspoll_seed). Drop silently; no real seed was emitted.
+            return ApplyOutcome(outcome="rejected_invalid_refs")
         store.add_proposal(
             cycle_id=cycle_id,
             op=prop.op,
@@ -266,7 +300,26 @@ def apply_or_queue(
             status="rejected",
             reviewer="auto-validator",
         )
-        return "rejected_invalid_refs"
+        return ApplyOutcome(outcome="rejected_invalid_refs")
+
+    if prop.op == "crosspoll_seed":
+        if not allow_send:
+            return ApplyOutcome(outcome="crosspoll_skipped_disabled")
+        if already_emitted >= per_cycle_limit:
+            return ApplyOutcome(outcome="crosspoll_skipped_limit")
+        assert crosspoll_store is not None and source_channel is not None
+        seed_id = crosspoll_store.enqueue_seed(
+            source_channel=source_channel,
+            summary=prop.payload["summary"],
+            payload=prop.payload,
+        )
+        store.add_event(
+            summary=f"crosspoll seed emitted: {prop.payload['summary']}",
+            entity_ids=prop.payload.get("entity_ids") or [],
+            source="loom",
+        )
+        return ApplyOutcome(outcome="crosspoll_emitted", seed_id=seed_id)
+
     auto = prop.op != "add_entity" and prop.confidence >= threshold
     if auto:
         store.apply_and_record_proposal(
@@ -277,7 +330,7 @@ def apply_or_queue(
             provenance=prop.provenance,
             reviewer="loom",
         )
-        return "applied"
+        return ApplyOutcome(outcome="applied")
     store.add_proposal(
         cycle_id=cycle_id,
         op=prop.op,
@@ -285,7 +338,7 @@ def apply_or_queue(
         confidence=prop.confidence,
         provenance=prop.provenance,
     )
-    return "queued"
+    return ApplyOutcome(outcome="queued")
 
 
 def truncate_transcript(
@@ -440,6 +493,7 @@ class LoomCycle:
     verse_stable_block: str
     transcript: list[tuple[str, str]] = field(default_factory=list)
     beats_posted: int = 0
+    emitted_seeds: int = 0
 
     def append_transcript(self, nick: str, text: str) -> None:
         self.transcript.append((nick, text))
