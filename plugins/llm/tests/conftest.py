@@ -458,6 +458,10 @@ def plugin_init_patches(
     patches["httpserver_hook"] = mocker.patch("llm.plugin.httpserver.hook")
     patches["addPeriodicEvent"] = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
     patches["removeEvent"] = mocker.patch("llm.plugin.schedule.removeEvent")
+    # Also patch addEvent so the daily compaction timer (PR 3 / E3)
+    # doesn't hit the real supybot schedule between tests — repeated
+    # registrations would otherwise collide on the unique-name check.
+    patches["addEvent"] = mocker.patch("llm.plugin.schedule.addEvent")
 
     # LLMExecutor stub: submit runs the function synchronously so tests
     # that callback() and immediately assert on queueMsg / db writes

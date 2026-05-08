@@ -2969,9 +2969,13 @@ class TestPluginDatabaseWiring:
         mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
         plugin = LLM(mock_irc)
 
-        # schedule.addEvent should be called with the future fire_at time
-        mock_add_event.assert_called_once()
-        call_kwargs = mock_add_event.call_args
+        # schedule.addEvent should be called with the future fire_at time.
+        # __init__ also arms the daily compaction timer, so filter by name.
+        reminder_calls = [
+            c for c in mock_add_event.call_args_list if c.kwargs.get("name") == "llm_remind_123_1"
+        ]
+        assert len(reminder_calls) == 1
+        call_kwargs = reminder_calls[0]
         assert call_kwargs[1]["name"] == "llm_remind_123_1"
         # Reminder should be stored in plugin._reminders
         assert "llm_remind_123_1" in plugin._reminders
@@ -6907,3 +6911,102 @@ class TestAskWithVerseRoute:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         # model_override should be absent or None — never a hard-coded value.
         assert kwargs.get("model_override") is None
+
+
+class TestCompactionTimerWiring:
+    """E3: plugin wires the daily compaction timer + walks verse-enabled channels."""
+
+    def test_plugin_registers_compaction_timer_at_load(self, plugin_env) -> None:
+        """The plugin's __init__ should set ``_compaction_timer_name`` and
+        attempt registration; the registered name is ``llm_verse_compact``."""
+        plugin, _irc, _msg = plugin_env
+        assert plugin._compaction_timer_name == "llm_verse_compact"
+
+    def test_compaction_callback_walks_verse_enabled_channels(
+        self, plugin_env, mocker, monkeypatch
+    ) -> None:
+        """``_run_compaction_pass`` invokes ``compact_verse`` once per
+        verse-enabled channel returned by ``_verse_enabled_channels``."""
+        plugin, _irc, _msg = plugin_env
+
+        # Only #afnet is verse-enabled. _verse_enabled_channels already
+        # filters by registry; emulate that here.
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
+
+        # Defensive re-check inside _run_compaction_pass uses
+        # registryValue("verseEnabled", channel) — return True for both
+        # so the iteration faithfully reflects the helper's output.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *args: True
+            if key == "verseEnabled"
+            else (
+                30
+                if key == "verseEventRetentionDays"
+                else "gemini/x"
+                if key == "loomModel"
+                else 20
+                if key == "verseCompactionMinKeepEvents"
+                else "03:00"
+                if key == "verseCompactionDailyAt"
+                else ""
+            )
+        )
+
+        # Stub stores expose ``_channel`` so the fake compact_verse can
+        # introspect which channel it was handed.
+        def _fake_store_for(channel: str):
+            return mocker.MagicMock(_channel=channel)
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
+
+        called_for: list[str] = []
+
+        def fake_compact(store, **kw):
+            called_for.append(store._channel)
+            return "skipped_no_events"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", fake_compact)
+
+        plugin._run_compaction_pass()
+        assert called_for == ["#afnet"]
+
+    def test_compaction_failure_does_not_abort_remaining_channels(
+        self, plugin_env, mocker, monkeypatch
+    ) -> None:
+        """A raise in one channel's compact_verse must not skip later channels."""
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a", "#b"])
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *args: True
+            if key == "verseEnabled"
+            else (
+                30
+                if key == "verseEventRetentionDays"
+                else "gemini/x"
+                if key == "loomModel"
+                else 20
+                if key == "verseCompactionMinKeepEvents"
+                else "03:00"
+                if key == "verseCompactionDailyAt"
+                else ""
+            )
+        )
+
+        def _fake_store_for(channel: str):
+            return mocker.MagicMock(_channel=channel)
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
+
+        seen: list[str] = []
+
+        def maybe_bomb(store, **kw):
+            seen.append(store._channel)
+            if store._channel == "#a":
+                raise RuntimeError("fail")
+            return "skipped_no_events"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", maybe_bomb)
+
+        plugin._run_compaction_pass()
+        assert "#a" in seen and "#b" in seen

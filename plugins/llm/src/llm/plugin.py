@@ -677,6 +677,14 @@ class LLM(callbacks.Plugin):
         ):
             getattr(conf.supybot.plugins.LLM, _key).addCallback(self._on_loom_config_change)
 
+        # Daily verse compaction timer (PR 3 / E3). Registry keys
+        # ``verseCompactionDailyAt`` and ``verseCompactionMinKeepEvents``
+        # are added by F1; until then ``_register_compaction_timer``'s
+        # try/except falls back to documented defaults so the timer
+        # still arms on un-configured installs.
+        self._compaction_timer_name = "llm_verse_compact"
+        self._register_compaction_timer()
+
     def _apply_log_level(self) -> None:
         """Set plugin logger levels from the logLevel config value."""
         level_name = self.registryValue("logLevel")
@@ -740,6 +748,9 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_loom_after_beat1")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_loom_after_beat2")
+        # Daily compaction timer teardown (PR 3 / E3).
+        if hasattr(self, "_compaction_timer_name"):
+            self._cancel_compaction_timer()
 
         # Remove all reminder events (guard for tests that mock __init__)
         if hasattr(self, "_reminders"):
@@ -4726,6 +4737,113 @@ class LLM(callbacks.Plugin):
             self._loom.tick()
         except Exception:
             self.log.exception("loom tick failed")
+
+    # -------------------------------------------------------------------------
+    # Daily verse compaction timer (PR 3 / E3)
+    # -------------------------------------------------------------------------
+
+    def _register_compaction_timer(self) -> None:
+        """Arm the next single-shot compaction firing.
+
+        Idempotent: ``register_daily_timer`` cancels any existing event
+        with the same name first, so callers can re-arm without bothering
+        to cancel.
+        """
+        from llm.verse.compaction import register_daily_timer
+
+        try:
+            fire_at = self.registryValue("verseCompactionDailyAt") or "03:00"
+        except Exception:
+            # Registry key not yet defined (F1 adds it). Fall back so
+            # the timer still arms on un-configured installs.
+            fire_at = "03:00"
+        try:
+            register_daily_timer(
+                schedule_module=schedule,
+                fire_at_local=fire_at,
+                callback=self._compaction_tick,
+                name=self._compaction_timer_name,
+            )
+        except Exception:
+            self.log.exception("verse: failed to register compaction timer")
+
+    def _cancel_compaction_timer(self) -> None:
+        from llm.verse.compaction import cancel_daily_timer
+
+        cancel_daily_timer(schedule_module=schedule, name=self._compaction_timer_name)
+
+    def _compaction_tick(self) -> None:
+        """One firing of the daily timer: do work, then re-arm.
+
+        The re-arm runs in ``finally`` so a failed pass never kills the
+        timer — the next day still gets a shot.
+        """
+        try:
+            self._run_compaction_pass()
+        finally:
+            self._register_compaction_timer()
+
+    def _run_compaction_pass(self) -> None:
+        """Walk every verse-enabled channel and compact it.
+
+        Per-channel failures are logged and swallowed so one bad verse
+        doesn't abort the rest of the pass.
+        """
+        from llm.verse import compaction as _compaction
+        from llm.verse.loom import LiteLLMLoomClient
+
+        retention_days_default = 30
+        try:
+            min_keep = int(self.registryValue("verseCompactionMinKeepEvents") or 20)
+        except Exception:
+            # Registry key not yet defined (F1 adds it).
+            min_keep = 20
+        model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
+        loom_api_key = self.registryValue("assistantApiKey") or None
+        client = LiteLLMLoomClient(api_key=loom_api_key)
+
+        def _log_usage(*, op: str, model: str, usage, channel: str) -> None:
+            self.db.log_usage(
+                nick="loom",
+                channel=channel,
+                command=f"loom:{op}",
+                model=model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cost=usage.cost,
+            )
+
+        for channel in self._verse_enabled_channels():
+            # Defensive re-check — _verse_enabled_channels already filters,
+            # but the registry could flip mid-pass.
+            try:
+                if not self.registryValue("verseEnabled", channel):
+                    continue
+            except Exception:
+                continue
+            store = self._get_or_create_verse_store(channel)
+            try:
+                retention_days = int(
+                    self.registryValue("verseEventRetentionDays", channel) or retention_days_default
+                )
+            except Exception:
+                retention_days = retention_days_default
+            try:
+                outcome = _compaction.compact_verse(
+                    store,
+                    retention_days=retention_days,
+                    min_keep_events=min_keep,
+                    model=model,
+                    client=client,
+                    # Default-arg captures the loop variable.
+                    log_usage=lambda *, op, model, usage, channel=channel: _log_usage(
+                        op=op, model=model, usage=usage, channel=channel
+                    ),
+                    now=time.time,
+                )
+                self.log.info("verse compaction: channel=%s outcome=%s", channel, outcome)
+            except Exception:
+                self.log.exception("verse compaction failed for %s; continuing", channel)
 
     def _get_or_create_verse_store(self, channel: str) -> VerseStore:
         """Return the VerseStore for *channel*, creating it lazily on first access.
