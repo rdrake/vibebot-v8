@@ -47,6 +47,10 @@ Each proposal MUST be valid JSON with these fields:
   rationale   — one sentence in your voice
 
 Always emit the proposal list as a single JSON array, no prose around it.
+
+Each entity in the focus verse appears as `- kind: name (id=N)`. When you
+reference an existing entity in `entity_ids`, `from_id`, `to_id`, or
+`entity_id`, reuse the id you saw — do not invent ids.
 """
 
 

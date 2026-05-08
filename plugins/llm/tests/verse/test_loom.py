@@ -947,3 +947,12 @@ def test_loomconfig_holds_all_settings() -> None:
     assert cfg.bot_nicks == ("botA", "botB")
     with pytest.raises(FrozenInstanceError):
         cfg.cycle_interval_s = 1  # type: ignore[misc]
+
+
+class TestStaticPrefixMentionsEntityIds:
+    def test_prefix_documents_id_inclusion(self) -> None:
+        from llm.verse.loom import LOOM_STATIC_PREFIX
+
+        # Two assertions — neither is fragile to whitespace.
+        assert "(id=" in LOOM_STATIC_PREFIX
+        assert "reuse" in LOOM_STATIC_PREFIX.lower() and "id" in LOOM_STATIC_PREFIX.lower()
