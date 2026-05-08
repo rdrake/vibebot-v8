@@ -7328,3 +7328,62 @@ class TestBridgeCrosspollWiring:
         plugin = LLM(mock_irc)
         assert plugin._loom is not None
         assert plugin._loom._cfg.crosspoll_per_cycle_limit == 4
+
+
+class TestVerseapproveCrosspollSource:
+    """F3-pre-2: @verseapprove infers event_source from cycle_id."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        msg.args = ("#afnet", "")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        return plugin, irc, msg, store
+
+    def test_approve_crosspoll_proposal_writes_crosspoll_event(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="crosspoll-recv",
+            op="add_event",
+            payload={"summary": "from elsewhere", "entity_ids": []},
+            confidence=0.0,
+            provenance="crosspoll from #alpha (seed-id=1)",
+        )
+        plugin.verseapprove(irc, msg, [pid])
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT source FROM events WHERE summary='from elsewhere'"
+            ).fetchone()
+        assert row is not None and row[0] == "crosspoll"
+
+    def test_approve_loom_proposal_still_writes_loom_event(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        pid = store.add_proposal(
+            cycle_id="loom-c1",
+            op="add_event",
+            payload={"summary": "regular event", "entity_ids": []},
+            confidence=0.5,
+            provenance="t",
+        )
+        plugin.verseapprove(irc, msg, [pid])
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT source FROM events WHERE summary='regular event'").fetchone()
+        assert row is not None and row[0] == "loom"

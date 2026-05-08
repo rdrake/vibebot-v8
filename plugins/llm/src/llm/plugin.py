@@ -5452,8 +5452,9 @@ class LLM(callbacks.Plugin):
             )
             return
         reviewer = self._resolve_identity(irc, msg).key
+        event_source = "crosspoll" if p.cycle_id.startswith("crosspoll-") else "loom"
         try:
-            store.apply_proposal_and_mark(p.id, reviewer=reviewer)
+            store.apply_proposal_and_mark(p.id, reviewer=reviewer, event_source=event_source)
         except Exception as exc:
             self.log.exception("verseapprove apply failed: %s", proposal_id)
             irc.error(f"Apply failed: {exc}.", prefixNick=False)
