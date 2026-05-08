@@ -4804,10 +4804,17 @@ class LLM(callbacks.Plugin):
         from llm.verse.loom import LiteLLMLoomClient
 
         retention_days_default = 30
+        # NB: explicit ``int(value)`` rather than ``int(value or 20)``
+        # — 0 is a legitimate registry value (NonNegativeInteger
+        # accepts it) and the ``or`` form would coerce it to 20.
         try:
-            min_keep = int(self.registryValue("verseCompactionMinKeepEvents") or 20)
+            _raw_min_keep = self.registryValue("verseCompactionMinKeepEvents")
         except Exception:
-            # Registry key not yet defined (F1 adds it).
+            # Registry key not yet defined (F1 adds it) or load error.
+            _raw_min_keep = 20
+        try:
+            min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
+        except (TypeError, ValueError):
             min_keep = 20
         model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
         loom_api_key = self.registryValue("assistantApiKey") or None
@@ -4833,11 +4840,16 @@ class LLM(callbacks.Plugin):
             except Exception:
                 continue
             store = self._get_or_create_verse_store(channel)
+            # Honour zero — operators set retention=0 to disable.
             try:
-                retention_days = int(
-                    self.registryValue("verseEventRetentionDays", channel) or retention_days_default
-                )
+                _raw_retention = self.registryValue("verseEventRetentionDays", channel)
             except Exception:
+                _raw_retention = retention_days_default
+            try:
+                retention_days = (
+                    int(_raw_retention) if _raw_retention is not None else retention_days_default
+                )
+            except (TypeError, ValueError):
                 retention_days = retention_days_default
             try:
                 outcome = _compaction.compact_verse(
@@ -5539,14 +5551,23 @@ class LLM(callbacks.Plugin):
         from llm.verse.loom import LiteLLMLoomClient
 
         store = self._get_or_create_verse_store(channel)
+        # Honour zero — see ``_run_compaction_pass`` note.
         try:
-            retention_days = int(self.registryValue("verseEventRetentionDays", channel) or 30)
+            _raw_retention = self.registryValue("verseEventRetentionDays", channel)
         except Exception:
+            _raw_retention = 30
+        try:
+            retention_days = int(_raw_retention) if _raw_retention is not None else 30
+        except (TypeError, ValueError):
             retention_days = 30
         try:
-            min_keep = int(self.registryValue("verseCompactionMinKeepEvents") or 20)
+            _raw_min_keep = self.registryValue("verseCompactionMinKeepEvents")
         except Exception:
             # Registry key not yet defined (F1 adds it).
+            _raw_min_keep = 20
+        try:
+            min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
+        except (TypeError, ValueError):
             min_keep = 20
         model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
         loom_api_key = self.registryValue("assistantApiKey") or None

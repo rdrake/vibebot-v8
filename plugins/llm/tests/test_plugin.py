@@ -7202,6 +7202,94 @@ class TestVersecompactCommand:
         assert seen_kwargs["min_keep_events"] == 20
         irc.reply.assert_called_once()
 
+    def test_zero_retention_and_min_keep_are_honoured(
+        self, compact_env, mocker, monkeypatch
+    ) -> None:
+        """Regression: ``int(0 or 30) == 30`` would coerce a legitimate
+        zero value (the registry types accept 0) into the default. The
+        fix uses an explicit conversion that preserves zero so operators
+        can disable compaction with retention=0."""
+        plugin, irc, msg, _store = compact_env
+
+        def _zero_registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            if key == "verseEventRetentionDays":
+                return 0
+            if key == "verseCompactionMinKeepEvents":
+                return 0
+            if key == "loomModel":
+                return "gemini/gemini-flash-lite-latest"
+            if key == "assistantApiKey":
+                return ""
+            return ""
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_zero_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        mocker.patch(
+            "llm.verse.loom.LiteLLMLoomClient",
+            return_value=mocker.MagicMock(),
+        )
+
+        seen_kwargs: dict = {}
+
+        def _fake_compact(store, **kw):
+            seen_kwargs.update(kw)
+            return "skipped_disabled"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        assert seen_kwargs["retention_days"] == 0
+        assert seen_kwargs["min_keep_events"] == 0
+
+    def test_zero_retention_and_min_keep_in_run_compaction_pass(
+        self, plugin_env, mocker, monkeypatch
+    ) -> None:
+        """Same regression but for the daily-timer driver
+        ``_run_compaction_pass`` — the same ``or default`` pattern was
+        also present there."""
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *args: (
+                True
+                if key == "verseEnabled"
+                else (
+                    0
+                    if key == "verseEventRetentionDays"
+                    else "gemini/x"
+                    if key == "loomModel"
+                    else 0
+                    if key == "verseCompactionMinKeepEvents"
+                    else "03:00"
+                    if key == "verseCompactionDailyAt"
+                    else ""
+                )
+            )
+        )
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=mocker.MagicMock(),
+        )
+
+        seen: dict = {}
+
+        def _fake_compact(store, **kw):
+            seen.update(kw)
+            return "skipped_disabled"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
+        plugin._run_compaction_pass()
+        assert seen["retention_days"] == 0
+        assert seen["min_keep_events"] == 0
+
 
 class TestBridgeCrosspollWiring:
     """F2: production bridge wires real crosspoll registry + store."""
