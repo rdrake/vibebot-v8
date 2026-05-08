@@ -6973,6 +6973,43 @@ class TestCompactionTimerWiring:
         plugin._run_compaction_pass()
         assert called_for == ["#afnet"]
 
+    def test_run_compaction_pass_falls_back_when_registry_raises(
+        self, plugin_env, mocker, monkeypatch
+    ) -> None:
+        """Defensive guards in _run_compaction_pass: if the registry
+        raises for either retention or min-keep keys (e.g. F1 key not
+        yet defined on a freshly-upgraded install), defaults kick in
+        and compaction still runs."""
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
+
+        def _flaky(key, *args):
+            if key == "verseEnabled":
+                return True
+            if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
+                raise RuntimeError("registry not loaded")
+            if key == "loomModel":
+                return "gemini/x"
+            return ""
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_flaky)
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=mocker.MagicMock(),
+        )
+        seen: dict = {}
+
+        def _fake_compact(store, **kw):
+            seen.update(kw)
+            return "skipped_no_events"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
+        plugin._run_compaction_pass()
+        assert seen["retention_days"] == 30
+        assert seen["min_keep_events"] == 20
+
     def test_compaction_failure_does_not_abort_remaining_channels(
         self, plugin_env, mocker, monkeypatch
     ) -> None:
