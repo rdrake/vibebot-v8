@@ -790,9 +790,9 @@ wheels = [
 
 [[package]]
 name = "limnoria"
-version = "2026.3.21"
+version = "2026.5.8"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d0/16/a7c676e1b9cccc1c563ae53fff28f900abeb6ef35f08ce2633b185271f1d/limnoria-2026.3.21.tar.gz", hash = "sha256:860e0d60ac9432ee230eff62de075e8dbcf4c3fbf4a6db30cceed35125cfdfee", size = 1110113, upload-time = "2026-03-25T20:36:15.118Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a4/b9/0ecba934d71f80ec0da428402e05623ee70c4c0b9f084df1c2d2cc28059b/limnoria-2026.5.8.tar.gz", hash = "sha256:ac9cd7302f7cf9235094d9e474c2bf60bee3967d1460be7bae6cc741eb54aef9", size = 1110745, upload-time = "2026-05-08T05:12:13.951Z" }
 
 [[package]]
 name = "litellm"
@@ -836,7 +836,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "limnoria", specifier = ">=2023.1.20" },
+    { name = "limnoria", specifier = ">=2026.5.8" },
     { name = "litellm", specifier = ">=1.83.14" },
     { name = "markdown", specifier = ">=3.5.0" },
     { name = "nh3", specifier = ">=0.2.0" },
@@ -1159,7 +1159,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "limnoria", specifier = ">=2023.1.20" }]
+requires-dist = [{ name = "limnoria", specifier = ">=2026.5.8" }]
 
 [[package]]
 name = "openai"
