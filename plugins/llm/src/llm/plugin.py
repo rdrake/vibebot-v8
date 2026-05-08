@@ -4776,6 +4776,8 @@ class LLM(callbacks.Plugin):
                 name=self._compaction_timer_name,
             )
         except Exception:
+            # On addEvent failure the timer is gone until next plugin
+            # reload — daily cadence makes this acceptable.
             self.log.exception("verse: failed to register compaction timer")
 
     def _cancel_compaction_timer(self) -> None:
