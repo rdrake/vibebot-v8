@@ -25,7 +25,7 @@ Two capabilities gate verse access:
 | Capability | Who needs it | What it unlocks |
 |------------|-------------|-----------------|
 | `llm.verse` | Regular users | `@verseopt in/out`, `@verse`, `@look`, `@who`, `@instruct` double-write |
-| `llm.verse.gm` | Trusted operators | `@versedump`, `@versepurge` |
+| `llm.verse.gm` | Trusted operators | `@versedump`, `@versepurge`, `@versecompact` |
 
 Grant capabilities the normal Limnoria way:
 
@@ -95,9 +95,42 @@ The bot processes the message through the normal `@ask` path. Nothing is
 recorded to the verse. Useful for meta questions or bot debugging without
 breaking scene.
 
+## Retention compaction
+
+Once a day at `verseCompactionDailyAt` (global, default `"03:00"`
+local time), the plugin walks every channel where `verseEnabled=True`
+and replaces the **oldest 200** events past `verseEventRetentionDays`
+(per-channel, default `30`) with a single lore-digest event. The
+summary is produced by the same cheap model the loom uses
+(`loomModel`), tagged `loom:compact` in `@usage`.
+
+`verseCompactionMinKeepEvents` (global, default `20`) sets a floor:
+verses with fewer than that many total events are skipped. This keeps
+small verses from thrashing.
+
+### Drain rate and backlog math
+
+A single compaction pass touches at most **200 events** — a safety
+cap so one model call cannot blow past the cheap model's context
+window. Practical implications:
+
+- A backlog of 10,000 events past the retention window converges in
+  about **50 daily runs** (~50 days).
+- A verse that produces **more than 200 events/day past its retention
+  window** will not converge under the daily cap; the events table
+  grows unboundedly. If you see this, lower
+  `verseEventRetentionDays`, or run `@versecompact #channel`
+  repeatedly to drain a backlog manually (each invocation processes
+  another 200-event batch).
+- Realistic verses (avatar-driven) produce on the order of 1-10
+  events/day, so the cap rarely matters.
+
+Failures are logged at WARNING and never block the timer; the next
+day's run will retry.
+
 ## Owner commands
 
-Both commands require `llm.verse.gm`.
+All commands require `llm.verse.gm`.
 
 ### `@versedump #chan`
 
@@ -131,6 +164,13 @@ The token is single-use; a new `@versepurge` call generates a new token.
 @versepurge #afternet abc123
 # bot: "Verse state for #afternet purged."
 ```
+
+### `@versecompact #channel`
+
+Manually run retention compaction for `#channel`. Useful for testing or
+forcing a digest before the daily timer fires. Requires capability
+`llm.verse.gm`. Reports the outcome (`compacted`, `skipped_no_events`,
+`skipped_below_floor`, `skipped_disabled`).
 
 ## Loom orchestrator
 
@@ -202,12 +242,36 @@ projections assume zero cache hits.
 | `loomTranscriptMaxLines`   | Transcript truncation drops salient lines.         |
 | `verseAutoApplyThreshold`  | Auto-apply approves too aggressively (raise it).   |
 
+## Cross-pollination
+
+Two verses can exchange seeds — short rumours that flow from one
+channel's loom digest to another's pending-proposals queue, where the
+receiving operator decides whether to canonise them. **Both ends must
+opt in:** the source needs `verseCrosspollAllowSend=True`; the receiver
+needs `verseCrosspollAllowReceive=True`. Defaults are `False` everywhere.
+
+`verseCrosspollPerCycleLimit` (global, default `1`) caps how many seeds
+a source verse's digest may emit per loom cycle. Seeds in excess are
+dropped with a warning.
+
+Receivers pull at most one seed per loom cycle, oldest first. A seed
+becomes a pending `add_event` proposal in the receiver's verse; approve
+or reject it with `@verseapprove` / `@versereject` as usual. Approved
+seeds materialise as events with `source='crosspoll'`.
+
+A verse cannot consume its own emissions.
+
 ## Registry keys
 
 | Key | Scope | Type | Default | Purpose |
 |-----|-------|------|---------|---------|
 | `verseEnabled` | per-channel | bool | `False` | Master switch — enables the verse path and verse commands for the channel |
-| `verseEventRetentionDays` | per-channel | int | `30` | Reserved for retention compaction (PR 3). Currently unused — set it now if you want a value in place before compaction lands |
+| `verseEventRetentionDays` | per-channel | int | `30` | Events older than this are eligible for retention compaction (oldest 200 collapse into a single lore-digest event per daily run) |
+| `verseCrosspollAllowSend` | per-channel | bool | `False` | Allow this verse's loom digest to emit crosspoll seeds to other verses |
+| `verseCrosspollAllowReceive` | per-channel | bool | `False` | Allow this verse to receive crosspoll seeds as pending `add_event` proposals |
+| `verseCrosspollPerCycleLimit` | global | int | `1` | Maximum crosspoll seeds a source verse may emit per loom cycle |
+| `verseCompactionDailyAt` | global | str | `"03:00"` | Local-time `HH:MM` for the daily retention-compaction sweep |
+| `verseCompactionMinKeepEvents` | global | int | `20` | Floor on total events; verses below this count are skipped by compaction |
 | `verseAutoApplyThreshold` | global | float | `0.85` | Minimum confidence at which loom proposals auto-apply without operator review (`add_entity` always queues) |
 | `loomNetwork` | global | str | `""` | Network where the loom orchestrator runs. Empty = disabled |
 | `loomChannel` | global | str | `""` | Channel where the loom orchestrator runs. Empty = disabled |
@@ -226,13 +290,10 @@ Set from IRC:
 @config channel #yourchan plugins.LLM.verseEventRetentionDays 14
 ```
 
-## What is NOT in PR 2
+## What is NOT shipped yet
 
 The following features are planned but not yet implemented:
 
-- **Cross-channel pollination** — shared entities across channels (PR 3).
-- **Retention compaction** — `verseEventRetentionDays`-driven pruning of
-  old events (PR 3).
 - **Gemini cache plumbing** — `cached_tokens` accounting in `@usage`.
 - **Web view at `/verse/<channel>`** — read-only HTML inspector.
 
