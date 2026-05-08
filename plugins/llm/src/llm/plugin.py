@@ -4716,6 +4716,7 @@ class LLM(callbacks.Plugin):
             transcript_max_lines=self.registryValue("loomTranscriptMaxLines"),
             transcript_max_chars=self.registryValue("loomTranscriptMaxChars"),
             auto_apply_threshold=self.registryValue("verseAutoApplyThreshold"),
+            crosspoll_per_cycle_limit=int(self.registryValue("verseCrosspollPerCycleLimit") or 1),
         )
         self._loom_bridge = _PluginLoomBridge(self, network, channel)
         # Loom shares the assistant's API key — both sides hit Gemini and
@@ -4868,6 +4869,17 @@ class LLM(callbacks.Plugin):
                 store = VerseStore(base, channel)
                 self._verse_stores[channel] = store
             return store
+
+    def _get_or_create_crosspoll_store(self):
+        """Return the process-wide CrosspollStore singleton, creating it on
+        first access. The store lives under the same ``verse/`` data dir as
+        the per-channel VerseStores."""
+        from .verse.crosspoll_store import CrosspollStore
+
+        if getattr(self, "_crosspoll_store", None) is None:
+            base = Path(conf.supybot.directories.data()) / "verse"
+            self._crosspoll_store = CrosspollStore(base)
+        return self._crosspoll_store
 
     def verseopt(
         self,
@@ -5669,17 +5681,13 @@ class _PluginLoomBridge:
         )
 
     def crosspoll_store(self):
-        # F2 will wire this to the real CrosspollStore. For D4, return None
-        # so apply_or_queue's crosspoll_seed branch stays disabled in prod.
-        return None
+        return self._plugin._get_or_create_crosspoll_store()
 
     def verse_allow_send(self, channel: str) -> bool:
-        # F2 will read verseAllowCrosspollSend from the registry per-channel.
-        return False
+        return bool(self._plugin.registryValue("verseCrosspollAllowSend", channel))
 
     def verse_allow_receive(self, channel: str) -> bool:
-        # F2 will read verseAllowCrosspollReceive from the registry per-channel.
-        return False
+        return bool(self._plugin.registryValue("verseCrosspollAllowReceive", channel))
 
 
 Class = LLM
