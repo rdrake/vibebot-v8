@@ -4072,6 +4072,7 @@ class TestCommandRegistry:
             "verseproposals",
             "verseapprove",
             "versereject",
+            "versecompact",
         }
         assert names == expected
 
@@ -6937,18 +6938,20 @@ class TestCompactionTimerWiring:
         # registryValue("verseEnabled", channel) — return True for both
         # so the iteration faithfully reflects the helper's output.
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: True
-            if key == "verseEnabled"
-            else (
-                30
-                if key == "verseEventRetentionDays"
-                else "gemini/x"
-                if key == "loomModel"
-                else 20
-                if key == "verseCompactionMinKeepEvents"
-                else "03:00"
-                if key == "verseCompactionDailyAt"
-                else ""
+            side_effect=lambda key, *args: (
+                True
+                if key == "verseEnabled"
+                else (
+                    30
+                    if key == "verseEventRetentionDays"
+                    else "gemini/x"
+                    if key == "loomModel"
+                    else 20
+                    if key == "verseCompactionMinKeepEvents"
+                    else "03:00"
+                    if key == "verseCompactionDailyAt"
+                    else ""
+                )
             )
         )
 
@@ -6978,18 +6981,20 @@ class TestCompactionTimerWiring:
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a", "#b"])
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: True
-            if key == "verseEnabled"
-            else (
-                30
-                if key == "verseEventRetentionDays"
-                else "gemini/x"
-                if key == "loomModel"
-                else 20
-                if key == "verseCompactionMinKeepEvents"
-                else "03:00"
-                if key == "verseCompactionDailyAt"
-                else ""
+            side_effect=lambda key, *args: (
+                True
+                if key == "verseEnabled"
+                else (
+                    30
+                    if key == "verseEventRetentionDays"
+                    else "gemini/x"
+                    if key == "loomModel"
+                    else 20
+                    if key == "verseCompactionMinKeepEvents"
+                    else "03:00"
+                    if key == "verseCompactionDailyAt"
+                    else ""
+                )
             )
         )
 
@@ -7010,3 +7015,189 @@ class TestCompactionTimerWiring:
 
         plugin._run_compaction_pass()
         assert "#a" in seen and "#b" in seen
+
+
+class TestVersecompactCommand:
+    """E4: @versecompact owner command — manual retention compaction.
+
+    Strategy mirrors @versepurge / @verseapprove tests: direct method
+    calls (bypassing wrap), real VerseStore in tmp_path, ircdb.checkCapability
+    monkeypatched. The happy-path test inserts >min_keep events older than
+    the retention window and monkeypatches compact_verse's loom client
+    constructor so no network call is attempted.
+    """
+
+    @pytest.fixture
+    def compact_env(self, plugin_env, tmp_path, mocker):
+        """plugin_env wired with a real VerseStore for #afnet."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+        plugin._verse_stores["#afnet"] = store
+
+        msg.args = ("#afnet", "@versecompact #afnet")
+        msg.prefix = "owner!user@host"
+        msg.nick = "owner"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    def _override_registry(self, plugin, mocker, *, verse_enabled: bool) -> None:
+        from tests.conftest import make_registry_side_effect
+
+        defaults = make_registry_side_effect()
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return verse_enabled
+            if key == "verseEventRetentionDays":
+                return 30
+            if key == "verseCompactionMinKeepEvents":
+                return 20
+            if key == "loomModel":
+                return "gemini/gemini-flash-lite-latest"
+            return defaults(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+    def test_compacts_named_channel(self, compact_env, mocker) -> None:
+        """GIVEN >min_keep old events WHEN @versecompact #afnet THEN reply 'compacted'."""
+        from plugins.llm.tests.verse.conftest import insert_event_at
+
+        plugin, irc, msg, store = compact_env
+        self._override_registry(plugin, mocker, verse_enabled=True)
+
+        # Grant llm.verse.gm so the wrap-bypassed direct call still
+        # treats the caller as an owner. (Direct .versecompact() call
+        # also won't pass through wrap's capability check; the in-method
+        # registry guard is what matters.)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        # Substitute a fake loom client so no network call happens.
+        class _FakeClient:
+            def call(self, *, op, model, messages):
+                from llm.verse.loom import LoomCallUsage
+
+                return "A digest of the past.", LoomCallUsage(
+                    prompt_tokens=10, completion_tokens=20, cost=0.0
+                )
+
+        mocker.patch(
+            "llm.verse.loom.LiteLLMLoomClient",
+            return_value=_FakeClient(),
+        )
+
+        seconds_per_day = 86400
+        now_ts = 100_000_000.0
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"old{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now_ts - 60 * seconds_per_day,
+            )
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert "compaction outcome for #afnet" in reply_text
+        assert "compacted" in reply_text
+
+    def test_disabled_verse_says_so(self, compact_env, mocker) -> None:
+        """GIVEN verseEnabled=False WHEN @versecompact THEN reply names verseEnabled."""
+        plugin, irc, msg, _store = compact_env
+        self._override_registry(plugin, mocker, verse_enabled=False)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert "verseEnabled" in reply_text
+
+    def test_failure_in_compact_verse_replies_error(self, compact_env, mocker, monkeypatch) -> None:
+        """GIVEN compact_verse raises WHEN @versecompact THEN irc.error not crash."""
+        plugin, irc, msg, _store = compact_env
+        self._override_registry(plugin, mocker, verse_enabled=True)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        mocker.patch(
+            "llm.verse.loom.LiteLLMLoomClient",
+            return_value=mocker.MagicMock(),
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _boom)
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        irc.error.assert_called_once()
+        err_text = irc.error.call_args[0][0]
+        assert "compaction failed for #afnet" in err_text
+        assert "RuntimeError" in err_text
+
+    def test_registry_lookup_failure_uses_defaults(self, compact_env, mocker, monkeypatch) -> None:
+        """GIVEN registryValue raises for retention/min_keep keys WHEN
+        @versecompact THEN defaults kick in and compaction still runs.
+
+        Covers the defensive try/except guards around the registry reads
+        for verseEventRetentionDays and verseCompactionMinKeepEvents.
+        F1 will define verseCompactionMinKeepEvents — until then, the
+        guard ensures the command still works.
+        """
+        plugin, irc, msg, _store = compact_env
+
+        def _flaky_registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
+                raise RuntimeError("registry not loaded")
+            if key == "loomModel":
+                return "gemini/gemini-flash-lite-latest"
+            if key == "assistantApiKey":
+                return ""
+            return ""
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_flaky_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        mocker.patch(
+            "llm.verse.loom.LiteLLMLoomClient",
+            return_value=mocker.MagicMock(),
+        )
+
+        seen_kwargs: dict = {}
+
+        def _fake_compact(store, **kw):
+            seen_kwargs.update(kw)
+            return "skipped_no_events"
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        # Defaults applied via except branches.
+        assert seen_kwargs["retention_days"] == 30
+        assert seen_kwargs["min_keep_events"] == 20
+        irc.reply.assert_called_once()

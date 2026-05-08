@@ -373,6 +373,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%versepurge #afnet", "%versepurge #afnet a1b2c3"),
         category="utility",
     ),
+    CommandInfo(
+        name="versecompact",
+        args="<channel>",
+        description=(
+            "Manually run retention compaction for a channel: summarise old "
+            "events into a single digest entry. Requires the llm.verse.gm capability."
+        ),
+        examples=("%versecompact #afnet",),
+        category="utility",
+    ),
 )
 
 
@@ -5485,6 +5495,89 @@ class LLM(callbacks.Plugin):
             ("checkCapability", "llm.verse.gm"),
             "somethingWithoutSpaces",
             optional("channel"),
+        ],
+    )
+
+    # ------------------------------------------------------------------
+    # @versecompact — manual retention compaction (E4)
+    # ------------------------------------------------------------------
+
+    def versecompact(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        channel: str,
+    ) -> None:
+        """<channel>
+
+        Manually run retention compaction for <channel>. Mirrors what the
+        daily timer does (``_run_compaction_pass``) but for one channel only.
+        Requires capability llm.verse.gm.
+        """
+        if not self.registryValue("verseEnabled", channel):
+            irc.reply(
+                f"verseEnabled is False for {channel}; nothing to compact.",
+                prefixNick=False,
+            )
+            return
+
+        from llm.verse import compaction as _compaction
+        from llm.verse.loom import LiteLLMLoomClient
+
+        store = self._get_or_create_verse_store(channel)
+        try:
+            retention_days = int(self.registryValue("verseEventRetentionDays", channel) or 30)
+        except Exception:
+            retention_days = 30
+        try:
+            min_keep = int(self.registryValue("verseCompactionMinKeepEvents") or 20)
+        except Exception:
+            # Registry key not yet defined (F1 adds it).
+            min_keep = 20
+        model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
+        loom_api_key = self.registryValue("assistantApiKey") or None
+        client = LiteLLMLoomClient(api_key=loom_api_key)
+
+        def _log_usage(*, op: str, model: str, usage, channel: str = channel) -> None:
+            self.db.log_usage(
+                nick="loom",
+                channel=channel,
+                command=f"loom:{op}",
+                model=model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cost=usage.cost,
+            )
+
+        try:
+            outcome = _compaction.compact_verse(
+                store,
+                retention_days=retention_days,
+                min_keep_events=min_keep,
+                model=model,
+                client=client,
+                log_usage=_log_usage,
+                now=time.time,
+            )
+        except Exception as exc:
+            self.log.exception("@versecompact failed for %s", channel)
+            irc.error(
+                f"compaction failed for {channel}: {type(exc).__name__}",
+                prefixNick=False,
+            )
+            return
+
+        irc.reply(
+            f"compaction outcome for {channel}: {outcome}",
+            prefixNick=False,
+        )
+
+    versecompact = wrap(
+        versecompact,
+        [
+            ("checkCapability", "llm.verse.gm"),
+            "channel",
         ],
     )
 
