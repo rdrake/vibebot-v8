@@ -124,6 +124,61 @@ class TestEnqueueAndClaim:
         assert store.pending_count_for("#b") == 1
 
 
+class TestNextUnconsumedFor:
+    def test_returns_none_when_empty(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        assert store.next_unconsumed_for("#b") is None
+
+    def test_returns_oldest_unconsumed_without_marking(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        sid = store.enqueue_seed(source_channel="#a", summary="x", payload={"k": "v"})
+        peek1 = store.next_unconsumed_for("#b")
+        peek2 = store.next_unconsumed_for("#b")
+        assert peek1 is not None and peek1.id == sid
+        # Diagnostic API does NOT mark consumed — second peek still sees it.
+        assert peek2 is not None and peek2.id == sid
+        assert peek1.payload == {"k": "v"}
+
+    def test_excludes_self_emissions(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        store.enqueue_seed(source_channel="#a", summary="x", payload={})
+        assert store.next_unconsumed_for("#a") is None
+
+    def test_skips_already_consumed(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        store.enqueue_seed(source_channel="#a", summary="first", payload={})
+        sid2 = store.enqueue_seed(source_channel="#a", summary="second", payload={})
+        store.claim_seed_for("#b", proposal_id="p-1")
+        peek = store.next_unconsumed_for("#b")
+        assert peek is not None and peek.id == sid2
+
+
+class TestWriteTransactionRollback:
+    def test_rolls_back_on_exception_inside_block(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        with pytest.raises(RuntimeError), store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO crosspoll_seeds "
+                "(source_channel, summary, payload, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("#a", "x", "{}", 1.0),
+            )
+            raise RuntimeError("boom")
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM crosspoll_seeds").fetchone()[0]
+        assert count == 0
+
+
 class TestCrosspollConcurrency:
     def test_concurrent_enqueue_serialises(self, crosspoll_dir: Path) -> None:
         import threading
