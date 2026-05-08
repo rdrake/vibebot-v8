@@ -1336,6 +1336,134 @@ class TestDigestPhaseRoutesCrosspoll:
         assert "second whisper" not in enqueued
 
 
+class TestDigestPhaseIsolatesCrosspollFailure:
+    """Regression: previously a failure in crosspoll_store() during
+    digest dropped EVERY proposal, not just crosspoll seeds. Now: the
+    crosspoll-store lookup is deferred until a crosspoll_seed proposal
+    needs it, and any failure isolates to that branch."""
+
+    def test_non_crosspoll_proposals_proceed_when_cx_store_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        # Need an entity so the add_event proposal's entity_ids resolve.
+        eid = store.add_entity(kind="place", name="Clearing", summary="quiet")
+
+        digest_payload = (
+            "["
+            '{"op":"crosspoll_seed","payload":{"summary":"seed","entity_ids":[]},'
+            '"confidence":0.6,"provenance":"x","rationale":""},'
+            '{"op":"add_event","payload":{"summary":"a quiet step","entity_ids":'
+            f"[{eid}]"
+            '},"confidence":0.5,"provenance":"x","rationale":""}'
+            "]"
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, *, op, model, messages):
+                self.calls.append(op)
+                if op == "digest":
+                    return digest_payload, LoomCallUsage(0, 0, 0.0)
+                return "x", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return store
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                # The receive hook calls this too; raising here also
+                # exercises the IMPORTANT-7 swallow.
+                raise RuntimeError("crosspoll DB unavailable")
+
+            def verse_allow_send(self, channel):
+                return True
+
+            def verse_allow_receive(self, channel):
+                # Don't even try — receive hook would also blow up.
+                return False
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+
+        # Drive the digest phase directly. tick() would also work but
+        # this avoids replaying the seed/beat path.
+        from llm.verse.loom import LoomCycle, build_verse_stable_block
+
+        snap = VerseSnapshot(
+            channel="#afnet",
+            summary="x",
+            top_entities=[("place", "Clearing", eid)],
+            recent_events=[],
+        )
+        cycle = LoomCycle(
+            cycle_id="c-isolate",
+            channel="#afnet",
+            started_at=0.0,
+            verse_stable_block=build_verse_stable_block(snap),
+        )
+        # Seed the transcript so digest_phase doesn't bail on empty.
+        cycle.append_transcript("alice", "hello")
+        loom._active = cycle
+
+        # Must not raise even though crosspoll_store() blows up.
+        loom._digest_phase(cycle)
+
+        # Non-crosspoll proposal landed in the proposals table (queued
+        # because confidence < threshold of 0.85).
+        with store.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT op, status FROM proposals WHERE cycle_id='c-isolate'"
+            ).fetchall()
+        assert rows == [("add_event", "pending")]
+
+
 class TestLoomTickConsumesSeed:
     def test_receiver_pulls_one_seed_inserts_proposal(self, verse_db_dir: Path) -> None:
         from llm.verse.loom import (

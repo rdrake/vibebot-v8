@@ -816,9 +816,24 @@ class Loom:
             )
             proposals = parse_digest(content)
             store = self._bridge.store_for(cycle.channel)
-            cx = self._bridge.crosspoll_store()
-            allow_send = self._bridge.verse_allow_send(cycle.channel)
+            # Crosspoll-store + allow_send are *only* needed for
+            # ``crosspoll_seed`` proposals. Defer their lookup until a
+            # seed actually shows up, and isolate failures so a broken
+            # crosspoll path doesn't drop non-crosspoll proposals.
+            cx: Any | None = None
+            cx_failed = False
+            try:
+                allow_send = self._bridge.verse_allow_send(cycle.channel)
+            except Exception:
+                self._log.exception("crosspoll: verse_allow_send query failed")
+                allow_send = False
             for p in proposals:
+                if p.op == "crosspoll_seed" and cx is None and not cx_failed:
+                    try:
+                        cx = self._bridge.crosspoll_store()
+                    except Exception:
+                        self._log.exception("crosspoll: store acquisition failed in digest")
+                        cx_failed = True
                 try:
                     # Snapshot the running emit counter under the lock for
                     # this iteration only — the cap is enforced against
@@ -832,7 +847,10 @@ class Loom:
                         threshold=self._cfg.auto_apply_threshold,
                         crosspoll_store=cx,
                         source_channel=cycle.channel,
-                        allow_send=allow_send,
+                        # If cx is unavailable, gate emit so apply_or_queue
+                        # returns ``crosspoll_skipped_disabled`` instead of
+                        # asserting on a None store.
+                        allow_send=allow_send and cx is not None,
                         per_cycle_limit=self._cfg.crosspoll_per_cycle_limit,
                         already_emitted=already,
                     )
