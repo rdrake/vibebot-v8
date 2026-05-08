@@ -1,0 +1,284 @@
+"""Tests for the daily verse retention compaction helper."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture
+def verse_db_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "verse"
+    d.mkdir()
+    return d
+
+
+class _FakeClient:
+    def __init__(self, content: str = "A digest of past events.") -> None:
+        self.content = content
+        self.calls: list[dict] = []
+
+    def call(self, *, op: str, model: str, messages: list[dict[str, str]]):
+        from llm.verse.loom import LoomCallUsage
+
+        self.calls.append({"op": op, "model": model, "messages": messages})
+        return self.content, LoomCallUsage(prompt_tokens=10, completion_tokens=20, cost=0.0)
+
+
+class TestCompactVerse:
+    def test_skips_when_retention_zero(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        insert_event_at(store, summary="x", entity_ids=[], source="loom", ts=1.0)
+        out = compact_verse(
+            store,
+            retention_days=0,
+            min_keep_events=20,
+            model="gemini/gemini-flash-lite-latest",
+            client=_FakeClient(),
+            log_usage=lambda **kw: None,
+            now=lambda: 1_000_000.0,
+        )
+        assert out == "skipped_disabled"
+
+    def test_skips_when_below_min_keep(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        insert_event_at(store, summary="x", entity_ids=[], source="loom", ts=1.0)
+        out = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=_FakeClient(),
+            log_usage=lambda **kw: None,
+            now=lambda: 100_000_000.0,
+        )
+        assert out == "skipped_below_floor"
+
+    def test_skips_when_no_old_events(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"e{i}",
+                entity_ids=[],
+                source="loom",
+                ts=1_000_000.0 - i,
+            )
+        out = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=_FakeClient(),
+            log_usage=lambda **kw: None,
+            now=lambda: 1_000_000.0,
+        )
+        assert out == "skipped_no_events"
+
+    def test_compacts_old_events_into_single_digest(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"old{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now - 60 * seconds_per_day,
+            )
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"new{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now - 1.0,
+            )
+        usage_calls: list[dict] = []
+        client = _FakeClient(content="Past events: a wood, a brook, a whisper.")
+        out = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="gemini/gemini-flash-lite-latest",
+            client=client,
+            log_usage=lambda **kw: usage_calls.append(kw),
+            now=lambda: now,
+        )
+        assert out == "compacted"
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT summary, source FROM events ORDER BY ts ASC").fetchall()
+        assert len(rows) == 26
+        assert rows[0][1] == "loom"
+        assert "Past events" in rows[0][0]
+        assert client.calls and client.calls[0]["op"] == "compact"
+        assert len(usage_calls) == 1
+        assert usage_calls[0]["op"] == "compact"
+
+    def test_long_backlog_only_deletes_what_was_summarised(self, verse_db_dir: Path) -> None:
+        """If there are 500 old events and the per-pass cap is 200,
+        exactly 200 originals are deleted; 300 survive for the next pass.
+        Regression test for the v1 plan bug where ALL olds were deleted
+        but only the last 200 were shown to the model."""
+        from llm.verse.compaction import _MAX_EVENTS_PER_PASS, compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(500):
+            insert_event_at(
+                store,
+                summary=f"old{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now - 60 * seconds_per_day - i,
+            )
+        client = _FakeClient(content="A long-ago digest.")
+        out = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=client,
+            log_usage=lambda **kw: None,
+            now=lambda: now,
+        )
+        assert out == "compacted"
+        assert _MAX_EVENTS_PER_PASS == 200
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count == 500 - _MAX_EVENTS_PER_PASS + 1
+
+    def test_per_event_summary_cap_truncates_long_summaries(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import (
+            _MAX_SUMMARY_CHARS_PER_EVENT,
+            compact_verse,
+        )
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        long_summary = "x" * 5000
+        for _ in range(25):
+            insert_event_at(
+                store,
+                summary=long_summary,
+                entity_ids=[],
+                source="avatar",
+                ts=now - 60 * seconds_per_day,
+            )
+        client = _FakeClient()
+        compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=client,
+            log_usage=lambda **kw: None,
+            now=lambda: now,
+        )
+        assert client.calls
+        bullets = client.calls[0]["messages"][1]["content"]
+        for line in bullets.splitlines():
+            assert len(line) <= _MAX_SUMMARY_CHARS_PER_EVENT + 4
+
+    def test_entity_ids_truncation_logs_when_capped(self, verse_db_dir: Path, caplog) -> None:
+        import json as _json
+        import logging
+
+        from llm.verse.compaction import _MAX_DIGEST_ENTITY_IDS, compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"e{i}",
+                entity_ids=list(range(i * 4, i * 4 + 4)),
+                source="avatar",
+                ts=now - 60 * seconds_per_day,
+            )
+        with caplog.at_level(logging.INFO, logger="llm.verse.compaction"):
+            compact_verse(
+                store,
+                retention_days=30,
+                min_keep_events=20,
+                model="m",
+                client=_FakeClient(),
+                log_usage=lambda **kw: None,
+                now=lambda: now,
+            )
+        assert any("entity_ids truncated" in r.message for r in caplog.records)
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT entity_ids FROM events WHERE source='loom' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert len(_json.loads(row[0])) == _MAX_DIGEST_ENTITY_IDS
+
+    def test_client_failure_aborts_without_data_loss(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"old{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now - 60 * seconds_per_day,
+            )
+
+        class Bomb:
+            def call(self, **kw):
+                raise RuntimeError("model down")
+
+        with pytest.raises(RuntimeError):
+            compact_verse(
+                store,
+                retention_days=30,
+                min_keep_events=20,
+                model="m",
+                client=Bomb(),
+                log_usage=lambda **kw: None,
+                now=lambda: now,
+            )
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count == 25
