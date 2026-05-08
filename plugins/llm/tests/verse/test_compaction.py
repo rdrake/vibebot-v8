@@ -131,11 +131,65 @@ class TestCompactVerse:
         with store.read_connection() as conn:
             rows = conn.execute("SELECT summary, source FROM events ORDER BY ts ASC").fetchall()
         assert len(rows) == 26
-        assert rows[0][1] == "loom"
-        assert "Past events" in rows[0][0]
+        # The digest is stamped at now() so it lands as the NEWEST row
+        # (last in ASC order). Stamping at max(batch.ts) used to put it
+        # ahead of the cutoff and re-summarise it the next day.
+        assert rows[-1][1] == "loom"
+        assert "Past events" in rows[-1][0]
         assert client.calls and client.calls[0]["op"] == "compact"
         assert len(usage_calls) == 1
         assert usage_calls[0]["op"] == "compact"
+
+    def test_digest_is_not_re_summarised_on_next_day(self, verse_db_dir: Path) -> None:
+        """Regression: a digest stamped at max(batch.ts) used to sit
+        older than the retention cutoff, so the next daily pass picked
+        it up via ``events_older_than`` and re-summarised it. Now: the
+        digest is stamped at now(), so the next pass (one day later)
+        finds nothing eligible.
+        """
+        from llm.verse.compaction import compact_verse
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        t0 = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"old{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=t0 - 60 * seconds_per_day,
+            )
+        client = _FakeClient(content="A digest.")
+        out1 = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=client,
+            log_usage=lambda **kw: None,
+            now=lambda: t0,
+        )
+        assert out1 == "compacted"
+
+        # One day later, no new events arrive. The digest stamped at
+        # t0 is now 1 day old, well within the 30-day retention. With
+        # min_keep_events=1 the floor check passes (only the digest
+        # remains), so we must reach the events_older_than query and
+        # find nothing eligible.
+        out2 = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=1,
+            model="m",
+            client=_FakeClient(),
+            log_usage=lambda **kw: None,
+            now=lambda: t0 + seconds_per_day,
+        )
+        assert out2 == "skipped_no_events"
 
     def test_long_backlog_only_deletes_what_was_summarised(self, verse_db_dir: Path) -> None:
         """If there are 500 old events and the per-pass cap is 200,

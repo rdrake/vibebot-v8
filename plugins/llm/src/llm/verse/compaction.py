@@ -140,11 +140,12 @@ def compact_verse(
         )
         union_ids = union_ids[:_MAX_DIGEST_ENTITY_IDS]
 
-    # Stamp the digest at the most-recent ts of the kept batch so it
-    # remains ordered *before* any surviving fresh events (which all
-    # have ts >= cutoff). Using ``now()`` would push the digest to the
-    # head of the timeline, hiding the fresh events behind it.
-    digest_ts = max(e.ts for e in kept_events)
+    # Stamp the digest at ``now()`` so it sits *newer* than the
+    # retention cutoff. If we used ``max(batch.ts)`` (the original
+    # plan), the digest would be older than the cutoff on the very
+    # next daily pass and ``events_older_than`` would re-summarise it,
+    # degrading history each cycle.
+    digest_ts = now()
     store.replace_events_with_lore_digest(
         delete_ids=delete_ids,
         summary=summary,
