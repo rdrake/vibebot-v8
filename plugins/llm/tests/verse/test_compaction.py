@@ -282,3 +282,40 @@ class TestCompactVerse:
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         assert count == 25
+
+
+class TestNextLocalTime:
+    def test_returns_today_when_hhmm_in_future(self) -> None:
+        import time as _t
+
+        from llm.verse.compaction import _next_local_time
+
+        # construct a "now" at local 03:00, ask for 10:00
+        struct = _t.struct_time((2026, 5, 8, 3, 0, 0, 4, 128, -1))
+        now_ts = _t.mktime(struct)
+        out = _next_local_time("10:00", now=lambda: now_ts)
+        assert out > now_ts
+        assert (out - now_ts) < 86400  # under one day away
+
+    def test_returns_tomorrow_when_hhmm_already_passed(self) -> None:
+        import time as _t
+
+        from llm.verse.compaction import _next_local_time
+
+        struct = _t.struct_time((2026, 5, 8, 14, 0, 0, 4, 128, -1))
+        now_ts = _t.mktime(struct)
+        out = _next_local_time("10:00", now=lambda: now_ts)
+        assert (out - now_ts) > 0
+        assert (out - now_ts) < 86400  # under one day away
+
+    def test_malformed_hhmm_falls_back_to_one_hour(self) -> None:
+        from llm.verse.compaction import _next_local_time
+
+        out = _next_local_time("not-a-time", now=lambda: 1000.0)
+        assert 3590.0 < (out - 1000.0) < 3610.0
+
+    def test_out_of_range_hhmm_falls_back(self) -> None:
+        from llm.verse.compaction import _next_local_time
+
+        out = _next_local_time("25:99", now=lambda: 1000.0)
+        assert 3590.0 < (out - 1000.0) < 3610.0
