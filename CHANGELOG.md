@@ -35,6 +35,15 @@ own conventional-commit history (`type(scope): summary`).
   `loom:seed` / `loom:beat` / `loom:digest`. Defaults are empty / disabled
   — upgrades are zero-effect until an operator points the loom at a
   channel.
+- Forest-verse: cross-pollination between verses (`verseCrosspollAllowSend`,
+  `verseCrosspollAllowReceive`, `verseCrosspollPerCycleLimit`); seeds queue
+  in a shared `_crosspoll.db` and arrive in receivers as pending proposals.
+- Forest-verse: daily retention compaction summarises events older than
+  `verseEventRetentionDays` into a single lore-digest event
+  (`verseCompactionDailyAt`, `verseCompactionMinKeepEvents`). New owner
+  command `@versecompact #channel` runs it on demand.
+- Forest-verse: loom prompt now grounds entity ids inline so the digest
+  model stops inventing them.
 
 ### Bug Fixes
 
