@@ -257,6 +257,20 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         category="memory",
     ),
     CommandInfo(
+        name="avatar",
+        args="[<persona> | clear]",
+        description=(
+            "Set the persona that shapes your avatar in verse-enabled channels. "
+            "Independent of %instruct — this only affects the verse, not %ask."
+        ),
+        examples=(
+            "%avatar A moss-covered tree spirit who speaks in riddles.",
+            "%avatar clear",
+            "%avatar",
+        ),
+        category="memory",
+    ),
+    CommandInfo(
         name="remind",
         args="[<text> | list | del <id> | clear | admin <list|del|clear> <nick> [<id>...]]",
         description="Set and manage reminders using natural language.",
@@ -2421,8 +2435,8 @@ class LLM(callbacks.Plugin):
         ) or store.find_avatar_by_nick(nick)
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
-        instruct = self.db.get_instruction(nick) or ""
-        system_prompt = build_verse_system_prompt(store, avatar_id, instruct)
+        persona = self.db.get_avatar_persona(nick) or ""
+        system_prompt = build_verse_system_prompt(store, avatar_id, persona)
         tools = make_verse_tool_specs()
         return VerseRoute(avatar_id, system_prompt, tools, store)
 
@@ -3627,13 +3641,55 @@ class LLM(callbacks.Plugin):
                 irc.reply("No instruction set. Use %instruct <text> to set one.", prefixNick=False)
             return
 
+        is_clear = text.strip().lower() == "clear"
+
+        if is_clear:
+            if self.db.delete_instruction(caller.key):
+                irc.reply("Instruction cleared.", prefixNick=False)
+            else:
+                irc.reply("No instruction to clear.", prefixNick=False)
+            return
+
+        self.db.save_instruction(caller.key, text)
+        irc.reply("Instruction set.", prefixNick=False)
+
+    instruct = wrap(instruct, [optional("text")])
+
+    def avatar(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None,
+    ) -> None:
+        """[<persona> | clear]
+
+        Set the persona that shapes your avatar in verse-enabled channels.
+        Independent of %instruct — this only affects the verse, not %ask.
+
+        Examples:
+          %avatar A moss-covered tree spirit who speaks in riddles.
+          %avatar clear
+          %avatar          (show current persona)
+        """
+        caller = self._resolve_identity(irc, msg)
+
+        if not text:
+            current = self.db.get_avatar_persona(caller.key)
+            if current:
+                irc.reply(f"Current persona: {current}", prefixNick=False)
+            else:
+                irc.reply("No persona set. Use %avatar <text> to set one.", prefixNick=False)
+            return
+
         channel = msg.args[0] if msg.args else None
         is_clear = text.strip().lower() == "clear"
         new_summary = "" if is_clear else text
 
-        # C6: If in a verse-enabled channel with an active avatar, update the
-        # avatar's summary *first*. Only proceed to the instruct write if the
-        # verse write succeeds (or there is no verse / no active avatar).
+        # If in a verse-enabled channel with an active avatar, mirror to the
+        # avatar's summary so /look and other display paths reflect the change
+        # immediately. The persona registry remains the source of truth for
+        # the verse system prompt.
         if channel and self.registryValue("verseEnabled", channel):
             store = self._get_or_create_verse_store(channel)
             avatar_id = (
@@ -3649,16 +3705,16 @@ class LLM(callbacks.Plugin):
                         )
 
         if is_clear:
-            if self.db.delete_instruction(caller.key):
-                irc.reply("Instruction cleared.", prefixNick=False)
+            if self.db.delete_avatar_persona(caller.key):
+                irc.reply("Persona cleared.", prefixNick=False)
             else:
-                irc.reply("No instruction to clear.", prefixNick=False)
+                irc.reply("No persona to clear.", prefixNick=False)
             return
 
-        self.db.save_instruction(caller.key, text)
-        irc.reply("Instruction set.", prefixNick=False)
+        self.db.save_avatar_persona(caller.key, text)
+        irc.reply("Persona set.", prefixNick=False)
 
-    instruct = wrap(instruct, [optional("text")])
+    avatar = wrap(avatar, [optional("text")])
 
     def usage(
         self,
@@ -4928,9 +4984,9 @@ class LLM(callbacks.Plugin):
         account = caller.account
 
         if mode == "in":
-            instruct_text = self.db.get_instruction(caller.key) or ""
+            persona_text = self.db.get_avatar_persona(caller.key) or ""
             store = self._get_or_create_verse_store(channel)
-            result = store.opt_in_avatar(nick, account, instruct_text)
+            result = store.opt_in_avatar(nick, account, persona_text)
             reply = result.scene_text
             if result.was_already_opted_in:
                 reply = "You are already opted in. " + reply

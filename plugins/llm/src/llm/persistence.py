@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -482,6 +482,20 @@ class LLMDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_candidates_nick
                     ON memory_candidates(nick);
+            """)
+            conn.commit()
+
+        if current_version < 16:
+            # Avatar persona is the verse-only counterpart to
+            # user_instructions. Split out so a user's @instruct (which
+            # shapes %ask everywhere) no longer bleeds into the verse
+            # system prompt. See @avatar / _verse_route_for in plugin.py.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_avatar_personas (
+                    nick TEXT PRIMARY KEY,
+                    persona TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
             """)
             conn.commit()
 
@@ -1926,6 +1940,39 @@ class LLMDatabase:
         with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM user_instructions WHERE nick = ?",
+                (nick,),
+            )
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Avatar persona operations (verse-only, separate from user_instructions)
+    # ------------------------------------------------------------------
+
+    def get_avatar_persona(self, nick: str) -> str | None:
+        """Get the user's avatar persona, or None if not set."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT persona FROM user_avatar_personas WHERE nick = ?",
+            (nick,),
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_avatar_persona(self, nick: str, persona: str) -> None:
+        """Save or overwrite the user's avatar persona."""
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO user_avatar_personas (nick, persona, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(nick) DO UPDATE SET persona = excluded.persona, "
+                "updated_at = excluded.updated_at",
+                (nick, persona, time.time()),
+            )
+
+    def delete_avatar_persona(self, nick: str) -> bool:
+        """Delete the user's avatar persona. Returns True if one was deleted."""
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_avatar_personas WHERE nick = ?",
                 (nick,),
             )
             return cursor.rowcount > 0

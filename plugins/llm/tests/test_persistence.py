@@ -1124,13 +1124,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_15(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 15."""
+    def test_schema_version_is_16(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 16."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 15
+            assert row[0] == 16
         finally:
             conn.close()
 
@@ -1573,6 +1573,46 @@ class TestUserInstructions:
     def test_delete_instruction_missing(self, test_db: LLMDatabase) -> None:
         """GIVEN no instruction WHEN deleted THEN returns False."""
         assert test_db.delete_instruction("testnick") is False
+
+
+class TestUserAvatarPersonas:
+    """Tests for user_avatar_personas table CRUD."""
+
+    def test_get_persona_returns_none_when_empty(self, test_db: LLMDatabase) -> None:
+        """GIVEN no persona WHEN queried THEN returns None."""
+        assert test_db.get_avatar_persona("testnick") is None
+
+    def test_save_and_get_persona(self, test_db: LLMDatabase) -> None:
+        """GIVEN saved persona WHEN queried THEN returns text."""
+        test_db.save_avatar_persona("testnick", "moss-covered tree spirit")
+        assert test_db.get_avatar_persona("testnick") == "moss-covered tree spirit"
+
+    def test_save_persona_overwrites(self, test_db: LLMDatabase) -> None:
+        """GIVEN existing persona WHEN saved again THEN overwrites."""
+        test_db.save_avatar_persona("testnick", "old")
+        test_db.save_avatar_persona("testnick", "new")
+        assert test_db.get_avatar_persona("testnick") == "new"
+
+    def test_delete_persona(self, test_db: LLMDatabase) -> None:
+        """GIVEN existing persona WHEN deleted THEN returns True and clears."""
+        test_db.save_avatar_persona("testnick", "text")
+        assert test_db.delete_avatar_persona("testnick") is True
+        assert test_db.get_avatar_persona("testnick") is None
+
+    def test_delete_persona_missing(self, test_db: LLMDatabase) -> None:
+        """GIVEN no persona WHEN deleted THEN returns False."""
+        assert test_db.delete_avatar_persona("testnick") is False
+
+    def test_persona_independent_of_instruction(self, test_db: LLMDatabase) -> None:
+        """GIVEN instruction set WHEN persona queried THEN returns None.
+
+        The split is the whole point: setting one must not leak into the other.
+        """
+        test_db.save_instruction("testnick", "ask voice")
+        assert test_db.get_avatar_persona("testnick") is None
+        test_db.save_avatar_persona("testnick", "verse voice")
+        assert test_db.get_instruction("testnick") == "ask voice"
+        assert test_db.get_avatar_persona("testnick") == "verse voice"
 
 
 class TestLoadPendingTasksTypeFilter:
