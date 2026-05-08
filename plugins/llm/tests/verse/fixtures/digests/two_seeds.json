@@ -1,0 +1,16 @@
+[
+  {
+    "op": "crosspoll_seed",
+    "payload": {"summary": "first whisper", "entity_ids": []},
+    "confidence": 0.6,
+    "provenance": "transcript-line-1",
+    "rationale": "ambient"
+  },
+  {
+    "op": "crosspoll_seed",
+    "payload": {"summary": "second whisper", "entity_ids": []},
+    "confidence": 0.6,
+    "provenance": "transcript-line-2",
+    "rationale": "ambient"
+  }
+]

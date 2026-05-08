@@ -18,6 +18,12 @@ def verse_db_dir(tmp_path: Path) -> Path:
     return d
 
 
+def fixture_text(name: str) -> str:
+    """Return the text contents of a file under
+    ``plugins/llm/tests/verse/fixtures/<name>``."""
+    return (Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8")
+
+
 def insert_event_at(
     store: Any,
     *,

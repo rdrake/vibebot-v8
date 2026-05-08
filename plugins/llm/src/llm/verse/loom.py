@@ -751,14 +751,29 @@ class Loom:
             )
             proposals = parse_digest(content)
             store = self._bridge.store_for(cycle.channel)
+            cx = self._bridge.crosspoll_store()
+            allow_send = self._bridge.verse_allow_send(cycle.channel)
             for p in proposals:
                 try:
-                    apply_or_queue(
+                    # Snapshot the running emit counter under the lock for
+                    # this iteration only — the cap is enforced against
+                    # the count *before* this proposal is evaluated.
+                    with self._lock:
+                        already = cycle.emitted_seeds
+                    outcome = apply_or_queue(
                         store,
                         p,
                         cycle_id=cycle.cycle_id,
                         threshold=self._cfg.auto_apply_threshold,
+                        crosspoll_store=cx,
+                        source_channel=cycle.channel,
+                        allow_send=allow_send,
+                        per_cycle_limit=self._cfg.crosspoll_per_cycle_limit,
+                        already_emitted=already,
                     )
+                    if outcome.outcome == "crosspoll_emitted":
+                        with self._lock:
+                            cycle.emitted_seeds += 1
                 except Exception:
                     self._log.exception(
                         "loom proposal apply failed: op=%s payload=%s",

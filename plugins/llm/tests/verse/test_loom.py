@@ -1282,3 +1282,55 @@ class TestLoomBridgeProtocolHasCrosspoll:
         members = {n for n, _ in inspect.getmembers(LoomBridge)}
         for name in ("crosspoll_store", "verse_allow_send", "verse_allow_receive"):
             assert name in members, f"LoomBridge missing {name}"
+
+
+class TestDigestPhaseRoutesCrosspoll:
+    def test_emit_caps_at_per_cycle_limit(self, verse_db_dir: Path) -> None:
+        """Two seeds in one digest, limit=1 -> only first enqueued."""
+        from llm.verse.loom import (
+            LoomCycle,
+            apply_or_queue,
+            parse_digest,
+        )
+        from llm.verse.store import VerseStore
+
+        from .conftest import fixture_text
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        digest = fixture_text("digests/two_seeds.json")
+        proposals = parse_digest(digest)
+        assert len(proposals) == 2
+
+        enqueued: list[str] = []
+
+        class FakeCross:
+            def enqueue_seed(self, *, source_channel, summary, payload):
+                enqueued.append(summary)
+                return len(enqueued)
+
+        cx = FakeCross()
+        cycle = LoomCycle(
+            cycle_id="c1",
+            channel="#afnet",
+            started_at=0.0,
+            verse_stable_block="block",
+        )
+        for p in proposals:
+            r = apply_or_queue(
+                store,
+                p,
+                cycle_id=cycle.cycle_id,
+                threshold=0.85,
+                crosspoll_store=cx,
+                source_channel=cycle.channel,
+                allow_send=True,
+                per_cycle_limit=1,
+                already_emitted=cycle.emitted_seeds,
+            )
+            if r.outcome == "crosspoll_emitted":
+                cycle.emitted_seeds += 1
+
+        assert cycle.emitted_seeds == 1
+        assert enqueued == ["first whisper"]
+        # second seed was skipped, NOT silently re-enqueued
+        assert "second whisper" not in enqueued
