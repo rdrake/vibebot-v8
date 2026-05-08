@@ -174,6 +174,75 @@ class TestCompactVerse:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         assert count == 500 - _MAX_EVENTS_PER_PASS + 1
 
+    def test_bullet_trim_only_deletes_events_in_prompt(self, verse_db_dir: Path) -> None:
+        """When the bullet block exceeds _MAX_BULLET_BLOCK_CHARS, oldest
+        bullets are dropped from the prompt. Regression: previously the
+        delete_ids list still referenced the FULL batch, so events the
+        LLM never saw got deleted. Now: delete_ids matches exactly the
+        events whose bullets remain in the prompt; events with trimmed
+        bullets survive for the next pass.
+        """
+        from llm.verse.compaction import (
+            _MAX_BULLET_BLOCK_CHARS,
+            _MAX_SUMMARY_CHARS_PER_EVENT,
+            compact_verse,
+        )
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        seconds_per_day = 86400
+        now = 100_000_000.0
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        # Long summaries cap at _MAX_SUMMARY_CHARS_PER_EVENT (240).
+        # Bullet line is "- " + summary -> ~242 chars per line.
+        # 70 events * (242 + 1 newline) ~= 17000 chars > 16000 cap.
+        n_events = 70
+        long_summary = "x" * (_MAX_SUMMARY_CHARS_PER_EVENT * 2)
+        ids: list[int] = []
+        for i in range(n_events):
+            eid = insert_event_at(
+                store,
+                summary=f"e{i:03d}-{long_summary}",
+                entity_ids=[],
+                source="avatar",
+                ts=now - 60 * seconds_per_day - (n_events - i),
+            )
+            ids.append(eid)
+
+        client = _FakeClient(content="A digest.")
+        out = compact_verse(
+            store,
+            retention_days=30,
+            min_keep_events=20,
+            model="m",
+            client=client,
+            log_usage=lambda **kw: None,
+            now=lambda: now,
+        )
+        assert out == "compacted"
+
+        # The bullet block sent to the LLM should be capped.
+        bullets = client.calls[0]["messages"][1]["content"]
+        assert len(bullets) <= _MAX_BULLET_BLOCK_CHARS
+        kept_bullet_lines = bullets.count("\n") + 1 if bullets else 0
+        assert kept_bullet_lines < n_events  # i.e. some were trimmed
+
+        # After compaction, surviving events = (n_events - kept) originals
+        # + 1 digest. Events whose bullets were trimmed off the front
+        # MUST survive; their ids are the OLDEST ones (lowest ts).
+        with store.read_connection() as conn:
+            rows = conn.execute("SELECT id, source FROM events ORDER BY ts ASC, id ASC").fetchall()
+        # 1 digest row (source='loom') + (n_events - kept_bullet_lines) survivors.
+        survivor_ids = [r[0] for r in rows if r[1] != "loom"]
+        digest_rows = [r for r in rows if r[1] == "loom"]
+        assert len(digest_rows) == 1
+        # Number of deletions equals number of bullet lines actually shown.
+        assert len(survivor_ids) == n_events - kept_bullet_lines
+        # Survivors are the OLDEST events (front-trimmed off the prompt).
+        assert survivor_ids == ids[: n_events - kept_bullet_lines]
+
     def test_per_event_summary_cap_truncates_long_summaries(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import (
             _MAX_SUMMARY_CHARS_PER_EVENT,

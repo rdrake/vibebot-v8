@@ -86,18 +86,23 @@ def compact_verse(
             return s
         return s[: _MAX_SUMMARY_CHARS_PER_EVENT - 1] + "…"
 
-    bullet_lines = [f"- {_truncated(e.summary)}" for e in batch]
-    bullets = "\n".join(bullet_lines)
+    # Pair each event with its bullet so the trim drops both together.
+    # Without this, oldest bullets could be dropped from the prompt
+    # while their event ids remained in delete_ids — deleting events
+    # the LLM never saw.
+    pairs: list[tuple[Any, str]] = [(e, f"- {_truncated(e.summary)}") for e in batch]
+    bullets = "\n".join(b for _, b in pairs)
     if len(bullets) > _MAX_BULLET_BLOCK_CHARS:
-        # Trim oldest bullets first; newest of the batch stay in.
-        while bullet_lines and len("\n".join(bullet_lines)) > _MAX_BULLET_BLOCK_CHARS:
-            bullet_lines.pop(0)
-        bullets = "\n".join(bullet_lines)
+        # Trim oldest pairs first; newest of the batch stay in.
+        while pairs and len("\n".join(b for _, b in pairs)) > _MAX_BULLET_BLOCK_CHARS:
+            pairs.pop(0)
+        bullets = "\n".join(b for _, b in pairs)
         _LOG.info(
             "verse compaction: bullet block trimmed to %d chars over %d-event batch",
             len(bullets),
-            len(bullet_lines),
+            len(pairs),
         )
+    kept_events = [e for e, _ in pairs]
 
     messages = [
         {
@@ -113,10 +118,13 @@ def compact_verse(
     content, usage = client.call(op="compact", model=model, messages=messages)
     summary = (content or "").strip() or "A period of unrecorded events passed."
 
-    delete_ids = [e.id for e in batch]
+    # delete_ids and entity_ids union are computed only over the events
+    # that actually appeared in the prompt — anything trimmed off the
+    # front survives for the next pass.
+    delete_ids = [e.id for e in kept_events]
     union_ids: list[int] = []
     seen: set[int] = set()
-    for ev in batch:
+    for ev in kept_events:
         for eid in ev.entity_ids:
             if eid not in seen:
                 seen.add(eid)
@@ -128,15 +136,15 @@ def compact_verse(
             "(union over %d events); rest dropped",
             len(union_ids),
             _MAX_DIGEST_ENTITY_IDS,
-            len(batch),
+            len(kept_events),
         )
         union_ids = union_ids[:_MAX_DIGEST_ENTITY_IDS]
 
-    # Stamp the digest at the most-recent ts of the batch so it remains
-    # ordered *before* any surviving fresh events (which all have ts >=
-    # cutoff). Using ``now()`` would push the digest to the head of the
-    # timeline, hiding the fresh events behind it.
-    digest_ts = max(e.ts for e in batch)
+    # Stamp the digest at the most-recent ts of the kept batch so it
+    # remains ordered *before* any surviving fresh events (which all
+    # have ts >= cutoff). Using ``now()`` would push the digest to the
+    # head of the timeline, hiding the fresh events behind it.
+    digest_ts = max(e.ts for e in kept_events)
     store.replace_events_with_lore_digest(
         delete_ids=delete_ids,
         summary=summary,
