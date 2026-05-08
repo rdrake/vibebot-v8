@@ -36,6 +36,7 @@ Use the following commands when you want direct, predictable behavior.
 | `@who` | | List active avatars in this channel's verse (requires `llm.verse`) |
 | `@versedump` | `#chan` | Dump verse state as JSON (requires `llm.verse.gm`) |
 | `@versepurge` | `#chan [token]` | Irreversibly purge verse state; two-step token confirmation (requires `llm.verse.gm`) |
+| `@versecompact` | `#chan` | Manually run retention compaction for the channel (requires `llm.verse.gm`) |
 | `@verseproposals` | `[#chan] [pending\|approved\|rejected] [<limit>]` | List loom proposals (default channel = current; default status = `pending`; default limit 3, max 50) (requires `llm.verse.gm`) |
 | `@verseapprove` | `<id> [#chan]` | Apply a pending loom proposal and mark it approved; accepts unique-prefix ids (requires `llm.verse.gm`) |
 | `@versereject` | `<id> [#chan]` | Reject a pending loom proposal without applying its mutation; accepts unique-prefix ids (requires `llm.verse.gm`) |
@@ -141,6 +142,18 @@ Show API usage statistics for yourself, another user, or a channel.
 ```
 
 See [Reminders & Usage -- usage](../user/reminders-usage.md#usage) for full details.
+
+### versecompact
+
+Manually run retention compaction for the named channel.
+Requires capability `llm.verse.gm`.
+
+```
+@versecompact #channel
+```
+
+See [Forest-Verse -- Retention compaction](../operator/forest-verse.md#retention-compaction)
+for what compaction does.
 
 ## Features
 
