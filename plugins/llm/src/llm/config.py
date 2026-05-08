@@ -457,6 +457,60 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseCrosspollAllowSend",
+    registry.Boolean(
+        False,
+        _("""When True, this channel may emit crosspoll seeds from its
+        loom digest into the shared crosspoll queue. Default False
+        (off)."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseCrosspollAllowReceive",
+    registry.Boolean(
+        False,
+        _("""When True, on each loom cycle this channel may pull one
+        queued crosspoll seed from another verse and insert it as a
+        pending proposal for the operator to approve or reject. Default
+        False (off)."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "verseCrosspollPerCycleLimit",
+    registry.PositiveInteger(
+        1,
+        _("""Maximum crosspoll seeds a single loom digest may emit per
+        cycle. Excess seeds are dropped with a warning."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "verseCompactionDailyAt",
+    registry.String(
+        "03:00",
+        _("""Local-time HH:MM at which the daily verse-event-retention
+        compaction job fires. Empty or malformed values defer the next
+        run by one hour."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "verseCompactionMinKeepEvents",
+    registry.NonNegativeInteger(
+        20,
+        _("""Floor on total event count below which a verse is left
+        alone by compaction. Prevents thrashing small verses."""),
+    ),
+)
+
 # ============================================================================
 # Pending Task Retry (per-command expiry)
 # ============================================================================

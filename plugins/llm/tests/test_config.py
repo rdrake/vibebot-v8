@@ -337,3 +337,42 @@ class TestValidatedModelNameThreadSafety:
         # Should warn exactly once despite 20 concurrent threads
         assert len(warnings_logged) == 1
         assert model in warnings_logged[0]
+
+
+class TestPR3RegistryKeys:
+    """F1: five PR 3 registry keys (crosspoll + compaction)."""
+
+    def test_verse_crosspoll_allow_send_per_channel_false(self) -> None:
+        """verseCrosspollAllowSend is per-channel and defaults to False."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseCrosspollAllowSend() is False
+
+    def test_verse_crosspoll_allow_receive_per_channel_false(self) -> None:
+        """verseCrosspollAllowReceive is per-channel and defaults to False."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseCrosspollAllowReceive() is False
+
+    def test_verse_crosspoll_per_cycle_limit_global_one(self) -> None:
+        """verseCrosspollPerCycleLimit is global PositiveInteger, default 1."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseCrosspollPerCycleLimit() == 1
+
+    def test_verse_compaction_daily_at_default(self) -> None:
+        """verseCompactionDailyAt is global String, default '03:00'."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseCompactionDailyAt() == "03:00"
+
+    def test_verse_compaction_min_keep_events_default(self) -> None:
+        """verseCompactionMinKeepEvents is global NonNegativeInteger, default 20."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseCompactionMinKeepEvents() == 20
