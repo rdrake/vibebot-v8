@@ -1703,8 +1703,15 @@ class TestLoomTickConsumesSeed:
             created_at = 0.0
 
         class FakeCross:
+            def __init__(self) -> None:
+                self.released: list[tuple[int, str]] = []
+
             def claim_seed_for(self, ch, *, proposal_id):
                 return FakeSeed()
+
+            def release_claim(self, seed_id: int, dest_channel: str) -> bool:
+                self.released.append((seed_id, dest_channel))
+                return True
 
         class BoomStore:
             """Wraps real store but raises on add_proposal."""
@@ -1715,6 +1722,8 @@ class TestLoomTickConsumesSeed:
         class FakeClient:
             def call(self, **kw):
                 return "", LoomCallUsage(0, 0, 0.0)
+
+        cx_singleton = FakeCross()
 
         class FakeBridge:
             def list_candidate_channels(self):
@@ -1748,7 +1757,7 @@ class TestLoomTickConsumesSeed:
                 pass
 
             def crosspoll_store(self):
-                return FakeCross()
+                return cx_singleton
 
             def verse_allow_send(self, channel):
                 return False
@@ -1776,6 +1785,171 @@ class TestLoomTickConsumesSeed:
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
         assert count == 0
+        # Regression: insert failure must release the consumption row so
+        # the seed isn't lost. Without this the row is permanent.
+        assert cx_singleton.released == [(99, "#afnet")]
+
+    def test_proposal_insert_failure_re_pends_via_real_store(self, tmp_path: Path) -> None:
+        """End-to-end: with a real CrosspollStore, an add_proposal failure
+        must leave the seed pending again (release_claim ran)."""
+        from llm.verse.crosspoll_store import CrosspollStore
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+
+        cx = CrosspollStore(tmp_path / "verse")
+        cx.enqueue_seed(source_channel="#other", summary="doomed", payload={})
+
+        class BoomStore:
+            def add_proposal(self, **kw):
+                raise RuntimeError("disk full")
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return BoomStore()
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return cx
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        # Pending count starts at 1.
+        assert cx.pending_count_for("#afnet") == 1
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.tick()
+        # After the failed insert + release, the seed is pending again.
+        assert cx.pending_count_for("#afnet") == 1
+
+    def test_consume_swallows_bridge_construction_failure(self, verse_db_dir: Path) -> None:
+        """Regression: ``crosspoll_store()`` raising during the receive
+        hook must NOT abort the loom tick — the seed/beat/digest path
+        doesn't depend on receive working."""
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, *, op, model, messages):
+                self.calls.append(op)
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return store
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                raise RuntimeError("DB unavailable")
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        # Must not raise — bridge failure is logged + swallowed.
+        loom.tick()
+        # Seed phase still ran (called once, even though content is empty).
+        # No assertion on seed run — both behaviours are acceptable
+        # because the seed phase runs regardless.
 
 
 class TestCrosspollEndToEnd:

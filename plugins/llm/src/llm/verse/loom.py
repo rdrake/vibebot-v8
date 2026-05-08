@@ -622,15 +622,23 @@ class Loom:
              this caller wins the claim, it returns the seed; otherwise
              ``None`` (no pending seed, or another receiver claimed it).
           3. If we won, insert the local proposal with the pre-generated
-             id. If the proposal insert fails, the consumption row is
-             left dangling — that's a one-seed loss for this receiver,
-             logged at exception level but not retried.
+             id. If the proposal insert fails, release the consumption
+             row so a future cycle (or another receiver) can re-claim
+             — without this the seed would be lost forever.
 
-        Other failures are logged at WARNING and swallowed; a different
-        seed will be picked up on the next cycle.
+        Bridge-construction failures (``crosspoll_store()`` or
+        ``verse_allow_receive`` raising) are logged and swallowed so the
+        loom tick continues; the seed/beat/digest path doesn't depend on
+        the receive hook.
         """
-        cx = self._bridge.crosspoll_store()
-        if cx is None or not self._bridge.verse_allow_receive(channel):
+        try:
+            if not self._bridge.verse_allow_receive(channel):
+                return
+            cx = self._bridge.crosspoll_store()
+            if cx is None:
+                return
+        except Exception:
+            self._log.exception("crosspoll: bridge query failed")
             return
         proposal_id = uuid.uuid4().hex
         try:
@@ -653,10 +661,17 @@ class Loom:
         except Exception:
             self._log.exception(
                 "crosspoll: claimed seed %s but proposal insert failed; "
-                "consumption row at proposal_id=%s is now dangling",
+                "releasing claim so a future cycle can re-claim",
                 seed.id,
-                proposal_id,
             )
+            try:
+                cx.release_claim(seed.id, channel)
+            except Exception:
+                self._log.exception(
+                    "crosspoll: release_claim failed for seed %s; consumption "
+                    "row remains and seed is lost for this dest",
+                    seed.id,
+                )
 
     def _seed_phase(self, cycle: LoomCycle) -> None:
         messages = [

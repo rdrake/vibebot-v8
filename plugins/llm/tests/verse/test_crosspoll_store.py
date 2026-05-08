@@ -124,6 +124,34 @@ class TestEnqueueAndClaim:
         assert store.pending_count_for("#b") == 1
 
 
+class TestReleaseClaim:
+    """Regression: when the receiver's local proposal insert fails after
+    a successful claim, the consumption row must be released so the seed
+    isn't lost forever.
+    """
+
+    def test_release_then_reclaim(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        sid = store.enqueue_seed(source_channel="#a", summary="x", payload={})
+        first = store.claim_seed_for("#b", proposal_id="p1")
+        assert first is not None and first.id == sid
+        # Without release, a re-claim returns None (already consumed).
+        assert store.claim_seed_for("#b", proposal_id="p2") is None
+        # Release lets the next claim succeed for the same dest.
+        assert store.release_claim(sid, "#b") is True
+        second = store.claim_seed_for("#b", proposal_id="p3")
+        assert second is not None and second.id == sid
+
+    def test_release_missing_row_is_idempotent(self, crosspoll_dir: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        # Nothing consumed yet — release reports False but does not raise.
+        assert store.release_claim(seed_id=999, dest_channel="#b") is False
+
+
 class TestNextUnconsumedFor:
     def test_returns_none_when_empty(self, crosspoll_dir: Path) -> None:
         from llm.verse.crosspoll_store import CrosspollStore

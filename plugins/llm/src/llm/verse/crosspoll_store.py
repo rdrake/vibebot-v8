@@ -164,6 +164,22 @@ class CrosspollStore:
             created_at=created_at,
         )
 
+    def release_claim(self, seed_id: int, dest_channel: str) -> bool:
+        """Delete the consumption row for ``(seed_id, dest_channel)``.
+
+        Used by the receiver consume hook when the local proposal insert
+        fails after a successful claim — without this the consumption
+        row is permanent and that seed is lost for the receiver forever.
+        Returns True if a row was deleted; idempotent (missing row
+        returns False without raising).
+        """
+        with self.write_transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM crosspoll_consumptions WHERE seed_id=? AND dest_channel=?",
+                (seed_id, dest_channel),
+            )
+            return cur.rowcount > 0
+
     def next_unconsumed_for(self, dest_channel: str) -> CrosspollSeed | None:
         """Diagnostic-only: oldest seed not yet consumed by
         ``dest_channel``. Does **not** mark consumed — use
