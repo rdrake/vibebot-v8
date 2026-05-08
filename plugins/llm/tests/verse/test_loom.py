@@ -956,3 +956,33 @@ class TestStaticPrefixMentionsEntityIds:
         # Two assertions — neither is fragile to whitespace.
         assert "(id=" in LOOM_STATIC_PREFIX
         assert "reuse" in LOOM_STATIC_PREFIX.lower() and "id" in LOOM_STATIC_PREFIX.lower()
+
+
+class TestParseDigestCrosspollSeed:
+    def test_accepts_crosspoll_seed_op(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = """
+        [
+          {
+            "op": "crosspoll_seed",
+            "payload": {"summary": "rumour from the brook", "entity_ids": [4]},
+            "confidence": 0.6,
+            "provenance": "transcript-line-2",
+            "rationale": "ambient riffing"
+          }
+        ]
+        """
+        out = parse_digest(text)
+        assert len(out) == 1
+        assert out[0].op == "crosspoll_seed"
+        assert out[0].payload["summary"] == "rumour from the brook"
+        assert out[0].payload["entity_ids"] == [4]
+
+    def test_rejects_crosspoll_seed_with_bad_payload(self) -> None:
+        from llm.verse.loom import parse_digest
+
+        text = '[{"op":"crosspoll_seed","payload":{"summary":"ok"},"confidence":0.5,"provenance":"p","rationale":"r"}]'
+        # missing entity_ids
+        out = parse_digest(text)
+        assert out == []

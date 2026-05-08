@@ -35,13 +35,18 @@ and proposes mutations to a shared fictional world. Your role is to
 or rejects them.
 
 Each proposal MUST be valid JSON with these fields:
-  op          — one of: add_event, set_attribute, add_relation, add_entity
+  op          — one of: add_event, set_attribute, add_relation, add_entity, crosspoll_seed
   payload     — object whose required keys depend on op:
                   add_event:     summary (str), entity_ids (list[int])
                   set_attribute: entity_id (int), key (str), value (str)
                   add_relation:  from_id (int), to_id (int), kind (str), note (str?)
                   add_entity:    kind (str: avatar|npc|place|faction|item),
                                  name (str), summary (str?)
+                  crosspoll_seed: summary (str), entity_ids (list[int])
+                                  — emit only if this verse has crosspoll
+                                    send permission; the seed will appear
+                                    as a *proposal* in another verse for
+                                    that operator to approve or reject.
   confidence  — float between 0.0 and 1.0
   provenance  — short string identifying which transcript line(s) drove this
   rationale   — one sentence in your voice
@@ -103,7 +108,7 @@ def build_digest_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE)
 
-_VALID_OPS = ("add_event", "set_attribute", "add_relation", "add_entity")
+_VALID_OPS = ("add_event", "set_attribute", "add_relation", "add_entity", "crosspoll_seed")
 
 
 def _is_strict_int(v: Any) -> bool:
@@ -133,6 +138,10 @@ _PAYLOAD_SCHEMA: dict[str, tuple[tuple[str, Callable[[Any], bool], str], ...]] =
     "add_entity": (
         ("kind", lambda v: isinstance(v, str), "str"),
         ("name", lambda v: isinstance(v, str), "str"),
+    ),
+    "crosspoll_seed": (
+        ("summary", lambda v: isinstance(v, str), "str"),
+        ("entity_ids", _is_int_list, "list[int]"),
     ),
 }
 
