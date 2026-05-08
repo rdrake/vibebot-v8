@@ -633,8 +633,14 @@ class VerseStore:
         provenance: str = "",
         status: str = "pending",
         reviewer: str | None = None,
+        proposal_id: str | None = None,
     ) -> str:
-        """Insert a proposal and return its uuid id.
+        """Insert a proposal and return its id.
+
+        When *proposal_id* is None (default) a fresh uuid is generated.
+        The crosspoll-receiver consume hook passes a caller-supplied id
+        so the consumption row written by ``CrosspollStore.claim_seed_for``
+        points at the same proposal record.
 
         When *status* is 'approved' or 'rejected', *reviewer* must be
         supplied and reviewed_at is set to now (this is how auto-apply
@@ -645,7 +651,7 @@ class VerseStore:
             raise ValueError(f"invalid status: {status!r}")
         if status != "pending" and not reviewer:
             raise ValueError("reviewer required when status != pending")
-        pid = uuid.uuid4().hex
+        pid = proposal_id if proposal_id is not None else uuid.uuid4().hex
         now = time.time()
         reviewed_at = now if status != "pending" else None
         with self.write_transaction() as conn:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -1175,3 +1176,64 @@ class TestReplaceEventsWithLoreDigest:
         with store.read_connection() as conn:
             row = conn.execute("SELECT entity_ids FROM events WHERE id=?", (new_id,)).fetchone()
         assert json.loads(row[0]) == [1, 2, 3]
+
+
+class TestAddProposalAcceptsId:
+    def test_default_generates_uuid_id(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.0,
+            provenance="t",
+        )
+        # 32-char lowercase hex (uuid4 .hex)
+        assert isinstance(pid, str) and len(pid) == 32
+        assert all(c in "0123456789abcdef" for c in pid)
+
+    def test_caller_supplied_id_is_used_verbatim(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid_in = "deadbeef" * 4  # 32 chars
+        pid_out = store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.0,
+            provenance="t",
+            proposal_id=pid_in,
+        )
+        assert pid_out == pid_in
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM proposals WHERE id=?",
+                (pid_in,),
+            ).fetchone()
+        assert row is not None and row[0] == pid_in
+
+    def test_caller_supplied_duplicate_id_raises(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        pid = "abcd" * 8
+        store.add_proposal(
+            cycle_id="c-1",
+            op="add_event",
+            payload={"summary": "x", "entity_ids": []},
+            confidence=0.0,
+            provenance="t",
+            proposal_id=pid,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            store.add_proposal(
+                cycle_id="c-1",
+                op="add_event",
+                payload={"summary": "y", "entity_ids": []},
+                confidence=0.0,
+                provenance="t",
+                proposal_id=pid,
+            )
