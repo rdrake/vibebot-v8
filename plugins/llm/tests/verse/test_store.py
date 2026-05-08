@@ -1049,3 +1049,47 @@ class TestWriteLockConcurrency:
         final = store.get_attribute(eid, "round")
         assert final is not None
         assert int(final) in range(50)
+
+
+class TestEventsOlderThan:
+    def test_returns_oldest_first(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        ids: list[int] = []
+        for ts in (10.0, 20.0, 30.0):
+            ids.append(
+                insert_event_at(
+                    store,
+                    summary=f"e{ts}",
+                    entity_ids=[],
+                    source="loom",
+                    ts=ts,
+                )
+            )
+        rows = store.events_older_than(cutoff_ts=25.0)
+        assert [r.id for r in rows] == [ids[0], ids[1]]
+        assert [r.ts for r in rows] == [10.0, 20.0]
+
+    def test_empty_when_no_events_below_cutoff(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        insert_event_at(store, summary="x", entity_ids=[], source="loom", ts=100.0)
+        assert store.events_older_than(cutoff_ts=50.0) == []
+
+    def test_includes_all_sources(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        from .conftest import insert_event_at
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        insert_event_at(store, summary="a", entity_ids=[], source="avatar", ts=5.0)
+        insert_event_at(store, summary="b", entity_ids=[], source="loom", ts=6.0)
+        insert_event_at(store, summary="c", entity_ids=[], source="crosspoll", ts=7.0)
+        rows = store.events_older_than(cutoff_ts=10.0)
+        assert {r.source for r in rows} == {"avatar", "loom", "crosspoll"}

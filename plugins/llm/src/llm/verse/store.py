@@ -388,6 +388,31 @@ class VerseStore:
             for row in rows
         ]
 
+    def events_older_than(self, *, cutoff_ts: float) -> list[Event]:
+        """All events with ``ts < cutoff_ts``, oldest-first.
+
+        Used by retention compaction to gather rows that will be replaced by
+        a single lore-digest event. Lock-free read. ``entity_ids`` are
+        normalised to ``int`` to match the existing ``recent_events``
+        convention (``store.py:387``).
+        """
+        with self.read_connection() as conn:
+            cur = conn.execute(
+                "SELECT id, ts, summary, entity_ids, source FROM events "
+                "WHERE ts < ? ORDER BY ts ASC, id ASC",
+                (cutoff_ts,),
+            )
+            return [
+                Event(
+                    id=row[0],
+                    ts=row[1],
+                    summary=row[2],
+                    entity_ids=tuple(int(x) for x in json.loads(row[3])),
+                    source=row[4],
+                )
+                for row in cur.fetchall()
+            ]
+
     # ------------------------------------------------------------------
     # Avatar opt-in
     # ------------------------------------------------------------------
