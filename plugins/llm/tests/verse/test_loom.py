@@ -1251,3 +1251,34 @@ class TestApplyOrQueueCrosspollSeed:
                 "SELECT COUNT(*) FROM proposals WHERE op='crosspoll_seed'"
             ).fetchone()[0]
         assert bad == 0
+
+
+class TestLoomConfigCrosspollDefault:
+    def test_per_cycle_limit_defaults_present_in_dataclass(self) -> None:
+        from llm.verse.loom import LoomConfig
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="gemini/gemini-flash-lite-latest",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        assert cfg.crosspoll_per_cycle_limit == 1
+
+
+class TestLoomBridgeProtocolHasCrosspoll:
+    def test_protocol_documents_three_new_methods(self) -> None:
+        import inspect
+
+        from llm.verse.loom import LoomBridge
+
+        members = {n for n, _ in inspect.getmembers(LoomBridge)}
+        for name in ("crosspoll_store", "verse_allow_send", "verse_allow_receive"):
+            assert name in members, f"LoomBridge missing {name}"

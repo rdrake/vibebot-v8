@@ -5457,5 +5457,18 @@ class _PluginLoomBridge:
             cost=usage.cost,
         )
 
+    def crosspoll_store(self):
+        # F2 will wire this to the real CrosspollStore. For D4, return None
+        # so apply_or_queue's crosspoll_seed branch stays disabled in prod.
+        return None
+
+    def verse_allow_send(self, channel: str) -> bool:
+        # F2 will read verseAllowCrosspollSend from the registry per-channel.
+        return False
+
+    def verse_allow_receive(self, channel: str) -> bool:
+        # F2 will read verseAllowCrosspollReceive from the registry per-channel.
+        return False
+
 
 Class = LLM

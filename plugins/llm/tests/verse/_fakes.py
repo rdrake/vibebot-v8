@@ -65,6 +65,15 @@ class FakeBridge:
     def log_usage(self, *, channel: str, op: str, model: str, usage: LoomCallUsage) -> None:
         self.usage_log.append((channel, op, model, usage))
 
+    def crosspoll_store(self) -> Any | None:
+        return None
+
+    def verse_allow_send(self, channel: str) -> bool:
+        return False
+
+    def verse_allow_receive(self, channel: str) -> bool:
+        return False
+
 
 class StubClient:
     """Deterministic ``LoomModelClient`` returning canned replies per op."""

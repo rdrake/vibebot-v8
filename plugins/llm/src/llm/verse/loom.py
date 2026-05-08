@@ -483,6 +483,7 @@ class LoomConfig:
     transcript_max_lines: int
     transcript_max_chars: int
     auto_apply_threshold: float
+    crosspoll_per_cycle_limit: int = 1
 
 
 @dataclass
@@ -531,6 +532,10 @@ class LoomBridge(Protocol):
         model: str,
         usage: LoomCallUsage,
     ) -> None: ...
+
+    def crosspoll_store(self) -> Any | None: ...
+    def verse_allow_send(self, channel: str) -> bool: ...
+    def verse_allow_receive(self, channel: str) -> bool: ...
 
 
 class Loom:
