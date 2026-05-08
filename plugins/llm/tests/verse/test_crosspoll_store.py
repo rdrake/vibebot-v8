@@ -122,3 +122,34 @@ class TestEnqueueAndClaim:
         assert store.pending_count_for("#b") == 2
         store.claim_seed_for("#b", proposal_id="p")
         assert store.pending_count_for("#b") == 1
+
+
+class TestCrosspollConcurrency:
+    def test_concurrent_enqueue_serialises(self, crosspoll_dir: Path) -> None:
+        import threading
+
+        from llm.verse.crosspoll_store import CrosspollStore
+
+        store = CrosspollStore(crosspoll_dir)
+        n_writers = 50
+        errors: list[BaseException] = []
+
+        def writer(i: int) -> None:
+            try:
+                store.enqueue_seed(
+                    source_channel=f"#chan-{i % 4}",
+                    summary=f"line-{i}",
+                    payload={"i": i},
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(n_writers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        with store.read_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM crosspoll_seeds").fetchone()[0]
+        assert count == n_writers
