@@ -1776,3 +1776,64 @@ class TestLoomTickConsumesSeed:
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
         assert count == 0
+
+
+class TestCrosspollEndToEnd:
+    def test_seed_emitted_then_consumed_then_approved(self, tmp_path: Path) -> None:
+        from llm.verse.crosspoll_store import CrosspollStore
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+        from llm.verse.store import VerseStore
+
+        verse_dir = tmp_path / "verse"
+        verse_dir.mkdir()
+        cx = CrosspollStore(verse_dir)
+        src_store = VerseStore(verse_dir, "#alpha")
+        rcv_store = VerseStore(verse_dir, "#beta")
+
+        # Source emits one crosspoll_seed via apply_or_queue.
+        seed_prop = ParsedProposal(
+            op="crosspoll_seed",
+            payload={"summary": "a rumour from alpha", "entity_ids": []},
+            confidence=0.7,
+            provenance="t-1",
+            rationale="ambient",
+        )
+        out = apply_or_queue(
+            src_store,
+            seed_prop,
+            cycle_id="c-src",
+            threshold=0.85,
+            crosspoll_store=cx,
+            source_channel="#alpha",
+            allow_send=True,
+            per_cycle_limit=1,
+            already_emitted=0,
+        )
+        assert out.outcome == "crosspoll_emitted"
+
+        # Receiver atomically claims the seed (consumption row + read in
+        # one TX), then inserts the local pending proposal with the same id.
+        import uuid as _uuid
+
+        proposal_id = _uuid.uuid4().hex
+        seed = cx.claim_seed_for("#beta", proposal_id=proposal_id)
+        assert seed is not None and seed.source_channel == "#alpha"
+        rcv_store.add_proposal(
+            cycle_id="crosspoll-recv",
+            op="add_event",
+            payload={"summary": seed.summary, "entity_ids": []},
+            confidence=0.0,
+            provenance=f"crosspoll from #alpha (seed-id={seed.id})",
+            proposal_id=proposal_id,
+        )
+
+        # Operator approves; receiver event row gets source='crosspoll'.
+        rcv_store.apply_proposal_and_mark(proposal_id, reviewer="op", event_source="crosspoll")
+        with rcv_store.read_connection() as conn:
+            rows = conn.execute("SELECT summary, source FROM events").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "a rumour from alpha"
+        assert rows[0][1] == "crosspoll"
+
+        # Second claim returns None — already consumed for this dest.
+        assert cx.claim_seed_for("#beta", proposal_id="p-x") is None
