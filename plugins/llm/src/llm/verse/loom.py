@@ -235,6 +235,9 @@ def _proposal_entity_refs_resolve(store: Any, prop: ParsedProposal) -> bool:
     if op == "add_event":
         ids = payload.get("entity_ids") or []
         return all(store.entity_exists(eid) for eid in ids)
+    if op == "crosspoll_seed":
+        ids = payload.get("entity_ids") or []
+        return all(store.entity_exists(eid) for eid in ids)
     return True
 
 

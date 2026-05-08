@@ -986,3 +986,33 @@ class TestParseDigestCrosspollSeed:
         # missing entity_ids
         out = parse_digest(text)
         assert out == []
+
+
+class TestProposalEntityRefsResolveCrosspoll:
+    def test_seed_refs_validate_against_source_store(self) -> None:
+        from llm.verse.loom import ParsedProposal, _proposal_entity_refs_resolve
+
+        class FakeStore:
+            def __init__(self, known: set[int]) -> None:
+                self.known = known
+
+            def entity_exists(self, eid: int) -> bool:
+                return eid in self.known
+
+        store = FakeStore({4, 7})
+        ok = ParsedProposal(
+            op="crosspoll_seed",
+            payload={"summary": "x", "entity_ids": [4, 7]},
+            confidence=0.5,
+            provenance="p",
+            rationale="r",
+        )
+        bad = ParsedProposal(
+            op="crosspoll_seed",
+            payload={"summary": "x", "entity_ids": [99]},
+            confidence=0.5,
+            provenance="p",
+            rationale="r",
+        )
+        assert _proposal_entity_refs_resolve(store, ok) is True
+        assert _proposal_entity_refs_resolve(store, bad) is False
