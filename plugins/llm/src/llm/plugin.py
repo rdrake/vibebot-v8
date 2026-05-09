@@ -3264,29 +3264,39 @@ class LLM(callbacks.Plugin):
         verse-enabled channel still falls back to the chat profile for any
         message that isn't routed through ``@ask``, so verse_record never
         fires and the canon goes unrecorded."""
-        route = self._verse_route_for(preflight.channel, preflight.nick, preflight.account, text)
-        if route is None:
-            self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
-            return
-        # Per-channel verse model override. Empty string falls back to
-        # assistantModel inside ``_ask_impl``. Useful when the channel's
-        # assistantModel is a reasoning model that hard-caps verse output
-        # at ~120 visible tokens regardless of prompt — point ``verseModel``
-        # at a non-reasoning model (e.g. gemini-flash-latest) for richer
-        # long-form scenes without affecting chat-mode behavior.
-        verse_model = self.registryValue("verseModel", preflight.channel) or None
-        self._ask_impl(
-            irc,
-            msg,
-            text,
-            preflight,
-            entry_route=entry_route,
-            system_prompt_override=route.system_prompt,
-            extra_tools_override=route.tools,
-            profile_override=PROFILE_VERSE,
-            verse_route=route,
-            model_override=verse_model,
-        )
+        # Fire the typing indicator the moment we know preflight passed —
+        # before any DB work (verse route lookup, history fetch, memory
+        # fetch, executor permit acquisition). Otherwise the user waits
+        # several seconds before "is composing" appears.
+        stop_typing = self.llm_service._begin_typing(irc, msg)
+        try:
+            route = self._verse_route_for(
+                preflight.channel, preflight.nick, preflight.account, text
+            )
+            if route is None:
+                self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
+                return
+            # Per-channel verse model override. Empty string falls back to
+            # assistantModel inside ``_ask_impl``. Useful when the channel's
+            # assistantModel is a reasoning model that hard-caps verse output
+            # at ~120 visible tokens regardless of prompt — point ``verseModel``
+            # at a non-reasoning model (e.g. gemini-flash-latest) for richer
+            # long-form scenes without affecting chat-mode behavior.
+            verse_model = self.registryValue("verseModel", preflight.channel) or None
+            self._ask_impl(
+                irc,
+                msg,
+                text,
+                preflight,
+                entry_route=entry_route,
+                system_prompt_override=route.system_prompt,
+                extra_tools_override=route.tools,
+                profile_override=PROFILE_VERSE,
+                verse_route=route,
+                model_override=verse_model,
+            )
+        finally:
+            stop_typing()
 
     def _ask_impl(
         self,
@@ -3397,52 +3407,53 @@ class LLM(callbacks.Plugin):
                 else:
                     combined_handlers = bridge_handlers
 
-                stop_typing = self.llm_service._begin_typing(irc, msg)
-                try:
-                    result = self.llm_service.assistant_request(
-                        request_text,
-                        request_context=request_context,
-                        db=self.db,
-                        context=self.context,
-                        bot_nick=irc.nick,
-                        images=images,
-                        history=history,
-                        channel_history=channel_history,
-                        irc=irc,
-                        msg=msg,
-                        memories=memories,
-                        system_prompt=effective_prompt,
-                        model_override=model_override,
-                        search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                        fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                        code_fn=lambda p: self._code_for_assistant(p, channel),
-                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                        cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                        extra_tools=extra_tools,
-                        extra_handlers=combined_handlers,
-                        manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
-                    )
+                # Typing keepalive is started in
+                # ``_dispatch_with_verse_routing`` so it covers the verse
+                # route lookup and history/memory fetches that run before
+                # this point. ``manage_typing=False`` keeps the
+                # service-level layer from clobbering it.
+                result = self.llm_service.assistant_request(
+                    request_text,
+                    request_context=request_context,
+                    db=self.db,
+                    context=self.context,
+                    bot_nick=irc.nick,
+                    images=images,
+                    history=history,
+                    channel_history=channel_history,
+                    irc=irc,
+                    msg=msg,
+                    memories=memories,
+                    system_prompt=effective_prompt,
+                    model_override=model_override,
+                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                    code_fn=lambda p: self._code_for_assistant(p, channel),
+                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                    extra_tools=extra_tools,
+                    extra_handlers=combined_handlers,
+                    manage_typing=False,
+                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                )
 
-                    response = result.content
+                response = result.content
 
-                    # Optional in-channel debug footer listing bridge tool calls.
-                    if bridge_debug and bridge_trace:
-                        footer = self._format_bridge_debug_footer(bridge_trace)
-                        if footer:
-                            response = f"{response}\n{footer}" if response else footer
+                # Optional in-channel debug footer listing bridge tool calls.
+                if bridge_debug and bridge_trace:
+                    footer = self._format_bridge_debug_footer(bridge_trace)
+                    if footer:
+                        response = f"{response}\n{footer}" if response else footer
 
-                    response, should_log = self._dispatch_assistant_reply(
-                        irc,
-                        msg,
-                        result,
-                        nick=nick,
-                        channel=channel,
-                        response=response,
-                        suppress_reminder_mutations=True,
-                    )
-                finally:
-                    stop_typing()
+                response, should_log = self._dispatch_assistant_reply(
+                    irc,
+                    msg,
+                    result,
+                    nick=nick,
+                    channel=channel,
+                    response=response,
+                    suppress_reminder_mutations=True,
+                )
 
             if should_log:
                 self._store_context_and_log_usage(
@@ -3481,34 +3492,37 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
-        request_context = self._build_request_context(
-            irc,
-            msg,
-            pf,
-            entry_route=PROFILE_CODE,
-            profile=PROFILE_CODE,
-        )
-
-        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
-        with self._trace_request("code", nick, channel):
-            history, channel_history = self._gather_history(nick, channel)
-
-            memories = self._get_user_memories(nick)
-            user_instruction = self.db.get_instruction(nick)
-            # Layer user instruction onto CODE_SYSTEM_PROMPT (the facade
-            # prompt that tells the planner to call generate_code) — not
-            # the registry codeSystemPrompt, which is the inner-call
-            # prompt used by _code_for_assistant.
-            from .assistant import CODE_SYSTEM_PROMPT
-
-            effective_prompt = (
-                f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
+        # Typing fires before any DB work (history, memory, executor
+        # permit) so the user sees "is composing" within ~50ms instead
+        # of after several seconds of synchronous setup.
+        stop_typing = self.llm_service._begin_typing(irc, msg)
+        try:
+            request_context = self._build_request_context(
+                irc,
+                msg,
+                pf,
+                entry_route=PROFILE_CODE,
+                profile=PROFILE_CODE,
             )
 
-            with self._allow_concurrent(), self._llm_executor.permit():
-                stop_typing = self.llm_service._begin_typing(irc, msg)
-                try:
+            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
+            with self._trace_request("code", nick, channel):
+                history, channel_history = self._gather_history(nick, channel)
+
+                memories = self._get_user_memories(nick)
+                user_instruction = self.db.get_instruction(nick)
+                # Layer user instruction onto CODE_SYSTEM_PROMPT (the facade
+                # prompt that tells the planner to call generate_code) — not
+                # the registry codeSystemPrompt, which is the inner-call
+                # prompt used by _code_for_assistant.
+                from .assistant import CODE_SYSTEM_PROMPT
+
+                effective_prompt = (
+                    f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
+                )
+
+                with self._allow_concurrent(), self._llm_executor.permit():
                     result = self.llm_service.assistant_request(
                         text,
                         request_context=request_context,
@@ -3538,13 +3552,13 @@ class LLM(callbacks.Plugin):
                         channel=channel,
                         response=result.content,
                     )
-                finally:
-                    stop_typing()
 
-            if should_log:
-                self._store_context_and_log_usage(
-                    nick, channel, "code", text, response, result, irc, msg
-                )
+                if should_log:
+                    self._store_context_and_log_usage(
+                        nick, channel, "code", text, response, result, irc, msg
+                    )
+        finally:
+            stop_typing()
 
     code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
@@ -3578,26 +3592,29 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
-        request_context = self._build_request_context(
-            irc,
-            msg,
-            pf,
-            entry_route=PROFILE_DRAW,
-            profile=PROFILE_DRAW,
-        )
-
-        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
-        with self._trace_request("draw", nick, channel):
-            history, channel_history = self._gather_history(
-                nick,
-                channel,
-                max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
+        # Typing fires immediately after preflight so users see "is
+        # composing" before history fetch / executor permit / image
+        # generation latency stack up.
+        stop_typing = self.llm_service._begin_typing(irc, msg)
+        try:
+            request_context = self._build_request_context(
+                irc,
+                msg,
+                pf,
+                entry_route=PROFILE_DRAW,
+                profile=PROFILE_DRAW,
             )
 
-            with self._allow_concurrent(), self._llm_executor.permit():
-                stop_typing = self.llm_service._begin_typing(irc, msg)
-                try:
+            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
+            with self._trace_request("draw", nick, channel):
+                history, channel_history = self._gather_history(
+                    nick,
+                    channel,
+                    max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
+                )
+
+                with self._allow_concurrent(), self._llm_executor.permit():
                     result = self.llm_service.assistant_request(
                         text,
                         request_context=request_context,
@@ -3622,13 +3639,13 @@ class LLM(callbacks.Plugin):
                         channel=channel,
                         response=result.content,
                     )
-                finally:
-                    stop_typing()
 
-            if should_log:
-                self._store_context_and_log_usage(
-                    nick, channel, "draw", text, response, result, irc, msg
-                )
+                if should_log:
+                    self._store_context_and_log_usage(
+                        nick, channel, "draw", text, response, result, irc, msg
+                    )
+        finally:
+            stop_typing()
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
