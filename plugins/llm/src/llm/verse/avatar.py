@@ -421,6 +421,22 @@ def build_verse_system_prompt(
     else:
         other_bullets = "- (no other avatars present)"
 
+    tools_block = (
+        "Tools:\n"
+        "- verse_act: when YOU (your own avatar) speak, move, or act."
+        " The four legacy tools (verse_act / verse_move / verse_look"
+        " / verse_recall) are for first-person actions.\n"
+        "- verse_record: whenever the user's message narrates an"
+        " in-world event involving one or more named characters that"
+        " AREN'T just your own avatar acting (e.g. \"stinky dan threw"
+        ' a guff grenade at Andrew" — call verse_record with'
+        ' summary set to the prose, actors=["stinky dan","Andrew"].'
+        " Items / weapons / places stay in the summary as prose, never"
+        " as actors). Always call verse_record for such events"
+        " BEFORE composing your in-character reply, so the canon is"
+        " logged. Unknown character names are auto-created as NPCs."
+    )
+
     parts = [
         identity_line,
         persona_line,
@@ -429,6 +445,7 @@ def build_verse_system_prompt(
         event_bullets,
         others_header,
         other_bullets,
+        tools_block,
     ]
     return "\n".join(parts)
 

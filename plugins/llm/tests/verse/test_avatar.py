@@ -408,6 +408,19 @@ class TestSystemPrompt:
         with pytest.raises(ValueError, match="avatar not found"):
             build_verse_system_prompt(store, 99999, "something")
 
+    def test_tools_section_names_verse_record(self, store: VerseStore) -> None:
+        """Per design v2.4 — the system prompt must explicitly tell the
+        model to call verse_record when the user narrates in-world
+        events involving named characters. Without this, the persona
+        framing dominates and the model emits narration without
+        recording (observed in first-deploy smoke test)."""
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "Tools:" in prompt
+        assert "verse_record" in prompt
+        # Must contrast with verse_act so the model picks the right one.
+        assert "verse_act" in prompt
+
 
 # ---------------------------------------------------------------------------
 # TestOOC
