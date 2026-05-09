@@ -44,7 +44,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: 1_000_000.0,
         )
-        assert out == "skipped_disabled"
+        assert out.state == "skipped_disabled"
+        assert out.total_events == 0
+        assert out.kept_in_digest == 0
 
     def test_skips_when_below_min_keep(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import compact_verse
@@ -63,7 +65,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: 100_000_000.0,
         )
-        assert out == "skipped_below_floor"
+        assert out.state == "skipped_below_floor"
+        assert out.total_events == 1
+        assert out.kept_in_digest == 0
 
     def test_skips_when_no_old_events(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import compact_verse
@@ -89,7 +93,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: 1_000_000.0,
         )
-        assert out == "skipped_no_events"
+        assert out.state == "skipped_no_events"
+        assert out.total_events == 25
+        assert out.kept_in_digest == 0
 
     def test_compacts_old_events_into_single_digest(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import compact_verse
@@ -127,7 +133,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: usage_calls.append(kw),
             now=lambda: now,
         )
-        assert out == "compacted"
+        assert out.state == "compacted"
+        assert out.total_events == 50
+        assert out.kept_in_digest == 0  # entity_ids=[] in setup
         with store.read_connection() as conn:
             rows = conn.execute("SELECT summary, source FROM events ORDER BY ts ASC").fetchall()
         assert len(rows) == 26
@@ -173,7 +181,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: t0,
         )
-        assert out1 == "compacted"
+        assert out1.state == "compacted"
+        assert out1.total_events == 25
+        assert out1.kept_in_digest == 0  # entity_ids=[] in setup
 
         # One day later, no new events arrive. The digest stamped at
         # t0 is now 1 day old, well within the 30-day retention. With
@@ -189,7 +199,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: t0 + seconds_per_day,
         )
-        assert out2 == "skipped_no_events"
+        assert out2.state == "skipped_no_events"
+        assert out2.total_events == 1  # only the digest survived
+        assert out2.kept_in_digest == 0
 
     def test_long_backlog_only_deletes_what_was_summarised(self, verse_db_dir: Path) -> None:
         """If there are 500 old events and the per-pass cap is 200,
@@ -222,7 +234,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: now,
         )
-        assert out == "compacted"
+        assert out.state == "compacted"
+        assert out.total_events == 500
+        assert out.kept_in_digest == 0  # entity_ids=[] in setup
         assert _MAX_EVENTS_PER_PASS == 200
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -275,7 +289,9 @@ class TestCompactVerse:
             log_usage=lambda **kw: None,
             now=lambda: now,
         )
-        assert out == "compacted"
+        assert out.state == "compacted"
+        assert out.total_events == n_events
+        assert out.kept_in_digest == 0  # entity_ids=[] in setup
 
         # The bullet block sent to the LLM should be capped.
         bullets = client.calls[0]["messages"][1]["content"]
