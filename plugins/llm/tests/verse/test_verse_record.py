@@ -201,3 +201,16 @@ class TestRecordUserEvent:
         assert npc.id not in latest.entity_ids
         assert store.get_attribute(avatar_v2, "last_seen_ts") is None
         assert store.get_attribute(npc.id, "last_seen_ts") == "100.0"
+
+    def test_retired_actor_id_raises(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, "alice")
+        store.unlink_avatar(alice_id)
+        with pytest.raises(ValueError, match="not an active entity"):
+            store.record_user_event(
+                actor_id=alice_id,
+                summary="alice did something",
+                actor_names=["bob"],
+                now=lambda: 100.0,
+            )
+        assert store.recent_events(limit=10) == []
+        assert store.find_active_entity_by_name("bob") is None
