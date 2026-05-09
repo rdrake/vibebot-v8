@@ -148,17 +148,27 @@ class VerseStore:
     # Entity CRUD
     # ------------------------------------------------------------------
 
+    def _add_entity_inline(
+        self,
+        conn: sqlite3.Connection,
+        kind: str,
+        name: str,
+        summary: str = "",
+    ) -> int:
+        """Insert a new entity on the caller's open ``conn`` and return its id."""
+        now = time.time()
+        cur = conn.execute(
+            "INSERT INTO entities (kind, name, summary, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (kind, name, summary, now, now),
+        )
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
     def add_entity(self, kind: str, name: str, summary: str = "") -> int:
         """Insert a new entity and return its id."""
-        now = time.time()
         with self.write_transaction() as conn:
-            cur = conn.execute(
-                "INSERT INTO entities (kind, name, summary, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (kind, name, summary, now, now),
-            )
-            assert cur.lastrowid is not None
-            return cur.lastrowid
+            return self._add_entity_inline(conn, kind, name, summary)
 
     def get_entity(self, entity_id: int) -> Entity | None:
         """Return the Entity with the given id, or None."""

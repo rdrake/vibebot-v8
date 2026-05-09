@@ -1239,6 +1239,26 @@ class TestAddProposalAcceptsId:
             )
 
 
+class TestInlineHelpers:
+    def test_add_entity_inline_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
+        """Caller opens its own write_transaction, calls _add_entity_inline,
+        and a sibling INSERT in the same tx — all without lock reentry."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#inline")
+        with store.write_transaction() as conn:
+            eid = store._add_entity_inline(  # type: ignore[attr-defined]
+                conn, "npc", "ghost", "a wisp of vapour"
+            )
+            # Sibling INSERT in the same tx proves we hold the same conn.
+            conn.execute(
+                "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'inline_marker', '1')",
+                (eid,),
+            )
+        assert store.find_entity_by_name("ghost", kind="npc") is not None
+        assert store.get_attribute(eid, "inline_marker") == "1"
+
+
 class TestApplyProposalAndMarkEventSource:
     def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
