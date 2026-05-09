@@ -2185,10 +2185,13 @@ class TestBuildContextMessage:
         assert "Context:" in result["content"]
         assert "Channel: #test" in result["content"]
         assert "Topic: Test topic" in result["content"]
-        assert "Speaking with: user" in result["content"]
+        # Speaker info is intentionally NOT in the context message —
+        # it lives in _build_speaker_message so the cacheable prefix
+        # stays byte-stable across users.
+        assert "Speaking with" not in result["content"]
 
     def test_build_context_message_pm(self) -> None:
-        """GIVEN PM WHEN building context THEN no channel/topic."""
+        """GIVEN PM WHEN building context THEN no channel/topic/speaker."""
         mock_irc = self.mocker.Mock()
         mock_irc.state.channels = {}
 
@@ -2201,7 +2204,7 @@ class TestBuildContextMessage:
         assert result is not None
         assert "Channel:" not in result["content"]
         assert "Topic:" not in result["content"]
-        assert "Speaking with: user" in result["content"]
+        assert "Speaking with" not in result["content"]
 
     def test_build_context_message_includes_date(self) -> None:
         """GIVEN any message WHEN building context THEN includes date."""
@@ -2277,7 +2280,58 @@ class TestBuildContextMessage:
         assert "Date:" in result["content"]
         assert "Channel: #test" in result["content"]
         assert "Topic: Welcome!" in result["content"]
+        # Speaker info is built separately by _build_speaker_message.
+        assert "Speaking with" not in result["content"]
+
+
+class TestBuildSpeakerMessage:
+    """Tests for _build_speaker_message (per-user payload)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def test_returns_none_without_irc_or_msg(self) -> None:
+        assert self.service._build_speaker_message(None, None) is None
+
+    def test_returns_none_without_prefix(self) -> None:
+        mock_irc = self.mocker.Mock()
+        mock_msg = self.mocker.Mock()
+        mock_msg.prefix = ""
+        assert self.service._build_speaker_message(mock_irc, mock_msg) is None
+
+    def test_channel_includes_speaker_and_role(self) -> None:
+        """Channel message → Speaking-with line + channel role when present."""
+        mock_irc = self.mocker.Mock()
+        ch_state = self.mocker.Mock(topic="t", ops={"user"}, halfops=set(), voices=set())
+        mock_irc.state.channels = {"#test": ch_state}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("#test",)
+        mock_msg.prefix = "user!user@host"
+
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
+
+        assert result is not None
+        assert result["role"] == "user"
+        assert result["content"].startswith("Speaker:")
         assert "Speaking with: user" in result["content"]
+        assert "Channel role: op" in result["content"]
+
+    def test_pm_excludes_channel_role(self) -> None:
+        mock_irc = self.mocker.Mock()
+        mock_irc.state.channels = {}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("botname",)
+        mock_msg.prefix = "user!user@host"
+
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
+
+        assert result is not None
+        assert "Speaking with: user" in result["content"]
+        assert "Channel role" not in result["content"]
 
 
 class TestRoleDetection:
@@ -2382,8 +2436,8 @@ class TestRoleDetection:
         assert result is None
 
 
-class TestBuildContextMessageWithRoles:
-    """Tests for _build_context_message() including bot and channel roles."""
+class TestBuildSpeakerMessageWithRoles:
+    """Tests for _build_speaker_message() including bot and channel roles."""
 
     @pytest.fixture(autouse=True)
     def setup(self, make_service, mocker: MockerFixture) -> None:
@@ -2391,8 +2445,8 @@ class TestBuildContextMessageWithRoles:
         self.mocker = mocker
         self.service, self.mock_plugin = make_service()
 
-    def test_context_includes_bot_role_owner(self) -> None:
-        """GIVEN owner user WHEN building context THEN includes bot role."""
+    def test_speaker_includes_bot_role_owner(self) -> None:
+        """GIVEN owner user WHEN building speaker msg THEN includes bot role."""
         mock_irc = self.mocker.Mock()
         ch_state = self.mocker.Mock(topic=None, ops=set(), halfops=set(), voices=set())
         mock_irc.state.channels = {"#test": ch_state}
@@ -2403,12 +2457,13 @@ class TestBuildContextMessageWithRoles:
 
         mock_check = self.mocker.patch("llm.service.ircdb.checkCapability")
         mock_check.side_effect = lambda h, c: c == "owner"
-        result = self.service._build_context_message(mock_irc, mock_msg)
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
 
+        assert result is not None
         assert "Bot role: owner" in result["content"]
 
-    def test_context_includes_channel_role_op(self) -> None:
-        """GIVEN channel op WHEN building context THEN includes channel role."""
+    def test_speaker_includes_channel_role_op(self) -> None:
+        """GIVEN channel op WHEN building speaker msg THEN includes channel role."""
         mock_irc = self.mocker.Mock()
         ch_state = self.mocker.Mock(topic=None, ops={"opnick"}, halfops=set(), voices=set())
         mock_irc.state.channels = {"#test": ch_state}
@@ -2419,12 +2474,13 @@ class TestBuildContextMessageWithRoles:
 
         mock_check = self.mocker.patch("llm.service.ircdb.checkCapability")
         mock_check.return_value = False
-        result = self.service._build_context_message(mock_irc, mock_msg)
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
 
+        assert result is not None
         assert "Channel role: op" in result["content"]
 
-    def test_context_includes_both_roles(self) -> None:
-        """GIVEN owner who is also op WHEN building context THEN includes both roles."""
+    def test_speaker_includes_both_roles(self) -> None:
+        """GIVEN owner who is also op WHEN building speaker msg THEN both roles."""
         mock_irc = self.mocker.Mock()
         ch_state = self.mocker.Mock(topic=None, ops={"ownernick"}, halfops=set(), voices=set())
         mock_irc.state.channels = {"#test": ch_state}
@@ -2435,8 +2491,9 @@ class TestBuildContextMessageWithRoles:
 
         mock_check = self.mocker.patch("llm.service.ircdb.checkCapability")
         mock_check.side_effect = lambda h, c: c == "owner"
-        result = self.service._build_context_message(mock_irc, mock_msg)
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
 
+        assert result is not None
         assert "Bot role: owner" in result["content"]
         assert "Channel role: op" in result["content"]
 
@@ -4911,6 +4968,34 @@ class TestBuildMessages:
         # Content portion (after "alice: ") should be exactly CHANNEL_MSG_TRUNCATE_LEN chars
         content_part = result[len("alice: ") :]
         assert len(content_part) == CHANNEL_MSG_TRUNCATE_LEN
+
+    def test_speaker_lives_outside_cacheable_prefix(self) -> None:
+        """messages[:3] (system + context + ack) must be byte-identical for two users in the same channel."""
+        ch_state = self.mocker.Mock(topic="t", ops=set(), halfops=set(), voices=set())
+        irc = self.mocker.Mock()
+        irc.state.channels = {"#test": ch_state}
+
+        def msg_for(nick: str) -> object:
+            m = self.mocker.Mock()
+            m.args = ("#test",)
+            m.prefix = f"{nick}!{nick}@host"
+            return m
+
+        msgs_a = self.service._build_messages(
+            "hi", None, system_prompt="sys", irc=irc, msg=msg_for("alice")
+        )
+        msgs_b = self.service._build_messages(
+            "hi", None, system_prompt="sys", irc=irc, msg=msg_for("bob")
+        )
+
+        # System + context + assistant ack must match byte-for-byte —
+        # this is what xAI's automatic prefix cache fingerprints.
+        assert msgs_a[:3] == msgs_b[:3]
+
+        # And both speakers' nicks must still reach the model, just
+        # later in the message list.
+        assert any("Speaking with: alice" in str(m.get("content", "")) for m in msgs_a)
+        assert any("Speaking with: bob" in str(m.get("content", "")) for m in msgs_b)
 
 
 class TestExtractMemories:

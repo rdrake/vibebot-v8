@@ -462,14 +462,20 @@ class TestResponseAppropriateness:
         # No XML framing since it's now a user message
         assert "<channel_topic" not in result["content"]
 
-    def test_speaking_with_included(self) -> None:
-        """GIVEN message from user WHEN context built THEN speaking with included."""
+    def test_speaking_with_in_speaker_message(self) -> None:
+        """GIVEN message from user WHEN speaker message built THEN nick included."""
         irc = self._make_mock_irc()
         msg = self._make_mock_msg(nick="someuser")
 
-        result = self.service._build_context_message(irc, msg)
+        # Speaker info lives in _build_speaker_message, kept out of the
+        # cacheable context prefix.
+        ctx = self.service._build_context_message(irc, msg)
+        assert ctx is not None
+        assert "Speaking with" not in ctx["content"]
 
-        assert "Speaking with: someuser" in result["content"]
+        speaker = self.service._build_speaker_message(irc, msg)
+        assert speaker is not None
+        assert "Speaking with: someuser" in speaker["content"]
 
     def test_date_included(self) -> None:
         """GIVEN any message WHEN context built THEN date included."""
