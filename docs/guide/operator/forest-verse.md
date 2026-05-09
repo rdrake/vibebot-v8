@@ -363,7 +363,7 @@ compaction outcome for #foo: skipped (only 7 events; floor is 20); aged 0 entiti
 |---|---|
 | `compacted` | Old events past `verseEventRetentionDays` were summarised into one digest event. |
 | `skipped_disabled` | `verseEventRetentionDays <= 0` — retention is off. |
-| `skipped_below_floor` | Total events count is below `verseEventCompactionFloor`; nothing yet to compact. |
+| `skipped_below_floor` | Total events count is below `verseCompactionMinKeepEvents`; nothing yet to compact. |
 | `skipped_no_events` | No events older than the retention cutoff. |
 
 Aging counts (`aged N entities (kept M)`) come from `AgingOutcome.retired`
