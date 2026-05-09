@@ -12,7 +12,6 @@ from llm.assistant import (
     CODE_SYSTEM_PROMPT,
     DRAW_SYSTEM_PROMPT,
     REMIND_ACTION_SYSTEM_PROMPT,
-    VERSE_SYSTEM_PROMPT,
     AssistantToolExecutor,
     ToolCallbackResult,
     ToolResult,
@@ -2312,45 +2311,6 @@ class TestProfileSystemPrompts:
     def test_draw_system_prompt_mentions_generate_image(self) -> None:
         """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
         assert "generate_image" in DRAW_SYSTEM_PROMPT
-
-    def test_verse_system_prompt_has_hard_rule_for_verse_record(self) -> None:
-        """VERSE_SYSTEM_PROMPT must promote verse_record to a HARD RULE so the
-        model logs canon before replying. Without this the framework's default
-        'use tools only when they materially help' lets narration slip through
-        without recording (observed in two consecutive deploy smoke tests)."""
-        assert "HARD RULE" in VERSE_SYSTEM_PROMPT
-        assert "verse_record" in VERSE_SYSTEM_PROMPT
-        # Both directions: user-described AND bot-narrated events.
-        assert "user describes" in VERSE_SYSTEM_PROMPT
-        assert "narrate" in VERSE_SYSTEM_PROMPT
-
-    def test_verse_system_prompt_distinguishes_verse_act_from_record(self) -> None:
-        """The avatar's own first-person actions go through verse_act, not
-        verse_record. Without this the model treats verse_record as a
-        catch-all and pollutes the actors list with the avatar's own name."""
-        assert "verse_act" in VERSE_SYSTEM_PROMPT
-        assert "verse_record" in VERSE_SYSTEM_PROMPT
-
-    def test_verse_system_prompt_has_bot_nick_placeholder(self) -> None:
-        """VERSE_SYSTEM_PROMPT must contain {bot_nick} for the
-        ``str.replace``-based formatting in service.py."""
-        assert "{bot_nick}" in VERSE_SYSTEM_PROMPT
-
-    def test_verse_system_prompt_does_not_inherit_chat_three_line_cap(self) -> None:
-        """Verse mode is long-form storytelling — the chat-mode 3-line cap
-        from _IRC_OUTPUT_FORMAT made the bot dismiss substantive user prompts
-        with two-line replies. The verse output format must NOT carry that
-        cap forward; long replies auto-paginate to pastebin via
-        _send_long_reply, so length isn't a flood concern."""
-        assert "Length cap: 3 lines" not in VERSE_SYSTEM_PROMPT
-        assert "One line is ideal" not in VERSE_SYSTEM_PROMPT
-
-    def test_verse_system_prompt_encourages_engagement_with_user_offers(self) -> None:
-        """Verse mode should reward user-offered scene details by expanding
-        on them, not deflecting. Without explicit guidance the model defaults
-        to terse replies even when the user is clearly inviting a long scene
-        ('tell me about X', 'where is Y going next', 'what's in the Z')."""
-        assert "Build on what the user offers" in VERSE_SYSTEM_PROMPT
 
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.

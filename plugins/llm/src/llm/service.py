@@ -36,7 +36,6 @@ from .assistant import (
     PROFILE_CODE,
     PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
-    PROFILE_VERSE,
 )
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
@@ -3081,7 +3080,6 @@ Examples (echo → action_prompt: ""):
             CODE_SYSTEM_PROMPT,
             DRAW_SYSTEM_PROMPT,
             REMIND_ACTION_SYSTEM_PROMPT,
-            VERSE_SYSTEM_PROMPT,
             AssistantToolExecutor,
             get_tools_for_profile,
         )
@@ -3109,12 +3107,17 @@ Examples (echo → action_prompt: ""):
             # is treated as an operator/user personality overlay that appends —
             # never replaces — so a per-channel ``assistantSystemPrompt`` can't
             # strip the format/length cap or the "don't fake tool success" rule.
+            # PROFILE_VERSE intentionally maps to CHAT_SYSTEM_PROMPT (default).
+            # The verse-mode personality overlay (avatar/scene/tools_block from
+            # build_verse_system_prompt) is appended on top in the system_prompt
+            # branch below. Sharing the chat framework keeps the cacheable
+            # prefix byte-identical between chat and verse turns, which would
+            # otherwise diverge and miss the prefix cache on every verse turn.
             profile_frameworks = {
                 PROFILE_CHAT: CHAT_SYSTEM_PROMPT,
                 PROFILE_CODE: CODE_SYSTEM_PROMPT,
                 PROFILE_DRAW: DRAW_SYSTEM_PROMPT,
                 PROFILE_REMIND_ACTION: REMIND_ACTION_SYSTEM_PROMPT,
-                PROFILE_VERSE: VERSE_SYSTEM_PROMPT,
             }
             framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
                 bot_nick=bot_nick
