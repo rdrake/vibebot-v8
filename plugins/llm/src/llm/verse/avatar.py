@@ -483,8 +483,21 @@ def make_verse_extra_handlers(
 
     def _handler(name: str) -> Callable[[dict[str, Any]], _VerseToolResult]:
         def _call(args: dict[str, Any]) -> _VerseToolResult:
-            dispatch_verse_tool_call(store, avatar_id, name, args, logger=log)
-            return _VerseToolResult(content=json.dumps({"status": "ok", "tool": name}))
+            result = dispatch_verse_tool_call(store, avatar_id, name, args, logger=log)
+            if result.ok:
+                payload: dict[str, Any] = {"status": "ok", "tool": name}
+                if result.payload:
+                    payload.update(result.payload)
+                return _VerseToolResult(content=json.dumps(payload))
+            return _VerseToolResult(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": result.error or "unknown error",
+                        "tool": name,
+                    }
+                )
+            )
 
         _call.__name__ = f"_verse_handler_{name}"
         return _call

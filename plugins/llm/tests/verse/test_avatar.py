@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -671,3 +672,43 @@ class TestDispatchContract:
         assert isinstance(result, VerseDispatchResult)
         assert result.ok is True
         assert result.payload == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# TestHandlerConsumesResult (Task 0a.2 — wrapper surfaces VerseDispatchResult)
+# ---------------------------------------------------------------------------
+
+
+class TestHandlerConsumesResult:
+    def test_handler_emits_payload_on_ok(self, store: VerseStore) -> None:
+        """ok=True with custom payload — handler serialises payload as
+        JSON, includes 'tool' key for backwards compat."""
+        from llm.verse.avatar import (
+            make_verse_extra_handlers,
+        )
+
+        alice_id = _opt_in(store)
+        handlers = make_verse_extra_handlers(store, alice_id)
+        result = handlers["verse_act"]({"verb": "speak"})
+        payload = json.loads(result.content)
+        assert payload["status"] == "ok"
+        assert payload["tool"] == "verse_act"
+
+    def test_handler_emits_error_on_not_ok(
+        self, store: VerseStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ok=False with error string — handler emits {'status':'error',
+        'error': <error>} so the model sees a structured failure."""
+        from llm.verse import avatar as avatar_mod
+
+        def fake_dispatch(*a, **k):
+            return avatar_mod.VerseDispatchResult(ok=False, error="summary required")
+
+        monkeypatch.setattr(avatar_mod, "dispatch_verse_tool_call", fake_dispatch)
+        alice_id = _opt_in(store)
+        handlers = avatar_mod.make_verse_extra_handlers(store, alice_id)
+        result = handlers["verse_act"]({"verb": "speak"})
+        payload = json.loads(result.content)
+        assert payload["status"] == "error"
+        assert payload["error"] == "summary required"
+        assert payload["tool"] == "verse_act"
