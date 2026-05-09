@@ -421,6 +421,29 @@ class TestSystemPrompt:
         # Must contrast with verse_act so the model picks the right one.
         assert "verse_act" in prompt
 
+    def test_reply_style_block_unblocks_long_form_storytelling(self, store: VerseStore) -> None:
+        """Once the verse-routing fix and the tools_block were in place, the
+        model started calling verse_record correctly but began producing
+        one-line replies — focusing 'effort' on the canon log entry and
+        treating the IRC reply as terse acknowledgment, plus inheriting the
+        chat framework's 3-line cap from _IRC_OUTPUT_FORMAT.
+
+        The personality overlay must explicitly grant the framework's
+        'exceed the cap when the user asks for detail' exception for verse
+        scene prompts, AND tell the model the verse_record summary is
+        bookkeeping while the IRC reply is the user-facing scene. Without
+        both signals together the model defaults to terse narration even
+        when the user is clearly inviting a long scene."""
+        alice_id = _opt_in(store, nick="alice")
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        # Length-cap exception is granted for scene prompts.
+        assert "length cap exception" in prompt
+        assert "three to eight paragraphs" in prompt
+        # Reply, not summary, is the user-facing scene.
+        assert "your IRC reply is what the user reads" in prompt
+        # Adopt user offers as canon — don't deflect.
+        assert "Adopt user-offered details as canon" in prompt
+
 
 # ---------------------------------------------------------------------------
 # TestOOC
