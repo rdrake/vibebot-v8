@@ -1272,6 +1272,21 @@ class TestInlineHelpers:
             )
         assert store.get_attribute(eid, "k") == "v2"
 
+    def test_add_event_inline_writes_on_caller_conn(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#inline")
+        eid = store.add_entity("avatar", "alice", "")
+        with store.write_transaction() as conn:
+            ev_id = store._add_event_inline(  # type: ignore[attr-defined]
+                conn,
+                summary="alice waved",
+                entity_ids=[eid],
+                source="avatar",
+            )
+        events = store.recent_events(limit=10)
+        assert any(e.id == ev_id and e.summary == "alice waved" for e in events)
+
 
 class TestApplyProposalAndMarkEventSource:
     def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:

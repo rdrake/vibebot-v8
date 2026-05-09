@@ -313,6 +313,26 @@ class VerseStore:
     # Event CRUD
     # ------------------------------------------------------------------
 
+    def _add_event_inline(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        summary: str,
+        entity_ids: Sequence[int],
+        source: str,
+        ts: float | None = None,
+    ) -> int:
+        """Insert an event on the caller's open ``conn`` and return its id."""
+        if ts is None:
+            ts = time.time()
+        encoded = json.dumps(list(entity_ids))
+        cur = conn.execute(
+            "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+            (ts, summary, encoded, source),
+        )
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
     def add_event(
         self,
         summary: str,
@@ -320,15 +340,10 @@ class VerseStore:
         source: str,
     ) -> int:
         """Insert an event and return its id."""
-        ts = time.time()
-        encoded = json.dumps(list(entity_ids))
         with self.write_transaction() as conn:
-            cur = conn.execute(
-                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
-                (ts, summary, encoded, source),
+            return self._add_event_inline(
+                conn, summary=summary, entity_ids=entity_ids, source=source
             )
-            assert cur.lastrowid is not None
-            return cur.lastrowid
 
     # ------------------------------------------------------------------
     # Avatar link CRUD
