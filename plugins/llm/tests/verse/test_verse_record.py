@@ -62,3 +62,19 @@ class TestRecordUserEvent:
         assert store.get_attribute(andrew_id, "last_seen_ts") is None
         events = store.recent_events(limit=10)
         assert any(list(e.entity_ids) == [alice_id, andrew_id] for e in events)
+
+    def test_existing_npc_reused_and_heartbeat_updated(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        dan_id = store.add_entity("npc", "dan", "")
+        store.set_attribute(dan_id, "auto_created", "1")
+        store.set_attribute(dan_id, "last_seen_ts", "50.0")
+
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="dan returned",
+            actor_names=["dan"],
+            now=lambda: 200.0,
+        )
+        rows = [e for e in store.list_entities_by_kind("npc") if e.name == "dan"]
+        assert len(rows) == 1
+        assert store.get_attribute(dan_id, "last_seen_ts") == "200.0"
