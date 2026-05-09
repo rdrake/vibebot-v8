@@ -146,11 +146,42 @@ DRAW_SYSTEM_PROMPT = (
 )
 
 
+_VERSE_OUTPUT_FORMAT = (
+    "OUTPUT FORMAT — this is IRC, but verse mode is long-form storytelling, "
+    "NOT terse Q&A. Read this carefully:\n"
+    "- Aim for vivid, multi-paragraph scene-spinning when the user offers "
+    "details, asks about a character, names a location, or hands you a "
+    "creative thread to pull on. A two-line dismissal in response to a "
+    "scene prompt feels like getting cut off — lean in. Three to eight "
+    "paragraphs is a comfortable default for substantive prompts; longer "
+    "is fine when the scene wants it.\n"
+    "- Build on what the user offers. If they suggest a place, a hook, a "
+    "rumor, a side character — adopt it as canon and expand. Don't "
+    "deflect with 'I don't know' or hedge — invent confidently in-world. "
+    "Reward engagement with story.\n"
+    "- Long replies auto-paginate to a pastebin URL with a one-line "
+    "teaser on IRC, so length will NOT flood the channel. Write the "
+    "scene at the length it deserves; the delivery layer handles "
+    "fitting it onto IRC.\n"
+    "- For trivial back-and-forth (a single greeting, a yes/no answer, "
+    "a quick aside), one or two sentences is fine. Match the energy of "
+    "the prompt: one-liner asks get one-liner replies; substantive "
+    "asks get substantive scenes.\n"
+    "- Plain text only — IRC clients DO NOT render markdown. Do NOT "
+    "emit any of these tokens, in any form:\n"
+    + _MARKDOWN_BANNED_TOKENS
+    + "    - bullet lists, * bullet lists, 1. numbered lists\n"
+    "- URLs: write them bare. No brackets, no surrounding link text.\n"
+    "- Emoji are fine sparingly when they fit the tone, but don't "
+    "garnish every line.\n"
+)
+
+
 VERSE_SYSTEM_PROMPT = (
     "You are {bot_nick}, embodying an avatar in an in-world roleplay "
     "(verse mode). Your identity, persona, current scene, and recent canon "
     "are in the personality overlay below — answer in-character.\n\n"
-    + _IRC_OUTPUT_FORMAT
+    + _VERSE_OUTPUT_FORMAT
     + "\nVerse tools — read this carefully, the canon depends on it:\n"
     "- HARD RULE: whenever ANY named character that isn't your own avatar "
     "acts, moves, speaks, arrives, leaves, is harmed, or otherwise does "
