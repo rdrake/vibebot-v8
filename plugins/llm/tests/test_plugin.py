@@ -4428,6 +4428,26 @@ class TestAccountFromMsg:
 
         assert plugin._account_from_msg(mock_irc, mock_msg) == "cached_acct"
 
+    def test_server_prefix_returns_none_instead_of_assertion(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        # Server-originated PRIVMSG (no nick!user@host) used to crash
+        # nickFromHostmask's assert. Must return None cleanly.
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.server_tags = {}
+        mock_msg.prefix = "luna.AfterNET.Org"
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) is None
+        mock_irc.state.nickToAccount.assert_not_called()
+
+    def test_empty_prefix_returns_none(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.server_tags = {}
+        mock_msg.prefix = ""
+
+        assert plugin._account_from_msg(mock_irc, mock_msg) is None
+        mock_irc.state.nickToAccount.assert_not_called()
+
 
 class TestResolveTierUsesResolver:
     def test_registered_tier_via_account_tag(self, plugin_env):
@@ -6280,6 +6300,12 @@ class TestVersedumpCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
+        # Default: pastebin write fails → inline fallback path (preserves
+        # the JSON-content assertions in tests written before the
+        # publish-and-link change). Tests exercising the URL path
+        # override this on the same mock.
+        plugin.llm_service.save_markdown_to_http = mocker.MagicMock(return_value=None)
+
         msg.args = ("#afnet", "@versedump #afnet")
         msg.prefix = "alice!user@host"
         msg.nick = "alice"
@@ -6379,6 +6405,29 @@ class TestVersedumpCommand:
 
         msg.args = ("#afnet", "@versedump #afnet")
         plugin.versedump(irc, msg, ["#afnet"])
+
+    def test_dump_publishes_to_pastebin_when_available(self, dump_env, mocker) -> None:
+        """WHEN save_markdown_to_http returns URL THEN reply is just the URL.
+
+        Avoids spamming IRC with a fat JSON line when the bot's HTTP
+        pastebin is configured.
+        """
+        plugin, irc, msg, store = dump_env
+        published_url = "http://example.com/llm/answer_abc123.html"
+        plugin.llm_service.save_markdown_to_http.return_value = published_url
+
+        plugin.versedump(irc, msg, ["#afnet"])
+
+        irc.reply.assert_called_once()
+        reply_text = irc.reply.call_args[0][0]
+        assert published_url in reply_text
+        # Body must have been wrapped as a fenced JSON markdown block so
+        # the pastebin renders with syntax highlighting (and includes the
+        # channel name in a header).
+        plugin.llm_service.save_markdown_to_http.assert_called_once()
+        markdown_arg = plugin.llm_service.save_markdown_to_http.call_args[0][0]
+        assert "```json" in markdown_arg
+        assert "#afnet" in markdown_arg
 
 
 # ===========================================================================

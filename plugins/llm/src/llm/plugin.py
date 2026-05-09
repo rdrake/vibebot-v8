@@ -1839,6 +1839,11 @@ class LLM(callbacks.Plugin):
         tag_account = account_from_server_tags(msg)
         if tag_account:
             return tag_account
+        # Server-originated messages (e.g. some operator NOTICEs) carry a
+        # bare server prefix instead of nick!user@host. ``nickFromHostmask``
+        # asserts user-hostmask form, so guard before calling.
+        if not msg.prefix or not ircutils.isUserHostmask(msg.prefix):
+            return None
         nick = ircutils.nickFromHostmask(msg.prefix)
         try:
             return irc.state.nickToAccount(nick)
@@ -5292,7 +5297,20 @@ class LLM(callbacks.Plugin):
             "proposals": [],
         }
 
-        irc.reply(json.dumps(dump, separators=(",", ":")), prefixNick=False)
+        # The dump is a single fat JSON line — for an active verse it can
+        # easily exceed Limnoria's pagination. Publish to the bot's HTTP
+        # pastebin and reply with just the URL; fall back to inline only
+        # if the pastebin write fails (e.g. http server not configured).
+        body = json.dumps(dump, indent=2)
+        markdown_body = f"# versedump {channel}\n\n```json\n{body}\n```\n"
+        url = self.llm_service.save_markdown_to_http(markdown_body)
+        if url:
+            irc.reply(
+                f"versedump {channel}: {url}",
+                prefixNick=False,
+            )
+        else:
+            irc.reply(json.dumps(dump, separators=(",", ":")), prefixNick=False)
 
     versedump = wrap(versedump, [optional("text")])
 
