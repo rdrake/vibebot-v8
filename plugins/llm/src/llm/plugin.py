@@ -3325,18 +3325,32 @@ class LLM(callbacks.Plugin):
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
 
-            # Personality overlay. When system_prompt_override is provided
-            # (verse route), use it directly — the verse system prompt already
-            # encodes the full persona+scene context and must replace, not
-            # augment, the channel ``assistantSystemPrompt``.
-            # Default: channel ``assistantSystemPrompt``, optionally prefixed
-            # with the user's persistent @instruct. The structural framework
-            # (plain-text rules, tool-behavior rules) is layered in by
-            # ``assistant_completion``.
+            # Personality overlay assembly.
+            #
+            # Default (chat): channel ``assistantSystemPrompt``, optionally
+            # prefixed with the user's persistent @instruct. The structural
+            # framework (plain-text rules, tool-behavior rules) is layered in
+            # by ``assistant_completion``.
+            #
+            # Verse: the override is just avatar identity + scene + recent
+            # canon. Empirically dropping the channel's ``assistantSystemPrompt``
+            # ("tell the tallest tales", "go mental") here cratered output
+            # length on #afternet — grok happily produced 600+ tokens in chat
+            # under the same model with that overlay, but only ~150 tokens in
+            # verse without it. The energy/length pump comes from the
+            # personality overlay, not the framework. So we PREPEND the
+            # channel overlay (and @instruct) to the verse scene context;
+            # the framework's verse-mode rules still apply on top.
+            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
             if system_prompt_override is not None:
-                effective_prompt = system_prompt_override
+                parts: list[str] = []
+                if user_instruction:
+                    parts.append(f"User instruction: {user_instruction}")
+                if ask_prompt:
+                    parts.append(ask_prompt)
+                parts.append(system_prompt_override)
+                effective_prompt = "\n\n".join(parts)
             else:
-                ask_prompt = self.registryValue("assistantSystemPrompt", channel)
                 effective_prompt = (
                     f"User instruction: {user_instruction}\n\n{ask_prompt}"
                     if user_instruction

@@ -7051,11 +7051,15 @@ class TestAskWithVerseRoute:
 
         return plugin, irc, msg, store
 
-    def test_ask_uses_verse_prompt_not_sentinel(self, verse_ask_env) -> None:
-        """GIVEN verse route WHEN @ask THEN assistantSystemPrompt sentinel is NOT in system_prompt.
+    def test_ask_verse_prompt_includes_channel_overlay_and_scene(self, verse_ask_env) -> None:
+        """GIVEN verse route WHEN @ask THEN system_prompt has BOTH the channel
+        ``assistantSystemPrompt`` overlay AND the avatar scene context.
 
-        The verse system prompt (avatar persona + scene) must entirely replace the
-        channel assistantSystemPrompt — the sentinel must not appear in the call.
+        Earlier behavior dropped the channel overlay on verse turns. That cratered
+        output length on #afternet — the model under verse produced ~150-token
+        list-style replies, while the same model under chat produced 600+ tokens
+        with the channel overlay attached. The energy/length pump comes from the
+        channel overlay; verse mode must inherit it on top of the scene context.
         """
         plugin, irc, msg, _store = verse_ask_env
 
@@ -7063,8 +7067,12 @@ class TestAskWithVerseRoute:
 
         plugin.llm_service.assistant_request.assert_called_once()
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        system_prompt = kwargs.get("system_prompt", "")
-        assert self.SENTINEL not in (system_prompt or "")
+        system_prompt = kwargs.get("system_prompt", "") or ""
+        # Channel overlay (the sentinel) must appear — its energy is what
+        # drove long-form output in chat mode.
+        assert self.SENTINEL in system_prompt
+        # AND the verse scene context (avatar name) must still be present.
+        assert "alice" in system_prompt
 
     def test_ask_verse_prompt_contains_avatar_name(self, verse_ask_env) -> None:
         """GIVEN verse route WHEN @ask THEN system_prompt includes avatar name 'alice'."""
