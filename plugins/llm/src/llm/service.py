@@ -3735,7 +3735,9 @@ Examples (echo → action_prompt: ""):
 
     def save_markdown_to_http(self, content: str | None) -> str | None:
         """Save Markdown answer content to HTTP server as HTML and return URL."""
-        return self._save_markdown_to_http(content, title="Answer", filename_prefix="answer")
+        return self._save_markdown_to_http(
+            content, title="grok sucks donkey dong", filename_prefix="answer"
+        )
 
     def save_code_to_http(self, content: str | None) -> str | None:
         """Save content to HTTP server as HTML and return URL.
