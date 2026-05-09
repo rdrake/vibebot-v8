@@ -1986,6 +1986,16 @@ class TestLoomWiring:
         assert plugin._loom is None
         assert plugin._loom_network_cache is None
 
+    def test_loom_disabled_when_loom_channel_not_a_channel_name(
+        self, mocker: MockerFixture
+    ) -> None:
+        # Operators sometimes paste smart-quoted text from a doc instead
+        # of typing a literal channel name. Without validation the bot
+        # PRIVMSGs that string as a nick and the server returns 401.
+        plugin = self._build(mocker, {"loomNetwork": "afternet", "loomChannel": "“”"})
+        assert plugin._loom is None
+        assert plugin._loom_channel_cache is None
+
     def test_loom_wired_when_both_set(self, mocker: MockerFixture) -> None:
         plugin = self._build(
             mocker,

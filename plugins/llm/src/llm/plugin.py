@@ -4733,6 +4733,17 @@ class LLM(callbacks.Plugin):
         """
         network = self.registryValue("loomNetwork") or ""
         channel = self.registryValue("loomChannel") or ""
+        # `loomChannel` is `registry.String` so it accepts arbitrary text
+        # (e.g. smart-quoted "“”" pasted from a doc). Without a chantype
+        # prefix the bot would PRIVMSG that string as a *nick*, producing
+        # a 401 storm — see post_to_loom_channel. Reject anything that
+        # isn't a valid IRC channel name; treat as unset.
+        if channel and not ircutils.isChannel(channel):
+            self.log.warning(
+                "loomChannel %r is not a valid IRC channel name; loom disabled",
+                channel,
+            )
+            channel = ""
         if not network or not channel:
             if self._loom is not None:
                 with contextlib.suppress(KeyError):
