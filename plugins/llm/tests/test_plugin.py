@@ -6902,7 +6902,7 @@ class TestVerseRouteForC7c:
         assert route.avatar_id is not None
         assert isinstance(route.system_prompt, str)
         assert "alice" in route.system_prompt
-        assert len(route.tools) == 4
+        assert len(route.tools) == 5
         assert route.store is store
 
     def test_route_system_prompt_includes_identity(self, verse_env) -> None:
@@ -6924,14 +6924,20 @@ class TestVerseRouteForC7c:
         assert "Scene:" in route.system_prompt
 
     def test_route_tools_have_expected_names(self, verse_env) -> None:
-        """Returned tools must be the four verse tool specs."""
+        """Returned tools must be the five verse tool specs."""
         plugin, _irc, _msg, _store = verse_env
 
         route = plugin._verse_route_for("#afnet", "alice", None, "hello")
 
         assert route is not None
         tool_names = {t["function"]["name"] for t in route.tools}
-        assert tool_names == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+        assert tool_names == {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }
 
 
 class TestAskWithVerseRoute:
@@ -7022,7 +7028,7 @@ class TestAskWithVerseRoute:
         assert "alice" in (system_prompt or "")
 
     def test_ask_in_verse_appends_verse_tools(self, verse_ask_env) -> None:
-        """GIVEN verse route WHEN @ask THEN all 4 verse tool names appear in extra_tools."""
+        """GIVEN verse route WHEN @ask THEN all 5 verse tool names appear in extra_tools."""
         plugin, irc, msg, _store = verse_ask_env
 
         plugin.ask(irc, msg, ["hello"])
@@ -7030,7 +7036,13 @@ class TestAskWithVerseRoute:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         extra_tools = kwargs.get("extra_tools") or []
         tool_names = {t["function"]["name"] for t in extra_tools}
-        expected = {"verse_act", "verse_move", "verse_look", "verse_recall"}
+        expected = {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }
         assert expected.issubset(tool_names)
 
     def test_ask_in_verse_bypasses_token_cap(self, verse_ask_env, mocker: MockerFixture) -> None:
@@ -7432,6 +7444,47 @@ class TestRunCompactionPassCallsAging:
             and "kept 5" in m
         ]
         assert matched, f"no friendly outcome message in {rendered!r}"
+
+
+class TestMaxActorsRegistryPlumbing:
+    """Phase 6.6: verseAutoEntityMaxNamesPerCall flows through
+    _build_verse_handlers_for into make_verse_extra_handlers."""
+
+    def test_max_actors_flows_to_make_verse_extra_handlers(
+        self, plugin_env, tmp_path, mocker, monkeypatch
+    ) -> None:
+        from llm.verse import avatar as avatar_mod
+        from llm.verse.store import VerseStore
+
+        plugin, _irc, _msg = plugin_env
+
+        captured: list[int] = []
+        real_handlers = avatar_mod.make_verse_extra_handlers
+
+        def spy_handlers(store, avatar_id, logger=None, *, max_actors=8):
+            captured.append(max_actors)
+            return real_handlers(store, avatar_id, logger=logger, max_actors=max_actors)
+
+        monkeypatch.setattr("llm.plugin.make_verse_extra_handlers", spy_handlers)
+
+        # Real store with one active avatar so the helper has something
+        # to bind handlers to.
+        store = VerseStore(tmp_path, "#x")
+        store.opt_in_avatar("alice", account=None, instruct_text="alice instruct")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        real_registry_side_effect = plugin.registryValue.side_effect
+
+        def fake_registry(key, *args):
+            if key == "verseAutoEntityMaxNamesPerCall":
+                return 4
+            return real_registry_side_effect(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=fake_registry)
+
+        handlers = plugin._build_verse_handlers_for(channel="#x")
+        assert handlers is not None
+        assert 4 in captured, f"max_actors not plumbed; got {captured}"
 
 
 class TestVersecompactCommand:

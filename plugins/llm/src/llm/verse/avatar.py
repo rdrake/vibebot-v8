@@ -557,14 +557,21 @@ def make_verse_extra_handlers(
     store: VerseStore,
     avatar_id: int,
     logger: logging.Logger | None = None,
+    *,
+    max_actors: int = 8,
 ) -> dict[str, Callable[[dict[str, Any]], Any]]:
-    """Return an extra_handlers dict for the four verse tools.
+    """Return an extra_handlers dict for the five verse tools.
 
     Each handler calls ``dispatch_verse_tool_call`` (which swallows failures)
     then returns a JSON-encoded ToolResult-compatible object so the
     assistant_request loop can continue normally.  The return value uses
     ``_VerseToolResult`` which has a ``content`` attribute matching the
     ``ToolResult`` duck-type expected by the loop.
+
+    ``max_actors`` is the per-call cap on ``verse_record.actors`` after
+    filtering; it travels into the dispatch closure via ``_max_actors``
+    in the args dict (callers that pass ``_max_actors`` explicitly win,
+    so existing tests continue to work).
     """
     log = logger or _log
     _verse_names = {
@@ -577,6 +584,8 @@ def make_verse_extra_handlers(
 
     def _handler(name: str) -> Callable[[dict[str, Any]], _VerseToolResult]:
         def _call(args: dict[str, Any]) -> _VerseToolResult:
+            args = dict(args)
+            args.setdefault("_max_actors", max_actors)
             result = dispatch_verse_tool_call(store, avatar_id, name, args, logger=log)
             if result.ok:
                 payload: dict[str, Any] = {"status": "ok", "tool": name}

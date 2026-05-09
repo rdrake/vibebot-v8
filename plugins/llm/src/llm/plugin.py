@@ -2483,8 +2483,43 @@ class LLM(callbacks.Plugin):
             return None  # User opted into the channel but isn't in the verse → chat path.
         persona = self.db.get_avatar_persona(nick) or ""
         system_prompt = build_verse_system_prompt(store, avatar_id, persona)
-        tools = make_verse_tool_specs()
+        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
+        tools = make_verse_tool_specs(max_actors=max_actors)
         return VerseRoute(avatar_id, system_prompt, tools, store)
+
+    def _build_verse_handlers_for(self, channel: str) -> dict | None:
+        """Build the verse extra-handlers dict for ``channel``, plumbing
+        the per-channel ``verseAutoEntityMaxNamesPerCall`` into the
+        dispatch closure.
+
+        Looks up the channel's verse store + most-recent active avatar
+        and binds handlers to that pair. Returns None if there is no
+        verse store or no active avatar in the channel.
+
+        The dispatch call site (which already has a full ``VerseRoute``
+        from ``_verse_route_for``) prefers
+        ``_build_verse_handlers_for_route`` so its avatar binding stays
+        caller-specific; this helper is the seam that the registry-
+        plumbing test relies on.
+        """
+        store = self._get_or_create_verse_store(channel)
+        if store is None:
+            return None
+        avatars = store.list_entities_by_kind("avatar", status="active")
+        if not avatars:
+            return None
+        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
+        return make_verse_extra_handlers(store, avatars[0].id, max_actors=max_actors)
+
+    def _build_verse_handlers_for_route(self, channel: str, route: VerseRoute) -> dict:
+        """Build verse handlers for an existing ``VerseRoute``.
+
+        Reads ``verseAutoEntityMaxNamesPerCall`` (channel-scoped) and
+        threads it into ``make_verse_extra_handlers`` so the dispatch
+        closure carries the per-channel cap.
+        """
+        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
+        return make_verse_extra_handlers(route.store, route.avatar_id, max_actors=max_actors)
 
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
@@ -3312,9 +3347,7 @@ class LLM(callbacks.Plugin):
                 # assistant_request loop can dispatch verse tool calls
                 # in-flight rather than passing them to the generic executor.
                 if verse_route is not None:
-                    verse_handlers = make_verse_extra_handlers(
-                        verse_route.store, verse_route.avatar_id
-                    )
+                    verse_handlers = self._build_verse_handlers_for_route(channel, verse_route)
                     combined_handlers: dict | None = {
                         **(bridge_handlers or {}),
                         **verse_handlers,
