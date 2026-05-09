@@ -2395,6 +2395,15 @@ class TestProfileSystemPrompts:
         assert "Adopt user-offered details" in VERSE_SYSTEM_PROMPT
         # bot_nick placeholder for service.py's str.replace formatting.
         assert "{bot_nick}" in VERSE_SYSTEM_PROMPT
+        # Time-anchored prompts ("hour by hour", "walk me through") must be
+        # called out by name as scene invitations, not planning artifacts.
+        # Empirically the failure mode was "Hour 1: lads muster... Hour 2:
+        # bait Andrew with cheese..." — sentence per hour. Calling the
+        # phrasing out by name keeps the model from defaulting to that.
+        assert "hour by hour" in VERSE_SYSTEM_PROMPT
+        assert "SCENE INVITATIONS" in VERSE_SYSTEM_PROMPT
+        # The bullet-style anti-example is named explicitly.
+        assert "Hour 1:" in VERSE_SYSTEM_PROMPT
 
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
