@@ -172,3 +172,32 @@ class TestRecordUserEvent:
         latest = events[0]
         assert list(latest.entity_ids) == [alice_id, andrew_id]
         assert store.get_attribute(andrew_id, "auto_created") is None
+
+    def test_opt_out_then_record_then_reopt_in_three_row_state(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, "alice")
+        avatar_v1 = _opt_in(store, "andrew")
+        store.unlink_avatar(avatar_v1)
+
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="Andrew was seen",
+            actor_names=["Andrew"],
+            now=lambda: 100.0,
+        )
+        npc = store.find_active_entity_by_name("Andrew")
+        assert npc is not None and npc.kind == "npc"
+
+        avatar_v2 = _opt_in(store, "andrew")
+        assert avatar_v2 != avatar_v1
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="Andrew is back",
+            actor_names=["Andrew"],
+            now=lambda: 200.0,
+        )
+        events = store.recent_events(limit=2)
+        latest = events[0]
+        assert avatar_v2 in latest.entity_ids
+        assert npc.id not in latest.entity_ids
+        assert store.get_attribute(avatar_v2, "last_seen_ts") is None
+        assert store.get_attribute(npc.id, "last_seen_ts") == "100.0"
