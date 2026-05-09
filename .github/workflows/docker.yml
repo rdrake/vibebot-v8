@@ -55,3 +55,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+
+      # Auto-deploy: trigger the prod restart over SSH using a deploy key
+      # locked in authorized_keys to a single forced command
+      # (``/usr/bin/systemctl --user restart vibebot``). The key cannot open a
+      # shell, forward ports, or run anything else on the box. Restart pulls
+      # the freshly pushed ``:latest`` image. Skipped silently when secrets
+      # are not configured (e.g. on forks).
+      - name: Deploy to prod
+        if: >-
+          env.DEPLOY_HOST != '' &&
+          env.DEPLOY_SSH_KEY != '' &&
+          env.DEPLOY_HOST_FINGERPRINT != ''
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_FINGERPRINT: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_HOST_FINGERPRINT" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          # Forced command on the remote ignores anything we send; the
+          # placeholder is only here so OpenSSH considers the request a
+          # remote command rather than an interactive session.
+          ssh -i ~/.ssh/deploy_key \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o BatchMode=yes \
+              "$DEPLOY_HOST" \
+              "deploy"
