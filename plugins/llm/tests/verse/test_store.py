@@ -1287,6 +1287,21 @@ class TestInlineHelpers:
         events = store.recent_events(limit=10)
         assert any(e.id == ev_id and e.summary == "alice waved" for e in events)
 
+    def test_set_status_inline_updates_on_caller_conn(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#inline")
+        eid = store.add_entity("npc", "ghost", "")
+        with store.write_transaction() as conn:
+            store._set_status_inline(  # type: ignore[attr-defined]
+                conn, eid, "retired"
+            )
+        # status reads via raw SQL since find_entity_by_name's exact filtering
+        # is documented per design §2 to ship in Phase 1, not here.
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "retired"
+
 
 class TestApplyProposalAndMarkEventSource:
     def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:

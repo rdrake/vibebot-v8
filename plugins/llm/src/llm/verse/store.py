@@ -211,14 +211,23 @@ class VerseStore:
             row = conn.execute(sql, params).fetchone()
         return Entity(*row) if row else None
 
+    def _set_status_inline(
+        self,
+        conn: sqlite3.Connection,
+        entity_id: int,
+        status: str,
+    ) -> None:
+        """Update entity status + updated_at on the caller's open ``conn``."""
+        now = time.time()
+        conn.execute(
+            "UPDATE entities SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, entity_id),
+        )
+
     def set_status(self, entity_id: int, status: str) -> None:
         """Update entity status and updated_at. Silent no-op if entity_id not found."""
-        now = time.time()
         with self.write_transaction() as conn:
-            conn.execute(
-                "UPDATE entities SET status = ?, updated_at = ? WHERE id = ?",
-                (status, now, entity_id),
-            )
+            self._set_status_inline(conn, entity_id, status)
 
     def list_entities_by_kind(self, kind: str, status: str | None = "active") -> list[Entity]:
         """List entities of the given kind. Filter by status unless status is None."""
