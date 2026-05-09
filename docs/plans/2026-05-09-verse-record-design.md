@@ -24,10 +24,14 @@
 
 - **2026-05-09 v1** — initial draft after Codex review of the inline sketch in chat.
   Codex flagged one fatal (schema CHECK constraint on `events.source`) and seven significant issues (race on find-then-add, lookup precedence not implemented, avatar-first risk, `min_keep_references` × compaction interaction, loom doesn't bump `last_seen_ts`, `find_entity_by_name` doesn't filter retired, dangling refs after digest truncation). All addressed below; specifics in §6.
+- **2026-05-09 v2.1** — line-citation correctness pass while drafting the PR plan. Two factual errors in v2 that don't affect architecture but would mislead the implementer:
+  1. **Bogus precedent.** v2 cited `_apply_op_inline` in `verse/loom.py` as the working precedent for the inline-helper extraction (§3 FATAL fix; §11 Step 0b). That symbol does not exist — `grep -n '_inline' plugins/llm/src/llm/verse/loom.py` returns nothing. Replaced with the actual inline-pattern reference (`opt_in_avatar` in `store.py:465-560`, which already does multi-step work directly on a single `write_transaction() as conn` block); no change to the extraction strategy itself.
+  2. **Test-migration count was 4, actual is 8.** v2 said Step 5b migrates "the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192`". `grep -n 'assert out' plugins/llm/tests/verse/test_compaction.py` shows eight: 47, 66, 92, 130, 176, 192, 225, 278. v2 caught every `skipped_*` site but missed every `"compacted"` site — those still equality-check the string and will break under the NamedTuple migration. Updated §4.3, §7 #15, §10 to enumerate all eight. The +20 line estimate in §10 is doubled to +40.
+
 - **2026-05-09 v2** — second adversarial pass (Codex) + senior code-review pass (general-purpose). Both surfaced the same two FATAL claims-vs-code mismatches; eight more SIG gaps:
   1. **FATAL — `dispatch_verse_tool_call` returns `None`**, not a `ToolResult`. The wrapper `make_verse_extra_handlers` (`avatar.py:438-462`) always returns `{"status":"ok"}`. Validation errors and `event_id` payloads from §3 are *not observable by the model* under the current contract. Resolved by adding **Step 0a** to §11: retrofit `dispatch_verse_tool_call` to return a structured result and update `make_verse_extra_handlers` to propagate it. Touches the four existing tool branches.
   2. **FATAL — `write_transaction` is non-reentrant** (uses a `threading.Lock`, see `opt_in_avatar`'s warning at `store.py:471-475`). The §3 pseudocode that calls public `add_entity` / `set_attribute` / `add_event` from inside `record_user_event`'s `write_transaction` will *deadlock*. The `_lookup_in_tx` / `_add_entity_in_tx` / `_set_attr_in_tx` / `_add_event_in_tx` helpers the v1 doc cited *do not exist*. Resolved by adding **Step 0b** to §11: refactor existing public mutators to expose `_inline(conn, …)` helpers (modelled on `_apply_op_inline` in `loom.py`); public methods become thin wrappers. No behaviour change, all existing tests stay green; precondition for §3.
-  3. **SIG — `compact_verse` returns a string**, so §8's UX text `compaction outcome for #foo: skipped (only 7 events; floor is 20); aged 2 entities (kept 5)` is unproducible without a contract change. Resolved: §4 now specifies `compact_verse` returns a `CompactionOutcome` NamedTuple `(state: str, total_events: int, kept_in_digest: int)`; the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` are migrated as part of Step 5b.
+  3. **SIG — `compact_verse` returns a string**, so §8's UX text `compaction outcome for #foo: skipped (only 7 events; floor is 20); aged 2 entities (kept 5)` is unproducible without a contract change. Resolved: §4 now specifies `compact_verse` returns a `CompactionOutcome` NamedTuple `(state: str, total_events: int, kept_in_digest: int)`; the eight assertion-on-string tests in `tests/verse/test_compaction.py` (lines 47, 66, 92, 130, 176, 192, 225, 278 — every `assert out == "..."` site, both `skipped_*` and `"compacted"`) are migrated as part of Step 5b.
   4. **SIG — Test #5 (race) tests Python lock, not the actual race window.** Both threads serialise behind `_lock` before any SQLite contention. Resolved: §7 #5 now specifies the test mocks `time.sleep` between lookup and insert, modelled on `test_concurrent_opt_in_distinct_nicks_one_place` (`test_store.py:611-629`) and the crosspoll barrier pattern (`test_crosspoll_store.py:84-108`). Also reframes the concurrency *claim*: §3 now scopes safety to "one cached `VerseStore` instance per channel within one process" (the loom and `verse_record` share that cached instance via `_get_or_create_verse_store`, `plugin.py:4952-4964`).
   5. **SIG — Test #6 doesn't pin the heartbeat call site.** Resolved: §4 now specifies the bump is added inside `_replace_events_with_source` (`store.py:391-434`) — not in `compaction.py` — so it executes on the same `conn` that wrote the digest, atomically. Test #6 asserts `get_attribute(entity_id, "last_seen_ts")` equals the digest's `now()`.
   6. **SIG — Test #7 hard-codes 40 entities** while `_MAX_DIGEST_ENTITY_IDS` is a private 32. Bumping the constant silently inverts the test. Resolved: §7 #7 imports `_MAX_DIGEST_ENTITY_IDS` from `verse.compaction` and uses `_MAX_DIGEST_ENTITY_IDS + 8`.
@@ -213,7 +217,7 @@ def record_user_event(self, *, actor_id, summary, actor_names, now):
         )
 ```
 
-**FATAL fix: `_*_inline(conn, …)` helpers are NEW.** Codex v2 caught that `write_transaction` is non-reentrant (uses `threading.Lock`, see `opt_in_avatar`'s warning at `store.py:471-475`). Calling public `add_entity` / `set_attribute` / `add_event` from inside `record_user_event`'s transaction would *deadlock*. **Step 0b** in §11 refactors those public mutators to expose `_inline` private helpers that take an open `conn` and skip the lock. The public methods become thin wrappers that open their own transaction and delegate. `_apply_op_inline` in `loom.py` is the working precedent. No behaviour change to public API; all existing tests stay green.
+**FATAL fix: `_*_inline(conn, …)` helpers are NEW.** Codex v2 caught that `write_transaction` is non-reentrant (uses `threading.Lock`, see `opt_in_avatar`'s warning at `store.py:471-475`). Calling public `add_entity` / `set_attribute` / `add_event` from inside `record_user_event`'s transaction would *deadlock*. **Step 0b** in §11 refactors those public mutators to expose `_inline` private helpers that take an open `conn` and skip the lock. The public methods become thin wrappers that open their own transaction and delegate. The closest existing precedent for "do many things on a single open `conn`" is `opt_in_avatar` (`store.py:465-560`), which inlines all of its DB work directly inside one `write_transaction() as conn` block. We're generalising that to be reusable across mutators rather than duplicated per call site. No behaviour change to public API; all existing tests stay green.
 
 **`source='avatar'` (not `'user_record'`).** Codex v1 FATAL: `events.source` has a CHECK constraint to `('avatar','loom','crosspoll')` (`verse/schema.sql:43`). Adding a fourth value requires a table-rebuild migration. **v1 reuses `'avatar'`** since the actor *is* the caller's avatar acting on the world. The provenance loss (can't audit user-record vs verse_act, loom can't tell the difference in transcript ingest) is documented as a known v1 limitation; a follow-up PR can extend the CHECK with a one-shot rebuild migration if the loom turns out to riff badly on user-recorded events.
 
@@ -263,7 +267,7 @@ class CompactionOutcome(NamedTuple):
     kept_in_digest: int  # len(union_ids[:32]) when state=='compacted', else 0
 ```
 
-This breaks the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` — migrated as part of Step 5b (split). The plugin-side caller already has `min_keep_events` (it's an input), so the friendlier outcome string can render without a second query.
+This breaks the eight assertion-on-string tests in `tests/verse/test_compaction.py` — every `assert out == "..."` site at lines 47, 66, 92, 130, 176, 192, 225, 278 (both the `skipped_*` and `"compacted"` cases) — migrated as part of Step 5b (split). The plugin-side caller already has `min_keep_events` (it's an input), so the friendlier outcome string can render without a second query.
 
 ## 5. Configuration
 
@@ -342,7 +346,7 @@ Each numbered item maps to a Codex finding from the v0 inline sketch.
 
 ### `tests/verse/test_compaction.py` updates (Step 5b)
 
-15. Migrate string-equality assertions at lines 47, 66, 92, 192 to NamedTuple `.state` lookups: `out.state == "compacted"` etc.
+15. Migrate every `assert out == "..."` (and `assert out1 ==`, `assert out2 ==`) site to NamedTuple `.state` lookups: `out.state == "compacted"`, `out.state == "skipped_below_floor"`, etc. Eight sites total: lines 47, 66, 92, 130, 176, 192, 225, 278. v2 listed only the four `skipped_*` sites; the four `"compacted"` sites would equally fail under the NamedTuple migration. Also assert the new NamedTuple fields (`out.total_events`, `out.kept_in_digest`) carry sensible values in the `"compacted"` cases — exact numbers depend on the test's seed pattern.
 
 ### `tests/verse/test_avatar.py` dispatch-contract updates (Step 0a)
 
@@ -387,12 +391,12 @@ Document `verse_record` in `docs/guide/operator/forest-verse.md`:
 | `plugins/llm/tests/verse/test_verse_record.py` (new, tests #1-13) | +280 |
 | `plugins/llm/tests/verse/test_verse_aging.py` (new, tests #1-9) | +220 |
 | `plugins/llm/tests/test_plugin.py` additions (tests #10-13) | +120 |
-| `plugins/llm/tests/verse/test_compaction.py` migration (Test #15, four sites) | +20 |
+| `plugins/llm/tests/verse/test_compaction.py` migration (Test #15, eight sites) | +40 |
 | `plugins/llm/tests/verse/test_avatar.py` 5-set + dispatch-contract updates (Tests #14, #16) | +30 |
 | `docs/guide/operator/forest-verse.md` (3 new H2 sections) | +80 |
 | `CHANGELOG.md` | +15 |
 
-Total **~1090 lines**. One PR. No schema migration. v1's 770-line estimate undercounted Step 0a (dispatch retrofit), Step 0b (inline-helper extraction across 4+ public methods), `CompactionOutcome` migration, and the loom heartbeat tests.
+Total **~1110 lines**. One PR. No schema migration. v1's 770-line estimate undercounted Step 0a (dispatch retrofit), Step 0b (inline-helper extraction across 4+ public methods), `CompactionOutcome` migration, and the loom heartbeat tests. v2.1 corrected Step 5b's test-migration count from 4 sites to 8 (+20 lines).
 
 ## 11. Implementation order
 
@@ -400,7 +404,7 @@ For the follow-up PR plan doc (`2026-05-09-verse-record-pr1.md`). Each step is i
 
 **Step 0a — Dispatch contract retrofit.** Introduce `VerseDispatchResult`. Change `dispatch_verse_tool_call` to return it; update `make_verse_extra_handlers._handler._call` to consume it. The four existing branches return `VerseDispatchResult(ok=True, payload={"status":"ok"})`; observable JSON to the model is unchanged. Migrate the dispatch-call tests (Test #16 above). **Gate**: `tests/verse/test_avatar.py` green; no other tests should change.
 
-**Step 0b — Store mutator inline-helper extraction.** Refactor `add_entity`, `set_attribute`, `add_event`, `set_status` to delegate to private `_*_inline(conn, …)` helpers. Public methods become thin wrappers that open `write_transaction` and call the inline helper. Models on `_apply_op_inline` in `loom.py`. **No behaviour change**, all existing store tests stay green. **Gate**: full `pytest plugins/llm/tests/verse/` green.
+**Step 0b — Store mutator inline-helper extraction.** Refactor `add_entity`, `set_attribute`, `add_event`, `set_status` to delegate to private `_*_inline(conn, …)` helpers. Public methods become thin wrappers that open `write_transaction` and call the inline helper. The closest existing precedent for "many DB ops on one open `conn`" is `opt_in_avatar` (`store.py:465-560`); we generalise that pattern across the four mutators. **No behaviour change**, all existing store tests stay green. **Gate**: full `pytest plugins/llm/tests/verse/` green.
 
 **Step 1 — New store queries.** TDD red-green for `find_active_entity_by_name(name)`, `list_entities_with_attribute(key, value, *, status)`. Inline variants (`_find_active_entity_by_name_inline`, `_set_attribute_inline`) come from Step 0b.
 
@@ -417,7 +421,7 @@ For the follow-up PR plan doc (`2026-05-09-verse-record-pr1.md`). Each step is i
 
 **Step 5a — Wire aging into the compaction pass.** Plugin's `_run_compaction_pass` calls `age_auto_created_entities` per channel after `compact_verse`. **Old enum-string outcome unchanged at this step.** Tests #10-12.
 
-**Step 5b — `compact_verse` returns `CompactionOutcome` NamedTuple + new outcome string.** Migrate the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` (Test #15). Plugin renders the friendlier outcome including aging counts. **Gate**: full `pytest` green.
+**Step 5b — `compact_verse` returns `CompactionOutcome` NamedTuple + new outcome string.** Migrate **all eight** assertion-on-string sites in `tests/verse/test_compaction.py` (lines 47, 66, 92, 130, 176, 192, 225, 278 — every `assert out == ...` site, both `skipped_*` and `"compacted"`) to NamedTuple `.state` lookups. Test #15. Plugin renders the friendlier outcome including aging counts. **Gate**: full `pytest` green.
 
 **Step 6 — Tool spec + dispatch branch.** Add `verse_record` to `make_verse_tool_specs(max_actors=…)`; add the dispatch branch from §3 using `VerseDispatchResult`. Plumb `verseAutoEntityMaxNamesPerCall` from registry through the call site at `plugin.py:3281` (`make_verse_extra_handlers`). Test #13.
 
