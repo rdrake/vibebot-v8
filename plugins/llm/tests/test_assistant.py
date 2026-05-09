@@ -2365,26 +2365,24 @@ class TestProfileSystemPrompts:
         assert "generate_image" in DRAW_SYSTEM_PROMPT
 
     def test_verse_prompt_is_dedicated_framework_not_shared(self) -> None:
-        """Verse mode has its own framework, NOT the chat framework with a
-        conditional block. The shared-framework experiment was empirically
-        tried and the model kept respecting chat-mode defaults (sentence-
-        per-item replies, tool_calls=0) — structural rules at the top of
-        the framework dominate any override added later. A dedicated
-        framework lets verse drop the chat-mode 'Answer questions directly'
-        framing and the 3-line cap, and gives verse_record the framework-
-        level 'must call' authority the personality overlay couldn't
-        carry. Cache cost is one miss per channel-session at first verse
-        turn; subsequent verse turns share a verse-mode prefix."""
+        """Verse mode has a dedicated framework distinct from CHAT_SYSTEM_PROMPT.
+
+        Earlier iterations of this prompt accreted ten-plus competing rules
+        (DEFAULT LONG, 300-word minimum, scene-invitation lectures, multi-turn
+        permission/forbidden, emoji-cluster failure mode, etc). Empirically that
+        bloat made the model output WORSE — single-step turns dropped to ~40
+        visible tokens. The minimal version trusts the channel personality
+        overlay to drive length/energy and keeps only structural essentials:
+        in-character framing, plain-text rules, the verse_record HARD RULE,
+        and the avatar-tool split."""
         # Dedicated, not shared.
         assert "VERSE MODE" not in CHAT_SYSTEM_PROMPT
         assert "verse_record" not in CHAT_SYSTEM_PROMPT
-        # Verse framework is built around storytelling, not Q&A.
+        # Verse framework is built around in-world roleplay.
         assert "in-world roleplay" in VERSE_SYSTEM_PROMPT
-        assert "long-form storytelling" in VERSE_SYSTEM_PROMPT
+        assert "Stay in character" in VERSE_SYSTEM_PROMPT
         # No chat-mode 3-line cap.
         assert "Length cap: 3 lines" not in VERSE_SYSTEM_PROMPT
-        # Paragraphs per beat, not sentences.
-        assert "paragraphs per beat" in VERSE_SYSTEM_PROMPT
         # HARD RULE for verse_record at framework level.
         assert "HARD RULE" in VERSE_SYSTEM_PROMPT
         assert "verse_record" in VERSE_SYSTEM_PROMPT
@@ -2395,30 +2393,10 @@ class TestProfileSystemPrompts:
         assert "Adopt user-offered details" in VERSE_SYSTEM_PROMPT
         # bot_nick placeholder for service.py's str.replace formatting.
         assert "{bot_nick}" in VERSE_SYSTEM_PROMPT
-        # Time-anchored prompts ("hour by hour", "walk me through") must be
-        # called out by name as scene invitations, not planning artifacts.
-        # Empirically the failure mode was "Hour 1: lads muster... Hour 2:
-        # bait Andrew with cheese..." — sentence per hour. Calling the
-        # phrasing out by name keeps the model from defaulting to that.
-        assert "hour by hour" in VERSE_SYSTEM_PROMPT
-        assert "SCENE INVITATIONS" in VERSE_SYSTEM_PROMPT
-        # The bullet-style anti-example is named explicitly.
-        assert "Hour 1:" in VERSE_SYSTEM_PROMPT
-        # Default-long rule with explicit minimum length.
-        assert "DEFAULT LONG" in VERSE_SYSTEM_PROMPT
-        assert "300 words" in VERSE_SYSTEM_PROMPT
-        # Encourage canon callbacks via verse_recall before scene.
+        # Avatar-tool split (verse_act/move/look/recall vs verse_record).
+        assert "verse_act" in VERSE_SYSTEM_PROMPT
         assert "verse_recall" in VERSE_SYSTEM_PROMPT
         # Forbid splitting prose across assistant turns. Empirically
-        # ``last_assistant_text = message.content`` in service.py overwrites
-        # with each step, so only the FINAL step's text reaches the user.
-        # An earlier "take multiple turns" rule made the model write 600+
-        # tokens of beats in step_2 and a 40-token wrap-up in step_3 — the
-        # wrap-up was all the user saw, beats discarded.
-        assert "ONE rich user-facing reply" in VERSE_SYSTEM_PROMPT
-        assert "silently" in VERSE_SYSTEM_PROMPT  # explains why
-        # Emoji-cluster failure mode named.
-        assert "emoji garnish" in VERSE_SYSTEM_PROMPT
 
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
