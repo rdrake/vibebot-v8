@@ -158,3 +158,17 @@ class TestRecordUserEvent:
         new_ghost = next(e for e in ghosts if e.status == "active")
         assert new_ghost.id != old_id
         assert store.get_attribute(new_ghost.id, "auto_created") == "1"
+
+    def test_actors_resolved_case_insensitively(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, "alice")
+        andrew_id = _opt_in(store, "andrew")
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="alice waved at ANDREW",
+            actor_names=["ANDREW"],
+            now=lambda: 100.0,
+        )
+        events = store.recent_events(limit=5)
+        latest = events[0]
+        assert list(latest.entity_ids) == [alice_id, andrew_id]
+        assert store.get_attribute(andrew_id, "auto_created") is None
