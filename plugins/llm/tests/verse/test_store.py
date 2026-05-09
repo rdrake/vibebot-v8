@@ -1434,3 +1434,36 @@ class TestFindActiveEntityByName:
                 (item_id, npc_id),
             ).fetchone()[0]
         assert count == 2
+
+
+class TestListEntitiesWithAttribute:
+    def test_returns_matching_entities(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#attr")
+        a = store.add_entity("npc", "alpha", "")
+        b = store.add_entity("npc", "beta", "")
+        store.add_entity("npc", "gamma", "")  # no attribute
+        store.set_attribute(a, "auto_created", "1")
+        store.set_attribute(b, "auto_created", "1")
+        rows = store.list_entities_with_attribute(key="auto_created", value="1", status="active")
+        assert {e.id for e in rows} == {a, b}
+
+    def test_status_filter(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#attr")
+        a = store.add_entity("npc", "alpha", "")
+        store.set_attribute(a, "auto_created", "1")
+        store.set_status(a, "retired")
+        active = store.list_entities_with_attribute(key="auto_created", value="1", status="active")
+        assert active == []
+
+    def test_value_filter(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#attr")
+        a = store.add_entity("npc", "alpha", "")
+        store.set_attribute(a, "auto_created", "0")
+        rows = store.list_entities_with_attribute(key="auto_created", value="1", status="active")
+        assert rows == []

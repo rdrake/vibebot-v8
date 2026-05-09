@@ -318,6 +318,30 @@ class VerseStore:
             ).fetchall()
         return dict(rows)
 
+    def list_entities_with_attribute(
+        self,
+        *,
+        key: str,
+        value: str,
+        status: str | None = "active",
+    ) -> list[Entity]:
+        """All entities with attribute (key=value), optionally filtered by
+        entity status. Used by aging to find auto_created='1' entities."""
+        sql = (
+            "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at"
+            " FROM entities e"
+            " JOIN attributes a ON a.entity_id = e.id"
+            " WHERE a.key = ? AND a.value = ?"
+        )
+        params: list[Any] = [key, value]
+        if status is not None:
+            sql += " AND e.status = ?"
+            params.append(status)
+        sql += " ORDER BY e.id ASC"
+        with self.read_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [Entity(*row) for row in rows]
+
     # ------------------------------------------------------------------
     # Relation CRUD
     # ------------------------------------------------------------------
