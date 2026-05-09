@@ -22,6 +22,10 @@
 
 ## Revisions
 
+- **2026-05-09 v2.2** — implementation-time clarifications surfaced during Phase 4 of the PR plan:
+  1. **FK-defensive heartbeat skip.** §4.2 now documents that both `_replace_events_with_source` and `bump_last_seen_ts` silently skip ids that don't resolve to a real `entities` row. `events.entity_ids` is a JSON blob with no FK, but `attributes.entity_id` does have an FK; the existing `test_entity_ids_truncation_logs_when_capped` compaction test passes synthetic ids. Defensive `SELECT 1 FROM entities WHERE id = ?` guard added to both heartbeat paths. Production effect: zero (digest `union_ids` and proposal `entity_ids` always reference real rows). Test effect: `test_entity_ids_truncation_logs_when_capped` stays green without coupling to FK enforcement details.
+  2. **§7 Aging Test #7 timing math.** v2.1's snippet (`digest_ts=1000.0`, `now=digest_ts + 30 * SECONDS_PER_DAY`, 14-day cutoff) would have retired all 40 entities (survivors got bumped to 1000.0, then `now ≈ 2.6M` aged them past cutoff). Implementation uses `digest_ts = 30 * SECONDS_PER_DAY`, `now = digest_ts + 5 * SECONDS_PER_DAY` so survivors are 5 days old (kept) and truncated-out NPCs are 35 days old (retired). Test still pins the design's intent: in-digest bumps protect, truncated-out ones age.
+
 - **2026-05-09 v1** — initial draft after Codex review of the inline sketch in chat.
   Codex flagged one fatal (schema CHECK constraint on `events.source`) and seven significant issues (race on find-then-add, lookup precedence not implemented, avatar-first risk, `min_keep_references` × compaction interaction, loom doesn't bump `last_seen_ts`, `find_entity_by_name` doesn't filter retired, dangling refs after digest truncation). All addressed below; specifics in §6.
 - **2026-05-09 v2.1** — line-citation correctness pass while drafting the PR plan. Two factual errors in v2 that don't affect architecture but would mislead the implementer:
@@ -255,6 +259,8 @@ Single SQL: `SELECT entities.id, attributes.value AS last_seen FROM entities JOI
 3. **`_replace_events_with_source` in `verse/store.py`** — *not* in `compaction.py`. The bump runs on the same `conn` that wrote the digest, atomically. Each entity in the digest's truncated `union_ids[:32]` list gets its `last_seen_ts` set to the digest's `now()`. Codex v2 SIG #5: this is the heartbeat call site, not `compaction.py`.
 
 Other paths that touch entities — `verse_act`, `verse_move`, `verse_look`, `verse_recall`, `add_relation`, `opt_in_avatar` — do **not** bump. Auto-NPCs are kept alive *only* by re-mention via `verse_record` or by surviving compaction's digest. Documented in the operator guide.
+
+**Best-effort heartbeat semantics.** `events.entity_ids` is a JSON blob with no FK to `entities`, but `attributes.entity_id` does have an FK. Both heartbeat paths (`_replace_events_with_source` inline bump and the public `bump_last_seen_ts`) silently skip ids that don't resolve to a real `entities` row, via a `SELECT 1 FROM entities WHERE id = ?` guard. In production this is a no-op (digest `union_ids` and proposal `entity_ids` always reference real rows); the guard exists to keep the existing `test_entity_ids_truncation_logs_when_capped` compaction test green without coupling tests to FK enforcement details.
 
 ### 4.3 `compact_verse` return shape change
 
