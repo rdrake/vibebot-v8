@@ -4882,6 +4882,7 @@ class LLM(callbacks.Plugin):
         doesn't abort the rest of the pass.
         """
         from llm.verse import compaction as _compaction
+        from llm.verse.aging import age_auto_created_entities
         from llm.verse.loom import LiteLLMLoomClient
 
         retention_days_default = 30
@@ -4948,6 +4949,28 @@ class LLM(callbacks.Plugin):
                 self.log.info("verse compaction: channel=%s outcome=%s", channel, outcome)
             except Exception:
                 self.log.exception("verse compaction failed for %s; continuing", channel)
+
+            # Aging is independent of compaction outcome — run it even if
+            # compact_verse raised. Wrapped in its own try/except so a
+            # single channel's failure doesn't abort the rest of the pass.
+            try:
+                retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
+                aging_outcome = age_auto_created_entities(
+                    store,
+                    retire_after_days=retire_days,
+                    now=time.time,
+                )
+                self.log.info(
+                    "verse aging: channel=%s scanned=%s retired=%s",
+                    channel,
+                    aging_outcome.scanned,
+                    aging_outcome.retired,
+                )
+            except Exception:
+                self.log.exception(
+                    "verse aging failed for %s; continuing with next channel",
+                    channel,
+                )
 
     def _get_or_create_verse_store(self, channel: str) -> VerseStore:
         """Return the VerseStore for *channel*, creating it lazily on first access.
