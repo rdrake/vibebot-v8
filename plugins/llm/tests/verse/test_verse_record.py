@@ -269,3 +269,57 @@ class TestVerseRecordDispatch:
         assert result.error is not None
         assert "too long" in result.error
         assert "250" in result.error
+
+    def test_dispatch_actors_filter_then_slice(self, store: VerseStore) -> None:
+        """Mixed-type input ['alice', 42, 'bob'] with max_actors=2 yields
+        actors ['alice', 'bob'], not ['alice'] (the 42 must NOT eat a slot)."""
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {
+                "summary": "test mixed",
+                "actors": ["alice_npc", 42, "bob_npc"],
+                "_max_actors": 2,
+            },
+        )
+        assert result.ok is True
+        assert store.find_active_entity_by_name("alice_npc") is not None
+        assert store.find_active_entity_by_name("bob_npc") is not None
+
+    def test_dispatch_actors_empty_or_whitespace_filtered(self, store: VerseStore) -> None:
+        """actors=['', '  ', 'alice'] processes only 'alice'; no
+        empty-name entities created."""
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {"summary": "filter ws", "actors": ["", "  ", "alice_w"]},
+        )
+        assert result.ok is True
+        assert store.find_active_entity_by_name("alice_w") is not None
+        assert store.find_active_entity_by_name("") is None
+        assert store.find_active_entity_by_name("  ") is None
+
+    def test_dispatch_truncates_to_max_actors(self, store: VerseStore) -> None:
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        raw = [f"npc{i}" for i in range(20)]
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {"summary": "many", "actors": raw, "_max_actors": 5},
+        )
+        assert result.ok is True
+        for i in range(5):
+            assert store.find_active_entity_by_name(f"npc{i}") is not None
+        for i in range(5, 20):
+            assert store.find_active_entity_by_name(f"npc{i}") is None
