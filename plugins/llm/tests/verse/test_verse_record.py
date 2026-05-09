@@ -253,3 +253,19 @@ class TestVerseRecordDispatch:
         assert result.ok is False
         assert result.error == "summary required"
         assert len(store.recent_events(limit=100)) == n_events_before
+
+    def test_dispatch_too_long_summary_returns_error(self, store: VerseStore) -> None:
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        summary = "x" * 250
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {"summary": summary, "actors": []},
+        )
+        assert result.ok is False
+        assert result.error is not None
+        assert "too long" in result.error
+        assert "250" in result.error
