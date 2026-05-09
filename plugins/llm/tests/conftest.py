@@ -231,6 +231,7 @@ def plugin_env(mocker: MockerFixture):
         schedule_llm_task_fn=None,
         extra_tools=None,
         extra_handlers=None,
+        model_override=None,
     ):
         from llm.service import AssistantResult as _AssistantResult
 

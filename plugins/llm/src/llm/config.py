@@ -235,6 +235,20 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseModel",
+    ValidatedModelName(
+        "",
+        _("""Model for verse-mode (in-world roleplay) replies. Falls back to
+        assistantModel if empty. Useful when the channel's assistantModel is a
+        reasoning model that empirically produces terse output for long-form
+        scenes — point this at a non-reasoning model (e.g. gemini-flash-latest)
+        to get richer prose for verse turns without changing chat-mode
+        behavior."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "drawTimeout",

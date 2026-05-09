@@ -3268,6 +3268,13 @@ class LLM(callbacks.Plugin):
         if route is None:
             self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
             return
+        # Per-channel verse model override. Empty string falls back to
+        # assistantModel inside ``_ask_impl``. Useful when the channel's
+        # assistantModel is a reasoning model that hard-caps verse output
+        # at ~120 visible tokens regardless of prompt — point ``verseModel``
+        # at a non-reasoning model (e.g. gemini-flash-latest) for richer
+        # long-form scenes without affecting chat-mode behavior.
+        verse_model = self.registryValue("verseModel", preflight.channel) or None
         self._ask_impl(
             irc,
             msg,
@@ -3278,6 +3285,7 @@ class LLM(callbacks.Plugin):
             extra_tools_override=route.tools,
             profile_override=PROFILE_VERSE,
             verse_route=route,
+            model_override=verse_model,
         )
 
     def _ask_impl(
@@ -3292,6 +3300,7 @@ class LLM(callbacks.Plugin):
         extra_tools_override: list[dict] | None = None,
         profile_override: str | None = None,
         verse_route: VerseRoute | None = None,
+        model_override: str | None = None,
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight.
 
@@ -3401,6 +3410,7 @@ class LLM(callbacks.Plugin):
                     msg=msg,
                     memories=memories,
                     system_prompt=effective_prompt,
+                    model_override=model_override,
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
