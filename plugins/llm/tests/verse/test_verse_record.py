@@ -48,3 +48,17 @@ class TestRecordUserEvent:
         assert list(ev.entity_ids) == [alice_id, dan.id, andrew.id]
         assert ev.source == "avatar"
         assert ev.summary == "stinky dan threw a guff grenade at Andrew"
+
+    def test_avatar_actor_not_tagged_or_bumped(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store, "alice")
+        andrew_id = _opt_in(store, "andrew")
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="alice greeted Andrew",
+            actor_names=["andrew"],
+            now=lambda: 100.0,
+        )
+        assert store.get_attribute(andrew_id, "auto_created") is None
+        assert store.get_attribute(andrew_id, "last_seen_ts") is None
+        events = store.recent_events(limit=10)
+        assert any(list(e.entity_ids) == [alice_id, andrew_id] for e in events)
