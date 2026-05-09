@@ -207,6 +207,51 @@ class TestAgeAutoCreatedEntities:
         assert outcome.outcome == "queued"
         assert store.get_attribute(eid, "last_seen_ts") == "0.0"
 
+    def test_loom_applied_set_attribute_bumps_last_seen(self, store: VerseStore) -> None:
+        """An applied set_attribute proposal bumps last_seen_ts on the
+        target entity. Per design v2.3 §4.2: heartbeat scope dispatches
+        on op."""
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "0.0")
+
+        prop = ParsedProposal(
+            op="set_attribute",
+            payload={"entity_id": eid, "key": "mood", "value": "wary"},
+            confidence=0.95,
+            provenance="test",
+            rationale="r",
+        )
+        outcome = apply_or_queue(store, prop, cycle_id="cyc-sa", threshold=0.7)
+        assert outcome.outcome == "applied"
+        last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
+        assert last_seen > 0.0
+
+    def test_loom_applied_add_relation_bumps_both_endpoints(self, store: VerseStore) -> None:
+        """An applied add_relation proposal bumps last_seen_ts on both
+        from_id and to_id endpoints."""
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+
+        a = store.add_entity("npc", "alpha", "")
+        b = store.add_entity("npc", "beta", "")
+        for eid in (a, b):
+            store.set_attribute(eid, "auto_created", "1")
+            store.set_attribute(eid, "last_seen_ts", "0.0")
+
+        prop = ParsedProposal(
+            op="add_relation",
+            payload={"from_id": a, "to_id": b, "kind": "ally"},
+            confidence=0.95,
+            provenance="test",
+            rationale="r",
+        )
+        outcome = apply_or_queue(store, prop, cycle_id="cyc-ar", threshold=0.7)
+        assert outcome.outcome == "applied"
+        assert float(store.get_attribute(a, "last_seen_ts") or "0") > 0.0
+        assert float(store.get_attribute(b, "last_seen_ts") or "0") > 0.0
+
     def test_loom_rejected_invalid_refs_does_not_bump(self, store: VerseStore) -> None:
         """Proposals referencing nonexistent entity ids auto-reject; no bump."""
         from llm.verse.loom import ParsedProposal, apply_or_queue

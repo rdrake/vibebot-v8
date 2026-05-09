@@ -215,6 +215,38 @@ def parse_digest(text: str) -> list[ParsedProposal]:
     return out
 
 
+def _referenced_entity_ids(prop: ParsedProposal) -> list[int]:
+    """All entity ids the proposal references, dispatched by op.
+
+    Used by apply_or_queue to bump last_seen_ts on every entity an
+    applied/crosspoll-emitted proposal touches. Mirrors the op
+    dispatch of ``_proposal_entity_refs_resolve``.
+
+    Returns an empty list for ``add_entity`` (creates a new row;
+    nothing to bump) and for any unrecognised op.
+    """
+    op = prop.op
+    payload = prop.payload
+    if op == "add_event":
+        ids = payload.get("entity_ids") or []
+        return [int(x) for x in ids if isinstance(x, int)]
+    if op == "set_attribute":
+        eid = payload.get("entity_id")
+        return [int(eid)] if isinstance(eid, int) else []
+    if op == "add_relation":
+        out: list[int] = []
+        for key in ("from_id", "to_id"):
+            v = payload.get(key)
+            if isinstance(v, int):
+                out.append(int(v))
+        return out
+    if op == "crosspoll_seed":
+        ids = payload.get("entity_ids") or []
+        return [int(x) for x in ids if isinstance(x, int)]
+    # add_entity and unknown ops bump nothing.
+    return []
+
+
 def _proposal_entity_refs_resolve(store: Any, prop: ParsedProposal) -> bool:
     """True iff every entity id the proposal references resolves to a row.
 
@@ -319,10 +351,7 @@ def apply_or_queue(
             entity_ids=prop.payload.get("entity_ids") or [],
             source="loom",
         )
-        store.bump_last_seen_ts(
-            list(prop.payload.get("entity_ids") or []),
-            ts=time.time(),
-        )
+        store.bump_last_seen_ts(_referenced_entity_ids(prop), ts=time.time())
         return ApplyOutcome(outcome="crosspoll_emitted", seed_id=seed_id)
 
     auto = prop.op != "add_entity" and prop.confidence >= threshold
@@ -335,10 +364,7 @@ def apply_or_queue(
             provenance=prop.provenance,
             reviewer="loom",
         )
-        store.bump_last_seen_ts(
-            list(prop.payload.get("entity_ids") or []),
-            ts=time.time(),
-        )
+        store.bump_last_seen_ts(_referenced_entity_ids(prop), ts=time.time())
         return ApplyOutcome(outcome="applied")
     store.add_proposal(
         cycle_id=cycle_id,
