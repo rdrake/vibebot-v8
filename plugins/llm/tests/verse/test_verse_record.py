@@ -214,3 +214,27 @@ class TestRecordUserEvent:
             )
         assert store.recent_events(limit=10) == []
         assert store.find_active_entity_by_name("bob") is None
+
+
+class TestVerseRecordDispatch:
+    def test_dispatch_happy_path(self, store: VerseStore) -> None:
+        """dispatch_verse_tool_call routes 'verse_record' to
+        record_user_event and surfaces event_id in the result payload."""
+        from llm.verse.avatar import (
+            VerseDispatchResult,
+            dispatch_verse_tool_call,
+        )
+
+        alice_id = _opt_in(store)
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {"summary": "alice waved", "actors": ["bob"]},
+        )
+        assert isinstance(result, VerseDispatchResult)
+        assert result.ok is True
+        assert result.error is None
+        assert result.payload is not None
+        assert result.payload["status"] == "ok"
+        assert isinstance(result.payload["event_id"], int)

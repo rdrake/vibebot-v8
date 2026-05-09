@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -498,6 +499,8 @@ def dispatch_verse_tool_call(
                 return _ok
             verse_recall(store, q)
             return _ok
+        elif name == "verse_record":
+            return _dispatch_verse_record(store, avatar_id, args, log=log)
         else:
             log.warning("unknown verse tool: %s (avatar=%s)", name, avatar_id)
             return _ok
@@ -509,6 +512,45 @@ def dispatch_verse_tool_call(
             exc,
         )
         return _ok
+
+
+def _dispatch_verse_record(
+    store: VerseStore,
+    avatar_id: int,
+    args: dict[str, Any],
+    *,
+    log: logging.Logger,
+) -> VerseDispatchResult:
+    """Validate verse_record args and call store.record_user_event.
+
+    Returns ok=False with a model-facing error string for empty / too-long
+    summaries or non-list actors. The actors list is filtered (drop
+    non-strings and empty / whitespace-only entries) BEFORE slicing to
+    ``_max_actors``, so a payload like ``["alice", 42, "bob"]`` with
+    max=2 yields ``["alice", "bob"]`` rather than ``["alice"]``.
+    """
+    _ = log  # currently unused; kept for symmetry with other branches
+    summary = (args.get("summary") or "").strip()
+    if not summary:
+        return VerseDispatchResult(ok=False, error="summary required")
+    if len(summary) > 200:
+        return VerseDispatchResult(
+            ok=False,
+            error=f"summary too long: {len(summary)} chars (max 200)",
+        )
+    raw = args.get("actors") or []
+    if not isinstance(raw, list):
+        return VerseDispatchResult(ok=False, error="actors must be an array")
+    max_actors = args.get("_max_actors", 8)
+    cleaned = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+    actors = cleaned[:max_actors]
+    event_id = store.record_user_event(
+        actor_id=avatar_id,
+        summary=summary,
+        actor_names=actors,
+        now=time.time,
+    )
+    return VerseDispatchResult(ok=True, payload={"status": "ok", "event_id": event_id})
 
 
 def make_verse_extra_handlers(
