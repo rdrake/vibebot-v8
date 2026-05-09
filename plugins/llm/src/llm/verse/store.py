@@ -9,7 +9,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -410,6 +410,53 @@ class VerseStore:
         with self.write_transaction() as conn:
             return self._add_event_inline(
                 conn, summary=summary, entity_ids=entity_ids, source=source
+            )
+
+    def record_user_event(
+        self,
+        *,
+        actor_id: int,
+        summary: str,
+        actor_names: Sequence[str],
+        now: Callable[[], float] = time.time,
+    ) -> int:
+        """Resolve actor_names to entity ids (auto-create as npc if unknown),
+        bump last_seen_ts on each non-avatar, and write one event row — all
+        in a single write_transaction.
+
+        The caller's avatar id is the first entry of the event's entity_ids
+        list; auto-created NPCs follow in actor_names order. source='avatar'
+        (per design §3 — re-using the existing CHECK constraint, not adding
+        a new value).
+
+        Concurrency: safe across callers sharing one cached VerseStore
+        instance per channel within one process. Multiple processes touching
+        the same DB or multiple VerseStore instances for the same channel
+        are NOT defended against (out of scope for v1).
+        """
+        ts = now()
+        with self.write_transaction() as conn:
+            actor_row = conn.execute(
+                "SELECT kind, status FROM entities WHERE id = ?", (actor_id,)
+            ).fetchone()
+            if actor_row is None or actor_row[1] != "active":
+                raise ValueError(f"record_user_event: actor_id={actor_id} not an active entity")
+
+            ids: list[int] = [actor_id]
+            for name in actor_names:
+                entity = self._find_active_entity_by_name_inline(conn, name)
+                if entity is None:
+                    eid = self._add_entity_inline(conn, "npc", name, "")
+                    self._set_attribute_inline(conn, eid, "auto_created", "1")
+                    self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+                else:
+                    eid = entity.id
+                    if entity.kind != "avatar":
+                        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+                ids.append(eid)
+
+            return self._add_event_inline(
+                conn, summary=summary, entity_ids=ids, source="avatar", ts=ts
             )
 
     # ------------------------------------------------------------------
