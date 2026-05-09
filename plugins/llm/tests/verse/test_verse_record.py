@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,51 @@ class TestRecordUserEvent:
         rows = [e for e in store.list_entities_by_kind("npc") if e.name == "dan"]
         assert len(rows) == 1
         assert store.get_attribute(rows[0].id, "last_seen_ts") == "300.0"
+
+    def test_concurrent_record_same_actor_one_row(
+        self, store: VerseStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two threads race record_user_event for the same unknown actor.
+        A `time.sleep(0.01)` is monkey-patched between find and insert so
+        the contention window is real (without it, the Python lock
+        serialises everything and the test passes trivially — the sleep
+        IS the test).
+
+        Both threads start at a Barrier so they enter find at the same
+        instant. Exactly one entity row results."""
+        import threading
+
+        alice_id = _opt_in(store)
+
+        real_find = store._find_active_entity_by_name_inline
+        barrier = threading.Barrier(2)
+
+        def slow_find(conn, name):  # noqa: ANN001
+            result = real_find(conn, name)
+            time.sleep(0.01)
+            return result
+
+        monkeypatch.setattr(store, "_find_active_entity_by_name_inline", slow_find)
+
+        results: list[int] = []
+
+        def call(seq: int) -> None:
+            barrier.wait()
+            eid = store.record_user_event(
+                actor_id=alice_id,
+                summary=f"event {seq}",
+                actor_names=["zorp"],
+                now=lambda: 100.0 + seq,
+            )
+            results.append(eid)
+
+        t1 = threading.Thread(target=call, args=(1,))
+        t2 = threading.Thread(target=call, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert len(results) == 2
+        zorps = [e for e in store.list_entities_by_kind("npc") if e.name == "zorp"]
+        assert len(zorps) == 1, f"expected exactly one 'zorp' entity, got {len(zorps)}"
