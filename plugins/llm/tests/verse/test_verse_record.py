@@ -238,3 +238,18 @@ class TestVerseRecordDispatch:
         assert result.payload is not None
         assert result.payload["status"] == "ok"
         assert isinstance(result.payload["event_id"], int)
+
+    def test_dispatch_empty_summary_returns_error(self, store: VerseStore) -> None:
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        n_events_before = len(store.recent_events(limit=100))
+        result = dispatch_verse_tool_call(
+            store,
+            alice_id,
+            "verse_record",
+            {"summary": "   ", "actors": ["bob"]},
+        )
+        assert result.ok is False
+        assert result.error == "summary required"
+        assert len(store.recent_events(limit=100)) == n_events_before
