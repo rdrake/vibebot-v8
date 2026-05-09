@@ -58,3 +58,16 @@ class TestAgeAutoCreatedEntities:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "active"
+
+    def test_skips_manually_created(self, store: VerseStore) -> None:
+        """An NPC without auto_created='1' must never be touched, even if
+        last_seen_ts is past cutoff."""
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "manual", "")
+        store.set_attribute(eid, "last_seen_ts", "0.0")
+        outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert outcome == (0, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
