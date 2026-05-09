@@ -30,11 +30,15 @@ class VerseDispatchResult:
     error: str | None = None
 
 
-def make_verse_tool_specs() -> list[dict]:
-    """Return OpenAI/LiteLLM tool specs for the four verse tools.
+def make_verse_tool_specs(*, max_actors: int = 8) -> list[dict]:
+    """Return OpenAI/LiteLLM tool specs for the five verse tools.
 
     The tools are model-callable but only meaningful when the @ask path
     is verse-routed (see plugin._verse_route_for + C7d dispatch).
+
+    ``max_actors`` controls the JSON-schema ``maxItems`` on
+    ``verse_record.actors`` so the model is told the per-call cap up
+    front (the dispatch branch also enforces it server-side).
     """
     return [
         {
@@ -98,6 +102,48 @@ def make_verse_tool_specs() -> list[dict]:
                     "type": "object",
                     "properties": {"query": {"type": "string"}},
                     "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_record",
+                "description": (
+                    "Record an in-world event involving one or more named "
+                    "actors. Use whenever a member narrates events that "
+                    "aren't strictly about their own avatar (e.g. \"stinky "
+                    'dan threw a guff grenade at Andrew" — record actors='
+                    '["stinky dan","Andrew"], the grenade stays in the '
+                    "summary as prose). Names that don't match an existing "
+                    "entity are auto-created as kind=npc. Items, places, "
+                    "and weapons are NOT actors — only put characters/"
+                    "people in the actors list."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": (
+                                "What happened, in past tense, ≤200 chars. "
+                                "The full prose narration including any "
+                                "items, places, or weapons mentioned. e.g. "
+                                "'stinky dan threw a guff grenade at Andrew'."
+                            ),
+                        },
+                        "actors": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": max_actors,
+                            "description": (
+                                "Names of CHARACTERS (people/npcs) central "
+                                "to the event. Do NOT include items, "
+                                "weapons, places, or abstractions."
+                            ),
+                        },
+                    },
+                    "required": ["summary"],
                 },
             },
         },
@@ -479,7 +525,13 @@ def make_verse_extra_handlers(
     ``ToolResult`` duck-type expected by the loop.
     """
     log = logger or _log
-    _verse_names = {"verse_act", "verse_move", "verse_look", "verse_recall"}
+    _verse_names = {
+        "verse_act",
+        "verse_move",
+        "verse_look",
+        "verse_recall",
+        "verse_record",
+    }
 
     def _handler(name: str) -> Callable[[dict[str, Any]], _VerseToolResult]:
         def _call(args: dict[str, Any]) -> _VerseToolResult:

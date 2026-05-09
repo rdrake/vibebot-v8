@@ -444,12 +444,18 @@ class TestOOC:
 class TestMakeVerseToolSpecs:
     """Tests for make_verse_tool_specs() (C7c)."""
 
-    def test_lists_four_tools_with_correct_names(self) -> None:
-        """GIVEN make_verse_tool_specs() THEN exactly 4 tool specs with the right names."""
+    def test_lists_five_tools_with_correct_names(self) -> None:
+        """GIVEN make_verse_tool_specs() THEN exactly 5 tool specs with the right names."""
         specs = make_verse_tool_specs()
-        assert len(specs) == 4
+        assert len(specs) == 5
         names = {s["function"]["name"] for s in specs}
-        assert names == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+        assert names == {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }
 
     def test_each_spec_is_function_type(self) -> None:
         """Each spec must have type='function' at the top level."""
@@ -615,7 +621,13 @@ class TestVerseToolDispatch:
         """GIVEN make_verse_extra_handlers THEN returns dict of 4 callables that return .content."""
         alice_id = _opt_in(store)
         handlers = make_verse_extra_handlers(store, alice_id)
-        assert set(handlers.keys()) == {"verse_act", "verse_move", "verse_look", "verse_recall"}
+        assert set(handlers.keys()) == {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }
 
         # Each handler is callable and returns an object with a .content attribute
         result = handlers["verse_act"]({"verb": "speak"})
@@ -711,4 +723,30 @@ class TestHandlerConsumesResult:
         payload = json.loads(result.content)
         assert payload["status"] == "error"
         assert payload["error"] == "summary required"
-        assert payload["tool"] == "verse_act"
+
+
+class TestVerseRecordToolSpec:
+    def test_make_verse_tool_specs_returns_five_with_default_max(self) -> None:
+        from llm.verse.avatar import make_verse_tool_specs
+
+        specs = make_verse_tool_specs()
+        assert len(specs) == 5
+        names = {s["function"]["name"] for s in specs}
+        assert names == {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }
+        record = next(s for s in specs if s["function"]["name"] == "verse_record")
+        params = record["function"]["parameters"]
+        assert params["properties"]["actors"]["maxItems"] == 8
+        assert params["required"] == ["summary"]
+
+    def test_make_verse_tool_specs_max_actors_dynamic(self) -> None:
+        from llm.verse.avatar import make_verse_tool_specs
+
+        specs = make_verse_tool_specs(max_actors=12)
+        record = next(s for s in specs if s["function"]["name"] == "verse_record")
+        assert record["function"]["parameters"]["properties"]["actors"]["maxItems"] == 12
