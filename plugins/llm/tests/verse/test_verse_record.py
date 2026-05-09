@@ -140,3 +140,21 @@ class TestRecordUserEvent:
         assert len(results) == 2
         zorps = [e for e in store.list_entities_by_kind("npc") if e.name == "zorp"]
         assert len(zorps) == 1, f"expected exactly one 'zorp' entity, got {len(zorps)}"
+
+    def test_retired_entity_not_rehydrated(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        old_id = store.add_entity("npc", "ghost", "")
+        store.set_status(old_id, "retired")
+
+        store.record_user_event(
+            actor_id=alice_id,
+            summary="ghost reappeared",
+            actor_names=["ghost"],
+            now=lambda: 100.0,
+        )
+        ghosts = [e for e in store.list_entities_by_kind("npc", status=None) if e.name == "ghost"]
+        statuses = sorted(e.status for e in ghosts)
+        assert statuses == ["active", "retired"]
+        new_ghost = next(e for e in ghosts if e.status == "active")
+        assert new_ghost.id != old_id
+        assert store.get_attribute(new_ghost.id, "auto_created") == "1"
