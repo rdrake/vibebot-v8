@@ -2752,6 +2752,10 @@ class TestInvalidCommand:
         plugin.registryValue = mocker.MagicMock(return_value=True)
         # Limnoria's MetaSynchronized requires this lock for synchronized methods
         plugin._MetaSynchronized_rlock = threading.RLock()
+        # Stub out verse routing — TestInvalidCommand asserts only that the
+        # chat path delegates to _ask_impl. Verse routing is covered by
+        # TestVerseRouting / TestAskCommand fixtures.
+        plugin._verse_route_for = mocker.MagicMock(return_value=None)
 
         return plugin, mock_irc, mock_msg
 
@@ -2806,6 +2810,51 @@ class TestInvalidCommand:
 
         plugin._ask_impl.assert_called_once()
         plugin._run_preflight.assert_called_once()
+
+    def test_invalid_command_routes_through_verse_dispatch(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """When a verse-enabled channel has an avatar for this user, an
+        unprefixed `vibebot, …` message must reach _ask_impl with
+        profile_override=PROFILE_VERSE — otherwise the chat profile fires
+        and verse_record never gets a chance to run.
+
+        Regression: invalidCommand previously called _ask_impl directly,
+        bypassing _verse_route_for. The whole verse subsystem only kicked in
+        for the explicit @ask command, so unprefixed messages in a verse
+        channel produced narration without canon. Fixed by routing every
+        addressed-text entry point through _dispatch_with_verse_routing."""
+        from llm.assistant import PROFILE_VERSE
+        from llm.plugin import VerseRoute
+
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin._run_preflight = mocker.MagicMock(
+            return_value=mocker.MagicMock(
+                blocked=False,
+                nick="rdrake",
+                channel="#afternet",
+                account=None,
+            )
+        )
+        fake_route = VerseRoute(
+            avatar_id=1,
+            system_prompt="verse system prompt",
+            tools=[{"type": "function"}],
+            store=mocker.MagicMock(),
+        )
+        plugin._verse_route_for = mocker.MagicMock(return_value=fake_route)
+        plugin._ask_impl = mocker.MagicMock()
+
+        plugin.invalidCommand(mock_irc, mock_msg, ["diarrhoea", "dan", "did", "X"])
+
+        plugin._verse_route_for.assert_called_once()
+        plugin._ask_impl.assert_called_once()
+        kwargs = plugin._ask_impl.call_args.kwargs
+        assert kwargs["profile_override"] == PROFILE_VERSE
+        assert kwargs["verse_route"] is fake_route
+        assert kwargs["system_prompt_override"] == "verse system prompt"
 
     def test_invalid_command_does_not_call_meta(
         self, plugin_with_mocks: tuple, mocker: MockerFixture

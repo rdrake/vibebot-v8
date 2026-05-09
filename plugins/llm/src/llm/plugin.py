@@ -1825,7 +1825,7 @@ class LLM(callbacks.Plugin):
         if preflight.blocked:
             return
 
-        self._ask_impl(irc, msg, text, preflight, entry_route="invalid_command")
+        self._dispatch_with_verse_routing(irc, msg, text, preflight, entry_route="invalid_command")
 
     @staticmethod
     def _strip_nick_prefix(bot_nick: str, text: str) -> str | None:
@@ -1856,7 +1856,7 @@ class LLM(callbacks.Plugin):
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if preflight.blocked:
             return
-        self._ask_impl(irc, msg, text, preflight, entry_route="addressed")
+        self._dispatch_with_verse_routing(irc, msg, text, preflight, entry_route="addressed")
 
     def _account_from_msg(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Resolve the requesting user's account name from an incoming message.
@@ -3241,25 +3241,44 @@ class LLM(callbacks.Plugin):
         if pf.blocked:
             return
 
-        route = self._verse_route_for(pf.channel, pf.nick, pf.account, text)
-        if route is None:
-            self._ask_impl(irc, msg, text, pf, entry_route="ask")
-        else:
-            # Verse path: override system prompt, append verse tools, use
-            # PROFILE_VERSE (bypasses token cap), use assistantModel.
-            self._ask_impl(
-                irc,
-                msg,
-                text,
-                pf,
-                entry_route="ask",
-                system_prompt_override=route.system_prompt,
-                extra_tools_override=route.tools,
-                profile_override=PROFILE_VERSE,
-                verse_route=route,
-            )
+        self._dispatch_with_verse_routing(irc, msg, text, pf, entry_route="ask")
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
+
+    def _dispatch_with_verse_routing(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        preflight: PreflightResult,
+        *,
+        entry_route: str,
+    ) -> None:
+        """Look up a VerseRoute for the (channel, nick, account, text) and
+        dispatch to ``_ask_impl`` with the verse overrides applied when one
+        matches; otherwise fall through to the chat path. Used from every
+        call site that turns user-addressed text into an assistant request
+        (the explicit ``@ask`` command, ``invalidCommand`` for bare
+        ``vibebot foo`` text, and ``_route_addressed_to_assistant`` for
+        nick-comma-prefixed text). Without this on every entry point a
+        verse-enabled channel still falls back to the chat profile for any
+        message that isn't routed through ``@ask``, so verse_record never
+        fires and the canon goes unrecorded."""
+        route = self._verse_route_for(preflight.channel, preflight.nick, preflight.account, text)
+        if route is None:
+            self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
+            return
+        self._ask_impl(
+            irc,
+            msg,
+            text,
+            preflight,
+            entry_route=entry_route,
+            system_prompt_override=route.system_prompt,
+            extra_tools_override=route.tools,
+            profile_override=PROFILE_VERSE,
+            verse_route=route,
+        )
 
     def _ask_impl(
         self,
