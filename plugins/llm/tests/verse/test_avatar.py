@@ -408,41 +408,26 @@ class TestSystemPrompt:
         with pytest.raises(ValueError, match="avatar not found"):
             build_verse_system_prompt(store, 99999, "something")
 
-    def test_tools_section_names_verse_record(self, store: VerseStore) -> None:
-        """Per design v2.4 — the system prompt must explicitly tell the
-        model to call verse_record when the user narrates in-world
-        events involving named characters. Without this, the persona
-        framing dominates and the model emits narration without
-        recording (observed in first-deploy smoke test)."""
+    def test_personality_overlay_carries_only_scene_context(self, store: VerseStore) -> None:
+        """The verse-mode tool rules and length-cap exception live in
+        CHAT_SYSTEM_PROMPT's VERSE MODE block (see test_assistant.py),
+        not in the personality overlay. The overlay carries identity,
+        persona, scene, recent events, and other avatars — pure context.
+        This split keeps the cacheable framework prefix byte-identical
+        between chat and verse turns; verse-only rules are dormant in
+        chat (no verse tools advertised) and active in verse (tools
+        present)."""
         alice_id = _opt_in(store, nick="alice")
         prompt = build_verse_system_prompt(store, alice_id, "a traveller")
-        assert "Tools:" in prompt
-        assert "verse_record" in prompt
-        # Must contrast with verse_act so the model picks the right one.
-        assert "verse_act" in prompt
-
-    def test_reply_style_block_unblocks_long_form_storytelling(self, store: VerseStore) -> None:
-        """Once the verse-routing fix and the tools_block were in place, the
-        model started calling verse_record correctly but began producing
-        one-line replies — focusing 'effort' on the canon log entry and
-        treating the IRC reply as terse acknowledgment, plus inheriting the
-        chat framework's 3-line cap from _IRC_OUTPUT_FORMAT.
-
-        The personality overlay must explicitly grant the framework's
-        'exceed the cap when the user asks for detail' exception for verse
-        scene prompts, AND tell the model the verse_record summary is
-        bookkeeping while the IRC reply is the user-facing scene. Without
-        both signals together the model defaults to terse narration even
-        when the user is clearly inviting a long scene."""
-        alice_id = _opt_in(store, nick="alice")
-        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
-        # Length-cap exception is granted for scene prompts.
-        assert "length cap exception" in prompt
-        assert "three to eight paragraphs" in prompt
-        # Reply, not summary, is the user-facing scene.
-        assert "your IRC reply is what the user reads" in prompt
-        # Adopt user offers as canon — don't deflect.
-        assert "Adopt user-offered details as canon" in prompt
+        # Scene context is present.
+        assert "You are alice" in prompt
+        assert "Persona" in prompt
+        assert "Scene" in prompt
+        assert "Recent events involving you" in prompt
+        # Tool rules and length-cap exception live in the framework, not here.
+        assert "verse_record" not in prompt
+        assert "HARD RULE" not in prompt
+        assert "length cap" not in prompt
 
 
 # ---------------------------------------------------------------------------

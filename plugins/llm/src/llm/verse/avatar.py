@@ -421,43 +421,13 @@ def build_verse_system_prompt(
     else:
         other_bullets = "- (no other avatars present)"
 
-    tools_block = (
-        "Tools:\n"
-        "- verse_act / verse_move / verse_look / verse_recall: for YOUR"
-        " OWN avatar's first-person actions (you speak, move, look,"
-        " recall).\n"
-        "- verse_record: for in-world events involving named characters"
-        " that AREN'T your own avatar — in BOTH directions:\n"
-        '  * events the user describes ("stinky dan threw a guff'
-        ' grenade at Andrew") — record before replying;\n'
-        '  * events YOU yourself are about to narrate ("where is stinky'
-        ' dan going next?" — before answering "to the dumpverse core",'
-        " record it).\n"
-        "  Args: summary=prose, actors=list of named non-avatar"
-        ' characters (e.g. ["stinky dan","Andrew"]). Items, weapons,'
-        " places stay in summary, never in actors. Unknown names are"
-        " auto-created as NPCs. The summary is a SHORT FACTUAL canon-log"
-        " entry, not the user-facing scene. After calling verse_record,"
-        " your IRC reply is what the user reads — give it the weight."
-    )
-
-    reply_style_block = (
-        "Reply style — this is verse mode, not chat-mode Q&A:\n"
-        "- When the user offers a scene prompt, names a place, asks about"
-        " a character, or hands you a creative thread, the framework's"
-        " length cap exception ('exceed when the user asks for detail')"
-        " APPLIES — they are asking for detail by inviting the scene."
-        " Spin three to eight paragraphs of vivid in-world prose. Long"
-        " replies auto-paginate to a pastebin URL with a one-line teaser"
-        " on IRC, so length will NOT flood the channel.\n"
-        "- Adopt user-offered details as canon and expand on them rather"
-        " than deflecting. If they suggest a place, a hook, a side"
-        " character, an idea — invent confidently in-world and weave it"
-        " in. Reward engagement with story.\n"
-        "- For trivial back-and-forth (greetings, yes/no, quick asides),"
-        " a sentence or two is fine. Match energy: short ask gets short"
-        " reply, scene ask gets scene."
-    )
+    # The verse_record / verse_act behavior rules and the length-cap
+    # exception live in the chat framework's VERSE MODE block (see
+    # CHAT_SYSTEM_PROMPT in assistant.py) so they get the framework
+    # footer's "rules above still apply — personality changes voice, not
+    # structure" weight. The personality overlay only carries scene
+    # context; per-call tool argument shapes come from the tool schemas
+    # themselves.
 
     parts = [
         identity_line,
@@ -467,8 +437,6 @@ def build_verse_system_prompt(
         event_bullets,
         others_header,
         other_bullets,
-        tools_block,
-        reply_style_block,
     ]
     return "\n".join(parts)
 

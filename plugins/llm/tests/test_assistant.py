@@ -2312,6 +2312,34 @@ class TestProfileSystemPrompts:
         """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
         assert "generate_image" in DRAW_SYSTEM_PROMPT
 
+    def test_chat_prompt_carries_verse_mode_conditional_block(self) -> None:
+        """The verse-mode tool rules and length-cap exception live in the
+        SHARED chat framework, not a dedicated verse framework. This keeps
+        the cacheable prefix byte-identical between chat and verse turns
+        (no x-grok-conv-id misses on the system prompt).
+
+        The block is gated on 'when verse_act and verse_record are
+        available' so it's a no-op for chat turns (those tools aren't
+        advertised) and active for verse turns (they are). The framework
+        footer's 'rules above ... still apply' weight gives this block
+        the authority the personality overlay alone lacks — without it,
+        verse_record stops firing (model treats overlay tool guidance as
+        decorative) AND scene replies revert to one-line teasers."""
+        # Verse-only conditional, not a fresh framework.
+        assert "VERSE MODE" in CHAT_SYSTEM_PROMPT
+        assert "verse_act" in CHAT_SYSTEM_PROMPT
+        assert "verse_record" in CHAT_SYSTEM_PROMPT
+        # HARD RULE forces the canon-log call before the in-character reply.
+        assert "HARD RULE" in CHAT_SYSTEM_PROMPT
+        # Both directions: user-described AND bot-narrated events.
+        assert "user describes" in CHAT_SYSTEM_PROMPT
+        assert "narrate" in CHAT_SYSTEM_PROMPT
+        # Length-cap exception explicitly invoked for scene prompts.
+        assert "3-line length cap does NOT apply" in CHAT_SYSTEM_PROMPT
+        assert "three to eight paragraphs" in CHAT_SYSTEM_PROMPT
+        # Adopt user offers as canon — don't deflect.
+        assert "Adopt user-offered details" in CHAT_SYSTEM_PROMPT
+
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
 
