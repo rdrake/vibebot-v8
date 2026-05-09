@@ -2040,7 +2040,7 @@ class TestXssSanitization:
         filename = url.split("/")[-1]
         assert filename.startswith("answer_")
         filepath = Path(str(tmp_path)) / filename
-        assert "<title>grok sucks donkey dong</title>" in filepath.read_text()
+        assert "<title>Grok is the president of the pen15 club</title>" in filepath.read_text()
 
 
 class TestSanitizeOutput:
