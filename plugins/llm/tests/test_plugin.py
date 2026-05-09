@@ -7260,6 +7260,50 @@ class TestRunCompactionPassCallsAging:
         stores = {id(c[0]) for c in called}
         assert len(stores) == 2
 
+    def test_aging_reads_retire_days_per_channel(self, plugin_env, mocker, monkeypatch) -> None:
+        """The aging call reads verseAutoEntityRetireDays at the channel
+        scope, not global."""
+        from llm.verse import aging as aging_mod
+
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a"])
+        captured: list[tuple[str, str | None]] = []
+
+        def _spy(key, *args):
+            channel = args[0] if args else None
+            captured.append((key, channel))
+            if key == "verseEnabled":
+                return True
+            if key == "verseEventRetentionDays":
+                return 30
+            if key == "verseCompactionMinKeepEvents":
+                return 20
+            if key == "loomModel":
+                return "gemini/x"
+            if key == "verseAutoEntityRetireDays":
+                return 14
+            return ""
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_spy)
+
+        def _fake_store_for(channel: str):
+            return mocker.MagicMock(_channel=channel)
+
+        mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
+        monkeypatch.setattr(
+            "llm.verse.compaction.compact_verse",
+            lambda *a, **kw: "skipped_disabled",
+        )
+        monkeypatch.setattr(
+            "llm.verse.aging.age_auto_created_entities",
+            lambda *a, **kw: aging_mod.AgingOutcome(0, 0),
+        )
+
+        plugin._run_compaction_pass()
+
+        assert ("verseAutoEntityRetireDays", "#a") in captured
+
 
 class TestVersecompactCommand:
     """E4: @versecompact owner command — manual retention compaction.
