@@ -376,3 +376,29 @@ class TestPR3RegistryKeys:
         import supybot.conf as conf
 
         assert conf.supybot.plugins.LLM.verseCompactionMinKeepEvents() == 20
+
+
+class TestVerseAutoEntityKeys:
+    """Two new per-channel registry keys for verse_record + aging."""
+
+    def test_verse_auto_entity_retire_days_default_14(self) -> None:
+        """verseAutoEntityRetireDays defaults to 14 (per-channel)."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseAutoEntityRetireDays() == 14
+
+    def test_verse_auto_entity_max_names_per_call_default_8(self) -> None:
+        """verseAutoEntityMaxNamesPerCall defaults to 8 (per-channel)."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseAutoEntityMaxNamesPerCall() == 8
+
+    def test_verse_auto_entity_retire_days_zero_allowed(self) -> None:
+        """0 must be a valid value — design §5: '0 disables sweep'."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        conf.supybot.plugins.LLM.verseAutoEntityRetireDays.setValue(0)
+        assert conf.supybot.plugins.LLM.verseAutoEntityRetireDays() == 0

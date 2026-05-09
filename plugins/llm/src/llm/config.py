@@ -342,6 +342,26 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseAutoEntityRetireDays",
+    registry.NonNegativeInteger(
+        14,
+        _("""Days of no reference before auto-created NPCs retire. 0 disables sweep."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseAutoEntityMaxNamesPerCall",
+    registry.PositiveInteger(
+        8,
+        _("""Hard cap on verse_record `actors` array length. The advertised
+        tool spec's maxItems is set from this; dispatch enforces. Increase
+        past 16 only if your verse routinely cites large casts."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "verseAutoApplyThreshold",
