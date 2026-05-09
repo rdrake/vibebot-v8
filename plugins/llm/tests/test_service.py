@@ -67,6 +67,35 @@ class TestLLMService:
         assert call_kwargs["nick"] == "testuser"
         assert call_kwargs["channel"] == "#test"
 
+    def test_assistant_request_forwards_manage_typing_flag(self) -> None:
+        """GIVEN caller owns typing lifetime WHEN assistant_request THEN flag is forwarded."""
+        request_context = AssistantRequestContext(
+            entry_route="ask",
+            profile="chat",
+            nick="testuser",
+            raw_nick="testuser",
+            account=None,
+            channel="#test",
+            is_private=False,
+            is_owner=False,
+            capabilities=frozenset({"llm.ask"}),
+        )
+        self.service.assistant_completion = self.mocker.Mock(
+            return_value=AssistantResult(content="ok"),
+        )
+
+        self.service.assistant_request(
+            "hello",
+            request_context=request_context,
+            db=self.mocker.Mock(),
+            context=self.mocker.Mock(),
+            bot_nick="Bot",
+            manage_typing=False,
+        )
+
+        call_kwargs = self.service.assistant_completion.call_args.kwargs
+        assert call_kwargs["manage_typing"] is False
+
     def test_assistant_request_forwards_profile_without_replacing_system_prompt(
         self,
     ) -> None:
@@ -4257,6 +4286,23 @@ class TestMemoryCleanup:
 
         assert call_kwargs["model"] == TEST_MODEL
         assert call_kwargs["api_key"] == TEST_API_KEY
+
+    def test_cleanup_uses_registry_timeout(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN custom timeout WHEN cleanup runs THEN LLM call uses registry value."""
+        from llm.persistence import MemoryRow
+
+        service, mock_plugin = make_service(timeout=123)
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
+        service.cleanup_memories("user1", "#test", rows)
+
+        call_kwargs = mock_litellm.completion.call_args.kwargs
+        assert call_kwargs["timeout"] == 123
 
     def test_cleanup_uses_memory_api_key_when_set(
         self, make_service, mocker: MockerFixture

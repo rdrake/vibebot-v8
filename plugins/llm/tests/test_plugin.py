@@ -4834,6 +4834,33 @@ class TestChatProfileBridgeWiring:
         assert kwargs.get("extra_tools") is None
         assert kwargs.get("extra_handlers") is None
 
+    def test_typing_done_is_sent_after_reply_dispatch(
+        self, plugin_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN ask reply WHEN dispatched THEN typing done follows the IRC reply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        events: list[str] = []
+
+        def begin_typing(_irc, _msg):
+            events.append("typing_active")
+            return lambda: events.append("typing_done")
+
+        plugin.llm_service._begin_typing.side_effect = begin_typing
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+        mocker.patch.object(
+            plugin,
+            "_send_long_reply",
+            side_effect=lambda *_args, **_kwargs: events.append("reply"),
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        assert events == ["typing_active", "reply", "typing_done"]
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["manage_typing"] is False
+
 
 class TestExtractActionFloodSafety:
     """``_extract_action`` must collapse newlines so the IRC ACTION is single-line.

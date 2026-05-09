@@ -3397,47 +3397,52 @@ class LLM(callbacks.Plugin):
                 else:
                     combined_handlers = bridge_handlers
 
-                result = self.llm_service.assistant_request(
-                    request_text,
-                    request_context=request_context,
-                    db=self.db,
-                    context=self.context,
-                    bot_nick=irc.nick,
-                    images=images,
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                    memories=memories,
-                    system_prompt=effective_prompt,
-                    model_override=model_override,
-                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                    code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    extra_tools=extra_tools,
-                    extra_handlers=combined_handlers,
-                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
-                )
+                stop_typing = self.llm_service._begin_typing(irc, msg)
+                try:
+                    result = self.llm_service.assistant_request(
+                        request_text,
+                        request_context=request_context,
+                        db=self.db,
+                        context=self.context,
+                        bot_nick=irc.nick,
+                        images=images,
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                        memories=memories,
+                        system_prompt=effective_prompt,
+                        model_override=model_override,
+                        search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                        fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                        code_fn=lambda p: self._code_for_assistant(p, channel),
+                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                        cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                        extra_tools=extra_tools,
+                        extra_handlers=combined_handlers,
+                        manage_typing=False,
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                    )
 
-                response = result.content
+                    response = result.content
 
-                # Optional in-channel debug footer listing bridge tool calls.
-                if bridge_debug and bridge_trace:
-                    footer = self._format_bridge_debug_footer(bridge_trace)
-                    if footer:
-                        response = f"{response}\n{footer}" if response else footer
+                    # Optional in-channel debug footer listing bridge tool calls.
+                    if bridge_debug and bridge_trace:
+                        footer = self._format_bridge_debug_footer(bridge_trace)
+                        if footer:
+                            response = f"{response}\n{footer}" if response else footer
 
-                response, should_log = self._dispatch_assistant_reply(
-                    irc,
-                    msg,
-                    result,
-                    nick=nick,
-                    channel=channel,
-                    response=response,
-                    suppress_reminder_mutations=True,
-                )
+                    response, should_log = self._dispatch_assistant_reply(
+                        irc,
+                        msg,
+                        result,
+                        nick=nick,
+                        channel=channel,
+                        response=response,
+                        suppress_reminder_mutations=True,
+                    )
+                finally:
+                    stop_typing()
 
             if should_log:
                 self._store_context_and_log_usage(
@@ -3502,34 +3507,39 @@ class LLM(callbacks.Plugin):
             )
 
             with self._allow_concurrent(), self._llm_executor.permit():
-                result = self.llm_service.assistant_request(
-                    text,
-                    request_context=request_context,
-                    db=self.db,
-                    context=self.context,
-                    bot_nick=irc.nick,
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                    memories=memories,
-                    system_prompt=effective_prompt,
-                    search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                    fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                    code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
-                )
+                stop_typing = self.llm_service._begin_typing(irc, msg)
+                try:
+                    result = self.llm_service.assistant_request(
+                        text,
+                        request_context=request_context,
+                        db=self.db,
+                        context=self.context,
+                        bot_nick=irc.nick,
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                        memories=memories,
+                        system_prompt=effective_prompt,
+                        search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+                        fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+                        code_fn=lambda p: self._code_for_assistant(p, channel),
+                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                        cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+                        manage_typing=False,
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                    )
 
-                response, should_log = self._dispatch_assistant_reply(
-                    irc,
-                    msg,
-                    result,
-                    nick=nick,
-                    channel=channel,
-                    response=result.content,
-                )
+                    response, should_log = self._dispatch_assistant_reply(
+                        irc,
+                        msg,
+                        result,
+                        nick=nick,
+                        channel=channel,
+                        response=result.content,
+                    )
+                finally:
+                    stop_typing()
 
             if should_log:
                 self._store_context_and_log_usage(
@@ -3586,29 +3596,34 @@ class LLM(callbacks.Plugin):
             )
 
             with self._allow_concurrent(), self._llm_executor.permit():
-                result = self.llm_service.assistant_request(
-                    text,
-                    request_context=request_context,
-                    db=self.db,
-                    context=self.context,
-                    bot_nick=irc.nick,
-                    history=history,
-                    channel_history=channel_history,
-                    irc=irc,
-                    msg=msg,
-                    memories=[],
-                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
-                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
-                )
+                stop_typing = self.llm_service._begin_typing(irc, msg)
+                try:
+                    result = self.llm_service.assistant_request(
+                        text,
+                        request_context=request_context,
+                        db=self.db,
+                        context=self.context,
+                        bot_nick=irc.nick,
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                        memories=[],
+                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                        manage_typing=False,
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                    )
 
-                response, should_log = self._dispatch_assistant_reply(
-                    irc,
-                    msg,
-                    result,
-                    nick=nick,
-                    channel=channel,
-                    response=result.content,
-                )
+                    response, should_log = self._dispatch_assistant_reply(
+                        irc,
+                        msg,
+                        result,
+                        nick=nick,
+                        channel=channel,
+                        response=result.content,
+                    )
+                finally:
+                    stop_typing()
 
             if should_log:
                 self._store_context_and_log_usage(

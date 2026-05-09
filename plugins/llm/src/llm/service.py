@@ -888,7 +888,7 @@ class LLMService:
         irc: Irc | None,
         msg: IrcMsg | None,
         *,
-        refresh: float = 3.0,
+        refresh: float = 4.0,
     ) -> Callable[[], None]:
         """Start an IRCv3 +typing=active indicator with periodic refresh.
 
@@ -2497,6 +2497,7 @@ class LLMService:
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
+        manage_typing: bool = True,
     ) -> AssistantResult:
         """Unified assistant facade that dispatches to assistant_completion.
 
@@ -2551,6 +2552,7 @@ class LLMService:
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
             exclude_tools=exclude_tools,
+            manage_typing=manage_typing,
         )
 
     def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
@@ -3046,6 +3048,7 @@ Examples (echo → action_prompt: ""):
         extra_tools: list[dict[str, Any]] | None = None,
         extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
         exclude_tools: frozenset[str] = frozenset(),
+        manage_typing: bool = True,
     ) -> AssistantResult:
         """Run a meta command through a multi-turn tool-calling loop.
 
@@ -3089,7 +3092,7 @@ Examples (echo → action_prompt: ""):
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_cost = 0.0
-        stop_typing = self._begin_typing(irc, msg)
+        stop_typing = self._begin_typing(irc, msg) if manage_typing else lambda: None
 
         try:
             target = self._channel_target(channel)
@@ -4308,13 +4311,14 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             api_key = self.plugin.registryValue("assistantApiKey", target)
+            timeout = self.plugin.registryValue("timeout")
             response = self._timed_completion(
                 "cleanup_memories",
                 model=model,
                 messages=messages,
                 channel=channel,
                 api_key=api_key,
-                timeout=60,
+                timeout=timeout,
                 num_retries=2,
                 response_format={"type": "json_object"},
             )
