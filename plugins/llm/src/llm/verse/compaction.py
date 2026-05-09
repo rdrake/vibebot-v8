@@ -11,10 +11,32 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 _LOG = logging.getLogger("llm.verse.compaction")
 SECONDS_PER_DAY = 86400
+
+
+class CompactionOutcome(NamedTuple):
+    """Result of one ``compact_verse`` call.
+
+    Carrying the counts (rather than just the state string) lets the
+    plugin render a single human-readable line covering both compaction
+    and aging, instead of two cryptic log records per channel.
+    """
+
+    state: str
+    """One of ``'compacted'``, ``'skipped_disabled'``,
+    ``'skipped_below_floor'``, ``'skipped_no_events'``."""
+
+    total_events: int
+    """``COUNT(*) FROM events`` at pass entry. ``0`` when retention is
+    disabled (we never query)."""
+
+    kept_in_digest: int
+    """``len(union_ids)`` after the ``_MAX_DIGEST_ENTITY_IDS`` truncation
+    when ``state == 'compacted'``; ``0`` for any skipped state."""
+
 
 # Per-pass tunables. Constants — operators tune retention via registry;
 # the rest are safety-net caps.
@@ -48,8 +70,9 @@ def compact_verse(
     client: Any,
     log_usage: Callable[..., None],
     now: Callable[[], float],
-) -> str:
-    """Compact a single verse. Returns one of:
+) -> CompactionOutcome:
+    """Compact a single verse. Returns a :class:`CompactionOutcome` whose
+    ``state`` is one of:
 
     - ``'compacted'`` — old events replaced by one digest event
     - ``'skipped_disabled'`` — ``retention_days <= 0``
@@ -64,17 +87,17 @@ def compact_verse(
     actually saw.
     """
     if retention_days <= 0:
-        return "skipped_disabled"
+        return CompactionOutcome("skipped_disabled", 0, 0)
 
     with store.read_connection() as conn:
         total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     if total < min_keep_events:
-        return "skipped_below_floor"
+        return CompactionOutcome("skipped_below_floor", total, 0)
 
     cutoff_ts = now() - retention_days * SECONDS_PER_DAY
     olds = store.events_older_than(cutoff_ts=cutoff_ts)
     if not olds:
-        return "skipped_no_events"
+        return CompactionOutcome("skipped_no_events", total, 0)
 
     # Process the OLDEST batch first. This guarantees forward progress:
     # even if the verse keeps receiving new events past the retention
@@ -153,7 +176,7 @@ def compact_verse(
         ts=digest_ts,
     )
     log_usage(op="compact", model=model, usage=usage)
-    return "compacted"
+    return CompactionOutcome("compacted", total, len(union_ids))
 
 
 def register_daily_timer(

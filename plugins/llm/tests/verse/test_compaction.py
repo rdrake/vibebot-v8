@@ -407,6 +407,27 @@ class TestCompactVerse:
         assert count == 25
 
 
+class TestCompactionOutcomeShape:
+    def test_returns_namedtuple(self, verse_db_dir: Path) -> None:
+        from llm.verse.compaction import CompactionOutcome, compact_verse
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#shape")
+        outcome = compact_verse(
+            store,
+            retention_days=0,  # trips skipped_disabled
+            min_keep_events=20,
+            model="m",
+            client=_FakeClient(),
+            log_usage=lambda **kw: None,
+            now=lambda: 0.0,
+        )
+        assert isinstance(outcome, CompactionOutcome)
+        assert outcome.state == "skipped_disabled"
+        assert outcome.total_events == 0
+        assert outcome.kept_in_digest == 0
+
+
 class TestNextLocalTime:
     def test_returns_today_when_hhmm_in_future(self) -> None:
         import time as _t
