@@ -78,3 +78,16 @@ class TestRecordUserEvent:
         rows = [e for e in store.list_entities_by_kind("npc") if e.name == "dan"]
         assert len(rows) == 1
         assert store.get_attribute(dan_id, "last_seen_ts") == "200.0"
+
+    def test_repeated_calls_one_row_latest_timestamp(self, store: VerseStore) -> None:
+        alice_id = _opt_in(store)
+        for ts in (100.0, 200.0, 300.0):
+            store.record_user_event(
+                actor_id=alice_id,
+                summary="dan reappears",
+                actor_names=["dan"],
+                now=lambda ts=ts: ts,
+            )
+        rows = [e for e in store.list_entities_by_kind("npc") if e.name == "dan"]
+        assert len(rows) == 1
+        assert store.get_attribute(rows[0].id, "last_seen_ts") == "300.0"
