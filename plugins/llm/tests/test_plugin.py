@@ -7115,11 +7115,13 @@ class TestCompactionTimerWiring:
 
         mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
 
+        from llm.verse.compaction import CompactionOutcome
+
         called_for: list[str] = []
 
         def fake_compact(store, **kw):
             called_for.append(store._channel)
-            return "skipped_no_events"
+            return CompactionOutcome("skipped_no_events", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", fake_compact)
 
@@ -7152,11 +7154,13 @@ class TestCompactionTimerWiring:
             "_get_or_create_verse_store",
             return_value=mocker.MagicMock(),
         )
+        from llm.verse.compaction import CompactionOutcome
+
         seen: dict = {}
 
         def _fake_compact(store, **kw):
             seen.update(kw)
-            return "skipped_no_events"
+            return CompactionOutcome("skipped_no_events", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
         plugin._run_compaction_pass()
@@ -7193,13 +7197,15 @@ class TestCompactionTimerWiring:
 
         mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
 
+        from llm.verse.compaction import CompactionOutcome
+
         seen: list[str] = []
 
         def maybe_bomb(store, **kw):
             seen.append(store._channel)
             if store._channel == "#a":
                 raise RuntimeError("fail")
-            return "skipped_no_events"
+            return CompactionOutcome("skipped_no_events", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", maybe_bomb)
 
@@ -7215,6 +7221,7 @@ class TestRunCompactionPassCallsAging:
         """_run_compaction_pass calls age_auto_created_entities once per
         channel returned by _verse_enabled_channels."""
         from llm.verse import aging as aging_mod
+        from llm.verse.compaction import CompactionOutcome
 
         plugin, _irc, _msg = plugin_env
 
@@ -7243,7 +7250,7 @@ class TestRunCompactionPassCallsAging:
         mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
         monkeypatch.setattr(
             "llm.verse.compaction.compact_verse",
-            lambda *a, **kw: "skipped_disabled",
+            lambda *a, **kw: CompactionOutcome("skipped_disabled", 0, 0),
         )
 
         called: list[tuple[object, int]] = []
@@ -7264,6 +7271,7 @@ class TestRunCompactionPassCallsAging:
         """The aging call reads verseAutoEntityRetireDays at the channel
         scope, not global."""
         from llm.verse import aging as aging_mod
+        from llm.verse.compaction import CompactionOutcome
 
         plugin, _irc, _msg = plugin_env
 
@@ -7293,7 +7301,7 @@ class TestRunCompactionPassCallsAging:
         mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
         monkeypatch.setattr(
             "llm.verse.compaction.compact_verse",
-            lambda *a, **kw: "skipped_disabled",
+            lambda *a, **kw: CompactionOutcome("skipped_disabled", 0, 0),
         )
         monkeypatch.setattr(
             "llm.verse.aging.age_auto_created_entities",
@@ -7309,6 +7317,7 @@ class TestRunCompactionPassCallsAging:
     ) -> None:
         """If aging raises for #a, #b still gets aged."""
         from llm.verse import aging as aging_mod
+        from llm.verse.compaction import CompactionOutcome
 
         plugin, _irc, _msg = plugin_env
 
@@ -7337,7 +7346,7 @@ class TestRunCompactionPassCallsAging:
         mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
         monkeypatch.setattr(
             "llm.verse.compaction.compact_verse",
-            lambda *a, **kw: "skipped_disabled",
+            lambda *a, **kw: CompactionOutcome("skipped_disabled", 0, 0),
         )
 
         seen: list[int] = []
@@ -7353,6 +7362,76 @@ class TestRunCompactionPassCallsAging:
         plugin._run_compaction_pass()
 
         assert len(seen) == 2
+
+    def test_compaction_outcome_message_includes_aging_counts(
+        self, plugin_env, mocker, monkeypatch
+    ) -> None:
+        """5b.3: per-channel summary log line folds compaction + aging
+        counts into one human-readable record. ``plugin.log`` is a
+        MagicMock under ``plugin_env`` (the conftest patches
+        ``llm.plugin.log``), so we inspect ``plugin.log.info`` call args
+        directly instead of using ``caplog`` — supybot's plugin logger
+        never reaches the stdlib root logger here."""
+        from llm.verse import aging as aging_mod
+        from llm.verse import compaction as compaction_mod
+
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#foo"])
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *args: (
+                True
+                if key == "verseEnabled"
+                else (
+                    30
+                    if key == "verseEventRetentionDays"
+                    else "gemini/x"
+                    if key == "loomModel"
+                    else 20
+                    if key == "verseCompactionMinKeepEvents"
+                    else 14
+                    if key == "verseAutoEntityRetireDays"
+                    else ""
+                )
+            )
+        )
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=mocker.MagicMock())
+        monkeypatch.setattr(
+            compaction_mod,
+            "compact_verse",
+            lambda *a, **kw: compaction_mod.CompactionOutcome(
+                state="compacted", total_events=12, kept_in_digest=5
+            ),
+        )
+        monkeypatch.setattr(
+            aging_mod,
+            "age_auto_created_entities",
+            lambda *a, **kw: aging_mod.AgingOutcome(scanned=7, retired=2),
+        )
+
+        plugin._run_compaction_pass()
+
+        # Render every info-level call to its formatted form and look for
+        # the friendly outcome line.
+        rendered = []
+        for call in plugin.log.info.call_args_list:
+            args = call.args
+            if not args:
+                continue
+            fmt = args[0]
+            try:
+                rendered.append(fmt % tuple(args[1:]))
+            except TypeError:
+                rendered.append(fmt)
+        matched = [
+            m
+            for m in rendered
+            if "compaction outcome" in m
+            and "compacted 12 events" in m
+            and "aged 2 entities" in m
+            and "kept 5" in m
+        ]
+        assert matched, f"no friendly outcome message in {rendered!r}"
 
 
 class TestVersecompactCommand:
@@ -7502,6 +7581,8 @@ class TestVersecompactCommand:
         F1 will define verseCompactionMinKeepEvents — until then, the
         guard ensures the command still works.
         """
+        from llm.verse.compaction import CompactionOutcome
+
         plugin, irc, msg, _store = compact_env
 
         def _flaky_registry(key, *args):
@@ -7529,7 +7610,7 @@ class TestVersecompactCommand:
 
         def _fake_compact(store, **kw):
             seen_kwargs.update(kw)
-            return "skipped_no_events"
+            return CompactionOutcome("skipped_no_events", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
 
@@ -7547,6 +7628,8 @@ class TestVersecompactCommand:
         zero value (the registry types accept 0) into the default. The
         fix uses an explicit conversion that preserves zero so operators
         can disable compaction with retention=0."""
+        from llm.verse.compaction import CompactionOutcome
+
         plugin, irc, msg, _store = compact_env
 
         def _zero_registry(key, *args):
@@ -7576,7 +7659,7 @@ class TestVersecompactCommand:
 
         def _fake_compact(store, **kw):
             seen_kwargs.update(kw)
-            return "skipped_disabled"
+            return CompactionOutcome("skipped_disabled", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
 
@@ -7591,6 +7674,8 @@ class TestVersecompactCommand:
         """Same regression but for the daily-timer driver
         ``_run_compaction_pass`` — the same ``or default`` pattern was
         also present there."""
+        from llm.verse.compaction import CompactionOutcome
+
         plugin, _irc, _msg = plugin_env
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
@@ -7621,7 +7706,7 @@ class TestVersecompactCommand:
 
         def _fake_compact(store, **kw):
             seen.update(kw)
-            return "skipped_disabled"
+            return CompactionOutcome("skipped_disabled", 0, 0)
 
         monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
         plugin._run_compaction_pass()

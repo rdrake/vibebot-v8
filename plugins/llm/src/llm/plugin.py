@@ -53,12 +53,14 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
+from .verse.aging import AgingOutcome
 from .verse.avatar import (
     build_verse_system_prompt,
     is_ooc,
     make_verse_extra_handlers,
     make_verse_tool_specs,
 )
+from .verse.compaction import CompactionOutcome
 from .verse.store import VerseStore
 
 if TYPE_CHECKING:
@@ -550,6 +552,38 @@ def _patch_irc_docapnew() -> None:
             self.requestCapabilities(new)
 
     irclib.Irc.doCapNew = doCapNew  # ty: ignore[invalid-assignment]
+
+
+def _format_compaction_outcome(
+    co: CompactionOutcome,
+    ao: AgingOutcome | None,
+    *,
+    min_keep_events: int,
+) -> str:
+    """Render a single human-readable line covering both compaction and
+    (optional) aging counts.
+
+    The two halves used to be separate INFO log records — operators had
+    to correlate them by channel name. Folding them into one message
+    keeps a daily-pass channel summary on a single line.
+
+    ``ao=None`` is for callers (``@versecompact``) that compact one
+    channel without running aging; the aged clause is omitted.
+    """
+    if co.state == "compacted":
+        head = f"compacted {co.total_events} events"
+    elif co.state == "skipped_below_floor":
+        head = f"skipped (only {co.total_events} events; floor is {min_keep_events})"
+    elif co.state == "skipped_no_events":
+        head = f"skipped (no events past retention; total {co.total_events})"
+    elif co.state == "skipped_disabled":
+        head = "skipped (retention disabled)"
+    else:  # forward-compat: unknown future state strings
+        head = co.state
+    if ao is None:
+        return head
+    aged_kept = ao.scanned - ao.retired
+    return f"{head}; aged {ao.retired} entities (kept {aged_kept})"
 
 
 class LLM(callbacks.Plugin):
@@ -4933,6 +4967,7 @@ class LLM(callbacks.Plugin):
                 )
             except (TypeError, ValueError):
                 retention_days = retention_days_default
+            outcome: CompactionOutcome | None = None
             try:
                 outcome = _compaction.compact_verse(
                     store,
@@ -4946,13 +4981,13 @@ class LLM(callbacks.Plugin):
                     ),
                     now=time.time,
                 )
-                self.log.info("verse compaction: channel=%s outcome=%s", channel, outcome)
             except Exception:
                 self.log.exception("verse compaction failed for %s; continuing", channel)
 
             # Aging is independent of compaction outcome — run it even if
             # compact_verse raised. Wrapped in its own try/except so a
             # single channel's failure doesn't abort the rest of the pass.
+            aging_outcome: AgingOutcome | None = None
             try:
                 retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
                 aging_outcome = age_auto_created_entities(
@@ -4960,17 +4995,18 @@ class LLM(callbacks.Plugin):
                     retire_after_days=retire_days,
                     now=time.time,
                 )
-                self.log.info(
-                    "verse aging: channel=%s scanned=%s retired=%s",
-                    channel,
-                    aging_outcome.scanned,
-                    aging_outcome.retired,
-                )
             except Exception:
                 self.log.exception(
                     "verse aging failed for %s; continuing with next channel",
                     channel,
                 )
+
+            # Render the per-channel summary as one line, but only if
+            # compaction itself succeeded — a raised compact_verse already
+            # got its own .exception log above.
+            if outcome is not None:
+                msg = _format_compaction_outcome(outcome, aging_outcome, min_keep_events=min_keep)
+                self.log.info("compaction outcome for %s: %s", channel, msg)
 
     def _get_or_create_verse_store(self, channel: str) -> VerseStore:
         """Return the VerseStore for *channel*, creating it lazily on first access.
@@ -5719,8 +5755,9 @@ class LLM(callbacks.Plugin):
             )
             return
 
+        outcome_msg = _format_compaction_outcome(outcome, None, min_keep_events=min_keep)
         irc.reply(
-            f"compaction outcome for {channel}: {outcome}",
+            f"compaction outcome for {channel}: {outcome_msg}",
             prefixNick=False,
         )
 
