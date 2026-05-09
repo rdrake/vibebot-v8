@@ -113,3 +113,47 @@ class TestAgeAutoCreatedEntities:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "active"
+
+    def test_digest_truncated_entities_correctly_age(self, store: VerseStore) -> None:
+        """Setup: _MAX_DIGEST_ENTITY_IDS + 8 auto-created NPCs all with
+        last_seen_ts=0. Insert a digest with all of them in entity_ids; the
+        digest layer truncates to _MAX_DIGEST_ENTITY_IDS. Aging then runs
+        and the 8 truncated-out NPCs are correctly retired."""
+        from llm.verse.aging import age_auto_created_entities
+        from llm.verse.compaction import _MAX_DIGEST_ENTITY_IDS
+
+        n_total = _MAX_DIGEST_ENTITY_IDS + 8
+        ids: list[int] = []
+        for i in range(n_total):
+            eid = store.add_entity("npc", f"ghost{i}", "")
+            store.set_attribute(eid, "auto_created", "1")
+            store.set_attribute(eid, "last_seen_ts", "0.0")
+            ids.append(eid)
+
+        # digest_ts must be > retire_after_days so truncated-out entities
+        # (last_seen_ts=0) age past cutoff while bumped survivors stay
+        # fresh.
+        digest_ts = 30 * SECONDS_PER_DAY
+        union_ids_truncated = ids[:_MAX_DIGEST_ENTITY_IDS]
+        store.replace_events_with_lore_digest(
+            delete_ids=[],
+            summary="many ghosts",
+            entity_ids=union_ids_truncated,
+            ts=digest_ts,
+        )
+
+        outcome = age_auto_created_entities(
+            store, retire_after_days=14, now=lambda: digest_ts + 5 * SECONDS_PER_DAY
+        )
+        assert outcome.retired == 8
+        survivors_status = []
+        truncated_status = []
+        with store.read_connection() as conn:
+            for i, eid in enumerate(ids):
+                row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+                if i < _MAX_DIGEST_ENTITY_IDS:
+                    survivors_status.append(row[0])
+                else:
+                    truncated_status.append(row[0])
+        assert set(survivors_status) == {"active"}
+        assert set(truncated_status) == {"retired"}
