@@ -22,6 +22,10 @@
 
 ## Revisions
 
+- **2026-05-09 v2.4** — first-deploy smoke test (`vibebot, stinky dan threw a guff grenade at Andrew` in `#afternet`) revealed a prompt-engineering gap: `tools=23 tool_calls=0`. The verse system prompt frames the model as the avatar (`"You are <name>. Persona: …"`) and is silent on tool use; the model interprets in-channel narration prompts as creative-writing briefs and emits text directly. The tool description alone is not loud enough to overcome the persona framing.
+  - Fix: extend `build_verse_system_prompt` to add a final "Tools" paragraph that names `verse_record` and tells the model to call it whenever the user narrates an in-world event involving named characters (other than the avatar's own action — those go through `verse_act`). Items / weapons / places stay in the summary as prose. Implemented in §1, tested in §7.
+  - Out of scope: tuning the description text on the four legacy tools (`verse_act` / `verse_move` / `verse_look` / `verse_recall`) — they continue to rely on their own descriptions, unchanged.
+
 - **2026-05-09 v2.3** — adversarial review (Codex pass on actual code) surfaced two heartbeat-scope drifts:
   1. **Loom heartbeat payload-key scope.** v2.0–v2.2 §4.2 #2 said "every entity_id referenced by the proposal payload" but the plan's snippet only scanned `payload.get("entity_ids")`. Applied `set_attribute` proposals reference an entity via `payload["entity_id"]` (singular); `add_relation` via `payload["from_id"]` and `payload["to_id"]`. Implementations must scan ALL entity-id-bearing payload keys per op:
      - `add_event` → `payload["entity_ids"]` (list[int])
