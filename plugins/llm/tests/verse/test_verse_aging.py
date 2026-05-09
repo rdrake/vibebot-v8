@@ -188,3 +188,43 @@ class TestAgeAutoCreatedEntities:
             store, retire_after_days=14, now=lambda: last_seen + SECONDS_PER_DAY
         )
         assert keep.retired == 0
+
+    def test_loom_queued_proposal_does_not_bump(self, store: VerseStore) -> None:
+        """Below-threshold proposals queue rather than apply; no bump."""
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "0.0")
+        prop = ParsedProposal(
+            op="add_event",
+            payload={"summary": "maybe ghost", "entity_ids": [eid]},
+            confidence=0.10,
+            provenance="test",
+            rationale="r",
+        )
+        outcome = apply_or_queue(store, prop, cycle_id="cyc-q", threshold=0.7)
+        assert outcome.outcome == "queued"
+        assert store.get_attribute(eid, "last_seen_ts") == "0.0"
+
+    def test_loom_rejected_invalid_refs_does_not_bump(self, store: VerseStore) -> None:
+        """Proposals referencing nonexistent entity ids auto-reject; no bump."""
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+
+        real_eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(real_eid, "auto_created", "1")
+        store.set_attribute(real_eid, "last_seen_ts", "0.0")
+        nonexistent_id = real_eid + 999_999
+        prop = ParsedProposal(
+            op="add_event",
+            payload={
+                "summary": "phantom event",
+                "entity_ids": [real_eid, nonexistent_id],
+            },
+            confidence=0.95,
+            provenance="test",
+            rationale="r",
+        )
+        outcome = apply_or_queue(store, prop, cycle_id="cyc-r", threshold=0.7)
+        assert outcome.outcome != "applied"
+        assert store.get_attribute(real_eid, "last_seen_ts") == "0.0"
