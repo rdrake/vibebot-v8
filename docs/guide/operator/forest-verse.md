@@ -303,3 +303,68 @@ There is no migration from the old forest-mode or spontaneous participation
 features. Those registry keys and code paths have been removed. Users who were
 in forest mode must opt in to the verse fresh with `@verseopt in`. No old state
 carries over.
+
+## Member-driven worldbuilding (verse_record)
+
+Opted-in members can narrate events involving entities other than their
+own avatar. Example:
+
+> `vibebot, stinky dan threw a guff grenade at Andrew`
+
+The bot's assistant calls the new `verse_record` tool with
+`actors=["stinky dan","Andrew"]`. The grenade stays in the summary as
+prose — items / weapons / places are never auto-created as actors.
+
+Names that match an existing entity link to it (precedence: avatar >
+npc > item > place, case-insensitive, retired entities skipped). Names
+that don't match are auto-created as `kind=npc` and tagged
+`auto_created='1'`.
+
+Cap: `verseAutoEntityMaxNamesPerCall` (default 8) limits the actors
+array length. Raise per-channel if your verse routinely cites large
+casts; raising past 16 invites high-cardinality flooding.
+
+## Auto-created NPCs and aging
+
+Auto-created NPCs without recent mentions are soft-retired by the daily
+compaction pass. The "recent mentions" definition (heartbeat scope):
+
+- A `verse_record` call mentioning the NPC.
+- A loom-applied or crosspoll-emitted proposal referencing the NPC.
+- A compaction digest event listing the NPC in its truncated entity
+  union (capped at the first 32 ids per digest).
+
+Other paths that touch entities — `verse_act`, `verse_move`,
+`verse_look`, `verse_recall`, `add_relation`, `opt_in_avatar` — do
+**not** count.
+
+Knob: `verseAutoEntityRetireDays` (default 14, per-channel). Set to
+`0` to disable aging entirely. If your verse loses cast members the
+operator wanted to keep, raise the value or manually clear the
+`auto_created` attribute on the entity (then it's a "real" NPC and
+won't age).
+
+A retired NPC with the same name as a future mention does **not**
+rehydrate — a fresh active row is created. The orphan ages out under
+the same policy.
+
+## Compaction outcome reference
+
+The compaction pass log line / `@versecompact` reply now reads:
+
+````
+compaction outcome for #foo: compacted 12 events; aged 2 entities (kept 5)
+compaction outcome for #foo: skipped (only 7 events; floor is 20); aged 0 entities (kept 0)
+````
+
+`CompactionOutcome.state` values:
+
+| state | meaning |
+|---|---|
+| `compacted` | Old events past `verseEventRetentionDays` were summarised into one digest event. |
+| `skipped_disabled` | `verseEventRetentionDays <= 0` — retention is off. |
+| `skipped_below_floor` | Total events count is below `verseEventCompactionFloor`; nothing yet to compact. |
+| `skipped_no_events` | No events older than the retention cutoff. |
+
+Aging counts (`aged N entities (kept M)`) come from `AgingOutcome.retired`
+and `scanned - retired` respectively.
