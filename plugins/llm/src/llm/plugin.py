@@ -1079,6 +1079,13 @@ class LLM(callbacks.Plugin):
             return
         if not msg.prefix or ircutils.strEqual(irc.nick, msg.nick):
             return
+        # Server-originated PRIVMSGs (e.g. some services responses) carry
+        # a server prefix instead of nick!user@host. Downstream code
+        # (preflight, account resolution, rate-limit identity) calls
+        # ``nickFromHostmask`` which asserts user-hostmask form, so drop
+        # these here rather than letting every call site guard.
+        if not ircutils.isUserHostmask(msg.prefix):
+            return
 
         text = msg.args[1] if len(msg.args) > 1 else ""
         if not text:

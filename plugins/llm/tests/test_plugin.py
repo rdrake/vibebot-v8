@@ -998,6 +998,23 @@ class TestDoPrivmsg:
 
         plugin.context.add_message.assert_not_called()
 
+    def test_doprivmsg_drops_server_prefixed_messages(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN server-prefixed PRIVMSG WHEN doPrivmsg called THEN dropped, not routed.
+
+        Downstream code calls ircutils.nickFromHostmask which asserts
+        user-hostmask form. Without this gate, services-originated PMs
+        would crash _run_preflight (seen as AssertionError on prod).
+        """
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.prefix = "luna.AfterNET.Org"  # bare server prefix
+        mock_msg.args = ("botname", "some text")
+        mock_msg.channel = None
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_not_called()
+
     def test_doprivmsg_skips_when_tracking_disabled(self, plugin_with_mocks: tuple) -> None:
         """GIVEN tracking disabled WHEN doPrivmsg called THEN does not track."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
