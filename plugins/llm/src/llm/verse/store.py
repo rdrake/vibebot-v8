@@ -300,6 +300,29 @@ class VerseStore:
         with self.write_transaction() as conn:
             self._set_attribute_inline(conn, entity_id, key, value)
 
+    def bump_last_seen_ts(
+        self,
+        entity_ids: Sequence[int],
+        *,
+        ts: float,
+    ) -> None:
+        """Bump ``last_seen_ts`` on every id. Single ``write_transaction``.
+
+        Used by loom ``apply_or_queue`` (which runs outside any open tx).
+        Defensively skips ids that do not resolve to an ``entities`` row,
+        because callers may pass LLM-emitted ids that never got
+        validated. No-op for empty input.
+        """
+        if not entity_ids:
+            return
+        ts_str = str(ts)
+        with self.write_transaction() as conn:
+            for eid in entity_ids:
+                row = conn.execute("SELECT 1 FROM entities WHERE id=?", (int(eid),)).fetchone()
+                if row is None:
+                    continue
+                self._set_attribute_inline(conn, int(eid), "last_seen_ts", ts_str)
+
     def get_attribute(self, entity_id: int, key: str) -> str | None:
         """Return the attribute value for key, or None if not set."""
         with self.read_connection() as conn:

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -318,6 +319,10 @@ def apply_or_queue(
             entity_ids=prop.payload.get("entity_ids") or [],
             source="loom",
         )
+        store.bump_last_seen_ts(
+            list(prop.payload.get("entity_ids") or []),
+            ts=time.time(),
+        )
         return ApplyOutcome(outcome="crosspoll_emitted", seed_id=seed_id)
 
     auto = prop.op != "add_entity" and prop.confidence >= threshold
@@ -329,6 +334,10 @@ def apply_or_queue(
             confidence=prop.confidence,
             provenance=prop.provenance,
             reviewer="loom",
+        )
+        store.bump_last_seen_ts(
+            list(prop.payload.get("entity_ids") or []),
+            ts=time.time(),
         )
         return ApplyOutcome(outcome="applied")
     store.add_proposal(
@@ -419,8 +428,6 @@ class LiteLLMLoomClient:
     def call(
         self, *, op: str, model: str, messages: list[dict[str, str]]
     ) -> tuple[str, LoomCallUsage]:
-        import time
-
         import litellm
 
         t0 = time.monotonic()

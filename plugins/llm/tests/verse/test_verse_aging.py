@@ -157,3 +157,34 @@ class TestAgeAutoCreatedEntities:
                     truncated_status.append(row[0])
         assert set(survivors_status) == {"active"}
         assert set(truncated_status) == {"retired"}
+
+    def test_loom_applied_proposal_bumps_last_seen(self, store: VerseStore) -> None:
+        """An apply_or_queue call landing as 'applied' bumps last_seen_ts
+        on every entity_id referenced by the proposal payload."""
+        from llm.verse.aging import age_auto_created_entities
+        from llm.verse.loom import ParsedProposal, apply_or_queue
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "0.0")
+
+        prop = ParsedProposal(
+            op="add_event",
+            payload={"summary": "ghost lurked", "entity_ids": [eid]},
+            confidence=0.95,
+            provenance="test",
+            rationale="r",
+        )
+        outcome = apply_or_queue(
+            store,
+            prop,
+            cycle_id="cyc-1",
+            threshold=0.7,
+        )
+        assert outcome.outcome == "applied"
+        last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
+        assert last_seen > 0.0
+        keep = age_auto_created_entities(
+            store, retire_after_days=14, now=lambda: last_seen + SECONDS_PER_DAY
+        )
+        assert keep.retired == 0
