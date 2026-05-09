@@ -423,18 +423,21 @@ def build_verse_system_prompt(
 
     tools_block = (
         "Tools:\n"
-        "- verse_act: when YOU (your own avatar) speak, move, or act."
-        " The four legacy tools (verse_act / verse_move / verse_look"
-        " / verse_recall) are for first-person actions.\n"
-        "- verse_record: whenever the user's message narrates an"
-        " in-world event involving one or more named characters that"
-        " AREN'T just your own avatar acting (e.g. \"stinky dan threw"
-        ' a guff grenade at Andrew" — call verse_record with'
-        ' summary set to the prose, actors=["stinky dan","Andrew"].'
-        " Items / weapons / places stay in the summary as prose, never"
-        " as actors). Always call verse_record for such events"
-        " BEFORE composing your in-character reply, so the canon is"
-        " logged. Unknown character names are auto-created as NPCs."
+        "- verse_act / verse_move / verse_look / verse_recall: for YOUR"
+        " OWN avatar's first-person actions (you speak, move, look,"
+        " recall).\n"
+        "- verse_record: for in-world events involving named characters"
+        " that AREN'T your own avatar — in BOTH directions:\n"
+        '  * events the user describes ("stinky dan threw a guff'
+        ' grenade at Andrew") — record before replying;\n'
+        '  * events YOU yourself are about to narrate ("where is stinky'
+        ' dan going next?" — before answering "to the dumpverse core",'
+        " record it).\n"
+        "  Args: summary=prose, actors=list of named non-avatar"
+        ' characters (e.g. ["stinky dan","Andrew"]). Items, weapons,'
+        " places stay in summary, never in actors. Unknown names are"
+        " auto-created as NPCs. Always record THEN reply, never just"
+        " narrate."
     )
 
     parts = [

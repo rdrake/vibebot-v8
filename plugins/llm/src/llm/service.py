@@ -36,6 +36,7 @@ from .assistant import (
     PROFILE_CODE,
     PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
+    PROFILE_VERSE,
 )
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
@@ -3080,6 +3081,7 @@ Examples (echo → action_prompt: ""):
             CODE_SYSTEM_PROMPT,
             DRAW_SYSTEM_PROMPT,
             REMIND_ACTION_SYSTEM_PROMPT,
+            VERSE_SYSTEM_PROMPT,
             AssistantToolExecutor,
             get_tools_for_profile,
         )
@@ -3112,6 +3114,7 @@ Examples (echo → action_prompt: ""):
                 PROFILE_CODE: CODE_SYSTEM_PROMPT,
                 PROFILE_DRAW: DRAW_SYSTEM_PROMPT,
                 PROFILE_REMIND_ACTION: REMIND_ACTION_SYSTEM_PROMPT,
+                PROFILE_VERSE: VERSE_SYSTEM_PROMPT,
             }
             framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
                 bot_nick=bot_nick
@@ -3152,15 +3155,17 @@ Examples (echo → action_prompt: ""):
             # tools= kwarg passed explicitly below.
             optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
 
-            # Cap output tokens on conversational profiles. Long-output cases
-            # (e.g. 960 tokens at ~50 tok/s ≈ 19s of generation) dominate the
-            # latency budget and trigger the pastebin path anyway when they
-            # cross the IRC line threshold. Capping here keeps short answers
-            # snappy and bounds the worst case. forest/code/draw are unbounded:
-            # forest is opt-in long-form, code/draw produce short summaries
-            # plus a URL by design.
+            # Cap output tokens on conversational profiles. The cap bounds
+            # the worst-case generation time (~50 tok/s); long-form replies
+            # cross the IRC line threshold and pastebin via _send_long_reply
+            # so the user gets a teaser+URL anyway. The cap was 600 originally
+            # but truncated explicit story / essay requests in the URL itself —
+            # bumped to 2000 (~1500 words, ~40s worst case) so long-form asks
+            # complete. forest/code/draw/verse are unbounded: forest+verse are
+            # opt-in long-form; code/draw produce short summaries plus a URL
+            # by design.
             profile_max_output = {
-                PROFILE_CHAT: 600,
+                PROFILE_CHAT: 2000,
                 PROFILE_REMIND_ACTION: 400,
             }.get(route_profile)
             if profile_max_output is not None:
