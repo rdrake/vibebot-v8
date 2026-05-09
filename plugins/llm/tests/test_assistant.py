@@ -2404,6 +2404,15 @@ class TestProfileSystemPrompts:
         assert "SCENE INVITATIONS" in VERSE_SYSTEM_PROMPT
         # The bullet-style anti-example is named explicitly.
         assert "Hour 1:" in VERSE_SYSTEM_PROMPT
+        # Default-long rule with explicit minimum length.
+        assert "DEFAULT LONG" in VERSE_SYSTEM_PROMPT
+        assert "300 words" in VERSE_SYSTEM_PROMPT
+        # Encourage canon callbacks via verse_recall before scene.
+        assert "verse_recall" in VERSE_SYSTEM_PROMPT
+        # Encourage multi-turn split across tool calls.
+        assert "multiple assistant turns" in VERSE_SYSTEM_PROMPT
+        # Emoji-cluster failure mode named.
+        assert "emoji garnish" in VERSE_SYSTEM_PROMPT
 
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
