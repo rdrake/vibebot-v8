@@ -559,7 +559,18 @@ class VerseStore:
                 (ts, summary, json.dumps(list(entity_ids)), source),
             )
             assert cur.lastrowid is not None
-            return int(cur.lastrowid)
+            new_id = int(cur.lastrowid)
+            # Heartbeat: bump last_seen_ts on every entity referenced in
+            # the digest. ``events.entity_ids`` is a JSON blob with no FK
+            # enforcement, so we defensively skip ids that do not resolve
+            # to an ``entities`` row (otherwise the attributes-FK would
+            # fail).
+            for eid in entity_ids:
+                row = conn.execute("SELECT 1 FROM entities WHERE id=?", (int(eid),)).fetchone()
+                if row is None:
+                    continue
+                self._set_attribute_inline(conn, int(eid), "last_seen_ts", str(ts))
+            return new_id
 
     def replace_events_with_lore_digest(
         self,

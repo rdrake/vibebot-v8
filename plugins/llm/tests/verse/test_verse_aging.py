@@ -85,3 +85,31 @@ class TestAgeAutoCreatedEntities:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (avatar_id,)).fetchone()
         assert row[0] == "active"
+
+    def test_digest_insert_bumps_last_seen(self, store: VerseStore) -> None:
+        """When _replace_events_with_source inserts a digest, every entity
+        in entity_ids has last_seen_ts bumped to ts. The bump is on the
+        same conn as the INSERT — atomic with the digest write."""
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "0.0")  # stale
+
+        digest_ts = 1000.0
+        store.replace_events_with_lore_digest(
+            delete_ids=[],
+            summary="ghost remained",
+            entity_ids=(eid,),
+            ts=digest_ts,
+        )
+        # Heartbeat fired
+        assert store.get_attribute(eid, "last_seen_ts") == str(digest_ts)
+        # Aging now sees a fresh entity → keeps it
+        outcome = age_auto_created_entities(
+            store, retire_after_days=14, now=lambda: digest_ts + SECONDS_PER_DAY
+        )
+        assert outcome == (1, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
