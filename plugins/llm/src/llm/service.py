@@ -3131,13 +3131,27 @@ Examples (echo → action_prompt: ""):
                 # containing literal '{...}' (e.g. JSON examples) doesn't blow
                 # up with KeyError. Only ``{bot_nick}`` is supported.
                 personality = system_prompt.replace("{bot_nick}", bot_nick)
+                # Footer must not reassert rules the active framework doesn't
+                # have. Verse framework deliberately drops the 3-line length
+                # cap; saying "length cap still applies" here re-imports the
+                # chat-mode default and pushes the model back to one-liners.
+                if route_profile == PROFILE_VERSE:
+                    overlay_footer = (
+                        "\n\nThe rules above (long-form storytelling, "
+                        "paragraphs per beat, mandatory verse_record) still "
+                        "apply — personality changes voice, not structure."
+                    )
+                else:
+                    overlay_footer = (
+                        "\n\nThe rules above (output format, length cap, "
+                        "tool behavior) still apply — personality changes "
+                        "voice, not structure."
+                    )
                 framework = (
                     framework
                     + "\n\n--- Personality / identity (overlay) ---\n"
                     + personality
-                    + "\n\nThe rules above (output format, length cap, tool "
-                    "behavior) still apply — personality changes voice, not "
-                    "structure."
+                    + overlay_footer
                 )
             # Memories are passed positionally below so they land in a user
             # message after the static system+context prefix — keeps the

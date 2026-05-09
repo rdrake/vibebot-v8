@@ -935,6 +935,57 @@ class TestMetaCompletion:
         assert "Length cap" in content
         assert "claim actions succeeded" in content
 
+    def test_assistant_completion_verse_overlay_footer_does_not_reassert_length_cap(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Verse profile drops the 3-line length cap on purpose. The personality
+        overlay footer must NOT say "length cap still apply" when route_profile
+        is verse — that wording re-imports the chat-mode default and pushes the
+        model back to one-liner output (observed empirically: ``completion_tokens``
+        in the 50–160 range, list-style "Hour 1: / Hour 2:" replies).
+        """
+        from llm.service import PROFILE_VERSE
+
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "Done."
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="describe the scene",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a brooding cat avatar named {bot_nick}.",
+            route_profile=PROFILE_VERSE,
+        )
+
+        content = captured_messages[0]["content"]
+        # Overlay landed
+        assert "brooding cat" in content
+        # Verse framework body is present (no 3-line cap)
+        assert "paragraphs per beat" in content
+        assert "Length cap: 3 lines" not in content
+        # Footer must not reassert a length cap that the verse framework
+        # explicitly omits — the chat-mode footer wording is forbidden here.
+        assert "length cap" not in content
+        # But we DO still want a footer that keeps the structural rules
+        # weighted above the personality overlay.
+        assert "personality changes voice, not structure" in content
+        assert "paragraphs per beat, mandatory verse_record" in content
+
     def test_assistant_completion_user_supplied_braces_dont_crash(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
