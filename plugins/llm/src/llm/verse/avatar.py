@@ -5,12 +5,29 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NamedTuple
 
 from .store import Event, VerseStore
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VerseDispatchResult:
+    """Structured result of a verse tool dispatch.
+
+    The four legacy tools (verse_act / verse_move / verse_look / verse_recall)
+    return ok=True with payload={'status': 'ok'}, preserving the wrapper's
+    historical observable JSON. New branches (verse_record) populate
+    payload with tool-specific data on success or error with a model-
+    facing string on failure.
+    """
+
+    ok: bool
+    payload: dict[str, Any] | None = None
+    error: str | None = None
 
 
 def make_verse_tool_specs() -> list[dict]:
@@ -387,7 +404,7 @@ def dispatch_verse_tool_call(
     args: dict[str, Any],
     *,
     logger: logging.Logger | None = None,
-) -> None:
+) -> VerseDispatchResult:
     """Dispatch a single verse tool call, swallowing all exceptions.
 
     Applies the side effect (event write, attribute update, etc.) to
@@ -401,31 +418,43 @@ def dispatch_verse_tool_call(
       verse_act and return normally (event row written).
     - Exception-level failures (retired avatar, DB gone) are caught here
       and logged at WARNING; no event row is written.
+
+    Returns a :class:`VerseDispatchResult`. The four legacy tools always
+    return ``ok=True`` with ``payload={'status': 'ok'}`` — preserving today's
+    swallow-and-skip semantics so the wrapper's observable JSON does not
+    change. Future branches (e.g. ``verse_record``) may return ``ok=False``
+    with a model-facing ``error`` string.
     """
     log = logger or _log
+    _ok = VerseDispatchResult(ok=True, payload={"status": "ok"})
     try:
         if name == "verse_act":
             verb = args.get("verb")
             if not verb:
                 log.warning("verse_act missing 'verb' arg (avatar=%s)", avatar_id)
-                return
+                return _ok
             verse_act(store, avatar_id, verb, args.get("target"), args.get("details"))
+            return _ok
         elif name == "verse_move":
             place = args.get("place_name")
             if not place:
                 log.warning("verse_move missing 'place_name' arg (avatar=%s)", avatar_id)
-                return
+                return _ok
             verse_move(store, avatar_id, place)
+            return _ok
         elif name == "verse_look":
             verse_look(store, avatar_id, args.get("target"))
+            return _ok
         elif name == "verse_recall":
             q = args.get("query")
             if q is None:
                 log.warning("verse_recall missing 'query' arg (avatar=%s)", avatar_id)
-                return
+                return _ok
             verse_recall(store, q)
+            return _ok
         else:
             log.warning("unknown verse tool: %s (avatar=%s)", name, avatar_id)
+            return _ok
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "verse tool dispatch failed: name=%s avatar=%s err=%s",
@@ -433,6 +462,7 @@ def dispatch_verse_tool_call(
             avatar_id,
             exc,
         )
+        return _ok
 
 
 def make_verse_extra_handlers(

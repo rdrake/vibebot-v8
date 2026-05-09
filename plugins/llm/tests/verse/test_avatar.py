@@ -624,3 +624,50 @@ class TestVerseToolDispatch:
         payload = json.loads(result.content)
         assert payload["status"] == "ok"
         assert payload["tool"] == "verse_act"
+
+
+# ---------------------------------------------------------------------------
+# TestDispatchContract (Task 0a.1 — VerseDispatchResult)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchContract:
+    def test_existing_tools_return_ok_result(self, store: VerseStore) -> None:
+        """GIVEN any of the four existing tools WHEN dispatched THEN returns
+        VerseDispatchResult(ok=True, payload={'status':'ok'}). The wrapper's
+        observable JSON is unchanged so the model's tool-result payloads
+        do not regress."""
+        from llm.verse.avatar import (
+            VerseDispatchResult,
+            dispatch_verse_tool_call,
+        )
+
+        alice_id = _opt_in(store)
+        for name, args in [
+            ("verse_act", {"verb": "speak"}),
+            ("verse_move", {"place_name": "anywhere"}),
+            ("verse_look", {}),
+            ("verse_recall", {"query": "x"}),
+        ]:
+            result = dispatch_verse_tool_call(store, alice_id, name, args)
+            assert isinstance(result, VerseDispatchResult)
+            assert result.ok is True
+            assert result.payload == {"status": "ok"}
+            assert result.error is None
+
+    def test_unknown_tool_returns_ok_with_warning(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown tool name still doesn't raise; result is ok=True with
+        the same payload (preserves today's silent-skip behaviour)."""
+        from llm.verse.avatar import (
+            VerseDispatchResult,
+            dispatch_verse_tool_call,
+        )
+
+        alice_id = _opt_in(store)
+        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
+            result = dispatch_verse_tool_call(store, alice_id, "hallucinated_tool", {"x": 1})
+        assert isinstance(result, VerseDispatchResult)
+        assert result.ok is True
+        assert result.payload == {"status": "ok"}
