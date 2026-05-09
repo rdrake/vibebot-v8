@@ -24,12 +24,36 @@
 
 - **2026-05-09 v1** — initial draft after Codex review of the inline sketch in chat.
   Codex flagged one fatal (schema CHECK constraint on `events.source`) and seven significant issues (race on find-then-add, lookup precedence not implemented, avatar-first risk, `min_keep_references` × compaction interaction, loom doesn't bump `last_seen_ts`, `find_entity_by_name` doesn't filter retired, dangling refs after digest truncation). All addressed below; specifics in §6.
+- **2026-05-09 v2** — second adversarial pass (Codex) + senior code-review pass (general-purpose). Both surfaced the same two FATAL claims-vs-code mismatches; eight more SIG gaps:
+  1. **FATAL — `dispatch_verse_tool_call` returns `None`**, not a `ToolResult`. The wrapper `make_verse_extra_handlers` (`avatar.py:438-462`) always returns `{"status":"ok"}`. Validation errors and `event_id` payloads from §3 are *not observable by the model* under the current contract. Resolved by adding **Step 0a** to §11: retrofit `dispatch_verse_tool_call` to return a structured result and update `make_verse_extra_handlers` to propagate it. Touches the four existing tool branches.
+  2. **FATAL — `write_transaction` is non-reentrant** (uses a `threading.Lock`, see `opt_in_avatar`'s warning at `store.py:471-475`). The §3 pseudocode that calls public `add_entity` / `set_attribute` / `add_event` from inside `record_user_event`'s `write_transaction` will *deadlock*. The `_lookup_in_tx` / `_add_entity_in_tx` / `_set_attr_in_tx` / `_add_event_in_tx` helpers the v1 doc cited *do not exist*. Resolved by adding **Step 0b** to §11: refactor existing public mutators to expose `_inline(conn, …)` helpers (modelled on `_apply_op_inline` in `loom.py`); public methods become thin wrappers. No behaviour change, all existing tests stay green; precondition for §3.
+  3. **SIG — `compact_verse` returns a string**, so §8's UX text `compaction outcome for #foo: skipped (only 7 events; floor is 20); aged 2 entities (kept 5)` is unproducible without a contract change. Resolved: §4 now specifies `compact_verse` returns a `CompactionOutcome` NamedTuple `(state: str, total_events: int, kept_in_digest: int)`; the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` are migrated as part of Step 5b.
+  4. **SIG — Test #5 (race) tests Python lock, not the actual race window.** Both threads serialise behind `_lock` before any SQLite contention. Resolved: §7 #5 now specifies the test mocks `time.sleep` between lookup and insert, modelled on `test_concurrent_opt_in_distinct_nicks_one_place` (`test_store.py:611-629`) and the crosspoll barrier pattern (`test_crosspoll_store.py:84-108`). Also reframes the concurrency *claim*: §3 now scopes safety to "one cached `VerseStore` instance per channel within one process" (the loom and `verse_record` share that cached instance via `_get_or_create_verse_store`, `plugin.py:4952-4964`).
+  5. **SIG — Test #6 doesn't pin the heartbeat call site.** Resolved: §4 now specifies the bump is added inside `_replace_events_with_source` (`store.py:391-434`) — not in `compaction.py` — so it executes on the same `conn` that wrote the digest, atomically. Test #6 asserts `get_attribute(entity_id, "last_seen_ts")` equals the digest's `now()`.
+  6. **SIG — Test #7 hard-codes 40 entities** while `_MAX_DIGEST_ENTITY_IDS` is a private 32. Bumping the constant silently inverts the test. Resolved: §7 #7 imports `_MAX_DIGEST_ENTITY_IDS` from `verse.compaction` and uses `_MAX_DIGEST_ENTITY_IDS + 8`.
+  7. **SIG — Loom heartbeat (§4 #2) had no test.** Resolved: §7 gains tests #8 (loom `applied` proposal bumps), #9 (loom `queued`/`rejected_invalid_refs` proposals do NOT bump — keeps junk from being kept alive by low-confidence model output).
+  8. **SIG — `objects` was dropped, but the flagship example "stinky dan threw a guff grenade at Andrew" implies item tracking.** Resolved: §1 now states explicitly that v1 records the grenade as *prose only* in `summary`. The model is instructed not to put items into `actors`. Documented in §1 example block + operator guide.
+  9. **SIG — Avatar opt-out → auto-NPC → opt-in produces three same-name rows.** The orphan NPC outlives its usefulness if it ever heartbeated. Resolved: §2 documents the explicit state machine and §7 #10 covers it. Aging will retire the orphan after `verseAutoEntityRetireDays`. Acceptable.
+  10. **SIG — Heartbeat-on-touch claim was overbroad.** `verse_act`, `verse_move`, `verse_look`, `verse_recall`, `add_relation` don't bump. Resolved: §4 narrows scope to *exactly* `record_user_event`, loom `apply_or_queue` (applied/crosspoll-emitted only), and `_replace_events_with_source`. Other read/write paths stay heartbeat-free; auto-NPCs are *only* kept alive by being re-mentioned via `verse_record` or surviving compaction's digest. Documented in §4.
+  11. **SIG — `AgingOutcome(scanned, retired, kept)` is invariant-violating.** `scanned == retired + kept`. Resolved: dropped `kept`; now `(scanned: int, retired: int)`. Operator string derives `kept = scanned - retired` if needed.
+  12. **SIG — `maxItems: 8` in spec is static while registry is dynamic.** The registry is a *floor*, not a ceiling. Resolved: §1 now generates the tool spec dynamically per channel — `make_verse_tool_specs(*, max_actors)` takes the per-channel registry value at call time. `make_verse_tool_specs()` is already called per assistant request, so the per-channel reach exists.
+  13. **MINOR cleanups** integrated inline:
+      - Renames: `actor_avatar_id` → `actor_id`, `subjects` → `actors`, `find_entity_by_name_active_first` → `find_active_entity_by_name`.
+      - Summary too long: returns `ToolResult(error=...)` rather than silent truncation.
+      - Subjects with empty/whitespace-only or non-string entries: filter before slicing (filter-then-slice fixes the integer-eats-a-slot footgun).
+      - Wrong test name in v1 §7 (`test_dispatch_verse_tool_call_unknown_op`) corrected to actual impacted assertions: `tests/verse/test_avatar.py:617` (the literal 4-set `assert set(handlers.keys()) == {…}`) and the `_verse_names` literal at `avatar.py:452` (must grow to 5-set).
+      - `_register_verse_tools` → real call site is `plugin.py:3281` `make_verse_extra_handlers(verse_route.store, verse_route.avatar_id)`.
+      - Wiring test (§7 #11) verifies per-channel registry scope of `verseAutoEntityRetireDays`.
+      - `verseRecordAvatarPrecedence` reference removed from §2 (out of scope = nowhere mentioned).
+      - Operator guide §8 lists the three new H2 anchors so a reviewer can spot collisions.
+      - `last_seen_ts` as attribute row is fine for v1; documented as a known scale concern in §9 ("revisit if aging-pass latency exceeds ~50ms").
+      - Realistic line estimate: ~900, not 770. §10 updated.
 
 ---
 
 ## 1. Tool surface
 
-`make_verse_tool_specs()` (`verse/avatar.py:16`) gains a fifth entry:
+`make_verse_tool_specs(*, max_actors: int = 8)` (`verse/avatar.py:16`) gains a fifth entry. The function signature gains a keyword arg so the per-channel registry value `verseAutoEntityMaxNamesPerCall` flows into the advertised `maxItems` — without this, the registry would be a floor (the model refuses to send more than the static cap) instead of a ceiling. `make_verse_tool_specs` is already called per assistant request, so the per-channel reach is free.
 
 ```jsonc
 {
@@ -40,24 +64,27 @@
       "Record an in-world event involving one or more named actors. "
       "Use whenever a member narrates events that aren't strictly about "
       "their own avatar (e.g. \"stinky dan threw a guff grenade at "
-      "Andrew\"). Names that don't match an existing entity are "
-      "auto-created as kind=npc. Only include actors central to the "
-      "narrated event — do not capture every noun in the sentence.",
+      "Andrew\" — record actors=[\"stinky dan\",\"Andrew\"], the grenade "
+      "stays in the summary as prose). Names that don't match an existing "
+      "entity are auto-created as kind=npc. Items, places, and weapons "
+      "are NOT actors — only put characters/people in the actors list.",
     "parameters": {
       "type": "object",
       "properties": {
         "summary": {
           "type": "string",
           "description":
-            "What happened, in past tense, ≤200 chars. e.g. "
-            "'stinky dan threw a guff grenade at Andrew'."
+            "What happened, in past tense, ≤200 chars. The full prose "
+            "narration including any items, places, or weapons mentioned. "
+            "e.g. 'stinky dan threw a guff grenade at Andrew'."
         },
-        "subjects": {
+        "actors": {
           "type": "array",
           "items": { "type": "string" },
-          "maxItems": 8,
+          "maxItems": "<max_actors>",   // ← injected from registry per channel
           "description":
-            "Names of actors central to the event. Up to 8."
+            "Names of CHARACTERS (people/npcs) central to the event. "
+            "Do NOT include items, weapons, places, or abstractions."
         }
       },
       "required": ["summary"]
@@ -66,119 +93,177 @@
 }
 ```
 
-**Dropped from the v0 sketch (per Codex):**
+**Decisions vs v0 sketch:**
 
-- `objects: string[]` — items and places have downstream behavioural differences (movement, scene). v1 doesn't auto-create either; loom + manual `@verseopt`/proposals remain the only path. If members want to mention an item-like noun, they put it in the `summary` text and skip linking.
-- `subjects` defaulting to multi-kind auto-create — v1 only auto-creates `npc`. An existing entity of any kind matches first via the lookup policy below; only when nothing matches do we mint an npc.
-
-`maxItems: 8` matches `verseAutoEntityMaxNamesPerCall` (registry-tunable). The user has signalled "lots of entities" — 8 is generous for a single sentence and bounds high-cardinality flooding from runaway model output. Operators can lower; raising past 16 should be discouraged in the doc.
+- `subjects` → `actors` — the v0 name implied grammatical subjects (actors *doing*), but the description includes patients ("threw at Andrew"). `actors` is honest and cuts model hesitation.
+- `objects: string[]` dropped from v1. Items and places have downstream behavioural differences (movement, scene snapshots, item-take/drop verbs in `verse_act`). The flagship example records *Dan* and *Andrew* as entity links; the *grenade* is prose only. Documented in the tool description and operator guide so the model behaves predictably. Item/place auto-create is a follow-up if real verses surface the need.
+- Auto-create kind is fixed to `npc`. An existing entity of any kind matches first via the lookup policy below; only when nothing matches do we mint an npc.
+- `maxItems` is dynamic, defaulting to 8 (matches `verseAutoEntityMaxNamesPerCall` default). The user signalled "lots of entities" — 8 is generous for a single sentence and bounds high-cardinality flooding. Operators can raise/lower per channel; raising past 16 should be discouraged in the doc.
 
 ## 2. Lookup policy & precedence
 
 Codex's most important call-out: today's `find_entity_by_name(name)` returns the first id ASC across **all kinds and statuses**, contradicting the spec'd `avatars > npcs > items > places` precedence. Either the spec is wrong or the impl is. We're doing both: a new helper, and an explicit decision on precedence.
 
-**New method:** `VerseStore.find_entity_by_name_active_first(name) -> Entity | None`
+**New method:** `VerseStore.find_active_entity_by_name(name) -> Entity | None`
 
 ```python
-def find_entity_by_name_active_first(self, name: str) -> Entity | None:
+def find_active_entity_by_name(self, name: str) -> Entity | None:
     """Resolve a name with precedence avatar > npc > item > place,
-    only over status='active' entities. Case-insensitive.
-
-    Used by verse_record to bind narration to a real avatar when the
-    name matches one, and to reuse npcs the verse has already met."""
+    case-insensitive, restricted to status='active'. Single SQL via
+    CASE on kind. Used by verse_record to bind narration to a real
+    avatar when the name matches one, and to reuse active npcs the
+    verse has already met. Retired entities are never returned (so
+    new mentions create a fresh row instead of silently rehydrating)."""
 ```
-
-Implemented as a single SQL with `CASE` ordering on `kind` so it stays one round-trip. Filters `status='active'` — so retired entities never get silently rehydrated by a new mention (Codex SIG #5).
 
 The legacy `find_entity_by_name(name, kind=...)` stays as-is for `verse_act`'s movement/item lookups (those genuinely want a kind filter and don't care about precedence).
 
-**Precedence decision: avatar-first stays.** Codex flagged the risk that "Andrew did X" silently links a real player's avatar to junk. Counterweight:
+**Precedence decision: avatar-first stays.** Codex's senior-review pass flagged the risk that "Andrew did X" silently links a real player's avatar to junk. Counterweight:
 - Members deliberately opt in via `@verseopt in`; their avatar identity is durable via `avatar_link`. Ambient narration referencing them by nick is the *desired* behaviour ("Andrew laughed" should attach to Andrew's avatar so `verse_recall` and `@verseproposals` reflect what the verse says about Andrew).
 - Avatar-first is what makes `verse_record` work for the Forest mode case where multiple humans co-narrate.
 - Mitigation: when a name resolves to an avatar, **don't bump `last_seen_ts`** and **don't tag `auto_created`** (the avatar wasn't created by this call and isn't aging out). The avatar's identity is unaffected; only the event row links.
 
-A per-channel registry key `verseRecordAvatarPrecedence` (default `True`) lets an operator disable avatar-first if a verse turns out to suffer from name collisions. Out of scope for v1 unless the test pass surfaces a real failure mode.
+**Avatar opt-out / re-opt-in edge case (Codex v2 SIG #6).** The unlink path deletes `avatar_link` and retires the entity (`store.py:345-356`). State machine after a member opts out, gets mentioned (auto-NPC created), then opts back in:
+
+| Step | entities table | avatar_link |
+|---|---|---|
+| Initial: opted in | `(id=1, kind=avatar, name=Andrew, status=active)` | `(entity_id=1, nick=andrew, account=…)` |
+| Opt out | `(id=1, status=retired)` | _deleted_ |
+| Member mentioned by verse_record | `(id=1, retired)`, `(id=2, kind=npc, name=Andrew, status=active, auto_created=1)` | _none_ |
+| Opt back in | `(id=1, retired)`, `(id=2, npc active)`, `(id=3, kind=avatar, name=Andrew, status=active)` | `(entity_id=3, …)` |
+
+After re-opt-in, `find_active_entity_by_name("Andrew")` returns `id=3` (avatar wins by precedence). `id=2` is an orphan NPC that aging will retire after `verseAutoEntityRetireDays` of no further mentions — provided no future `verse_record` mentions "Andrew" before then (each mention now resolves to id=3 and bumps id=3's nothing — avatars don't bump). Worst case the orphan lingers `verseAutoEntityRetireDays`. Documented behaviour; not blocking.
 
 ## 3. Dispatch
 
-New branch in `dispatch_verse_tool_call` (`verse/avatar.py:383`):
+**Pre-requisite: dispatch contract retrofit (Step 0a).** Today `dispatch_verse_tool_call` returns `None` and `make_verse_extra_handlers` always returns `{"status":"ok","tool":name}` — so any error or success payload `verse_record` tries to surface is invisible to the model. v2 retrofits both:
+
+```python
+@dataclass
+class VerseDispatchResult:
+    ok: bool
+    payload: dict[str, Any] | None = None   # serialised to tool result on success
+    error: str | None = None                # surfaced as tool error on failure
+
+def dispatch_verse_tool_call(store, avatar_id, name, args, *, logger, now=time.time):
+    # returns VerseDispatchResult; existing four branches return ok=True with
+    # payload={'status': 'ok'} so the JSON the model sees is unchanged.
+```
+
+The four existing branches change from side-effect-only to returning `VerseDispatchResult(ok=True, payload={"status": "ok"})`. `make_verse_extra_handlers._handler._call` consumes the result and either emits the payload as the tool content or sets a tool error. No behaviour change for existing tools; new contract for `verse_record`.
+
+**New branch in `dispatch_verse_tool_call` (`verse/avatar.py:383`):**
 
 ```python
 elif name == "verse_record":
-    summary = (args.get("summary") or "").strip()[:200]
+    summary = (args.get("summary") or "").strip()
     if not summary:
-        return ToolResult(error="summary required")
-    raw_subjects = args.get("subjects") or []
-    if not isinstance(raw_subjects, list):
-        return ToolResult(error="subjects must be an array")
-    max_names = ...  # passed in via dispatch context, see §5
-    subjects = [s.strip() for s in raw_subjects[:max_names] if isinstance(s, str)]
+        return VerseDispatchResult(ok=False, error="summary required")
+    if len(summary) > 200:
+        return VerseDispatchResult(
+            ok=False, error=f"summary too long: {len(summary)} chars (max 200)"
+        )
+    raw = args.get("actors") or []
+    if not isinstance(raw, list):
+        return VerseDispatchResult(ok=False, error="actors must be an array")
+    # Filter THEN slice — order matters. raw=["alice", 42, "bob"] with
+    # max=2 must yield ["alice","bob"], not ["alice"] (the 42 ate a slot).
+    max_actors = args.get("_max_actors", 8)        # closure-injected
+    cleaned = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+    actors = cleaned[:max_actors]
     event_id = store.record_user_event(
-        actor_avatar_id=avatar_id,
+        actor_id=avatar_id,
         summary=summary,
-        subject_names=subjects,
+        actor_names=actors,
         now=now,
     )
-    return ToolResult(content=json.dumps({"event_id": event_id}))
+    return VerseDispatchResult(
+        ok=True, payload={"status": "ok", "event_id": event_id}
+    )
 ```
 
-The DB work is pushed into a new store method `record_user_event` so the **find-or-create-then-link** is atomic in one `write_transaction`:
+**The DB work is pushed into a new store method `record_user_event`** so find-or-create-then-link is atomic in one `write_transaction`:
 
 ```python
-def record_user_event(self, *, actor_avatar_id, summary, subject_names, now):
-    """Resolve subject_names to entity ids (auto-create as npc if
-    unknown), bump last_seen_ts on each, and write the event row in
-    one transaction. Returns the new event id.
+def record_user_event(self, *, actor_id, summary, actor_names, now):
+    """Resolve actor_names to entity ids (auto-create as npc if unknown),
+    bump last_seen_ts on each non-avatar, and write the event row — all
+    in one write_transaction. Returns the new event id.
 
-    Race-safe: holds the write lock across find-or-create. Two
-    concurrent verse_record calls for the same npc name will not
-    create duplicates."""
+    Concurrency scope: safe across callers sharing one cached VerseStore
+    instance per channel within one process (the loom and verse_record
+    both go through _get_or_create_verse_store in plugin.py). Multiple
+    processes touching the same DB or multiple VerseStore instances for
+    the same channel are NOT defended against; out of scope for v1."""
     with self.write_transaction() as conn:
-        ids = [actor_avatar_id]
-        for raw in subject_names:
-            entity = self._lookup_in_tx(conn, raw)        # active-first, precedence
+        ids = [actor_id]
+        for name in actor_names:
+            entity = self._find_active_entity_by_name_inline(conn, name)
             if entity is None:
-                eid = self._add_entity_in_tx(conn, "npc", raw, "")
-                self._set_attr_in_tx(conn, eid, "auto_created", "1")
+                eid = self._add_entity_inline(conn, "npc", name, "")
+                self._set_attribute_inline(conn, eid, "auto_created", "1")
+                self._set_attribute_inline(conn, eid, "last_seen_ts", str(now()))
             else:
                 eid = entity.id
-                if entity.kind != "avatar":               # don't tag avatars
-                    self._set_attr_in_tx(conn, eid, "last_seen_ts", str(now()))
+                if entity.kind != "avatar":
+                    self._set_attribute_inline(conn, eid, "last_seen_ts", str(now()))
             ids.append(eid)
-        return self._add_event_in_tx(
+        return self._add_event_inline(
             conn, summary=summary, entity_ids=ids, source="avatar"
         )
 ```
 
-**`source='avatar'` (not `'user_record'`).** Codex FATAL: `events.source` has a CHECK constraint to `('avatar','loom','crosspoll')` (`verse/schema.sql:43`). Adding a fourth value requires a migration; SQLite's `ALTER TABLE` doesn't drop a CHECK so the migration is a table-rebuild. **v1 reuses `'avatar'`** since the actor *is* the caller's avatar acting on the world. The provenance loss (can't audit user-record vs verse_act) is documented as a known v1 limitation; a follow-up PR can add a fifth source via a one-shot rebuild migration.
+**FATAL fix: `_*_inline(conn, …)` helpers are NEW.** Codex v2 caught that `write_transaction` is non-reentrant (uses `threading.Lock`, see `opt_in_avatar`'s warning at `store.py:471-475`). Calling public `add_entity` / `set_attribute` / `add_event` from inside `record_user_event`'s transaction would *deadlock*. **Step 0b** in §11 refactors those public mutators to expose `_inline` private helpers that take an open `conn` and skip the lock. The public methods become thin wrappers that open their own transaction and delegate. `_apply_op_inline` in `loom.py` is the working precedent. No behaviour change to public API; all existing tests stay green.
 
-`_lookup_in_tx` calls the same SQL as `find_entity_by_name_active_first` but on the open connection. `_add_entity_in_tx` and `_set_attr_in_tx` are the existing private TX helpers.
+**`source='avatar'` (not `'user_record'`).** Codex v1 FATAL: `events.source` has a CHECK constraint to `('avatar','loom','crosspoll')` (`verse/schema.sql:43`). Adding a fourth value requires a table-rebuild migration. **v1 reuses `'avatar'`** since the actor *is* the caller's avatar acting on the world. The provenance loss (can't audit user-record vs verse_act, loom can't tell the difference in transcript ingest) is documented as a known v1 limitation; a follow-up PR can extend the CHECK with a one-shot rebuild migration if the loom turns out to riff badly on user-recorded events.
 
-## 4. Aging
+## 4. Aging & compaction outcome
+
+### 4.1 Aging helper
 
 New module `verse/aging.py`:
 
 ```python
+class AgingOutcome(NamedTuple):
+    scanned: int
+    retired: int
+    # `kept` derived as `scanned - retired` if needed; storing it
+    # would invite invariant-violation bugs (Codex v2 SIG #11).
+
 def age_auto_created_entities(
     store, *, retire_after_days, now
 ) -> AgingOutcome:
     """Soft-retire auto_created='1' entities whose last_seen_ts is
-    older than now - retire_after_days*86400. Returns
-    AgingOutcome(scanned, retired, kept). Skips kind='avatar' entities
-    defensively even if somehow tagged. retire_after_days<=0 disables."""
+    older than now - retire_after_days*86400. Skips kind='avatar'
+    defensively. retire_after_days<=0 disables (returns (0,0))."""
 ```
 
-Single SQL: `SELECT id, last_seen_ts attribute FROM entities JOIN attributes WHERE auto_created='1' AND status='active' AND kind!='avatar'`. Iterate in Python; flip status with `set_status` (existing).
+Single SQL: `SELECT entities.id, attributes.value AS last_seen FROM entities JOIN attributes ON … WHERE attributes.key='auto_created' AND attributes.value='1' AND entities.status='active' AND entities.kind != 'avatar'`. Iterate in Python; flip status with `set_status` (existing).
 
-**`min_keep_references` is dropped from v1.** Codex SIG #2.1: lifetime event-counts are unreliable post-compaction (compaction deletes raw events). `last_seen_ts` is sufficient — entities that get re-mentioned stay alive; entities that don't, age out. Simpler, no compaction-interaction bugs.
+**`min_keep_references` is dropped.** Codex v1 SIG #2.1: lifetime event-counts are unreliable post-compaction (compaction deletes raw events). `last_seen_ts` is sufficient — entities re-mentioned stay alive; quiet entities age out. Simpler, no compaction-interaction bugs.
 
-**Heartbeat sources** (everywhere `last_seen_ts` is bumped):
+### 4.2 Heartbeat scope (narrowed per Codex v2 SIG #10)
 
-1. `record_user_event` — for non-avatar subjects.
-2. `apply_or_queue` (loom apply path, `verse/loom.py`) — when a loom proposal references an existing entity, bump it. Closes Codex SIG #2.2.
-3. `replace_events_with_lore_digest` (`verse/compaction.py`) — when an entity survives the truncated `entity_ids` list (≤32) of a freshly-written digest event, bump its `last_seen_ts` to "now". Closes Codex SIG #4.2: the entity may have lost raw event references in compaction, but the digest IS the heartbeat. Entities truncated out of the digest are exactly the ones we want to consider for aging — they carry no recent signal.
+`last_seen_ts` is bumped at exactly three sites — *not* "every code path that touches an entity" (the v1 doc overclaimed):
 
-Heartbeat-on-lookup is the simpler property than the v0 sketch's "count references over lifetime" rule, and it falls out cleanly from "every code path that touches an entity bumps its timestamp."
+1. **`record_user_event`** — every non-avatar entity referenced by an `actors` list, on every call.
+2. **`apply_or_queue` in `verse/loom.py`** — only when the proposal lands as `applied` or `crosspoll_emitted`. Codex v2 SIG: `queued`/`rejected_invalid_refs` proposals must NOT bump (low-confidence model output shouldn't keep junk alive). Tested as a negative case in §7 #9.
+3. **`_replace_events_with_source` in `verse/store.py`** — *not* in `compaction.py`. The bump runs on the same `conn` that wrote the digest, atomically. Each entity in the digest's truncated `union_ids[:32]` list gets its `last_seen_ts` set to the digest's `now()`. Codex v2 SIG #5: this is the heartbeat call site, not `compaction.py`.
+
+Other paths that touch entities — `verse_act`, `verse_move`, `verse_look`, `verse_recall`, `add_relation`, `opt_in_avatar` — do **not** bump. Auto-NPCs are kept alive *only* by re-mention via `verse_record` or by surviving compaction's digest. Documented in the operator guide.
+
+### 4.3 `compact_verse` return shape change
+
+§8's outcome string requires counts that the current `compact_verse` doesn't surface. v2 changes the return type:
+
+```python
+class CompactionOutcome(NamedTuple):
+    state: str           # 'compacted' | 'skipped_disabled' | 'skipped_below_floor' | 'skipped_no_events'
+    total_events: int    # COUNT(*) FROM events at pass entry
+    kept_in_digest: int  # len(union_ids[:32]) when state=='compacted', else 0
+```
+
+This breaks the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` — migrated as part of Step 5b (split). The plugin-side caller already has `min_keep_events` (it's an input), so the friendlier outcome string can render without a second query.
 
 ## 5. Configuration
 
@@ -213,34 +298,55 @@ Each numbered item maps to a Codex finding from the v0 inline sketch.
 
 ## 7. Tests
 
-`tests/test_verse_record.py` (new):
+### `tests/verse/test_verse_record.py` (new)
 
-1. `verse_record` with all-new names creates `kind='npc'` entities, links event with caller's avatar id first.
-2. Existing avatar with the same name as a `subject` is linked instead of inventing an npc; the avatar gets neither `auto_created='1'` nor a `last_seen_ts` bump.
-3. Existing npc with the same name is reused; `last_seen_ts` is bumped.
-4. Repeated `verse_record` for the same npc keeps one entity row; `last_seen_ts` is the most recent value.
-5. **Race**: two `verse_record` calls in parallel for the same new name produce one entity. (Use `threading` + the real SQLite write lock; two threads race the find-or-create.)
-6. Retired entity with the same name as a subject is **not** rehydrated — a new active npc is created instead. Closes the active-filter gap.
-7. `subjects` longer than `verseAutoEntityMaxNamesPerCall` is truncated, not rejected. The first N are processed.
-8. Empty `summary` returns a tool error; no DB writes.
+1. `verse_record` with all-new names creates `kind='npc'` entities, links event with caller's avatar id first in `entity_ids`.
+2. Existing avatar with the same name as an `actor` is linked (avatar-first precedence); the avatar gets neither `auto_created='1'` nor a `last_seen_ts` bump (verify via `get_attribute` returning None).
+3. Existing npc with the same name is reused (single entity row, not a duplicate); `last_seen_ts` is bumped to `now()`.
+4. Repeated `verse_record` for the same npc keeps one entity row; `last_seen_ts` is the most recent timestamp.
+5. **Race (real)** — pattern modelled on `test_concurrent_opt_in_distinct_nicks_one_place` (`test_store.py:611-629`) and `test_crosspoll_store.py:84-108`. Mock `time.sleep` between `_find_active_entity_by_name_inline` and `_add_entity_inline` so the contention window is real; two threads race the find-or-create on the same `VerseStore` instance and only one entity row results. Without the sleep injection the test passes trivially (Python lock serialises) — **the sleep IS the test**.
+6. Retired entity with the same name as an actor is **not** rehydrated — a new active npc is created instead. Verifies the active-filter in `find_active_entity_by_name`.
+7. `actors` longer than `verseAutoEntityMaxNamesPerCall` is truncated to the first N after non-string filtering; mixed-type input `["alice", 42, "bob"]` with `max_actors=2` yields actors `["alice","bob"]` (filter-then-slice).
+8. Empty `summary` returns `VerseDispatchResult(ok=False, error="summary required")`; no DB writes.
+9. `summary` longer than 200 chars returns `VerseDispatchResult(ok=False, error="summary too long: …")`; no truncation, no DB writes (model is expected to retry).
+10. **Avatar opt-out → re-opt-in three-row state** (Codex v2 SIG #6): opt in alice, opt out, `verse_record actors=[alice]` creates auto-NPC, opt back in. Subsequent `verse_record actors=[alice]` resolves to the NEW avatar id (not the orphan NPC). The orphan NPC ages out after `retire_after_days`.
+11. Subject names case-collide with avatars — `actors=["ANDREW"]` resolves to avatar "andrew" (case-insensitive `LOWER(name) = LOWER(?)` already in `find_entity_by_name`).
+12. Empty/whitespace-only actor strings (`actors=["", "  ", "alice"]`) are filtered before slicing — only "alice" is processed; no empty-name entities created.
+13. `actor_id` pointing at a *retired* avatar raises (matching `verse_act`'s "avatar retired" guard).
 
-`tests/test_verse_aging.py` (new):
+### `tests/verse/test_verse_aging.py` (new)
 
 1. Auto-created npc with `last_seen_ts` past cutoff is retired.
 2. Auto-created npc with `last_seen_ts` recent is kept.
 3. Manually-created entity (no `auto_created='1'` attribute) is never touched, even past cutoff.
-4. Avatar with `auto_created='1'` (defensive: shouldn't happen, but if it does) is never retired.
-5. `retire_after_days=0` makes the helper a no-op.
-6. **Compaction interaction**: auto-created npc with 3 raw event references runs through `replace_events_with_lore_digest`, the digest event includes its id, aging then runs — entity stays active because the digest bumped `last_seen_ts`. Closes the trickiest Codex finding.
-7. **Compaction-truncation interaction**: same setup as #6 but with 40 entities so the digest truncates to 32 and excludes our npc; aging then retires it. Documents and verifies the intentional behaviour.
+4. Avatar with `auto_created='1'` (defensive: shouldn't happen) is never retired (the `kind != 'avatar'` guard).
+5. `retire_after_days=0` makes the helper a no-op (returns `AgingOutcome(0,0)`).
+6. **Compaction interaction (heartbeat fires)**: auto-created npc with 3 raw event references; run `replace_events_with_lore_digest`; aging runs immediately after. Assert `get_attribute(entity_id, "last_seen_ts")` equals the digest's `now()` *and* entity status remains `active`. Heartbeat call site is `_replace_events_with_source` (verified by reading the test target).
+7. **Compaction-truncation interaction (intentional retire)**: same setup as #6 but with `_MAX_DIGEST_ENTITY_IDS + 8` entities (imported from `verse.compaction`, not hardcoded — bumping the constant must not silently invert this test). The truncation drops our npc from the digest's `union_ids`; aging then correctly retires it.
+8. **Loom heartbeat (positive)** — Codex v2 SIG #7: an `apply_or_queue` call landing as `applied` or `crosspoll_emitted` bumps `last_seen_ts` on every referenced entity.
+9. **Loom heartbeat (negative)** — Codex v2 SIG #7: an `apply_or_queue` call landing as `queued` (low confidence) or `rejected_invalid_refs` does NOT bump. Critical: low-confidence model output must not keep aging junk alive.
 
-`tests/test_verse_record_wiring.py` (new, plugin-level):
+### `tests/test_plugin.py` additions (plugin-level wiring)
 
-8. `_run_compaction_pass` calls `age_auto_created_entities` once per `_verse_enabled_channels()` entry.
-9. Aging exception in one channel doesn't abort the pass for others (mirror the existing `_run_compaction_pass` failure-isolation test).
-10. The verse-tool dispatch closure passes `verseAutoEntityMaxNamesPerCall` from the registry to `dispatch_verse_tool_call`.
+10. `_run_compaction_pass` calls `age_auto_created_entities` once per channel returned by `_verse_enabled_channels()`.
+11. The aging call reads `verseAutoEntityRetireDays` at the *channel* scope, not the global scope (verify via `registryValue` mock with `channel=` kwarg assertion).
+12. An aging exception in one channel doesn't abort the pass for others (mirror existing `_run_compaction_pass` failure-isolation test).
+13. `make_verse_tool_specs(max_actors=N)` with N from `verseAutoEntityMaxNamesPerCall` flows into the dispatch closure built at `plugin.py:3281`.
 
-Existing test that's likely to break and needs update: `test_dispatch_verse_tool_call_unknown_op` — add `verse_record` to the known-ops list.
+### `tests/verse/test_avatar.py` updates
+
+14. `test_unknown_tool_name_logged_and_skipped` (`tests/verse/test_avatar.py:596`) is unaffected; the actually-impacted assertions are:
+    - The 4-set assertion at `tests/verse/test_avatar.py:617` (`assert set(handlers.keys()) == {…}`) becomes a 5-set.
+    - `_verse_names` literal at `avatar.py:452` grows from a 4-set to a 5-set.
+    - Any test asserting `len(make_verse_tool_specs()) == 4` becomes `== 5`.
+
+### `tests/verse/test_compaction.py` updates (Step 5b)
+
+15. Migrate string-equality assertions at lines 47, 66, 92, 192 to NamedTuple `.state` lookups: `out.state == "compacted"` etc.
+
+### `tests/verse/test_avatar.py` dispatch-contract updates (Step 0a)
+
+16. Existing tests verifying `dispatch_verse_tool_call` returns `None` are updated to assert `VerseDispatchResult(ok=True, payload={"status":"ok"})` for the four existing tools (no behaviour change observable via the wrapper's JSON output).
 
 ## 8. Operator UX
 
@@ -271,31 +377,60 @@ Document `verse_record` in `docs/guide/operator/forest-verse.md`:
 
 | Path | Lines |
 |---|---|
-| `plugins/llm/src/llm/verse/avatar.py` (tool spec + dispatch branch) | +35 |
-| `plugins/llm/src/llm/verse/store.py` (record_user_event + lookup + 1 attr query) | +60 |
-| `plugins/llm/src/llm/verse/aging.py` (new) | +50 |
-| `plugins/llm/src/llm/verse/loom.py` (heartbeat in apply_or_queue) | +5 |
-| `plugins/llm/src/llm/verse/compaction.py` (heartbeat in digest write) | +5 |
-| `plugins/llm/src/llm/plugin.py` (compaction-pass hook + outcome string + dispatch closure) | +25 |
+| `plugins/llm/src/llm/verse/avatar.py` (tool spec + dispatch branch + `VerseDispatchResult` + 4-branch return migration) | +60 |
+| `plugins/llm/src/llm/verse/store.py` (Step 0b inline-helper extraction + record_user_event + lookup + attr query + heartbeat in `_replace_events_with_source`) | +120 |
+| `plugins/llm/src/llm/verse/aging.py` (new) | +60 |
+| `plugins/llm/src/llm/verse/loom.py` (heartbeat in apply_or_queue, applied/crosspoll-emitted only) | +10 |
+| `plugins/llm/src/llm/verse/compaction.py` (`CompactionOutcome` NamedTuple + return-shape migration) | +20 |
+| `plugins/llm/src/llm/plugin.py` (compaction-pass hook + new outcome string + max_actors plumbing at `:3281`) | +35 |
 | `plugins/llm/src/llm/config.py` (two registry keys) | +20 |
-| `plugins/llm/tests/test_verse_record.py` (new) | +200 |
-| `plugins/llm/tests/test_verse_aging.py` (new) | +180 |
-| `plugins/llm/tests/test_verse_record_wiring.py` (new) | +120 |
-| `docs/guide/operator/forest-verse.md` (3 new sections) | +60 |
-| `CHANGELOG.md` | +10 |
+| `plugins/llm/tests/verse/test_verse_record.py` (new, tests #1-13) | +280 |
+| `plugins/llm/tests/verse/test_verse_aging.py` (new, tests #1-9) | +220 |
+| `plugins/llm/tests/test_plugin.py` additions (tests #10-13) | +120 |
+| `plugins/llm/tests/verse/test_compaction.py` migration (Test #15, four sites) | +20 |
+| `plugins/llm/tests/verse/test_avatar.py` 5-set + dispatch-contract updates (Tests #14, #16) | +30 |
+| `docs/guide/operator/forest-verse.md` (3 new H2 sections) | +80 |
+| `CHANGELOG.md` | +15 |
 
-Total ~770 lines. One PR. No schema migration.
+Total **~1090 lines**. One PR. No schema migration. v1's 770-line estimate undercounted Step 0a (dispatch retrofit), Step 0b (inline-helper extraction across 4+ public methods), `CompactionOutcome` migration, and the loom heartbeat tests.
 
 ## 11. Implementation order
 
-For a follow-up PR plan doc (`2026-05-09-verse-record-pr1.md`):
+For the follow-up PR plan doc (`2026-05-09-verse-record-pr1.md`). Each step is independently red-green-commit-able; integration gates are noted.
 
-1. Store: `find_entity_by_name_active_first`, `list_entities_with_attribute`, `record_user_event` — TDD red-green for each.
-2. Aging helper + tests.
-3. Heartbeat wiring in loom + compaction (3 lines × 2 sites; tests already in test_verse_aging.py #6 and #7).
-4. Tool spec + dispatch branch + tests.
-5. Compaction-pass hook in plugin + outcome string + wiring tests.
-6. Operator guide update.
-7. CHANGELOG.
+**Step 0a — Dispatch contract retrofit.** Introduce `VerseDispatchResult`. Change `dispatch_verse_tool_call` to return it; update `make_verse_extra_handlers._handler._call` to consume it. The four existing branches return `VerseDispatchResult(ok=True, payload={"status":"ok"})`; observable JSON to the model is unchanged. Migrate the dispatch-call tests (Test #16 above). **Gate**: `tests/verse/test_avatar.py` green; no other tests should change.
 
-Each step is independently red-green-commit-able; the final wiring test is the integration gate.
+**Step 0b — Store mutator inline-helper extraction.** Refactor `add_entity`, `set_attribute`, `add_event`, `set_status` to delegate to private `_*_inline(conn, …)` helpers. Public methods become thin wrappers that open `write_transaction` and call the inline helper. Models on `_apply_op_inline` in `loom.py`. **No behaviour change**, all existing store tests stay green. **Gate**: full `pytest plugins/llm/tests/verse/` green.
+
+**Step 1 — New store queries.** TDD red-green for `find_active_entity_by_name(name)`, `list_entities_with_attribute(key, value, *, status)`. Inline variants (`_find_active_entity_by_name_inline`, `_set_attribute_inline`) come from Step 0b.
+
+**Step 2 — `record_user_event`.** TDD red-green using the inline helpers from Steps 0b + 1. Race test (#5) with sleep injection. **Gate**: tests #1-13 from §7 green.
+
+**Step 3 — Aging helper + tests #1-5.** New `verse/aging.py`; pure helper. **Gate**: tests #1-5 from §7 green.
+
+**Step 4 — Heartbeat wiring.** Three sites:
+- `record_user_event` already does it (Step 2).
+- `_replace_events_with_source` in `verse/store.py` — bump `last_seen_ts` for every entity in `union_ids[:32]` after the digest insert, on the same `conn`. Tests #6, #7.
+- `apply_or_queue` in `verse/loom.py` — bump only when the result is `applied` or `crosspoll_emitted`. Tests #8, #9.
+
+**Gate**: tests #6-9 green.
+
+**Step 5a — Wire aging into the compaction pass.** Plugin's `_run_compaction_pass` calls `age_auto_created_entities` per channel after `compact_verse`. **Old enum-string outcome unchanged at this step.** Tests #10-12.
+
+**Step 5b — `compact_verse` returns `CompactionOutcome` NamedTuple + new outcome string.** Migrate the four assertion-on-string tests in `tests/verse/test_compaction.py:47, 66, 92, 192` (Test #15). Plugin renders the friendlier outcome including aging counts. **Gate**: full `pytest` green.
+
+**Step 6 — Tool spec + dispatch branch.** Add `verse_record` to `make_verse_tool_specs(max_actors=…)`; add the dispatch branch from §3 using `VerseDispatchResult`. Plumb `verseAutoEntityMaxNamesPerCall` from registry through the call site at `plugin.py:3281` (`make_verse_extra_handlers`). Test #13.
+
+**Step 7 — Operator guide + CHANGELOG.**
+- New H2 anchors in `docs/guide/operator/forest-verse.md`:
+  - `## Member-driven worldbuilding (verse_record)` — example `vibebot, stinky dan threw a guff grenade at Andrew` → resulting event row + linked entities.
+  - `## Auto-created NPCs and aging` — `verseAutoEntityRetireDays`, heartbeat semantics, "why do entities disappear" troubleshooting.
+  - `## Compaction outcome reference` — what each `CompactionOutcome.state` means in the friendlier string.
+- CHANGELOG entry under "Unreleased".
+
+**Step 8 — Re-review.** Before merging, dispatch:
+- `superpowers:requesting-code-review` (or `general-purpose` agent in code-review mode) over the diff.
+- `codex:codex-rescue` adversarial pass over the diff.
+Integrate findings inline. **Gate**: both reviewers say "ready to merge."
+
+**Step 9 — Wait for CI + Docker, restart prod, validate** per the standard protocol (CI green → wait for `Build and Push Docker Image` → `systemctl --user restart vibebot` → check logs for clean startup, no AssertionErrors, no 401s).
