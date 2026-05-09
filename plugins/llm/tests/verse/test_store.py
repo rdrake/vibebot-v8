@@ -1370,3 +1370,67 @@ class TestApplyProposalAndMarkEventSource:
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM events WHERE summary='once'").fetchone()[0]
         assert count == 1
+
+
+class TestFindActiveEntityByName:
+    def test_avatar_wins_over_npc(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        npc_id = store.add_entity("npc", "Andrew", "")
+        avatar_id = store.add_entity("avatar", "Andrew", "")
+        result = store.find_active_entity_by_name("Andrew")
+        assert result is not None and result.id == avatar_id
+        # Sanity: legacy kind-filtered call still finds the npc
+        legacy = store.find_entity_by_name("Andrew", kind="npc")
+        assert legacy is not None and legacy.id == npc_id
+
+    def test_case_insensitive(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        eid = store.add_entity("avatar", "andrew", "")
+        result = store.find_active_entity_by_name("ANDREW")
+        assert result is not None and result.id == eid
+
+    def test_skips_retired(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_status(eid, "retired")
+        assert store.find_active_entity_by_name("ghost") is None
+
+    def test_returns_none_when_no_match(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        assert store.find_active_entity_by_name("nobody") is None
+
+    def test_inline_variant_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        store.add_entity("npc", "moss", "")
+        with store.read_connection() as conn:
+            result = store._find_active_entity_by_name_inline(  # type: ignore[attr-defined]
+                conn, "moss"
+            )
+        assert result is not None and result.kind == "npc"
+
+    def test_npc_beats_item(self, verse_db_dir: Path) -> None:
+        """avatar > npc > item > place precedence — verify mid-tier."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#prec")
+        item_id = store.add_entity("item", "shard", "")
+        npc_id = store.add_entity("npc", "shard", "")
+        result = store.find_active_entity_by_name("shard")
+        assert result is not None and result.id == npc_id
+        # Ensure the item still exists — we picked, not deleted.
+        with store.read_connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM entities WHERE id IN (?, ?)",
+                (item_id, npc_id),
+            ).fetchone()[0]
+        assert count == 2

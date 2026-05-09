@@ -211,6 +211,40 @@ class VerseStore:
             row = conn.execute(sql, params).fetchone()
         return Entity(*row) if row else None
 
+    def _find_active_entity_by_name_inline(
+        self,
+        conn: sqlite3.Connection,
+        name: str,
+    ) -> Entity | None:
+        """Resolve a name with precedence avatar > npc > item > place,
+        case-insensitive, restricted to status='active'. Caller-provided
+        open conn (works under both read_connection and write_transaction).
+
+        Used by record_user_event (in-tx, must avoid lock reentry) and by
+        find_active_entity_by_name (out-of-tx, public)."""
+        row = conn.execute(
+            "SELECT id, kind, name, summary, status, created_at, updated_at"
+            " FROM entities"
+            " WHERE LOWER(name) = LOWER(?) AND status = 'active'"
+            " ORDER BY"
+            "   CASE kind"
+            "     WHEN 'avatar' THEN 0"
+            "     WHEN 'npc'    THEN 1"
+            "     WHEN 'item'   THEN 2"
+            "     WHEN 'place'  THEN 3"
+            "     ELSE 4"
+            "   END,"
+            "   id ASC"
+            " LIMIT 1",
+            (name,),
+        ).fetchone()
+        return Entity(*row) if row else None
+
+    def find_active_entity_by_name(self, name: str) -> Entity | None:
+        """Public wrapper around _find_active_entity_by_name_inline."""
+        with self.read_connection() as conn:
+            return self._find_active_entity_by_name_inline(conn, name)
+
     def _set_status_inline(
         self,
         conn: sqlite3.Connection,
