@@ -20,6 +20,14 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Added
 
+- `verse_record` assistant tool: opted-in verse members can narrate events
+  involving entities other than themselves; unknown actors auto-create as
+  `kind=npc`.
+- `verseAutoEntityRetireDays` (default 14, per-channel): soft-retire
+  auto-created NPCs after this many days without a heartbeat.
+- `verseAutoEntityMaxNamesPerCall` (default 8, per-channel): hard cap on
+  the `actors` array length advertised by the tool spec and enforced by
+  dispatch.
 - Forest-verse: per-channel SQLite entity graph + avatar shim. New commands
   `@verseopt`, `@verse`, `@look`, `@who`, plus owner commands `@versedump`,
   `@versepurge`. New capabilities `llm.verse` and `llm.verse.gm`.
@@ -44,6 +52,17 @@ own conventional-commit history (`type(scope): summary`).
   command `@versecompact #channel` runs it on demand.
 - Forest-verse: loom prompt now grounds entity ids inline so the digest
   model stops inventing them.
+
+### Changed
+
+- `compact_verse` returns a `CompactionOutcome` NamedTuple instead of a
+  string. Operator-visible compaction messages now include aging counts.
+- `dispatch_verse_tool_call` returns a structured `VerseDispatchResult`
+  so verse tools can surface error and payload data to the model. The
+  four legacy tools' observable JSON is unchanged.
+- `find_active_entity_by_name(name)` resolves names with the documented
+  `avatar > npc > item > place` precedence and skips retired entities.
+  The legacy `find_entity_by_name(name, kind=...)` is unchanged.
 
 ### Bug Fixes
 
