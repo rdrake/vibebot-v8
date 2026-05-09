@@ -96,14 +96,24 @@ class TestRecordUserEvent:
     def test_concurrent_record_same_actor_one_row(
         self, store: VerseStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Two threads race record_user_event for the same unknown actor.
-        A `time.sleep(0.01)` is monkey-patched between find and insert so
-        the contention window is real (without it, the Python lock
-        serialises everything and the test passes trivially — the sleep
-        IS the test).
+        """Two threads racing record_user_event for the same unknown actor
+        produce exactly one entity row. The Python `threading.Lock` inside
+        `write_transaction()` is what enforces this — both threads serialise
+        behind it; the second thread sees the just-created npc on its find
+        and skips the auto-create branch.
 
-        Both threads start at a Barrier so they enter find at the same
-        instant. Exactly one entity row results."""
+        A `time.sleep(0.01)` is monkey-patched between find and add to widen
+        the contention window for the lock-holding thread (without it, the
+        test would still pass but with a smaller probability of catching a
+        genuine ordering bug). The sleep lands INSIDE `write_transaction`,
+        after the lock is acquired — so this test exercises lock-held
+        serialisation, not a SQLite-level race. That's intentional: the
+        Python lock IS the safety mechanism for single-process callers (see
+        v2.3 design doc, §4.2 race-test scope clarification). Multi-process
+        contention is out of scope.
+
+        Both threads start at a Barrier so they enter their respective
+        record_user_event calls at the same instant."""
         import threading
 
         alice_id = _opt_in(store)
