@@ -71,3 +71,17 @@ class TestAgeAutoCreatedEntities:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "active"
+
+    def test_skips_avatar_kind_defensively(self, store: VerseStore) -> None:
+        """Even if a bug somewhere stamps auto_created='1' on an avatar,
+        aging must not retire it. The kind!='avatar' guard is defensive."""
+        from llm.verse.aging import age_auto_created_entities
+
+        avatar_id = store.add_entity("avatar", "alice", "")
+        store.set_attribute(avatar_id, "auto_created", "1")
+        store.set_attribute(avatar_id, "last_seen_ts", "0.0")
+        outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert outcome == (0, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (avatar_id,)).fetchone()
+        assert row[0] == "active"
