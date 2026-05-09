@@ -22,6 +22,16 @@
 
 ## Revisions
 
+- **2026-05-09 v2.3** — adversarial review (Codex pass on actual code) surfaced two heartbeat-scope drifts:
+  1. **Loom heartbeat payload-key scope.** v2.0–v2.2 §4.2 #2 said "every entity_id referenced by the proposal payload" but the plan's snippet only scanned `payload.get("entity_ids")`. Applied `set_attribute` proposals reference an entity via `payload["entity_id"]` (singular); `add_relation` via `payload["from_id"]` and `payload["to_id"]`. Implementations must scan ALL entity-id-bearing payload keys per op:
+     - `add_event` → `payload["entity_ids"]` (list[int])
+     - `set_attribute` → `[payload["entity_id"]]`
+     - `add_relation` → `[payload["from_id"], payload["to_id"]]`
+     - `add_entity` → `[]` (creating a new row; no refs to bump)
+     - `crosspoll_seed` → `payload["entity_ids"]` (list[int])
+     The `_proposal_entity_refs_resolve` helper in `loom.py:218-242` already encodes this dispatch shape — the heartbeat code reuses the same dispatch via a sibling helper `_referenced_entity_ids(prop)`. Both `applied` and `crosspoll_emitted` heartbeat sites use it. §7 #8 / #9 gain `set_attribute`-applied and `add_relation`-applied coverage so the gap can't regress.
+  2. **Race-test scope clarification.** v2.0–v2.2 §6 SIG #4 framed Test #5 as "proves the SQLite-level race window with `time.sleep` injection between find and insert." That's wrong: the sleep lands INSIDE `write_transaction()`, after the Python `threading.Lock` is already held, so the test exercises lock-held serialization, not SQLite-level contention. The Python lock IS the actual safety mechanism (intentional design choice — write_transaction's lock serializes all writers within one process), so the test's value is in pinning the contract "two threads racing for the same unknown actor produce one entity row" regardless of mechanism. The test docstring is updated to say so. We do not attempt a true SQLite-level race test (would require multi-process or moving the sleep outside `write_transaction()`, neither of which models real prod call sites).
+
 - **2026-05-09 v2.2** — implementation-time clarifications surfaced during Phase 4 of the PR plan:
   1. **FK-defensive heartbeat skip.** §4.2 now documents that both `_replace_events_with_source` and `bump_last_seen_ts` silently skip ids that don't resolve to a real `entities` row. `events.entity_ids` is a JSON blob with no FK, but `attributes.entity_id` does have an FK; the existing `test_entity_ids_truncation_logs_when_capped` compaction test passes synthetic ids. Defensive `SELECT 1 FROM entities WHERE id = ?` guard added to both heartbeat paths. Production effect: zero (digest `union_ids` and proposal `entity_ids` always reference real rows). Test effect: `test_entity_ids_truncation_logs_when_capped` stays green without coupling to FK enforcement details.
   2. **§7 Aging Test #7 timing math.** v2.1's snippet (`digest_ts=1000.0`, `now=digest_ts + 30 * SECONDS_PER_DAY`, 14-day cutoff) would have retired all 40 entities (survivors got bumped to 1000.0, then `now ≈ 2.6M` aged them past cutoff). Implementation uses `digest_ts = 30 * SECONDS_PER_DAY`, `now = digest_ts + 5 * SECONDS_PER_DAY` so survivors are 5 days old (kept) and truncated-out NPCs are 35 days old (retired). Test still pins the design's intent: in-digest bumps protect, truncated-out ones age.
@@ -255,7 +265,7 @@ Single SQL: `SELECT entities.id, attributes.value AS last_seen FROM entities JOI
 `last_seen_ts` is bumped at exactly three sites — *not* "every code path that touches an entity" (the v1 doc overclaimed):
 
 1. **`record_user_event`** — every non-avatar entity referenced by an `actors` list, on every call.
-2. **`apply_or_queue` in `verse/loom.py`** — only when the proposal lands as `applied` or `crosspoll_emitted`. Codex v2 SIG: `queued`/`rejected_invalid_refs` proposals must NOT bump (low-confidence model output shouldn't keep junk alive). Tested as a negative case in §7 #9.
+2. **`apply_or_queue` in `verse/loom.py`** — only when the proposal lands as `applied` or `crosspoll_emitted`. Codex v2 SIG: `queued`/`rejected_invalid_refs` proposals must NOT bump (low-confidence model output shouldn't keep junk alive). Tested as a negative case in §7 #9. The set of bumped ids is op-dispatched (v2.3): `add_event`/`crosspoll_seed` → `entity_ids`; `set_attribute` → `[entity_id]`; `add_relation` → `[from_id, to_id]`; `add_entity` → `[]`. Encoded in a `_referenced_entity_ids(prop)` helper that mirrors `_proposal_entity_refs_resolve`.
 3. **`_replace_events_with_source` in `verse/store.py`** — *not* in `compaction.py`. The bump runs on the same `conn` that wrote the digest, atomically. Each entity in the digest's truncated `union_ids[:32]` list gets its `last_seen_ts` set to the digest's `now()`. Codex v2 SIG #5: this is the heartbeat call site, not `compaction.py`.
 
 Other paths that touch entities — `verse_act`, `verse_move`, `verse_look`, `verse_recall`, `add_relation`, `opt_in_avatar` — do **not** bump. Auto-NPCs are kept alive *only* by re-mention via `verse_record` or by surviving compaction's digest. Documented in the operator guide.
