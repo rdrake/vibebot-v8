@@ -238,14 +238,24 @@ class VerseStore:
     # Attribute CRUD
     # ------------------------------------------------------------------
 
+    def _set_attribute_inline(
+        self,
+        conn: sqlite3.Connection,
+        entity_id: int,
+        key: str,
+        value: str,
+    ) -> None:
+        """Upsert an attribute on the caller's open ``conn``."""
+        conn.execute(
+            "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?)"
+            " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
+            (entity_id, key, value),
+        )
+
     def set_attribute(self, entity_id: int, key: str, value: str) -> None:
         """Upsert an attribute key/value for the given entity."""
         with self.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?)"
-                " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
-                (entity_id, key, value),
-            )
+            self._set_attribute_inline(conn, entity_id, key, value)
 
     def get_attribute(self, entity_id: int, key: str) -> str | None:
         """Return the attribute value for key, or None if not set."""

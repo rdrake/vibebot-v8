@@ -1258,6 +1258,20 @@ class TestInlineHelpers:
         assert store.find_entity_by_name("ghost", kind="npc") is not None
         assert store.get_attribute(eid, "inline_marker") == "1"
 
+    def test_set_attribute_inline_upserts_on_caller_conn(self, verse_db_dir: Path) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#inline")
+        eid = store.add_entity("npc", "moss", "")
+        with store.write_transaction() as conn:
+            store._set_attribute_inline(  # type: ignore[attr-defined]
+                conn, eid, "k", "v1"
+            )
+            store._set_attribute_inline(  # type: ignore[attr-defined]
+                conn, eid, "k", "v2"
+            )
+        assert store.get_attribute(eid, "k") == "v2"
+
 
 class TestApplyProposalAndMarkEventSource:
     def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
