@@ -2409,8 +2409,14 @@ class TestProfileSystemPrompts:
         assert "300 words" in VERSE_SYSTEM_PROMPT
         # Encourage canon callbacks via verse_recall before scene.
         assert "verse_recall" in VERSE_SYSTEM_PROMPT
-        # Encourage multi-turn split across tool calls.
-        assert "multiple assistant turns" in VERSE_SYSTEM_PROMPT
+        # Forbid splitting prose across assistant turns. Empirically
+        # ``last_assistant_text = message.content`` in service.py overwrites
+        # with each step, so only the FINAL step's text reaches the user.
+        # An earlier "take multiple turns" rule made the model write 600+
+        # tokens of beats in step_2 and a 40-token wrap-up in step_3 — the
+        # wrap-up was all the user saw, beats discarded.
+        assert "ONE rich user-facing reply" in VERSE_SYSTEM_PROMPT
+        assert "silently" in VERSE_SYSTEM_PROMPT  # explains why
         # Emoji-cluster failure mode named.
         assert "emoji garnish" in VERSE_SYSTEM_PROMPT
 
