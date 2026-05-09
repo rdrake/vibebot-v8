@@ -43,3 +43,18 @@ class TestAgeAutoCreatedEntities:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "retired"
+
+    def test_keeps_recent(self, store: VerseStore) -> None:
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "moss", "")
+        store.set_attribute(eid, "auto_created", "1")
+        last_seen = 1000.0
+        store.set_attribute(eid, "last_seen_ts", str(last_seen))
+        now = last_seen + 5 * SECONDS_PER_DAY  # 5 days < 14-day cutoff
+
+        outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: now)
+        assert outcome == (1, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
