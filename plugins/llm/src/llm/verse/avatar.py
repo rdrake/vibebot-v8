@@ -111,14 +111,20 @@ def make_verse_tool_specs(*, max_actors: int = 8) -> list[dict]:
             "function": {
                 "name": "verse_record",
                 "description": (
-                    "Record an in-world event involving one or more named "
-                    "actors. Use whenever a member narrates events that "
-                    "aren't strictly about their own avatar (e.g. \"stinky "
-                    'dan threw a guff grenade at Andrew" — record actors='
-                    '["stinky dan","Andrew"], the grenade stays in the '
-                    "summary as prose). Names that don't match an existing "
-                    "entity are auto-created as kind=npc. Items, places, "
-                    "and weapons are NOT actors — only put characters/"
+                    "Record a NEW in-world event involving one or more "
+                    "named actors. Use whenever a member narrates a NEW "
+                    "event happening right now that isn't strictly about "
+                    'their own avatar (e.g. "stinky dan threw a guff '
+                    'grenade at Andrew" — record actors=["stinky dan",'
+                    '"Andrew"], the grenade stays in the summary as '
+                    "prose). Do NOT use this tool for retellings, recall "
+                    "queries, or to answer 'what happened at X' / 'tell "
+                    "me about Y' / 'remember when Z' style questions — "
+                    "use verse_recall to look up past summaries instead, "
+                    "and put the retelling in your reply text. Names "
+                    "that don't match an existing entity are "
+                    "auto-created as kind=npc. Items, places, and "
+                    "weapons are NOT actors — only put characters/"
                     "people in the actors list."
                 ),
                 "parameters": {

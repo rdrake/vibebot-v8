@@ -2396,7 +2396,17 @@ class TestProfileSystemPrompts:
         # Avatar-tool split (verse_act/move/look/recall vs verse_record).
         assert "verse_act" in VERSE_SYSTEM_PROMPT
         assert "verse_recall" in VERSE_SYSTEM_PROMPT
-        # Forbid splitting prose across assistant turns. Empirically
+        # Recall vs narrate. "what happened at X" style questions are
+        # retellings of existing canon, not new events; without this
+        # carve-out the model fires verse_record on the question and
+        # replies with a brief "canon locked in" acknowledgement instead
+        # of the actual retell.
+        assert "RECALL" in VERSE_SYSTEM_PROMPT
+        # Forbid splitting prose across assistant turns. Empirically the
+        # model emits a tool_call + sentence fragment in step 1 then a
+        # brief finalize in step 2; only step 2's content reaches IRC,
+        # so the user sees a truncated mid-sentence reply.
+        assert "single message" in VERSE_SYSTEM_PROMPT
 
     def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
         """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.

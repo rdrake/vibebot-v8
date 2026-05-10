@@ -771,3 +771,19 @@ class TestVerseRecordToolSpec:
         specs = make_verse_tool_specs(max_actors=12)
         record = next(s for s in specs if s["function"]["name"] == "verse_record")
         assert record["function"]["parameters"]["properties"]["actors"]["maxItems"] == 12
+
+    def test_verse_record_description_excludes_recall_use(self) -> None:
+        """verse_record description steers the model to verse_recall for retells.
+
+        Prod symptom: the model called verse_record on "vibebot what
+        happened at X" recall queries and replied with a brief
+        in-character acknowledgement instead of a full retelling. The
+        tool description must mark verse_record as NEW-event-only and
+        point the model at verse_recall for retellings of past canon.
+        """
+        from llm.verse.avatar import make_verse_tool_specs
+
+        record = next(s for s in make_verse_tool_specs() if s["function"]["name"] == "verse_record")
+        desc = record["function"]["description"]
+        assert "NEW" in desc
+        assert "verse_recall" in desc
