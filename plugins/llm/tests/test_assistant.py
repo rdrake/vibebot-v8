@@ -2460,11 +2460,55 @@ class TestToolSpecVisibility:
             {"chat", "verse", "draw", "remind_action"}
         )
 
-    def test_verse_profile_inherits_chat_tool_surface(self) -> None:
-        """Verse mode uses the same tool surface as chat (same visible_in membership)."""
+    def test_verse_profile_is_strict_subset_of_chat(self) -> None:
+        """Verse drops scheduling/usage/instruction tools that drown the model.
+
+        Empirically xai/grok-4-1-fast-reasoning starts emitting empty
+        completions once the advertised tool count climbs past ~25 (4
+        empty-response incidents on 2026-05-10 alone, more than any
+        prior day in 30d). Verse mode is in-character roleplay — the
+        scheduling/reminder/usage/instruction tools have no in-world use
+        but still bloat every prompt with their schemas. Trim them.
+        """
         chat_tools = {t["function"]["name"] for t in get_tools_for_profile("chat")}
         verse_tools = {t["function"]["name"] for t in get_tools_for_profile("verse")}
-        assert verse_tools == chat_tools
+        assert verse_tools < chat_tools
+
+    def test_verse_profile_excludes_scheduling_and_meta_tools(self) -> None:
+        """Tools that have no in-character use are hidden from verse mode."""
+        names = {t["function"]["name"] for t in get_tools_for_profile("verse")}
+        for tool in (
+            "set_reminder",
+            "list_pending_tasks",
+            "cancel_pending_task",
+            "cancel_all_pending_tasks",
+            "schedule_llm_task",
+            "get_usage",
+            "get_channel_usage",
+            "forget_context",
+            "cleanup_memories",
+            "clear_memories",
+            "clear_instruction",
+            "get_instruction",
+            "set_instruction",
+        ):
+            assert tool not in names, f"{tool} should not be visible in verse profile"
+
+    def test_verse_profile_keeps_research_and_memory_tools(self) -> None:
+        """Verse keeps tools the bot still uses in-character: research,
+        non-destructive memory, and creative output."""
+        names = {t["function"]["name"] for t in get_tools_for_profile("verse")}
+        for tool in (
+            "search_web",
+            "fetch_url",
+            "generate_image",
+            "generate_code",
+            "save_memory",
+            "list_memories",
+            "delete_memory",
+            "update_memory",
+        ):
+            assert tool in names, f"{tool} missing from verse profile"
 
     def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
         """Action reminders need the union of @ask + @draw tool surfaces."""
@@ -2563,23 +2607,24 @@ class TestScheduleLlmTaskFamily:
 
     def test_schedule_llm_task_specs_overrides_applied(self) -> None:
         """C2: ToolSpec overrides give schedule_llm_task require_account=True;
-        list/cancel inherit defaults (llm.ask, no account, chat+remind_action)."""
+        list/cancel inherit defaults (llm.ask, no account). All three are
+        hidden from verse mode — see _VERSE_EXCLUDED_TOOLS."""
         from llm.assistant import ASSISTANT_TOOL_REGISTRY
 
         sch = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
         assert sch.capability == "llm.ask"
         assert sch.require_account is True
-        assert sch.visible_in == frozenset({"chat", "verse", "remind_action"})
+        assert sch.visible_in == frozenset({"chat", "remind_action"})
 
         lst = ASSISTANT_TOOL_REGISTRY["list_pending_tasks"]
         assert lst.capability == "llm.ask"
         assert lst.require_account is False
-        assert lst.visible_in == frozenset({"chat", "verse", "remind_action"})
+        assert lst.visible_in == frozenset({"chat", "remind_action"})
 
         can = ASSISTANT_TOOL_REGISTRY["cancel_pending_task"]
         assert can.capability == "llm.ask"
         assert can.require_account is False
-        assert can.visible_in == frozenset({"chat", "verse", "remind_action"})
+        assert can.visible_in == frozenset({"chat", "remind_action"})
 
     def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
         """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""

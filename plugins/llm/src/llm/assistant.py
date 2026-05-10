@@ -786,13 +786,44 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+# Verse mode hides tools with no in-character use to keep the
+# advertised tool surface small. xai/grok-4-1-fast-reasoning starts
+# emitting empty completions once the surface climbs past ~25 tools (4
+# empty-response incidents on 2026-05-10, more than any prior day in
+# 30d). Scheduling, reminders, usage stats, persistent instructions,
+# and the destructive memory-bulk ops have no role in storytelling.
+_VERSE_EXCLUDED_TOOLS: frozenset[str] = frozenset(
+    {
+        "cancel_all_pending_tasks",
+        "cancel_pending_task",
+        "cleanup_memories",
+        "clear_instruction",
+        "clear_memories",
+        "forget_context",
+        "get_channel_usage",
+        "get_instruction",
+        "get_usage",
+        "list_pending_tasks",
+        "schedule_llm_task",
+        "set_instruction",
+        "set_reminder",
+    }
+)
+
+
 def _build_tool_specs() -> tuple[ToolSpec, ...]:
     destructive_tools = {"clear_instruction", "clear_memories"}
     specs: list[ToolSpec] = []
     for tool in ASSISTANT_TOOLS:
         fn = tool["function"]
         name = fn["name"]
-        overrides = _TOOL_SPEC_OVERRIDES.get(name, {})
+        overrides = dict(_TOOL_SPEC_OVERRIDES.get(name, {}))
+        if name in _VERSE_EXCLUDED_TOOLS:
+            base_visible: frozenset[str] = overrides.get(
+                "visible_in",
+                frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION}),
+            )
+            overrides["visible_in"] = base_visible - {PROFILE_VERSE}
         specs.append(
             ToolSpec(
                 name=name,
