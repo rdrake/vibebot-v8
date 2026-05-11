@@ -449,18 +449,26 @@ class TestResponseAppropriateness:
         assert "Channel:" not in result["content"]
 
     def test_channel_topic_in_user_message_raw(self) -> None:
-        """GIVEN channel with topic WHEN context built THEN topic passed raw."""
+        """GIVEN channel with topic WHEN topic message built THEN topic
+        passed raw in its own user message. Topic lives outside the
+        cacheable prefix (system + context + ack) so topic edits don't
+        reset xAI's automatic prompt cache; it's no longer appended to
+        the context message."""
         ch_state = self._make_mock_channel_state(topic="Python programming help")
         irc = self._make_mock_irc(channels={"#python": ch_state})
         msg = self._make_mock_msg(channel="#python")
 
-        result = self.service._build_context_message(irc, msg)
+        ctx = self.service._build_context_message(irc, msg)
+        topic_msg = self.service._build_topic_message(irc, msg)
 
-        # Topic is passed raw in user message (no XML framing needed)
-        assert "Python programming help" in result["content"]
-        assert "Topic:" in result["content"]
-        # No XML framing since it's now a user message
-        assert "<channel_topic" not in result["content"]
+        # Topic no longer lives in the context message.
+        assert ctx is not None
+        assert "Topic" not in ctx["content"]
+        # The dedicated topic message carries it raw, no XML framing.
+        assert topic_msg is not None
+        assert topic_msg["role"] == "user"
+        assert "Python programming help" in topic_msg["content"]
+        assert "<channel_topic" not in topic_msg["content"]
 
     def test_speaking_with_in_speaker_message(self) -> None:
         """GIVEN message from user WHEN speaker message built THEN nick included."""
