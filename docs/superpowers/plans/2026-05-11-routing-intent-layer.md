@@ -349,10 +349,12 @@ type Client interface {
 	EnsureCache(ctx context.Context, scope Scope, prefix CachedPrefix) (CacheHandle, error)
 
 	// Complete runs one LLM completion. The prefix is passed every call so
-	// that providers without explicit cache (e.g. xAI) can inline
-	// Canonical(prefix) ahead of messages; providers with cache use the
-	// CacheHandle and ignore the prefix bytes. B is the only layer that
-	// knows the provider's caching mode.
+	// B can choose the right mode:
+	//   - if !cache.IsCached(): B MUST inline Canonical(prefix) ahead of
+	//     messages (uncached path; e.g. xAI, or Gemini with no live cache).
+	//   - if cache.IsCached(): B MUST reference cache by handle and ignore
+	//     the prefix bytes (they were already cached when EnsureCache ran).
+	// E never branches on provider; B is the only layer that knows mode.
 	Complete(ctx context.Context, prefix CachedPrefix, messages []Message, tools []ToolSchema, model string, cache CacheHandle) (Completion, error)
 }
 ```
