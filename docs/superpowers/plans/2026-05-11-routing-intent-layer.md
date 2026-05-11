@@ -4,11 +4,15 @@
 
 **Goal:** Implement sub-project E of the vibebot Go rewrite: the routing/intent layer (pure `router.Route` + stateful `exec.Executor`), with interface contracts and test fakes for sub-projects A/B/C/D/F so this slice is independently testable.
 
-**Architecture:** Pure decision function emits a `RouteDecision` struct → stateful executor consumes it, drives an LLM tool-call loop, delivers via IRC. Cache discipline is enforced via canonically serialized `CachedPrefix` bytes keyed by `CacheScope`. Test fakes for every external interface keep the slice runnable in isolation.
+**Architecture:** Pure decision function emits a `RouteDecision` struct → stateful executor consumes it, resolves tools to schemas, builds a canonical cache prefix, drives an LLM tool-call loop, delivers via IRC. Cache discipline is enforced by `llmcore.Canonical(CachedPrefix) []byte` — a single byte serializer with documented ordering and delimiter. Test fakes for every external interface keep the slice runnable in isolation.
 
-**Tech Stack:** Go 1.23 (`log/slog`, `crypto/sha256`, `encoding/json`), no external runtime dependencies in this slice (real `openai-go`, `ergochat/irc-go`, Gemini SDK enter in sub-projects A/B). Module path: `github.com/rdrake/vibebot-v8/v9`. Code lives in `go/` subdirectory of the existing repo.
+**Tech Stack:** Go 1.23 (pinned floor; `log/slog`, `crypto/sha256`, `encoding/json`, `sync`). No external runtime dependencies in this slice (real `openai-go`, `ergochat/irc-go`, Gemini SDK enter in sub-projects A/B). Module path: `github.com/rdrake/vibebot-v8/v9`. Code lives in `go/` subdirectory of the existing repo.
 
 **Spec:** `docs/superpowers/specs/2026-05-11-routing-intent-layer-design.md` (commit `2b07346`).
+
+**Revision history:**
+- v1: initial draft
+- v2: revised after codex + code-reviewer pass — fixes cache-prefix-bytes serialization, overlay scope circular dep, panic-test fidelity, `CacheHandle`/`ToolSchema` types, task granularity, missing test coverage.
 
 ---
 
@@ -18,25 +22,26 @@ All paths relative to repo root `/Users/rdrake/workspace/afternet/vibebot-v8/`.
 
 ```
 go/
-├── go.mod                          # module github.com/rdrake/vibebot-v8/v9
+├── go.mod                          # module github.com/rdrake/vibebot-v8/v9; go 1.23
 ├── Makefile                        # build/test/lint targets
 ├── llmcore/
-│   ├── client.go                   # Client interface, CachedPrefix, Message, Completion types
+│   ├── client.go                   # Client iface, CachedPrefix, ToolSchema, CacheHandle, Canonical()
+│   ├── canonical_test.go
 │   └── fake/fake.go                # in-memory fake LLM client
 ├── tooling/
-│   ├── dispatcher.go               # Dispatcher interface, ToolCall, ToolResult
-│   └── fake/fake.go                # in-memory fake tool dispatcher
+│   ├── dispatcher.go               # Dispatcher iface, ToolCall, ToolResult
+│   └── fake/fake.go                # in-memory fake (with PanicOnDispatch)
 ├── overlay/
-│   ├── resolver.go                 # Resolver interface
-│   └── fake/fake.go                # in-memory fake overlay resolver
+│   ├── resolver.go                 # Resolver iface (Scope has no OverlayHash)
+│   └── fake/fake.go
 ├── persist/
-│   ├── store.go                    # Store interface
-│   └── fake/fake.go                # in-memory fake store
+│   ├── store.go                    # Store iface
+│   └── fake/fake.go
 ├── ircout/
-│   ├── sender.go                   # Sender interface
-│   └── fake/fake.go                # in-memory fake IRC sender
+│   ├── sender.go                   # Sender iface
+│   └── fake/fake.go
 ├── router/
-│   ├── doc.go                      # package docstring
+│   ├── doc.go
 │   ├── types.go                    # IRCEvent, ChannelState, BotState, RouteDecision, ...
 │   ├── addressed.go                # addressed() helper
 │   ├── addressed_test.go
@@ -45,27 +50,30 @@ go/
 │   ├── route.go                    # Route() pure function
 │   ├── route_test.go
 │   └── profile/
-│       ├── profile.go              # Profile struct, Registry
+│       ├── profile.go              # Profile struct, Registry (defensive-copy Get)
 │       ├── builtin.go              # quiet, chat, scene, loom, admin
 │       ├── profile_test.go
 │       └── builtin_test.go
 ├── exec/
 │   ├── doc.go
 │   ├── errors.go                   # typed error categories
-│   ├── prefix.go                   # CachedPrefix builder, canonical serializer
+│   ├── errors_test.go
+│   ├── resolve.go                  # ResolveSchemas helper
+│   ├── resolve_test.go
+│   ├── prefix.go                   # BuildCachedPrefix
 │   ├── prefix_test.go
-│   ├── delivery.go                 # chunking, typing, reply-to fallback
-│   ├── delivery_test.go
+│   ├── chunk.go                    # chunkAt helper
+│   ├── chunk_test.go
 │   ├── loop.go                     # tool-call loop
 │   ├── loop_test.go
 │   ├── executor.go                 # Executor struct, Run()
 │   └── executor_test.go
 └── cmd/
     └── routerdemo/
-        └── main.go                 # wires fakes, sends a sample event, prints result
+        └── main.go                 # wires fakes, sends a sample event
 ```
 
-Total: 27 tasks. Each task is one logical unit (a struct + its tests, an interface + a smoke check, etc.). Steps within a task are 2–5 minutes each.
+Total: 26 tasks across 7 phases. Each task is one logical unit; each step is 2–5 minutes of work.
 
 ---
 
@@ -78,12 +86,17 @@ Total: 27 tasks. Each task is one logical unit (a struct + its tests, an interfa
 - Create: `go/Makefile`
 - Create: `go/.gitignore`
 
-- [ ] **Step 1: Verify Go is installed**
+- [ ] **Step 1: Verify Go is installed (1.23+)**
 
 Run: `go version`
-Expected: `go version go1.23.x ...` or newer. If missing, install Go 1.23+ before proceeding.
+Expected: `go version go1.23.x ...` or newer. If older or missing, install via `brew install go` (macOS) or follow https://go.dev/doc/install.
 
-- [ ] **Step 2: Create the module**
+- [ ] **Step 2: Verify golangci-lint is installed**
+
+Run: `golangci-lint --version`
+Expected: a version string. If missing, install via `brew install golangci-lint` before continuing — the Makefile treats it as a hard dependency.
+
+- [ ] **Step 3: Create the module**
 
 ```bash
 mkdir -p /Users/rdrake/workspace/afternet/vibebot-v8/go
@@ -91,35 +104,49 @@ cd /Users/rdrake/workspace/afternet/vibebot-v8/go
 go mod init github.com/rdrake/vibebot-v8/v9
 ```
 
-Expected: `go/go.mod` created with `module github.com/rdrake/vibebot-v8/v9` and `go 1.23` (or newer).
+Then edit `go/go.mod` so the `go` directive pins to `1.23` (not "or newer"):
 
-- [ ] **Step 3: Write `go/Makefile`**
+```
+module github.com/rdrake/vibebot-v8/v9
+
+go 1.23
+```
+
+- [ ] **Step 4: Write `go/Makefile`**
 
 ```make
-.PHONY: build test lint vet fmt all
+.PHONY: build test lint vet fmt all check-go check-lint
 
-GO_PKGS := ./...
+all: check-go check-lint fmt vet lint test build
 
-all: fmt vet lint test build
+check-go:
+	@v=$$(go version | awk '{print $$3}' | sed 's/^go//'); \
+	  case "$$v" in \
+	    1.23*|1.24*|1.25*|1.26*|1.27*|1.28*|1.29*) ;; \
+	    *) echo "go 1.23+ required, found $$v"; exit 1 ;; \
+	  esac
+
+check-lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+	  echo "golangci-lint required; install: brew install golangci-lint"; exit 1; }
 
 build:
-	go build $(GO_PKGS)
+	go build ./...
 
 test:
-	go test -race -count=1 $(GO_PKGS)
+	go test -race -count=1 ./...
 
 vet:
-	go vet $(GO_PKGS)
+	go vet ./...
 
 fmt:
 	gofmt -l -w .
 
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed; skipping"; exit 0; }
-	golangci-lint run $(GO_PKGS)
+	golangci-lint run ./...
 ```
 
-- [ ] **Step 4: Write `go/.gitignore`**
+- [ ] **Step 5: Write `go/.gitignore`**
 
 ```
 # Go build artifacts
@@ -130,12 +157,12 @@ lint:
 coverage.txt
 ```
 
-- [ ] **Step 5: Smoke-build**
+- [ ] **Step 6: Smoke-build**
 
-Run from `go/`: `make build`
-Expected: succeeds with no output (no packages yet, nothing to build, but module is valid).
+Run from `go/`: `make check-go check-lint build`
+Expected: succeeds with no output (no packages yet but the module is valid; lint+go checks pass).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd /Users/rdrake/workspace/afternet/vibebot-v8
@@ -147,42 +174,141 @@ git commit -m "feat(go): initialize v9 Go module skeleton"
 
 ## Phase 1 — External interface contracts
 
-These five tasks define the interfaces E expects from sub-projects A/B/C/D/F. Each interface lives in its own package. Real implementations land in later sub-project specs; this plan provides only the contracts and test fakes.
-
 ### Task 2: Define `llmcore` interface (sub-project B contract)
+
+This task defines the types `CachedPrefix`, `ToolSchema`, `CacheHandle`, `Canonical()`, plus the `Client` interface. `Canonical(CachedPrefix) []byte` is the single byte serializer that pins the cache-discipline contract.
 
 **Files:**
 - Create: `go/llmcore/client.go`
+- Create: `go/llmcore/canonical_test.go`
 
-- [ ] **Step 1: Write the file**
+- [ ] **Step 1: Write the failing test**
+
+```go
+package llmcore_test
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/rdrake/vibebot-v8/v9/llmcore"
+)
+
+func TestCanonicalIsDelimited(t *testing.T) {
+	cp := llmcore.CachedPrefix{
+		FrameworkPrompt: "F",
+		Overlay:         "O",
+		ToolSchemasJSON: []byte(`[]`),
+		ChannelContext:  "C",
+	}
+	got := string(llmcore.Canonical(cp))
+	want := "F\n\n---\n\nO\n\n---\n\n[]\n\n---\n\nC"
+	if got != want {
+		t.Fatalf("\ngot  %q\nwant %q", got, want)
+	}
+}
+
+func TestCanonicalByteIdenticalAcrossEqualInputs(t *testing.T) {
+	cp1 := llmcore.CachedPrefix{
+		FrameworkPrompt: "F", Overlay: "O",
+		ToolSchemasJSON: []byte(`[{"name":"a"},{"name":"b"}]`),
+		ChannelContext:  "Network: n\nChannel: c\nProfile: p\n",
+	}
+	cp2 := cp1
+	a := llmcore.Canonical(cp1)
+	b := llmcore.Canonical(cp2)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("not byte-identical:\nA=%s\nB=%s", a, b)
+	}
+}
+
+func TestCanonicalDifferentInputsDifferBytes(t *testing.T) {
+	a := llmcore.Canonical(llmcore.CachedPrefix{FrameworkPrompt: "F1", Overlay: "O", ToolSchemasJSON: []byte(`[]`), ChannelContext: "C"})
+	b := llmcore.Canonical(llmcore.CachedPrefix{FrameworkPrompt: "F2", Overlay: "O", ToolSchemasJSON: []byte(`[]`), ChannelContext: "C"})
+	if bytes.Equal(a, b) {
+		t.Fatal("framework change must change canonical bytes")
+	}
+}
+
+func TestCacheHandleZeroIsUncached(t *testing.T) {
+	var h llmcore.CacheHandle
+	if h.IsCached() {
+		t.Fatal("zero CacheHandle should be uncached")
+	}
+	h.Name = "x"
+	if !h.IsCached() {
+		t.Fatal("non-empty Name should be cached")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run from `go/`: `go test ./llmcore/...`
+Expected: FAIL — `llmcore` package types and `Canonical` not defined.
+
+- [ ] **Step 3: Write `go/llmcore/client.go`**
 
 ```go
 // Package llmcore defines the LLM client contract consumed by the executor.
 // The real implementation lives in sub-project B.
 package llmcore
 
-import "context"
+import (
+	"bytes"
+	"context"
+	"time"
+)
 
-// CachedPrefix is the deterministic byte block that goes into the LLM cache.
-// All four fields are serialized into a single cacheable prompt prefix.
-// E builds this; B canonicalizes and submits it.
+// CachedPrefix is the deterministic content that goes into the LLM cache.
+// The four fields are serialized by Canonical into a single byte block.
+// E populates this struct; B passes Canonical(cp) to the provider.
+//
+// Schema canonicalization is sub-project C's responsibility: the bytes in
+// ToolSchemasJSON MUST already be canonical (sorted keys, no insignificant
+// whitespace). E does not re-canonicalize.
 type CachedPrefix struct {
-	// FrameworkPrompt is the per-profile system prompt. Stable per Profile.
 	FrameworkPrompt string
-
-	// Overlay is the channel-specific overlay text from sub-project D.
-	// MUST be a pure function of CacheScope (no user data).
-	Overlay string
-
-	// Tools is the canonical JSON schemas for every tool in the profile's
-	// allowlist. Sorted by tool name; within each schema, JSON keys sorted
-	// alphabetically.
+	Overlay         string
 	ToolSchemasJSON []byte
-
-	// ChannelContext is a fixed-key-order block:
-	//   "Network: {n}\nChannel: {c}\nProfile: {p}\n"
-	ChannelContext string
+	ChannelContext  string
 }
+
+// Canonical returns the byte representation of cp that the cache key
+// must agree with byte-for-byte. The exact ordering and `\n\n---\n\n`
+// delimiter are part of the contract with sub-project B.
+func Canonical(cp CachedPrefix) []byte {
+	const sep = "\n\n---\n\n"
+	var buf bytes.Buffer
+	buf.Grow(len(cp.FrameworkPrompt) + len(cp.Overlay) + len(cp.ToolSchemasJSON) + len(cp.ChannelContext) + 4*len(sep))
+	buf.WriteString(cp.FrameworkPrompt)
+	buf.WriteString(sep)
+	buf.WriteString(cp.Overlay)
+	buf.WriteString(sep)
+	buf.Write(cp.ToolSchemasJSON)
+	buf.WriteString(sep)
+	buf.WriteString(cp.ChannelContext)
+	return buf.Bytes()
+}
+
+// ToolSchema is one tool's canonical schema, ready for both cache prefix
+// composition and Complete calls. Pre-resolved by exec.ResolveSchemas so
+// B never needs a back-channel to C.
+type ToolSchema struct {
+	Name       string
+	SchemaJSON []byte
+}
+
+// CacheHandle is the opaque reference to a CachedContent (or equivalent).
+// Zero value means uncached path (e.g. xAI, or provider without cache).
+type CacheHandle struct {
+	Name      string
+	Provider  string    // "gemini", "xai", ""
+	ExpiresAt time.Time // zero when no cache
+}
+
+// IsCached reports whether the handle refers to a live cache entry.
+func (h CacheHandle) IsCached() bool { return h.Name != "" }
 
 // Message is one entry in the uncached tail (history, memories, user msg,
 // or tool result). Role is "system", "user", "assistant", or "tool".
@@ -203,11 +329,11 @@ type ToolCall struct {
 type Completion struct {
 	Text         string
 	ToolCalls    []ToolCall
-	CachedTokens int // for cache-hit verification
+	CachedTokens int
 }
 
 // Scope identifies a cache lane. Mirror of router.CacheScope; lives here
-// to avoid an import cycle (llmcore must not import router).
+// to avoid import cycles (llmcore must not import router).
 type Scope struct {
 	Network     string
 	Channel     string
@@ -217,28 +343,27 @@ type Scope struct {
 
 // Client is the contract.
 type Client interface {
-	// EnsureCache creates or refreshes a CachedContent for scope+prefix and
-	// returns an opaque cache name. For providers without explicit cache
-	// (e.g. xAI), returns "" and a nil error.
-	EnsureCache(ctx context.Context, scope Scope, prefix CachedPrefix) (cacheName string, err error)
+	// EnsureCache creates or refreshes a CachedContent for scope+prefix.
+	// Returns a CacheHandle; zero value indicates no cache (provider does
+	// not support, or scope already has live coverage cheaper than refresh).
+	EnsureCache(ctx context.Context, scope Scope, prefix CachedPrefix) (CacheHandle, error)
 
-	// Complete sends the uncached tail referencing cacheName (when non-empty)
-	// or sends the full prefix inline (when empty). Returns one Completion.
-	Complete(ctx context.Context, messages []Message, tools []string, model, cacheName string) (Completion, error)
+	// Complete sends the uncached tail. When cache.IsCached(), the prefix
+	// bytes are NOT sent inline; when zero, the prefix is sent inline.
+	Complete(ctx context.Context, messages []Message, tools []ToolSchema, model string, cache CacheHandle) (Completion, error)
 }
 ```
 
-- [ ] **Step 2: Build to check**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run from `go/`: `go build ./llmcore/...`
-Expected: success, no output.
+Run: `go test ./llmcore/...`
+Expected: PASS all four `TestCanonical*` and `TestCacheHandleZeroIsUncached`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/rdrake/workspace/afternet/vibebot-v8
-git add go/llmcore/client.go
-git commit -m "feat(go): define llmcore.Client interface"
+git add go/llmcore/client.go go/llmcore/canonical_test.go
+git commit -m "feat(go): define llmcore.Client interface with Canonical serializer"
 ```
 
 ---
@@ -261,32 +386,32 @@ import "context"
 type ToolCall struct {
 	ID        string
 	Name      string
-	Arguments string // raw JSON
+	Arguments string
 }
 
 // ToolResult is what to feed back to the LLM.
 type ToolResult struct {
-	Content string // JSON, or plain text
-	Err     error  // non-nil if the tool failed
-	Denied  bool   // true if profile/rate disallowed; Err must also be non-nil
+	Content string
+	Err     error
+	Denied  bool // true if profile/rate disallowed; Err must also be non-nil
 }
 
-// Dispatcher resolves a tool name to a handler and runs it within ctx.
+// Dispatcher resolves a tool name to a handler.
 type Dispatcher interface {
 	// SchemaJSON returns the canonical JSON schema for a tool name.
-	// Used by exec.prefix to build CachedPrefix.ToolSchemasJSON.
-	// MUST be byte-identical across calls.
+	// MUST be byte-identical across calls (sorted keys, no insignificant
+	// whitespace). Used by exec.ResolveSchemas to populate llmcore.ToolSchema.
 	SchemaJSON(name string) ([]byte, error)
 
 	// Dispatch runs a tool call. Honors ctx cancellation. The per-tool
-	// timeout is enforced inside Dispatch.
+	// timeout is enforced inside Dispatch (sub-project C's responsibility).
 	Dispatch(ctx context.Context, call ToolCall) ToolResult
 }
 ```
 
 - [ ] **Step 2: Build**
 
-Run from `go/`: `go build ./tooling/...`
+Run: `go build ./tooling/...`
 Expected: success.
 
 - [ ] **Step 3: Commit**
@@ -312,13 +437,13 @@ package overlay
 
 import "context"
 
-// Scope mirrors llmcore.Scope and router.CacheScope. Lives here to avoid
-// import cycles.
+// Scope identifies an overlay lookup. NO OverlayHash — the hash is derived
+// FROM the returned text, computed by the caller. Including it here would
+// be circular.
 type Scope struct {
-	Network     string
-	Channel     string
-	Profile     string
-	OverlayHash string
+	Network string
+	Channel string
+	Profile string
 }
 
 // Resolver returns the overlay text for a scope. MUST be a pure function:
@@ -333,14 +458,14 @@ type Resolver interface {
 
 - [ ] **Step 2: Build**
 
-Run from `go/`: `go build ./overlay/...`
+Run: `go build ./overlay/...`
 Expected: success.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add go/overlay/resolver.go
-git commit -m "feat(go): define overlay.Resolver interface"
+git commit -m "feat(go): define overlay.Resolver interface (Scope has no hash)"
 ```
 
 ---
@@ -362,7 +487,6 @@ import (
 	"time"
 )
 
-// HistoryEntry is one past turn pulled from storage.
 type HistoryEntry struct {
 	Role      string // "user" or "assistant"
 	Nick      string
@@ -370,15 +494,13 @@ type HistoryEntry struct {
 	Timestamp time.Time
 }
 
-// Memory is one user-facing memory line surfaced into the uncached tail.
 type Memory struct {
 	ID      int64
-	Nick    string // owner of the memory
+	Nick    string
 	Fact    string
 	Channel string
 }
 
-// UsageRow is what gets recorded after a turn.
 type UsageRow struct {
 	Timestamp        time.Time
 	Network          string
@@ -390,11 +512,10 @@ type UsageRow struct {
 	CompletionTokens int
 	CachedTokens     int
 	Cost             float64
-	Status           string // "success", "transient_fail", "fatal_fail", "budget_exceeded"
+	Status           string
 	ErrorDetail      string
 }
 
-// Store is the contract.
 type Store interface {
 	History(ctx context.Context, network, channel string, limit int) ([]HistoryEntry, error)
 	Memories(ctx context.Context, network, channel, nick string) ([]Memory, error)
@@ -405,7 +526,7 @@ type Store interface {
 
 - [ ] **Step 2: Build**
 
-Run from `go/`: `go build ./persist/...`
+Run: `go build ./persist/...`
 Expected: success.
 
 - [ ] **Step 3: Commit**
@@ -431,16 +552,14 @@ package ircout
 
 import "context"
 
-// SendOpts shapes one outbound message.
 type SendOpts struct {
-	Network  string
-	Target   string // channel or nick
-	Text     string // already chunked by the caller; one chunk == one PRIVMSG
-	ReplyTo  string // IRCv3 +draft/reply target message-id; "" to omit
-	NickPrefix string // fallback "nick: " prefix when ReplyTo CAP is unavailable; "" to omit
+	Network    string
+	Target     string
+	Text       string
+	ReplyTo    string // IRCv3 +draft/reply target message-id; "" to omit
+	NickPrefix string // fallback prefix when ReplyTo CAP unavailable; "" to omit
 }
 
-// TypingState is the value of the typing tag.
 type TypingState string
 
 const (
@@ -448,24 +567,20 @@ const (
 	TypingDone   TypingState = "done"
 )
 
-// Sender is the contract.
 type Sender interface {
 	Send(ctx context.Context, opts SendOpts) error
 
-	// SendTyping is best-effort: it should not return an error if the network
-	// doesn't support draft/typing. Best-effort failures are logged but not
-	// surfaced.
+	// SendTyping is best-effort: no error returned, failures logged at sink.
 	SendTyping(ctx context.Context, network, target string, state TypingState)
 
-	// HasReplyCAP returns whether IRCv3 draft/reply was negotiated on this
-	// network. Used by the executor to decide between ReplyTo and NickPrefix.
+	// HasReplyCAP reports whether IRCv3 draft/reply was negotiated.
 	HasReplyCAP(network string) bool
 }
 ```
 
 - [ ] **Step 2: Build**
 
-Run from `go/`: `go build ./ircout/...`
+Run: `go build ./ircout/...`
 Expected: success.
 
 - [ ] **Step 3: Commit**
@@ -479,9 +594,7 @@ git commit -m "feat(go): define ircout.Sender interface"
 
 ## Phase 2 — Test fakes
 
-Each external interface gets an in-memory fake the router/exec tests will use.
-
-### Task 7: `llmcore/fake` — scripted LLM
+### Task 7: `llmcore/fake`
 
 **Files:**
 - Create: `go/llmcore/fake/fake.go`
@@ -495,6 +608,7 @@ package fake_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
 	"github.com/rdrake/vibebot-v8/v9/llmcore/fake"
@@ -504,41 +618,37 @@ func TestScriptedCompletions(t *testing.T) {
 	c := fake.New()
 	c.Script = []llmcore.Completion{
 		{Text: "hello"},
-		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "save_memory", Arguments: `{"fact":"x"}`}}},
+		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "save_memory"}}},
 		{Text: "done"},
 	}
-
 	for i, want := range c.Script {
-		got, err := c.Complete(context.Background(), nil, nil, "m", "")
+		got, err := c.Complete(context.Background(), nil, nil, "m", llmcore.CacheHandle{})
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
 		if got.Text != want.Text {
-			t.Fatalf("iter %d text: got %q want %q", i, got.Text, want.Text)
-		}
-		if len(got.ToolCalls) != len(want.ToolCalls) {
-			t.Fatalf("iter %d toolcalls: got %d want %d", i, len(got.ToolCalls), len(want.ToolCalls))
+			t.Fatalf("iter %d text: %q", i, got.Text)
 		}
 	}
 }
 
-func TestEnsureCacheReturnsName(t *testing.T) {
+func TestEnsureCacheReturnsHandle(t *testing.T) {
 	c := fake.New()
-	c.CacheName = "fake-cache-1"
-	name, err := c.EnsureCache(context.Background(), llmcore.Scope{Channel: "#x"}, llmcore.CachedPrefix{})
+	c.CacheHandleOut = llmcore.CacheHandle{Name: "fake-1", Provider: "gemini", ExpiresAt: time.Now().Add(time.Hour)}
+	h, err := c.EnsureCache(context.Background(), llmcore.Scope{Channel: "#x"}, llmcore.CachedPrefix{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "fake-cache-1" {
-		t.Fatalf("name: got %q want %q", name, "fake-cache-1")
+	if h.Name != "fake-1" || !h.IsCached() {
+		t.Fatalf("handle: %+v", h)
 	}
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to fail**
 
-Run from `go/`: `go test ./llmcore/fake/...`
-Expected: FAIL — package `fake` doesn't exist yet.
+Run: `go test ./llmcore/fake/...`
+Expected: FAIL.
 
 - [ ] **Step 3: Write the fake**
 
@@ -554,21 +664,15 @@ import (
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
 )
 
-// Client is a scripted llmcore.Client.
 type Client struct {
-	// Script is the queue of completions returned by Complete, in order.
-	Script []llmcore.Completion
-	// CacheName is what EnsureCache returns.
-	CacheName string
-	// EnsureCacheErr is returned by EnsureCache when non-nil.
+	Script         []llmcore.Completion
+	CacheHandleOut llmcore.CacheHandle
 	EnsureCacheErr error
-	// CompleteErr is returned by Complete when non-nil.
-	CompleteErr error
+	CompleteErr    error
 
 	mu sync.Mutex
 	i  int
 
-	// Recorded calls (read-only after the test runs).
 	EnsureCacheCalls []EnsureCacheCall
 	CompleteCalls    []CompleteCall
 }
@@ -579,29 +683,28 @@ type EnsureCacheCall struct {
 }
 
 type CompleteCall struct {
-	Messages  []llmcore.Message
-	Tools     []string
-	Model     string
-	CacheName string
+	Messages []llmcore.Message
+	Tools    []llmcore.ToolSchema
+	Model    string
+	Cache    llmcore.CacheHandle
 }
 
-// New returns a zero-value Client ready to use.
 func New() *Client { return &Client{} }
 
-func (c *Client) EnsureCache(ctx context.Context, scope llmcore.Scope, prefix llmcore.CachedPrefix) (string, error) {
+func (c *Client) EnsureCache(ctx context.Context, scope llmcore.Scope, prefix llmcore.CachedPrefix) (llmcore.CacheHandle, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.EnsureCacheCalls = append(c.EnsureCacheCalls, EnsureCacheCall{scope, prefix})
 	if c.EnsureCacheErr != nil {
-		return "", c.EnsureCacheErr
+		return llmcore.CacheHandle{}, c.EnsureCacheErr
 	}
-	return c.CacheName, nil
+	return c.CacheHandleOut, nil
 }
 
-func (c *Client) Complete(ctx context.Context, messages []llmcore.Message, tools []string, model, cacheName string) (llmcore.Completion, error) {
+func (c *Client) Complete(ctx context.Context, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.CompleteCalls = append(c.CompleteCalls, CompleteCall{messages, tools, model, cacheName})
+	c.CompleteCalls = append(c.CompleteCalls, CompleteCall{messages, tools, model, cache})
 	if c.CompleteErr != nil {
 		return llmcore.Completion{}, c.CompleteErr
 	}
@@ -614,9 +717,9 @@ func (c *Client) Complete(ctx context.Context, messages []llmcore.Message, tools
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run to pass**
 
-Run from `go/`: `go test ./llmcore/fake/...`
+Run: `go test ./llmcore/fake/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -628,7 +731,7 @@ git commit -m "feat(go): add llmcore fake client for tests"
 
 ---
 
-### Task 8: `tooling/fake` — scripted tool dispatcher
+### Task 8: `tooling/fake` (includes `PanicOnDispatch`)
 
 **Files:**
 - Create: `go/tooling/fake/fake.go`
@@ -651,34 +754,48 @@ import (
 func TestDispatchReturnsScripted(t *testing.T) {
 	d := fake.New()
 	d.Results = map[string]tooling.ToolResult{
-		"save_memory":  {Content: `{"ok":true}`},
-		"search_web":   {Err: errors.New("rate limited"), Denied: true},
+		"save_memory": {Content: `{"ok":true}`},
+		"search_web":  {Err: errors.New("rate"), Denied: true},
 	}
 	r := d.Dispatch(context.Background(), tooling.ToolCall{Name: "save_memory"})
 	if r.Content != `{"ok":true}` {
-		t.Fatalf("save_memory: got %q", r.Content)
+		t.Fatal(r)
 	}
 	r = d.Dispatch(context.Background(), tooling.ToolCall{Name: "search_web"})
 	if !r.Denied || r.Err == nil {
-		t.Fatalf("search_web: got %+v", r)
+		t.Fatal(r)
 	}
 }
 
 func TestSchemaJSONStable(t *testing.T) {
 	d := fake.New()
 	d.Schemas = map[string][]byte{"save_memory": []byte(`{"name":"save_memory"}`)}
-	got1, _ := d.SchemaJSON("save_memory")
-	got2, _ := d.SchemaJSON("save_memory")
-	if string(got1) != string(got2) || string(got1) != `{"name":"save_memory"}` {
-		t.Fatalf("schema not stable: %q vs %q", got1, got2)
+	a, _ := d.SchemaJSON("save_memory")
+	b, _ := d.SchemaJSON("save_memory")
+	if string(a) != string(b) {
+		t.Fatal("unstable")
 	}
+}
+
+func TestPanicOnDispatch(t *testing.T) {
+	d := fake.New()
+	d.PanicOnDispatch = true
+	d.PanicMessage = "boom"
+	defer func() {
+		got := recover()
+		if got != "boom" {
+			t.Fatalf("recover got %v", got)
+		}
+	}()
+	d.Dispatch(context.Background(), tooling.ToolCall{Name: "x"})
+	t.Fatal("expected panic")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to fail**
 
-Run from `go/`: `go test ./tooling/fake/...`
-Expected: FAIL — package `fake` doesn't exist.
+Run: `go test ./tooling/fake/...`
+Expected: FAIL.
 
 - [ ] **Step 3: Write the fake**
 
@@ -695,8 +812,10 @@ import (
 )
 
 type Dispatcher struct {
-	Results map[string]tooling.ToolResult
-	Schemas map[string][]byte
+	Results         map[string]tooling.ToolResult
+	Schemas         map[string][]byte
+	PanicOnDispatch bool
+	PanicMessage    string
 
 	mu    sync.Mutex
 	Calls []tooling.ToolCall
@@ -718,6 +837,13 @@ func (d *Dispatcher) SchemaJSON(name string) ([]byte, error) {
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call tooling.ToolCall) tooling.ToolResult {
+	if d.PanicOnDispatch {
+		msg := d.PanicMessage
+		if msg == "" {
+			msg = "fake panic"
+		}
+		panic(msg)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.Calls = append(d.Calls, call)
@@ -729,21 +855,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call tooling.ToolCall) toolin
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run to pass**
 
-Run from `go/`: `go test ./tooling/fake/...`
+Run: `go test ./tooling/fake/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add go/tooling/fake/
-git commit -m "feat(go): add tooling fake dispatcher for tests"
+git commit -m "feat(go): add tooling fake dispatcher with PanicOnDispatch"
 ```
 
 ---
 
-### Task 9: `overlay/fake` — static-map resolver
+### Task 9: `overlay/fake`
 
 **Files:**
 - Create: `go/overlay/fake/fake.go`
@@ -765,9 +891,9 @@ import (
 func TestGetReturnsCanned(t *testing.T) {
 	r := fake.New()
 	r.Texts = map[overlay.Scope]string{
-		{Network: "afternet", Channel: "#x", Profile: "chat", OverlayHash: "abc"}: "hello overlay",
+		{Network: "afternet", Channel: "#x", Profile: "chat"}: "hello overlay",
 	}
-	got, err := r.Get(context.Background(), overlay.Scope{Network: "afternet", Channel: "#x", Profile: "chat", OverlayHash: "abc"})
+	got, err := r.Get(context.Background(), overlay.Scope{Network: "afternet", Channel: "#x", Profile: "chat"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +958,7 @@ git commit -m "feat(go): add overlay fake resolver for tests"
 
 ---
 
-### Task 10: `persist/fake` — in-memory store
+### Task 10: `persist/fake`
 
 **Files:**
 - Create: `go/persist/fake/fake.go`
@@ -855,29 +981,25 @@ import (
 func TestAppendAndHistory(t *testing.T) {
 	s := fake.New()
 	ctx := context.Background()
-	if err := s.AppendTurn(ctx, "afternet", "#x", "alice", "hi alice"); err != nil {
+	if err := s.AppendTurn(ctx, "n", "#x", "alice", "hi alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendTurn(ctx, "afternet", "#x", "bob", "hi bob"); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.History(ctx, "afternet", "#x", 10)
+	got, err := s.History(ctx, "n", "#x", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("history len: got %d want 4", len(got))
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
 	}
 }
 
 func TestRecordUsage(t *testing.T) {
 	s := fake.New()
-	row := persist.UsageRow{Timestamp: time.Now(), Profile: "chat", Status: "success"}
-	if err := s.RecordUsage(context.Background(), row); err != nil {
+	if err := s.RecordUsage(context.Background(), persist.UsageRow{Timestamp: time.Now(), Status: "success"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.Usage) != 1 {
-		t.Fatalf("usage len: got %d", len(s.Usage))
+		t.Fatal("not recorded")
 	}
 }
 ```
@@ -909,17 +1031,12 @@ type Store struct {
 
 type memoryKey struct{ network, channel, nick string }
 
-func New() *Store {
-	return &Store{MemoryRows: map[memoryKey][]persist.Memory{}}
-}
+func New() *Store { return &Store{MemoryRows: map[memoryKey][]persist.Memory{}} }
 
 func (s *Store) History(ctx context.Context, network, channel string, limit int) ([]persist.HistoryEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []persist.HistoryEntry
-	for _, e := range s.HistoryEntries {
-		out = append(out, e)
-	}
+	out := append([]persist.HistoryEntry(nil), s.HistoryEntries...)
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
@@ -936,7 +1053,7 @@ func (s *Store) AppendTurn(ctx context.Context, network, channel, nick, assistan
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.HistoryEntries = append(s.HistoryEntries,
-		persist.HistoryEntry{Role: "user", Nick: nick, Content: "(redacted user msg)", Timestamp: time.Now()},
+		persist.HistoryEntry{Role: "user", Nick: nick, Content: "(user msg)", Timestamp: time.Now()},
 		persist.HistoryEntry{Role: "assistant", Content: assistantText, Timestamp: time.Now()},
 	)
 	return nil
@@ -959,12 +1076,12 @@ Expected: PASS.
 
 ```bash
 git add go/persist/fake/
-git commit -m "feat(go): add persist fake store for tests"
+git commit -m "feat(go): add persist fake store"
 ```
 
 ---
 
-### Task 11: `ircout/fake` — recording sender
+### Task 11: `ircout/fake`
 
 **Files:**
 - Create: `go/ircout/fake/fake.go`
@@ -989,27 +1106,24 @@ func TestSendRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(s.Sent) != 1 || s.Sent[0].Text != "hi" {
-		t.Fatalf("sent: %+v", s.Sent)
+		t.Fatal(s.Sent)
 	}
 }
 
 func TestSendTypingRecords(t *testing.T) {
 	s := fake.New()
-	s.SendTyping(context.Background(), "afternet", "#x", ircout.TypingActive)
-	s.SendTyping(context.Background(), "afternet", "#x", ircout.TypingDone)
-	if got := len(s.TypingStates); got != 2 {
-		t.Fatalf("typing states: %d", got)
+	s.SendTyping(context.Background(), "n", "#x", ircout.TypingActive)
+	s.SendTyping(context.Background(), "n", "#x", ircout.TypingDone)
+	if len(s.TypingStates) != 2 {
+		t.Fatal(s.TypingStates)
 	}
 }
 
 func TestHasReplyCAP(t *testing.T) {
 	s := fake.New()
-	s.ReplyCAP = map[string]bool{"afternet": true}
-	if !s.HasReplyCAP("afternet") {
-		t.Fatal("should have reply cap")
-	}
-	if s.HasReplyCAP("other") {
-		t.Fatal("should not have reply cap")
+	s.ReplyCAP = map[string]bool{"n": true}
+	if !s.HasReplyCAP("n") || s.HasReplyCAP("other") {
+		t.Fatal("cap mismatch")
 	}
 }
 ```
@@ -1083,7 +1197,7 @@ git commit -m "feat(go): add ircout fake sender for tests"
 
 ## Phase 3 — Profile registry
 
-### Task 12: `router/profile` — Profile struct + Registry
+### Task 12: `router/profile` — Profile struct + Registry (defensive-copy Get)
 
 **Files:**
 - Create: `go/router/profile/profile.go`
@@ -1102,40 +1216,47 @@ import (
 
 func TestRegistryLookup(t *testing.T) {
 	r := profile.NewRegistry()
-	p := profile.Profile{
-		Name:             "test",
-		Tools:            []string{"a", "b"},
-		Model:            "m",
-		MaxIters:         2,
-		FrameworkPrompt:  "fp",
-		AllowAmbient:     true,
-	}
-	r.Register(p)
+	r.Register(profile.Profile{Name: "test", Tools: []string{"a", "b"}, MaxIters: 2})
 	got, ok := r.Get("test")
-	if !ok {
-		t.Fatal("not found")
-	}
-	if got.Name != "test" || got.MaxIters != 2 {
-		t.Fatalf("got %+v", got)
+	if !ok || got.MaxIters != 2 {
+		t.Fatalf("got %+v ok=%v", got, ok)
 	}
 }
 
-func TestRegistryUnknownFallback(t *testing.T) {
+func TestRegistryUnknownReturnsFalse(t *testing.T) {
 	r := profile.NewRegistry()
-	r.Register(profile.Profile{Name: "quiet", MaxIters: 2})
-	got, ok := r.Get("does-not-exist")
-	if ok {
-		t.Fatal("should not find missing profile")
+	if _, ok := r.Get("missing"); ok {
+		t.Fatal("should not find")
 	}
-	_ = got
 }
 
-func TestToolsAreSortedOnRegister(t *testing.T) {
+func TestToolsSortedOnRegister(t *testing.T) {
 	r := profile.NewRegistry()
 	r.Register(profile.Profile{Name: "x", Tools: []string{"c", "a", "b"}})
 	p, _ := r.Get("x")
-	if got := []string(p.Tools); got[0] != "a" || got[1] != "b" || got[2] != "c" {
-		t.Fatalf("not sorted: %v", got)
+	if p.Tools[0] != "a" || p.Tools[1] != "b" || p.Tools[2] != "c" {
+		t.Fatalf("not sorted: %v", p.Tools)
+	}
+}
+
+func TestRegisterOverwrites(t *testing.T) {
+	r := profile.NewRegistry()
+	r.Register(profile.Profile{Name: "x", Tools: []string{"a"}, MaxIters: 1})
+	r.Register(profile.Profile{Name: "x", Tools: []string{"b"}, MaxIters: 5})
+	p, _ := r.Get("x")
+	if len(p.Tools) != 1 || p.Tools[0] != "b" || p.MaxIters != 5 {
+		t.Fatalf("not overwritten: %+v", p)
+	}
+}
+
+func TestGetReturnsDefensiveCopy(t *testing.T) {
+	r := profile.NewRegistry()
+	r.Register(profile.Profile{Name: "x", Tools: []string{"a", "b"}})
+	p, _ := r.Get("x")
+	p.Tools[0] = "MUTATED"
+	p2, _ := r.Get("x")
+	if p2.Tools[0] != "a" {
+		t.Fatalf("registry mutated through Get: %v", p2.Tools)
 	}
 }
 ```
@@ -1143,7 +1264,7 @@ func TestToolsAreSortedOnRegister(t *testing.T) {
 - [ ] **Step 2: Run to fail**
 
 Run: `go test ./router/profile/...`
-Expected: FAIL — package doesn't exist.
+Expected: FAIL.
 
 - [ ] **Step 3: Write the package**
 
@@ -1153,47 +1274,52 @@ package profile
 
 import "sort"
 
-// Profile is one engagement mode (e.g. "chat", "scene").
 type Profile struct {
 	Name            string
-	Tools           []string // alphabetical
+	Tools           []string
 	Model           string
 	MaxIters        int
 	FrameworkPrompt string
-	AllowAmbient    bool // true if channels MAY enable ambient on this profile
+	AllowAmbient    bool
 }
 
-// Registry is a lookup table populated at startup.
 type Registry struct {
 	m map[string]Profile
 }
 
 func NewRegistry() *Registry { return &Registry{m: map[string]Profile{}} }
 
-// Register adds (or replaces) a profile. Tool list is canonicalized to
-// alphabetical order on insert.
+// Register inserts (or overwrites) a profile. Tool list is sorted on insert.
 func (r *Registry) Register(p Profile) {
-	sort.Strings(p.Tools)
+	tools := append([]string(nil), p.Tools...)
+	sort.Strings(tools)
+	p.Tools = tools
 	r.m[p.Name] = p
 }
 
-// Get returns the profile and true, or zero and false if not present.
+// Get returns a deep copy of the profile, so callers cannot mutate the
+// registry's Tools slice through the returned value.
 func (r *Registry) Get(name string) (Profile, bool) {
 	p, ok := r.m[name]
-	return p, ok
+	if !ok {
+		return Profile{}, false
+	}
+	out := p
+	out.Tools = append([]string(nil), p.Tools...)
+	return out, true
 }
 ```
 
 - [ ] **Step 4: Run to pass**
 
 Run: `go test ./router/profile/...`
-Expected: PASS.
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add go/router/profile/profile.go go/router/profile/profile_test.go
-git commit -m "feat(go): add router/profile registry"
+git commit -m "feat(go): add router/profile registry with defensive-copy Get"
 ```
 
 ---
@@ -1220,19 +1346,19 @@ func TestBuiltinsRegistered(t *testing.T) {
 	profile.RegisterBuiltins(r)
 	for _, name := range []string{"quiet", "chat", "scene", "loom", "admin"} {
 		if _, ok := r.Get(name); !ok {
-			t.Errorf("missing builtin: %s", name)
+			t.Errorf("missing: %s", name)
 		}
 	}
 }
 
-func TestQuietHasNoDestructive(t *testing.T) {
+func TestQuietIsMinimal(t *testing.T) {
 	r := profile.NewRegistry()
 	profile.RegisterBuiltins(r)
 	p, _ := r.Get("quiet")
 	for _, banned := range []string{"delete_memory", "update_memory", "generate_image", "search_web", "fetch_url"} {
 		for _, t1 := range p.Tools {
 			if t1 == banned {
-				t.Errorf("quiet contains banned tool: %s", banned)
+				t.Errorf("quiet contains banned %s", banned)
 			}
 		}
 	}
@@ -1245,7 +1371,7 @@ func TestSceneExcludesDestructiveMemoryAndInstruction(t *testing.T) {
 	for _, banned := range []string{"delete_memory", "update_memory", "set_instruction", "clear_instruction"} {
 		for _, t1 := range p.Tools {
 			if t1 == banned {
-				t.Errorf("scene contains banned tool: %s", banned)
+				t.Errorf("scene contains banned %s", banned)
 			}
 		}
 	}
@@ -1265,11 +1391,11 @@ func TestChatHasDrawAndSearch(t *testing.T) {
 		}
 	}
 	if !gotDraw || !gotSearch {
-		t.Fatalf("chat missing draw/search: %v", p.Tools)
+		t.Fatalf("missing draw/search: %v", p.Tools)
 	}
 }
 
-func TestNoRemindersInAnyProfile(t *testing.T) {
+func TestNoRemindersAnywhere(t *testing.T) {
 	r := profile.NewRegistry()
 	profile.RegisterBuiltins(r)
 	for _, name := range []string{"quiet", "chat", "scene", "loom", "admin"} {
@@ -1277,7 +1403,7 @@ func TestNoRemindersInAnyProfile(t *testing.T) {
 		for _, banned := range []string{"set_reminder", "cancel_pending_task", "cancel_all_pending_tasks", "schedule_llm_task", "list_pending_tasks"} {
 			for _, t1 := range p.Tools {
 				if t1 == banned {
-					t.Errorf("%s contains reminder tool %s", name, banned)
+					t.Errorf("%s contains %s", name, banned)
 				}
 			}
 		}
@@ -1288,14 +1414,13 @@ func TestNoRemindersInAnyProfile(t *testing.T) {
 - [ ] **Step 2: Run to fail**
 
 Run: `go test ./router/profile/...`
-Expected: FAIL — `RegisterBuiltins` not defined.
+Expected: FAIL — `RegisterBuiltins` undefined.
 
 - [ ] **Step 3: Write the builtins**
 
 ```go
 package profile
 
-// RegisterBuiltins inserts the v9 profile set into r.
 func RegisterBuiltins(r *Registry) {
 	r.Register(Profile{
 		Name:            "quiet",
@@ -1359,7 +1484,7 @@ func RegisterBuiltins(r *Registry) {
 - [ ] **Step 4: Run to pass**
 
 Run: `go test ./router/profile/...`
-Expected: PASS, all builtin tests green.
+Expected: PASS (all builtin tests green).
 
 - [ ] **Step 5: Commit**
 
@@ -1372,7 +1497,7 @@ git commit -m "feat(go): add v9 builtin profile definitions"
 
 ## Phase 4 — Router types and helpers
 
-### Task 14: `router/types.go` — data types
+### Task 14: `router/types.go`
 
 **Files:**
 - Create: `go/router/doc.go`
@@ -1393,12 +1518,11 @@ package router
 
 import "time"
 
-// IRCEvent is one inbound message from sub-project A.
 type IRCEvent struct {
 	Network    string
-	Channel    string // "" for DM
+	Channel    string
 	Nick       string
-	Account    string // SASL-authenticated account, "" if unauth
+	Account    string
 	Text       string
 	IsAction   bool
 	Tags       map[string]string
@@ -1406,27 +1530,27 @@ type IRCEvent struct {
 	ReceivedAt time.Time
 }
 
-// SceneRef and LoomRef are opaque pointers indicating an active mode.
 type SceneRef struct{ ID string }
 type LoomRef struct{ ID string }
 
-// ChannelKey uniquely identifies a channel per network.
 type ChannelKey struct {
 	Network string
 	Channel string
 }
 
-// ChannelState is the persisted runtime state for one channel.
+// ChannelState is hydrated by the dispatcher BEFORE Route is called. The
+// Overlay field is the pre-resolved overlay text from D's Resolver.Get —
+// Route hashes it to build CacheScope.OverlayHash. Executor will re-resolve
+// via D for determinism, but D's purity contract guarantees the same text.
 type ChannelState struct {
 	Profile         string
-	Overlay         string // raw overlay text from D's resolver
+	Overlay         string
 	AmbientEnabled  bool
 	AmbientCooldown time.Duration
 	SceneActive     *SceneRef
 	LoomActive      *LoomRef
 }
 
-// BotState is the snapshot the dispatcher hands to Route.
 type BotState struct {
 	SelfNick      string
 	LastAmbientAt map[ChannelKey]time.Time
@@ -1434,7 +1558,6 @@ type BotState struct {
 	RecentSentIDs []string
 }
 
-// Action is what Route decides.
 type Action int
 
 const (
@@ -1459,7 +1582,6 @@ func (a Action) String() string {
 	}
 }
 
-// CacheScope is the cache lane identifier.
 type CacheScope struct {
 	Network     string
 	Channel     string
@@ -1467,23 +1589,20 @@ type CacheScope struct {
 	OverlayHash string
 }
 
-// PromptSpec is the shape of the prompt body (history tail policy + user msg).
 type PromptSpec struct {
-	HistoryLimit int    // last-N turns to include from the store
-	UserText     string // verbatim user message
-	UserNick     string // for memory scoping in the tail; never goes into the prefix
+	HistoryLimit int
+	UserText     string
+	UserNick     string
 }
 
-// DeliverySpec controls how the response goes back to IRC.
 type DeliverySpec struct {
-	Typing        bool
-	ChunkSize     int    // bytes per PRIVMSG chunk
-	ReplyToID     string // IRCv3 +draft/reply; "" to skip
-	NickPrefixOnFallback bool // if ReplyToID set but CAP missing, use "nick: " prefix
-	MaxIters      int
+	Typing               bool
+	ChunkSize            int
+	ReplyToID            string
+	NickPrefixOnFallback bool
+	MaxIters             int
 }
 
-// RouteDecision is the output of Route.
 type RouteDecision struct {
 	Action     Action
 	Profile    string
@@ -1492,13 +1611,13 @@ type RouteDecision struct {
 	Model      string
 	Prompt     PromptSpec
 	Delivery   DeliverySpec
-	Event      IRCEvent // carried through so the executor has the source event
+	Event      IRCEvent
 }
 ```
 
 - [ ] **Step 3: Build**
 
-Run from `go/`: `go build ./router/...`
+Run: `go build ./router/...`
 Expected: success.
 
 - [ ] **Step 4: Commit**
@@ -1510,7 +1629,7 @@ git commit -m "feat(go): add router data types"
 
 ---
 
-### Task 15: `router/addressed.go` — addressed() helper
+### Task 15: `router/addressed.go`
 
 **Files:**
 - Create: `go/router/addressed.go`
@@ -1524,8 +1643,7 @@ package router
 import "testing"
 
 func TestAddressedDM(t *testing.T) {
-	got := addressed(IRCEvent{Channel: "", Text: "anything"}, "vibebot", nil)
-	if !got {
+	if !addressed(IRCEvent{Channel: "", Text: "anything"}, "vibebot", nil) {
 		t.Fatal("DM should be addressed")
 	}
 }
@@ -1540,8 +1658,10 @@ func TestAddressedFirstTokenMatch(t *testing.T) {
 		{"vibebot; what?", true},
 		{"VIBEBOT hi", true},
 		{"  vibebot   hi", true},
-		{"hi vibebot", false}, // mid-message — explicitly out of scope for v1
-		{"vibebotsomething hi", false}, // not equal after punctuation strip
+		{"vibebot:\nhello", true},     // newline whitespace
+		{"vibebot:\thi", true},        // tab
+		{"hi vibebot", false},         // mid-message — out of scope for v1
+		{"vibebotsomething hi", false},
 		{"", false},
 	}
 	for _, c := range cases {
@@ -1568,7 +1688,7 @@ func TestAddressedReplyTag(t *testing.T) {
 - [ ] **Step 2: Run to fail**
 
 Run: `go test ./router/ -run TestAddressed`
-Expected: FAIL — `addressed` not defined.
+Expected: FAIL.
 
 - [ ] **Step 3: Write the function**
 
@@ -1581,10 +1701,11 @@ import "strings"
 //
 // True iff ANY of:
 //   - evt.Channel == "" (DM)
-//   - evt.Tags["+draft/reply"] is in recentSentIDs (bot is being replied to)
+//   - evt.Tags["+draft/reply"] is in recentSentIDs
 //   - first whitespace-delimited token of evt.Text, lowercased and stripped
 //     of trailing punctuation in [:,;.!?], equals strings.ToLower(selfNick)
 //
+// Whitespace is any unicode whitespace (via strings.Fields).
 // Mid-message mention is intentionally NOT addressed for v1.
 func addressed(evt IRCEvent, selfNick string, recentSentIDs []string) bool {
 	if evt.Channel == "" {
@@ -1597,20 +1718,11 @@ func addressed(evt IRCEvent, selfNick string, recentSentIDs []string) bool {
 			}
 		}
 	}
-	first := firstToken(evt.Text)
-	if first == "" {
+	fields := strings.Fields(evt.Text)
+	if len(fields) == 0 {
 		return false
 	}
-	return strings.EqualFold(stripTrailingPunct(first), selfNick)
-}
-
-func firstToken(s string) string {
-	s = strings.TrimLeft(s, " \t")
-	end := strings.IndexAny(s, " \t")
-	if end == -1 {
-		return s
-	}
-	return s[:end]
+	return strings.EqualFold(stripTrailingPunct(fields[0]), selfNick)
 }
 
 func stripTrailingPunct(s string) string {
@@ -1621,18 +1733,18 @@ func stripTrailingPunct(s string) string {
 - [ ] **Step 4: Run to pass**
 
 Run: `go test ./router/ -run TestAddressed -v`
-Expected: PASS for all cases.
+Expected: PASS for all cases including the newline case.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add go/router/addressed.go go/router/addressed_test.go
-git commit -m "feat(go): add router addressed() with strict v1 semantics"
+git commit -m "feat(go): add router addressed() with unicode-aware tokenization"
 ```
 
 ---
 
-### Task 16: `router/scope.go` — OverlayHash + CacheScope builder
+### Task 16: `router/scope.go` — OverlayHash + CacheScope
 
 **Files:**
 - Create: `go/router/scope.go`
@@ -1649,9 +1761,9 @@ func TestOverlayHashStable(t *testing.T) {
 	a := overlayHash("hello world")
 	b := overlayHash("hello world")
 	if a != b {
-		t.Fatalf("not stable: %q vs %q", a, b)
+		t.Fatalf("not stable")
 	}
-	if len(a) != 32 { // 16 bytes hex
+	if len(a) != 32 {
 		t.Fatalf("len: %d", len(a))
 	}
 }
@@ -1665,17 +1777,17 @@ func TestOverlayHashDifferentInputs(t *testing.T) {
 func TestBuildCacheScope(t *testing.T) {
 	got := buildCacheScope("afternet", "#x", "chat", "overlay text")
 	if got.Network != "afternet" || got.Channel != "#x" || got.Profile != "chat" {
-		t.Fatalf("scope: %+v", got)
+		t.Fatalf("%+v", got)
 	}
-	if got.OverlayHash == "" || len(got.OverlayHash) != 32 {
-		t.Fatalf("overlay hash: %q", got.OverlayHash)
+	if len(got.OverlayHash) != 32 {
+		t.Fatalf("hash: %q", got.OverlayHash)
 	}
 }
 ```
 
 - [ ] **Step 2: Run to fail**
 
-Run: `go test ./router/ -run "TestOverlayHash|TestBuildCacheScope"`
+Run: `go test ./router/ -run "TestOverlay|TestBuildCache"`
 Expected: FAIL.
 
 - [ ] **Step 3: Write the helpers**
@@ -1688,14 +1800,13 @@ import (
 	"encoding/hex"
 )
 
-// overlayHash returns the truncated hex sha256 of overlay text.
-// 16 bytes = 32 hex chars. Same input → same hash, byte-identical.
+// overlayHash is hex sha256 truncated to 16 bytes (32 hex chars).
+// Same input → same hash, byte-identical.
 func overlayHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:16])
 }
 
-// buildCacheScope assembles the cache key for a turn.
 func buildCacheScope(network, channel, profile, overlay string) CacheScope {
 	return CacheScope{
 		Network:     network,
@@ -1708,21 +1819,23 @@ func buildCacheScope(network, channel, profile, overlay string) CacheScope {
 
 - [ ] **Step 4: Run to pass**
 
-Run: `go test ./router/ -run "TestOverlayHash|TestBuildCacheScope" -v`
+Run: `go test ./router/ -run "TestOverlay|TestBuildCache" -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add go/router/scope.go go/router/scope_test.go
-git commit -m "feat(go): add router overlay hash and CacheScope builder"
+git commit -m "feat(go): add router OverlayHash and CacheScope builder"
 ```
 
 ---
 
 ## Phase 5 — Route() decision function
 
-### Task 17: `router/route.go` — Route() core decision tree
+### Task 17: `router/route.go`
+
+This task is split into two implementation steps to keep each one under ~50 lines.
 
 **Files:**
 - Create: `go/router/route.go`
@@ -1734,6 +1847,7 @@ git commit -m "feat(go): add router overlay hash and CacheScope builder"
 package router
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -1749,12 +1863,11 @@ func newTestRegistry(t *testing.T) *profile.Registry {
 
 func TestRouteIgnoresUnaddressedNoAmbient(t *testing.T) {
 	r := newTestRegistry(t)
-	evt := IRCEvent{Channel: "#x", Text: "random chatter", Network: "afternet", ReceivedAt: time.Now()}
+	evt := IRCEvent{Channel: "#x", Text: "random", Network: "afternet", ReceivedAt: time.Now()}
 	state := ChannelState{Profile: "chat", AmbientEnabled: false}
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
-	d := Route(evt, state, bot, r)
-	if d.Action != Ignore {
-		t.Fatalf("got %v want Ignore", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != Ignore {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
@@ -1764,36 +1877,31 @@ func TestRouteAddressedChat(t *testing.T) {
 	state := ChannelState{Profile: "chat", Overlay: "be friendly"}
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
 	d := Route(evt, state, bot, r)
-	if d.Action != RespondChat {
-		t.Fatalf("got %v want RespondChat", d.Action)
-	}
-	if d.Profile != "chat" {
-		t.Fatalf("profile %q", d.Profile)
+	if d.Action != RespondChat || d.Profile != "chat" {
+		t.Fatalf("%+v", d)
 	}
 	if d.CacheScope.OverlayHash == "" {
-		t.Fatal("overlay hash empty")
+		t.Fatal("hash empty")
 	}
 }
 
-func TestRouteAddressedSceneTakesPriority(t *testing.T) {
+func TestRouteSceneTakesPriorityOverChatWhenAddressed(t *testing.T) {
 	r := newTestRegistry(t)
-	state := ChannelState{Profile: "chat", SceneActive: &SceneRef{ID: "scene-1"}}
+	state := ChannelState{Profile: "chat", SceneActive: &SceneRef{ID: "s"}}
 	evt := IRCEvent{Channel: "#x", Text: "vibebot: hi", Network: "afternet", ReceivedAt: time.Now()}
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
-	d := Route(evt, state, bot, r)
-	if d.Action != RespondScene {
-		t.Fatalf("got %v want RespondScene", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != RespondScene {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
-func TestRouteAddressedLoomTakesPriorityOverScene(t *testing.T) {
+func TestRouteLoomTakesPriorityOverScene(t *testing.T) {
 	r := newTestRegistry(t)
 	state := ChannelState{Profile: "chat", SceneActive: &SceneRef{ID: "s"}, LoomActive: &LoomRef{ID: "l"}}
 	evt := IRCEvent{Channel: "#x", Text: "vibebot: hi", Network: "afternet", ReceivedAt: time.Now()}
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
-	d := Route(evt, state, bot, r)
-	if d.Action != RespondLoom {
-		t.Fatalf("got %v want RespondLoom", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != RespondLoom {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
@@ -1801,15 +1909,14 @@ func TestRouteAmbientPassesCooldown(t *testing.T) {
 	r := newTestRegistry(t)
 	now := time.Now()
 	state := ChannelState{Profile: "chat", AmbientEnabled: true, AmbientCooldown: 60 * time.Second}
-	evt := IRCEvent{Channel: "#x", Text: "general chatter", Network: "afternet", ReceivedAt: now}
+	evt := IRCEvent{Channel: "#x", Text: "general", Network: "afternet", ReceivedAt: now}
 	bot := BotState{
 		SelfNick:      "vibebot",
 		Now:           now,
 		LastAmbientAt: map[ChannelKey]time.Time{{Network: "afternet", Channel: "#x"}: now.Add(-90 * time.Second)},
 	}
-	d := Route(evt, state, bot, r)
-	if d.Action != RespondChat {
-		t.Fatalf("got %v want RespondChat (cooldown elapsed)", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != RespondChat {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
@@ -1817,15 +1924,14 @@ func TestRouteAmbientBlockedByCooldown(t *testing.T) {
 	r := newTestRegistry(t)
 	now := time.Now()
 	state := ChannelState{Profile: "chat", AmbientEnabled: true, AmbientCooldown: 60 * time.Second}
-	evt := IRCEvent{Channel: "#x", Text: "general chatter", Network: "afternet", ReceivedAt: now}
+	evt := IRCEvent{Channel: "#x", Text: "general", Network: "afternet", ReceivedAt: now}
 	bot := BotState{
 		SelfNick:      "vibebot",
 		Now:           now,
 		LastAmbientAt: map[ChannelKey]time.Time{{Network: "afternet", Channel: "#x"}: now.Add(-30 * time.Second)},
 	}
-	d := Route(evt, state, bot, r)
-	if d.Action != Ignore {
-		t.Fatalf("got %v want Ignore (cooldown not elapsed)", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != Ignore {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
@@ -1838,15 +1944,14 @@ func TestRouteAmbientNeverTriggersSceneOrLoom(t *testing.T) {
 		AmbientEnabled:  true,
 		AmbientCooldown: time.Second,
 	}
-	evt := IRCEvent{Channel: "#x", Text: "general chatter", Network: "afternet", ReceivedAt: now}
+	evt := IRCEvent{Channel: "#x", Text: "general", Network: "afternet", ReceivedAt: now}
 	bot := BotState{
 		SelfNick:      "vibebot",
 		Now:           now,
 		LastAmbientAt: map[ChannelKey]time.Time{{Network: "afternet", Channel: "#x"}: now.Add(-1 * time.Hour)},
 	}
-	d := Route(evt, state, bot, r)
-	if d.Action != RespondChat {
-		t.Fatalf("got %v want RespondChat (ambient never triggers scene)", d.Action)
+	if d := Route(evt, state, bot, r); d.Action != RespondChat {
+		t.Fatalf("got %v", d.Action)
 	}
 }
 
@@ -1857,10 +1962,7 @@ func TestRouteUnknownProfileFallsBackToQuiet(t *testing.T) {
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
 	d := Route(evt, state, bot, r)
 	if d.Profile != "quiet" {
-		t.Fatalf("fallback profile: got %q want quiet", d.Profile)
-	}
-	if d.Action != RespondChat {
-		t.Fatalf("action: %v", d.Action)
+		t.Fatalf("fallback: %q", d.Profile)
 	}
 }
 
@@ -1869,19 +1971,66 @@ func TestRouteCarriesEvent(t *testing.T) {
 	evt := IRCEvent{Channel: "#x", Text: "vibebot: hi", Network: "afternet", MessageID: "m-1", ReceivedAt: time.Now()}
 	state := ChannelState{Profile: "chat"}
 	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
-	d := Route(evt, state, bot, r)
-	if d.Event.MessageID != "m-1" {
-		t.Fatalf("event not carried: %+v", d.Event)
+	if d := Route(evt, state, bot, r); d.Event.MessageID != "m-1" {
+		t.Fatalf("not carried: %+v", d.Event)
 	}
+}
+
+func TestRouteIsPureUnderConcurrentCalls(t *testing.T) {
+	r := newTestRegistry(t)
+	evt := IRCEvent{Channel: "#x", Text: "vibebot: hi", Network: "afternet", ReceivedAt: time.Now()}
+	state := ChannelState{Profile: "chat", Overlay: "be friendly"}
+	bot := BotState{SelfNick: "vibebot", Now: time.Now()}
+	want := Route(evt, state, bot, r)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got := Route(evt, state, bot, r)
+			if got.Action != want.Action || got.Profile != want.Profile || got.CacheScope.OverlayHash != want.CacheScope.OverlayHash {
+				t.Errorf("non-deterministic")
+			}
+		}()
+	}
+	wg.Wait()
 }
 ```
 
 - [ ] **Step 2: Run to fail**
 
 Run: `go test ./router/ -run TestRoute`
-Expected: FAIL — `Route` not defined.
+Expected: FAIL — `Route` undefined.
 
-- [ ] **Step 3: Implement Route**
+- [ ] **Step 3: Write `decideAction` (decision-tree only)**
+
+```go
+package router
+
+func decideAction(evt IRCEvent, state ChannelState, bot BotState) Action {
+	if addressed(evt, bot.SelfNick, bot.RecentSentIDs) {
+		switch {
+		case state.LoomActive != nil:
+			return RespondLoom
+		case state.SceneActive != nil:
+			return RespondScene
+		default:
+			return RespondChat
+		}
+	}
+	if !state.AmbientEnabled {
+		return Ignore
+	}
+	key := ChannelKey{Network: evt.Network, Channel: evt.Channel}
+	if evt.ReceivedAt.Sub(bot.LastAmbientAt[key]) < state.AmbientCooldown {
+		return Ignore
+	}
+	return RespondChat
+}
+```
+
+- [ ] **Step 4: Write `Route` (wires registry + scope + decision)**
 
 ```go
 package router
@@ -1900,8 +2049,6 @@ func Route(evt IRCEvent, state ChannelState, bot BotState, reg *profile.Registry
 		profileName = "quiet"
 		p, ok = reg.Get(profileName)
 		if !ok {
-			// Registry is missing even quiet; return an Ignore decision rather
-			// than panicking. The dispatcher logs at WARN.
 			return RouteDecision{Action: Ignore, Event: evt}
 		}
 	}
@@ -1915,7 +2062,7 @@ func Route(evt IRCEvent, state ChannelState, bot BotState, reg *profile.Registry
 	return RouteDecision{
 		Action:     action,
 		Profile:    profileName,
-		Tools:      append([]string(nil), p.Tools...), // defensive copy
+		Tools:      p.Tools, // already a defensive copy from registry.Get
 		CacheScope: scope,
 		Model:      p.Model,
 		Prompt: PromptSpec{
@@ -1927,44 +2074,20 @@ func Route(evt IRCEvent, state ChannelState, bot BotState, reg *profile.Registry
 			Typing:               true,
 			ChunkSize:            380,
 			ReplyToID:            evt.MessageID,
-			NickPrefixOnFallback: evt.Channel != "", // skip nick prefix in DMs
+			NickPrefixOnFallback: evt.Channel != "",
 			MaxIters:             p.MaxIters,
 		},
 		Event: evt,
 	}
 }
-
-func decideAction(evt IRCEvent, state ChannelState, bot BotState) Action {
-	if addressed(evt, bot.SelfNick, bot.RecentSentIDs) {
-		switch {
-		case state.LoomActive != nil:
-			return RespondLoom
-		case state.SceneActive != nil:
-			return RespondScene
-		default:
-			return RespondChat
-		}
-	}
-	// Not addressed → ambient check
-	if !state.AmbientEnabled {
-		return Ignore
-	}
-	key := ChannelKey{Network: evt.Network, Channel: evt.Channel}
-	last := bot.LastAmbientAt[key]
-	if evt.ReceivedAt.Sub(last) < state.AmbientCooldown {
-		return Ignore
-	}
-	// Ambient ALWAYS routes to RespondChat regardless of scene/loom
-	return RespondChat
-}
 ```
 
-- [ ] **Step 4: Run to pass**
+- [ ] **Step 5: Run to pass**
 
-Run: `go test ./router/...`
-Expected: PASS for all router tests.
+Run: `go test ./router/... -race`
+Expected: PASS for all router tests including the concurrent purity test.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add go/router/route.go go/router/route_test.go
@@ -1975,11 +2098,14 @@ git commit -m "feat(go): add router.Route() pure decision function"
 
 ## Phase 6 — Executor
 
-### Task 18: `exec/errors.go` — typed errors
+Phase 6 is split into smaller tasks: errors, ResolveSchemas, BuildCachedPrefix, chunking, loop, then the full Executor.Run wiring.
+
+### Task 18: `exec/errors.go` — typed error categories
 
 **Files:**
 - Create: `go/exec/doc.go`
 - Create: `go/exec/errors.go`
+- Create: `go/exec/errors_test.go`
 
 - [ ] **Step 1: Write doc.go**
 
@@ -1989,140 +2115,246 @@ git commit -m "feat(go): add router.Route() pure decision function"
 package exec
 ```
 
-- [ ] **Step 2: Write errors.go**
+- [ ] **Step 2: Write the failing test**
+
+```go
+package exec
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestErrCategoriesDistinct(t *testing.T) {
+	cats := []error{
+		ErrLLMTransient, ErrLLMFatal, ErrToolDenied, ErrToolFailed,
+		ErrIRCSend, ErrCacheStale, ErrBudgetExceeded,
+	}
+	for i, a := range cats {
+		if a == nil {
+			t.Errorf("cat %d nil", i)
+		}
+		for j, b := range cats {
+			if i == j {
+				continue
+			}
+			if errors.Is(a, b) {
+				t.Errorf("%v incorrectly Is(%v)", a, b)
+			}
+		}
+	}
+}
+```
+
+- [ ] **Step 3: Run to fail**
+
+Run: `go test ./exec/ -run TestErr`
+Expected: FAIL — error variables undefined.
+
+- [ ] **Step 4: Write `errors.go`**
 
 ```go
 package exec
 
 import "errors"
 
-// Typed errors for category-based recovery.
 var (
-	ErrLLMTransient    = errors.New("exec: llm transient failure")
-	ErrLLMFatal        = errors.New("exec: llm fatal failure")
-	ErrToolDenied      = errors.New("exec: tool denied")
-	ErrToolFailed      = errors.New("exec: tool execution failed")
-	ErrIRCSend         = errors.New("exec: irc send failed")
-	ErrCacheStale      = errors.New("exec: cache stale")
-	ErrBudgetExceeded  = errors.New("exec: budget exceeded")
+	ErrLLMTransient   = errors.New("exec: llm transient failure")
+	ErrLLMFatal       = errors.New("exec: llm fatal failure")
+	ErrToolDenied     = errors.New("exec: tool denied")
+	ErrToolFailed     = errors.New("exec: tool execution failed")
+	ErrIRCSend        = errors.New("exec: irc send failed")
+	ErrCacheStale     = errors.New("exec: cache stale")
+	ErrBudgetExceeded = errors.New("exec: budget exceeded")
 )
 ```
 
-- [ ] **Step 3: Build**
+- [ ] **Step 5: Run to pass**
 
-Run from `go/`: `go build ./exec/...`
-Expected: success.
+Run: `go test ./exec/ -run TestErr`
+Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add go/exec/doc.go go/exec/errors.go
-git commit -m "feat(go): add exec typed errors"
+git add go/exec/doc.go go/exec/errors.go go/exec/errors_test.go
+git commit -m "feat(go): add exec typed errors with distinctness test"
 ```
 
 ---
 
-### Task 19: `exec/prefix.go` — CachedPrefix builder
+### Task 19: `exec/resolve.go` — ResolveSchemas helper
 
 **Files:**
-- Create: `go/exec/prefix.go`
-- Create: `go/exec/prefix_test.go`
+- Create: `go/exec/resolve.go`
+- Create: `go/exec/resolve_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
+
+```go
+package exec_test
+
+import (
+	"testing"
+
+	"github.com/rdrake/vibebot-v8/v9/exec"
+	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+)
+
+func TestResolveSchemasReturnsInOrder(t *testing.T) {
+	td := toolfake.New()
+	td.Schemas = map[string][]byte{
+		"a": []byte(`{"name":"a"}`),
+		"b": []byte(`{"name":"b"}`),
+	}
+	got, err := exec.ResolveSchemas(td, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestResolveSchemasMissingErrors(t *testing.T) {
+	td := toolfake.New()
+	if _, err := exec.ResolveSchemas(td, []string{"missing"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+```
+
+- [ ] **Step 2: Run to fail**
+
+Run: `go test ./exec/ -run TestResolveSchemas`
+Expected: FAIL.
+
+- [ ] **Step 3: Write `resolve.go`**
 
 ```go
 package exec
 
 import (
+	"fmt"
+
+	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot-v8/v9/tooling"
+)
+
+// ResolveSchemas converts tool names into ToolSchema via the dispatcher.
+// Caller-side resolution means B never needs a back-channel to C.
+func ResolveSchemas(d tooling.Dispatcher, names []string) ([]llmcore.ToolSchema, error) {
+	out := make([]llmcore.ToolSchema, 0, len(names))
+	for _, n := range names {
+		b, err := d.SchemaJSON(n)
+		if err != nil {
+			return nil, fmt.Errorf("schema for %q: %w", n, err)
+		}
+		out = append(out, llmcore.ToolSchema{Name: n, SchemaJSON: b})
+	}
+	return out, nil
+}
+```
+
+- [ ] **Step 4: Run to pass**
+
+Run: `go test ./exec/ -run TestResolveSchemas -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go/exec/resolve.go go/exec/resolve_test.go
+git commit -m "feat(go): add exec.ResolveSchemas to pre-resolve tools"
+```
+
+---
+
+### Task 20: `exec/prefix.go` — BuildCachedPrefix
+
+**Files:**
+- Create: `go/exec/prefix.go`
+- Create: `go/exec/prefix_test.go`
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+package exec_test
+
+import (
 	"bytes"
 	"testing"
 
+	"github.com/rdrake/vibebot-v8/v9/exec"
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
 )
 
-func TestBuildCachedPrefixFieldsSet(t *testing.T) {
-	td := toolfake.New()
-	td.Schemas = map[string][]byte{
-		"a": []byte(`{"name":"a"}`),
-		"b": []byte(`{"name":"b"}`),
-	}
-	cp, err := BuildCachedPrefix(BuildPrefixArgs{
-		Framework: "fp",
-		Overlay:   "ov",
-		Tools:     []string{"a", "b"},
-		Network:   "afternet",
-		Channel:   "#x",
-		Profile:   "chat",
-		Dispatch:  td,
+func TestBuildCachedPrefixFields(t *testing.T) {
+	cp := exec.BuildCachedPrefix(exec.BuildPrefixArgs{
+		Framework: "fp", Overlay: "ov",
+		Tools: []llmcore.ToolSchema{
+			{Name: "a", SchemaJSON: []byte(`{"name":"a"}`)},
+			{Name: "b", SchemaJSON: []byte(`{"name":"b"}`)},
+		},
+		Network: "afternet", Channel: "#x", Profile: "chat",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cp.FrameworkPrompt != "fp" {
-		t.Errorf("framework: %q", cp.FrameworkPrompt)
-	}
-	if cp.Overlay != "ov" {
-		t.Errorf("overlay: %q", cp.Overlay)
+	if cp.FrameworkPrompt != "fp" || cp.Overlay != "ov" {
+		t.Fatalf("%+v", cp)
 	}
 	if cp.ChannelContext != "Network: afternet\nChannel: #x\nProfile: chat\n" {
-		t.Errorf("channel ctx: %q", cp.ChannelContext)
+		t.Fatalf("ctx: %q", cp.ChannelContext)
 	}
-	// Tools JSON should contain both schemas, in a deterministic envelope.
 	if !bytes.Contains(cp.ToolSchemasJSON, []byte(`"name":"a"`)) ||
 		!bytes.Contains(cp.ToolSchemasJSON, []byte(`"name":"b"`)) {
-		t.Errorf("tool schemas: %s", cp.ToolSchemasJSON)
+		t.Fatalf("schemas: %s", cp.ToolSchemasJSON)
 	}
 }
 
-func TestBuildCachedPrefixToolsByteIdentical(t *testing.T) {
-	td := toolfake.New()
-	td.Schemas = map[string][]byte{
-		"a": []byte(`{"name":"a"}`),
-		"b": []byte(`{"name":"b"}`),
-	}
-	args := BuildPrefixArgs{
-		Framework: "fp",
-		Overlay:   "ov",
-		Tools:     []string{"b", "a"}, // unsorted input
-		Network:   "afternet",
-		Channel:   "#x",
-		Profile:   "chat",
-		Dispatch:  td,
-	}
-	first, _ := BuildCachedPrefix(args)
-	args.Tools = []string{"a", "b"} // pre-sorted
-	second, _ := BuildCachedPrefix(args)
-	if !bytes.Equal(first.ToolSchemasJSON, second.ToolSchemasJSON) {
-		t.Fatalf("not byte-identical:\nA=%s\nB=%s", first.ToolSchemasJSON, second.ToolSchemasJSON)
-	}
-}
-
-func TestBuildCachedPrefixMissingToolErrors(t *testing.T) {
-	td := toolfake.New() // empty schemas
-	_, err := BuildCachedPrefix(BuildPrefixArgs{
-		Framework: "fp",
-		Overlay:   "ov",
-		Tools:     []string{"missing"},
-		Network:   "afternet",
-		Channel:   "#x",
-		Profile:   "chat",
-		Dispatch:  td,
+func TestBuildCachedPrefixToolOrderStable(t *testing.T) {
+	a := exec.BuildCachedPrefix(exec.BuildPrefixArgs{
+		Framework: "fp", Overlay: "ov",
+		Tools: []llmcore.ToolSchema{
+			{Name: "b", SchemaJSON: []byte(`{"name":"b"}`)},
+			{Name: "a", SchemaJSON: []byte(`{"name":"a"}`)},
+		},
+		Network: "n", Channel: "c", Profile: "p",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing schema")
+	b := exec.BuildCachedPrefix(exec.BuildPrefixArgs{
+		Framework: "fp", Overlay: "ov",
+		Tools: []llmcore.ToolSchema{
+			{Name: "a", SchemaJSON: []byte(`{"name":"a"}`)},
+			{Name: "b", SchemaJSON: []byte(`{"name":"b"}`)},
+		},
+		Network: "n", Channel: "c", Profile: "p",
+	})
+	if !bytes.Equal(llmcore.Canonical(a), llmcore.Canonical(b)) {
+		t.Fatalf("canonical bytes differ across input order:\nA=%s\nB=%s", llmcore.Canonical(a), llmcore.Canonical(b))
 	}
 }
 
-var _ = llmcore.CachedPrefix{} // ensure llmcore is referenced
+func TestBuildCachedPrefixDifferentSchemasDiffer(t *testing.T) {
+	a := exec.BuildCachedPrefix(exec.BuildPrefixArgs{
+		Framework: "fp", Overlay: "ov",
+		Tools:   []llmcore.ToolSchema{{Name: "x", SchemaJSON: []byte(`{"v":1}`)}},
+		Network: "n", Channel: "c", Profile: "p",
+	})
+	b := exec.BuildCachedPrefix(exec.BuildPrefixArgs{
+		Framework: "fp", Overlay: "ov",
+		Tools:   []llmcore.ToolSchema{{Name: "x", SchemaJSON: []byte(`{"v":2}`)}},
+		Network: "n", Channel: "c", Profile: "p",
+	})
+	if bytes.Equal(llmcore.Canonical(a), llmcore.Canonical(b)) {
+		t.Fatal("different schemas must produce different canonical bytes")
+	}
+}
 ```
 
 - [ ] **Step 2: Run to fail**
 
-Run: `go test ./exec/ -run TestBuildCachedPrefix`
+Run: `go test ./exec/ -run TestBuildCached`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement BuildCachedPrefix**
+- [ ] **Step 3: Implement `BuildCachedPrefix`**
 
 ```go
 package exec
@@ -2133,38 +2365,37 @@ import (
 	"sort"
 
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
 )
 
 // BuildPrefixArgs is the input to BuildCachedPrefix.
+// Tools must already be resolved schemas (see ResolveSchemas). The schemas'
+// bytes must be canonical per sub-project C's contract; this function does
+// NOT re-canonicalize JSON keys or whitespace.
 type BuildPrefixArgs struct {
 	Framework string
 	Overlay   string
-	Tools     []string
+	Tools     []llmcore.ToolSchema
 	Network   string
 	Channel   string
 	Profile   string
-	Dispatch  tooling.Dispatcher
 }
 
 // BuildCachedPrefix assembles the four-block cacheable prefix per the spec
-// section "Cache prefix composition". Tools are sorted alphabetically and
-// concatenated with a fixed separator into ToolSchemasJSON.
-func BuildCachedPrefix(args BuildPrefixArgs) (llmcore.CachedPrefix, error) {
-	tools := append([]string(nil), args.Tools...)
-	sort.Strings(tools)
+// section "Cache prefix composition". Tools are sorted by name before
+// serialization to make output insensitive to caller-side ordering.
+//
+// Use llmcore.Canonical(cp) to get the cacheable byte block.
+func BuildCachedPrefix(args BuildPrefixArgs) llmcore.CachedPrefix {
+	tools := append([]llmcore.ToolSchema(nil), args.Tools...)
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 
 	var buf bytes.Buffer
 	buf.WriteByte('[')
-	for i, name := range tools {
-		schema, err := args.Dispatch.SchemaJSON(name)
-		if err != nil {
-			return llmcore.CachedPrefix{}, fmt.Errorf("schema for %q: %w", name, err)
-		}
+	for i, t := range tools {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		buf.Write(schema)
+		buf.Write(t.SchemaJSON)
 	}
 	buf.WriteByte(']')
 
@@ -2173,40 +2404,38 @@ func BuildCachedPrefix(args BuildPrefixArgs) (llmcore.CachedPrefix, error) {
 		Overlay:         args.Overlay,
 		ToolSchemasJSON: buf.Bytes(),
 		ChannelContext:  fmt.Sprintf("Network: %s\nChannel: %s\nProfile: %s\n", args.Network, args.Channel, args.Profile),
-	}, nil
+	}
 }
 ```
 
 - [ ] **Step 4: Run to pass**
 
-Run: `go test ./exec/ -run TestBuildCachedPrefix -v`
-Expected: PASS.
+Run: `go test ./exec/ -run TestBuildCached -v`
+Expected: PASS for all three tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add go/exec/prefix.go go/exec/prefix_test.go
-git commit -m "feat(go): add exec.BuildCachedPrefix with canonical serialization"
+git commit -m "feat(go): add exec.BuildCachedPrefix backed by llmcore.Canonical"
 ```
 
 ---
 
-### Task 20: `exec/delivery.go` — chunking + reply fallback
+### Task 21: `exec/chunk.go` — chunkAt helper
 
 **Files:**
-- Create: `go/exec/delivery.go`
-- Create: `go/exec/delivery_test.go`
+- Create: `go/exec/chunk.go`
+- Create: `go/exec/chunk_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
 package exec
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestChunkAt(t *testing.T) {
+func TestChunkAtSplits(t *testing.T) {
 	got := chunkAt("aaaaaaaaaaaaaaa", 5)
 	if len(got) != 3 {
 		t.Fatalf("len: %d", len(got))
@@ -2221,12 +2450,19 @@ func TestChunkAt(t *testing.T) {
 func TestChunkAtPreservesShort(t *testing.T) {
 	got := chunkAt("hi", 380)
 	if len(got) != 1 || got[0] != "hi" {
-		t.Fatalf("got %v", got)
+		t.Fatal(got)
 	}
 }
 
 func TestChunkAtZeroSizeReturnsSingle(t *testing.T) {
 	got := chunkAt("hello", 0)
+	if len(got) != 1 || got[0] != "hello" {
+		t.Fatal(got)
+	}
+}
+
+func TestChunkAtExactBoundary(t *testing.T) {
+	got := chunkAt("hello", 5)
 	if len(got) != 1 || got[0] != "hello" {
 		t.Fatalf("got %v", got)
 	}
@@ -2244,11 +2480,8 @@ Expected: FAIL.
 package exec
 
 // chunkAt splits s into pieces of at most n bytes. n<=0 returns [s].
-//
-// This is byte-naive on purpose: IRC PRIVMSG has a byte-length cap (~512
-// including envelope). A UTF-8-aware splitter is a future refinement; for
-// v1, sub-project A is expected to either reject malformed chunks or guard
-// at the wire boundary.
+// Byte-naive on purpose; sub-project A is responsible for wire-level
+// validation (UTF-8 safety, IRC line length).
 func chunkAt(s string, n int) []string {
 	if n <= 0 || len(s) <= n {
 		return []string{s}
@@ -2273,13 +2506,13 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go/exec/delivery.go go/exec/delivery_test.go
-git commit -m "feat(go): add exec.chunkAt helper"
+git add go/exec/chunk.go go/exec/chunk_test.go
+git commit -m "feat(go): add exec.chunkAt"
 ```
 
 ---
 
-### Task 21: `exec/loop.go` — tool-call loop
+### Task 22: `exec/loop.go` — tool-call loop
 
 **Files:**
 - Create: `go/exec/loop.go`
@@ -2301,7 +2534,7 @@ import (
 	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
 )
 
-func TestRunLoopNoToolCallsReturnsImmediately(t *testing.T) {
+func TestRunLoopNoToolCallsReturns(t *testing.T) {
 	llm := llmfake.New()
 	llm.Script = []llmcore.Completion{{Text: "hello"}}
 	td := toolfake.New()
@@ -2313,17 +2546,17 @@ func TestRunLoopNoToolCallsReturnsImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	if text != "hello" {
-		t.Fatalf("text %q", text)
+		t.Fatalf("%q", text)
 	}
-	if got := len(llm.CompleteCalls); got != 1 {
-		t.Fatalf("Complete calls: %d", got)
+	if len(llm.CompleteCalls) != 1 {
+		t.Fatalf("calls: %d", len(llm.CompleteCalls))
 	}
 }
 
-func TestRunLoopOneToolCallThenReturn(t *testing.T) {
+func TestRunLoopOneToolThenReturn(t *testing.T) {
 	llm := llmfake.New()
 	llm.Script = []llmcore.Completion{
-		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "save_memory", Arguments: `{}`}}},
+		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "save_memory", Arguments: "{}"}}},
 		{Text: "saved!"},
 	}
 	td := toolfake.New()
@@ -2331,42 +2564,41 @@ func TestRunLoopOneToolCallThenReturn(t *testing.T) {
 
 	text, err := runLoop(context.Background(), runLoopArgs{
 		LLM: llm, Tools: td, MaxIters: 3,
-		Messages: []llmcore.Message{{Role: "user", Content: "remember x"}},
+		Messages: []llmcore.Message{{Role: "user", Content: "remember"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if text != "saved!" {
-		t.Fatalf("text %q", text)
+		t.Fatalf("%q", text)
 	}
-	if got := len(llm.CompleteCalls); got != 2 {
-		t.Fatalf("Complete calls: %d", got)
+	if len(llm.CompleteCalls) != 2 {
+		t.Fatalf("calls: %d", len(llm.CompleteCalls))
 	}
-	// Second call should have the tool result appended.
-	second := llm.CompleteCalls[1].Messages
-	if len(second) < 2 || second[len(second)-1].Role != "tool" {
-		t.Fatalf("last msg not tool result: %+v", second)
+	last := llm.CompleteCalls[1].Messages
+	if last[len(last)-1].Role != "tool" {
+		t.Fatalf("last msg: %+v", last)
 	}
 }
 
 func TestRunLoopHitsMaxIters(t *testing.T) {
 	llm := llmfake.New()
 	llm.Script = []llmcore.Completion{
-		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "a", Arguments: "{}"}}},
-		{ToolCalls: []llmcore.ToolCall{{ID: "2", Name: "a", Arguments: "{}"}}},
+		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "a"}}},
+		{ToolCalls: []llmcore.ToolCall{{ID: "2", Name: "a"}}},
 	}
 	td := toolfake.New()
 	td.Results = map[string]tooling.ToolResult{"a": {Content: "{}"}}
 
 	text, err := runLoop(context.Background(), runLoopArgs{
-		LLM: llm, Tools: td, MaxIters: 2, FallbackText: "i'm in a loop",
+		LLM: llm, Tools: td, MaxIters: 2, FallbackText: "looping",
 		Messages: []llmcore.Message{{Role: "user", Content: "go"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "i'm in a loop" {
-		t.Fatalf("text %q", text)
+	if text != "looping" {
+		t.Fatalf("%q", text)
 	}
 }
 
@@ -2374,11 +2606,10 @@ func TestRunLoopPropagatesLLMError(t *testing.T) {
 	llm := llmfake.New()
 	llm.CompleteErr = errors.New("boom")
 	td := toolfake.New()
-	_, err := runLoop(context.Background(), runLoopArgs{
+	if _, err := runLoop(context.Background(), runLoopArgs{
 		LLM: llm, Tools: td, MaxIters: 2,
 		Messages: []llmcore.Message{{Role: "user", Content: "hi"}},
-	})
-	if err == nil {
+	}); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -2407,18 +2638,16 @@ type runLoopArgs struct {
 	Tools        tooling.Dispatcher
 	MaxIters     int
 	Messages     []llmcore.Message
-	ToolsList    []string // for Complete()
+	ToolsList    []llmcore.ToolSchema
 	Model        string
-	CacheName    string
+	Cache        llmcore.CacheHandle
 	FallbackText string
 }
 
-// runLoop runs the multi-step tool-call loop. Returns the final assistant
-// text or the fallback if MaxIters is reached.
 func runLoop(ctx context.Context, args runLoopArgs) (string, error) {
 	messages := append([]llmcore.Message(nil), args.Messages...)
 	for i := 1; i <= args.MaxIters; i++ {
-		completion, err := args.LLM.Complete(ctx, messages, args.ToolsList, args.Model, args.CacheName)
+		completion, err := args.LLM.Complete(ctx, messages, args.ToolsList, args.Model, args.Cache)
 		if err != nil {
 			return "", err
 		}
@@ -2462,7 +2691,7 @@ func toolResultPayload(r tooling.ToolResult) string {
 - [ ] **Step 4: Run to pass**
 
 Run: `go test ./exec/ -run TestRunLoop -v`
-Expected: PASS for all four tests.
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -2473,21 +2702,23 @@ git commit -m "feat(go): add exec.runLoop tool-call loop"
 
 ---
 
-### Task 22: `exec/executor.go` — Executor.Run wiring
+### Task 23: `exec/executor.go` — Executor wiring (split into 4 implementation steps)
 
 **Files:**
 - Create: `go/exec/executor.go`
 - Create: `go/exec/executor_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```go
 package exec_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -2496,50 +2727,46 @@ import (
 	ircfake "github.com/rdrake/vibebot-v8/v9/ircout/fake"
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
 	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	"github.com/rdrake/vibebot-v8/v9/overlay"
 	overlayfake "github.com/rdrake/vibebot-v8/v9/overlay/fake"
 	persistfake "github.com/rdrake/vibebot-v8/v9/persist/fake"
 	"github.com/rdrake/vibebot-v8/v9/router"
 	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
 	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
 )
 
-func newExecutor(t *testing.T) (*exec.Executor, *llmfake.Client, *ircfake.Sender, *toolfake.Dispatcher, *overlayfake.Resolver) {
-	t.Helper()
-	llm := llmfake.New()
-	td := toolfake.New()
-	td.Schemas = map[string][]byte{
-		"clear_instruction": []byte(`{"name":"clear_instruction"}`),
-		"get_instruction":   []byte(`{"name":"get_instruction"}`),
-		"list_memories":     []byte(`{"name":"list_memories"}`),
-		"save_memory":       []byte(`{"name":"save_memory"}`),
-		"set_instruction":   []byte(`{"name":"set_instruction"}`),
-		"delete_memory":     []byte(`{"name":"delete_memory"}`),
-		"update_memory":     []byte(`{"name":"update_memory"}`),
-		"search_web":        []byte(`{"name":"search_web"}`),
-		"fetch_url":         []byte(`{"name":"fetch_url"}`),
-		"generate_image":    []byte(`{"name":"generate_image"}`),
-	}
-	or := overlayfake.New()
-	st := persistfake.New()
-	sender := ircfake.New()
-	e := exec.New(exec.Config{
-		LLM:      llm,
-		Tools:    td,
-		Overlay:  or,
-		Store:    st,
-		IRC:      sender,
-		Log:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Registry: builtinRegistry(),
-	})
-	return e, llm, sender, td, or
+type harness struct {
+	e      *exec.Executor
+	llm    *llmfake.Client
+	sender *ircfake.Sender
+	tools  *toolfake.Dispatcher
+	store  *persistfake.Store
+	res    *overlayfake.Resolver
 }
 
-func builtinRegistry() *profile.Registry {
-	r := profile.NewRegistry()
-	profile.RegisterBuiltins(r)
-	return r
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	td := toolfake.New()
+	for _, n := range []string{
+		"clear_instruction", "delete_memory", "fetch_url", "generate_image",
+		"get_instruction", "list_memories", "save_memory", "search_web",
+		"set_instruction", "update_memory",
+	} {
+		td.Schemas[n] = []byte(`{"name":"` + n + `"}`)
+	}
+	llm := llmfake.New()
+	llm.CacheHandleOut = llmcore.CacheHandle{Name: "cache-1", Provider: "gemini", ExpiresAt: time.Now().Add(time.Hour)}
+	sender := ircfake.New()
+	st := persistfake.New()
+	res := overlayfake.New()
+	reg := profile.NewRegistry()
+	profile.RegisterBuiltins(reg)
+
+	e := exec.New(exec.Config{
+		LLM: llm, Tools: td, Overlay: res, Store: st, IRC: sender,
+		Log:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Registry: reg,
+	})
+	return &harness{e, llm, sender, td, st, res}
 }
 
 func sampleDecision() router.RouteDecision {
@@ -2556,87 +2783,160 @@ func sampleDecision() router.RouteDecision {
 }
 
 func TestRunSendsResponse(t *testing.T) {
-	e, llm, sender, _, _ := newExecutor(t)
-	llm.Script = []llmcore.Completion{{Text: "hello alice"}}
-	if err := e.Run(context.Background(), sampleDecision()); err != nil {
+	h := newHarness(t)
+	h.llm.Script = []llmcore.Completion{{Text: "hello alice"}}
+	if err := h.e.Run(context.Background(), sampleDecision()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.Sent) == 0 {
-		t.Fatal("no irc send")
-	}
-	if sender.Sent[0].Text != "hello alice" {
-		t.Fatalf("sent: %q", sender.Sent[0].Text)
+	if len(h.sender.Sent) == 0 || h.sender.Sent[0].Text != "hello alice" {
+		t.Fatalf("sent: %+v", h.sender.Sent)
 	}
 }
 
 func TestRunSendsTypingActiveThenDone(t *testing.T) {
-	e, llm, sender, _, _ := newExecutor(t)
-	llm.Script = []llmcore.Completion{{Text: "hi"}}
-	if err := e.Run(context.Background(), sampleDecision()); err != nil {
+	h := newHarness(t)
+	h.llm.Script = []llmcore.Completion{{Text: "hi"}}
+	if err := h.e.Run(context.Background(), sampleDecision()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.TypingStates) < 2 {
-		t.Fatalf("typing: %v", sender.TypingStates)
+	if len(h.sender.TypingStates) < 2 {
+		t.Fatalf("typing: %v", h.sender.TypingStates)
 	}
-	if sender.TypingStates[0].State != ircout.TypingActive {
-		t.Errorf("first: %v", sender.TypingStates[0].State)
+	if h.sender.TypingStates[0].State != ircout.TypingActive {
+		t.Errorf("first: %v", h.sender.TypingStates[0].State)
 	}
-	if sender.TypingStates[len(sender.TypingStates)-1].State != ircout.TypingDone {
-		t.Errorf("last: %v", sender.TypingStates[len(sender.TypingStates)-1].State)
+	if h.sender.TypingStates[len(h.sender.TypingStates)-1].State != ircout.TypingDone {
+		t.Errorf("last: %v", h.sender.TypingStates[len(h.sender.TypingStates)-1].State)
 	}
 }
 
-func TestRunTypingDoneFiresOnPanicViaDefer(t *testing.T) {
-	e, _, sender, _, _ := newExecutor(t)
+func TestRunTypingDoneFiresOnError(t *testing.T) {
+	h := newHarness(t)
 	d := sampleDecision()
-	// Force a panic by passing a nil registry-resolved tool the dispatcher will
-	// fail on for schema lookup. Simulate by setting Tools to one with no schema.
 	d.Tools = []string{"nonexistent_tool"}
-	// Run should return an error from BuildCachedPrefix, NOT panic — but typing=done
-	// must still fire.
-	err := e.Run(context.Background(), d)
-	if err == nil {
+	if err := h.e.Run(context.Background(), d); err == nil {
 		t.Fatal("expected error")
 	}
-	if len(sender.TypingStates) == 0 || sender.TypingStates[len(sender.TypingStates)-1].State != ircout.TypingDone {
-		t.Fatalf("typing done not sent: %v", sender.TypingStates)
+	if len(h.sender.TypingStates) == 0 || h.sender.TypingStates[len(h.sender.TypingStates)-1].State != ircout.TypingDone {
+		t.Fatalf("typing done missing: %v", h.sender.TypingStates)
 	}
 }
 
-func TestRunRecordsUsage(t *testing.T) {
-	e, llm, _, _, _ := newExecutor(t)
-	llm.Script = []llmcore.Completion{{Text: "hi", CachedTokens: 100}}
-	store := e.Store().(*persistfake.Store)
-	if err := e.Run(context.Background(), sampleDecision()); err != nil {
+func TestRunTypingDoneFiresOnDispatcherPanic(t *testing.T) {
+	h := newHarness(t)
+	h.llm.Script = []llmcore.Completion{
+		{ToolCalls: []llmcore.ToolCall{{ID: "1", Name: "save_memory", Arguments: "{}"}}},
+	}
+	h.tools.PanicOnDispatch = true
+	h.tools.PanicMessage = "boom"
+
+	defer func() {
+		if got := recover(); got != "boom" {
+			t.Fatalf("expected panic %q, got %v", "boom", got)
+		}
+		if len(h.sender.TypingStates) == 0 || h.sender.TypingStates[len(h.sender.TypingStates)-1].State != ircout.TypingDone {
+			t.Fatalf("typing done missing after panic: %v", h.sender.TypingStates)
+		}
+	}()
+	_ = h.e.Run(context.Background(), sampleDecision())
+	t.Fatal("expected panic to propagate")
+}
+
+func TestRunRecordsCachedTokens(t *testing.T) {
+	h := newHarness(t)
+	h.llm.Script = []llmcore.Completion{{Text: "hi", CachedTokens: 100}}
+	if err := h.e.Run(context.Background(), sampleDecision()); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.Usage) != 1 {
-		t.Fatalf("usage: %d", len(store.Usage))
+	if len(h.store.Usage) != 1 {
+		t.Fatalf("usage: %d", len(h.store.Usage))
 	}
-	if store.Usage[0].CachedTokens != 100 {
-		t.Errorf("cached tokens: %d", store.Usage[0].CachedTokens)
+	if h.store.Usage[0].CachedTokens != 100 {
+		t.Errorf("cached: %d", h.store.Usage[0].CachedTokens)
 	}
 }
 
-var _ = overlay.Scope{} // imported
-var _ = tooling.ToolCall{} // imported
+func TestRunUsesReplyToWhenCAPAvailable(t *testing.T) {
+	h := newHarness(t)
+	h.sender.ReplyCAP = map[string]bool{"afternet": true}
+	h.llm.Script = []llmcore.Completion{{Text: "hi"}}
+	d := sampleDecision()
+	d.Delivery.ReplyToID = "m-1"
+	d.Delivery.NickPrefixOnFallback = true
+	if err := h.e.Run(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	first := h.sender.Sent[0]
+	if first.ReplyTo != "m-1" {
+		t.Errorf("ReplyTo: %q", first.ReplyTo)
+	}
+	if first.NickPrefix != "" {
+		t.Errorf("NickPrefix should be empty when ReplyTo set: %q", first.NickPrefix)
+	}
+}
+
+func TestRunUsesNickPrefixWhenNoReplyCAP(t *testing.T) {
+	h := newHarness(t)
+	// ReplyCAP empty by default
+	h.llm.Script = []llmcore.Completion{{Text: "hi"}}
+	d := sampleDecision()
+	d.Delivery.ReplyToID = "m-1"
+	d.Delivery.NickPrefixOnFallback = true
+	if err := h.e.Run(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	first := h.sender.Sent[0]
+	if first.ReplyTo != "" {
+		t.Errorf("ReplyTo should be empty without CAP: %q", first.ReplyTo)
+	}
+	if first.NickPrefix != "alice: " {
+		t.Errorf("NickPrefix: %q", first.NickPrefix)
+	}
+}
+
+func TestRunChunksLongResponse(t *testing.T) {
+	h := newHarness(t)
+	long := strings.Repeat("a", 1000)
+	h.llm.Script = []llmcore.Completion{{Text: long}}
+	d := sampleDecision()
+	d.Delivery.ChunkSize = 200
+	if err := h.e.Run(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sender.Sent) != 5 {
+		t.Fatalf("expected 5 chunks, got %d", len(h.sender.Sent))
+	}
+}
+
+func TestRunPropagatesLLMError(t *testing.T) {
+	h := newHarness(t)
+	h.llm.CompleteErr = errors.New("provider down")
+	if err := h.e.Run(context.Background(), sampleDecision()); err == nil {
+		t.Fatal("expected error")
+	}
+	// Failure should still record usage with status != success
+	if len(h.store.Usage) != 1 {
+		t.Fatalf("usage rows: %d", len(h.store.Usage))
+	}
+	if h.store.Usage[0].Status == "success" {
+		t.Errorf("status: %q", h.store.Usage[0].Status)
+	}
+}
 ```
 
 - [ ] **Step 2: Run to fail**
 
 Run: `go test ./exec/ -run TestRun -v`
-Expected: FAIL — `exec.New`, `exec.Executor`, `exec.Config` don't exist.
+Expected: FAIL — `exec.New`/`exec.Executor`/`exec.Config` undefined.
 
-- [ ] **Step 3: Implement Executor**
+- [ ] **Step 3: Write `Executor` struct + constructor + skeleton `Run` (typing on/off, fast-return on Ignore)**
 
 ```go
 package exec
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/rdrake/vibebot-v8/v9/ircout"
 	"github.com/rdrake/vibebot-v8/v9/llmcore"
@@ -2666,111 +2966,24 @@ type Executor struct {
 // New constructs an Executor.
 func New(cfg Config) *Executor { return &Executor{cfg: cfg} }
 
-// Store returns the configured persist.Store. Test-only convenience.
-func (e *Executor) Store() persist.Store { return e.cfg.Store }
-
-// Run executes one routing decision end-to-end.
+// Run executes one routing decision end-to-end. Sub-steps below add the
+// overlay/prefix/loop/deliver/persist phases.
 func (e *Executor) Run(ctx context.Context, d router.RouteDecision) (err error) {
 	if d.Action == router.Ignore {
 		return nil
 	}
 
-	// Typing on, with deferred off (fires on every exit including panic).
+	target := deliveryTarget(d)
 	if d.Delivery.Typing {
-		e.cfg.IRC.SendTyping(ctx, d.Event.Network, deliveryTarget(d), ircout.TypingActive)
-		defer func() {
-			e.cfg.IRC.SendTyping(context.Background(), d.Event.Network, deliveryTarget(d), ircout.TypingDone)
-		}()
+		e.cfg.IRC.SendTyping(ctx, d.Event.Network, target, ircout.TypingActive)
+		defer e.cfg.IRC.SendTyping(context.Background(), d.Event.Network, target, ircout.TypingDone)
 	}
 
-	prof, _ := e.cfg.Registry.Get(d.Profile)
+	return e.runInner(ctx, d)
+}
 
-	// Resolve overlay via D.
-	ovText, err := e.cfg.Overlay.Get(ctx, overlay.Scope{
-		Network: d.CacheScope.Network, Channel: d.CacheScope.Channel,
-		Profile: d.CacheScope.Profile, OverlayHash: d.CacheScope.OverlayHash,
-	})
-	if err != nil {
-		return fmt.Errorf("overlay get: %w", err)
-	}
-
-	// Build cached prefix.
-	prefix, err := BuildCachedPrefix(BuildPrefixArgs{
-		Framework: prof.FrameworkPrompt,
-		Overlay:   ovText,
-		Tools:     d.Tools,
-		Network:   d.CacheScope.Network,
-		Channel:   d.CacheScope.Channel,
-		Profile:   d.CacheScope.Profile,
-		Dispatch:  e.cfg.Tools,
-	})
-	if err != nil {
-		return fmt.Errorf("build prefix: %w", err)
-	}
-
-	// Pre-warm cache via B.
-	cacheName, err := e.cfg.LLM.EnsureCache(ctx, llmcore.Scope{
-		Network: d.CacheScope.Network, Channel: d.CacheScope.Channel,
-		Profile: d.CacheScope.Profile, OverlayHash: d.CacheScope.OverlayHash,
-	}, prefix)
-	if err != nil {
-		return fmt.Errorf("ensure cache: %w", err)
-	}
-
-	// Hydrate uncached tail.
-	history, err := e.cfg.Store.History(ctx, d.Event.Network, d.Event.Channel, d.Prompt.HistoryLimit)
-	if err != nil {
-		return fmt.Errorf("history: %w", err)
-	}
-	memories, err := e.cfg.Store.Memories(ctx, d.Event.Network, d.Event.Channel, d.Prompt.UserNick)
-	if err != nil {
-		return fmt.Errorf("memories: %w", err)
-	}
-	messages := buildTail(history, memories, d.Prompt.UserText, d.Prompt.UserNick)
-
-	// Capture cached token count from the LLM response stream.
-	var lastCached int
-	wrapped := &cacheCounter{Client: e.cfg.LLM, last: &lastCached}
-
-	text, err := runLoop(ctx, runLoopArgs{
-		LLM:       wrapped,
-		Tools:     e.cfg.Tools,
-		MaxIters:  d.Delivery.MaxIters,
-		Messages:  messages,
-		ToolsList: d.Tools,
-		Model:     d.Model,
-		CacheName: cacheName,
-	})
-	if err != nil {
-		_ = e.cfg.Store.RecordUsage(ctx, persist.UsageRow{
-			Timestamp: time.Now(),
-			Network:   d.Event.Network, Channel: d.Event.Channel, Nick: d.Event.Nick,
-			Profile: d.Profile, Model: d.Model, Status: "fatal_fail",
-			ErrorDetail: err.Error(),
-		})
-		return err
-	}
-
-	// Deliver.
-	if err := e.deliver(ctx, d, text); err != nil {
-		return fmt.Errorf("deliver: %w", err)
-	}
-
-	// Persist.
-	if err := e.cfg.Store.AppendTurn(ctx, d.Event.Network, d.Event.Channel, d.Event.Nick, text); err != nil {
-		e.cfg.Log.Warn("append turn failed", "err", err)
-	}
-	_ = e.cfg.Store.RecordUsage(ctx, persist.UsageRow{
-		Timestamp:    time.Now(),
-		Network:      d.Event.Network,
-		Channel:      d.Event.Channel,
-		Nick:         d.Event.Nick,
-		Profile:      d.Profile,
-		Model:        d.Model,
-		CachedTokens: lastCached,
-		Status:       "success",
-	})
-
+func (e *Executor) runInner(ctx context.Context, d router.RouteDecision) error {
+	// Filled in by subsequent steps.
 	return nil
 }
 
@@ -2779,6 +2992,123 @@ func deliveryTarget(d router.RouteDecision) string {
 		return d.Event.Channel
 	}
 	return d.Event.Nick
+}
+```
+
+- [ ] **Step 4: Add overlay resolve, schema resolve, prefix build, cache ensure to `runInner`**
+
+Replace `runInner` with:
+
+```go
+func (e *Executor) runInner(ctx context.Context, d router.RouteDecision) error {
+	prof, _ := e.cfg.Registry.Get(d.Profile)
+
+	ovText, err := e.cfg.Overlay.Get(ctx, overlay.Scope{
+		Network: d.CacheScope.Network, Channel: d.CacheScope.Channel, Profile: d.CacheScope.Profile,
+	})
+	if err != nil {
+		e.recordFailure(ctx, d, "overlay_get", err)
+		return err
+	}
+
+	tools, err := ResolveSchemas(e.cfg.Tools, d.Tools)
+	if err != nil {
+		e.recordFailure(ctx, d, "resolve_schemas", err)
+		return err
+	}
+
+	prefix := BuildCachedPrefix(BuildPrefixArgs{
+		Framework: prof.FrameworkPrompt,
+		Overlay:   ovText,
+		Tools:     tools,
+		Network:   d.CacheScope.Network,
+		Channel:   d.CacheScope.Channel,
+		Profile:   d.CacheScope.Profile,
+	})
+
+	cache, err := e.cfg.LLM.EnsureCache(ctx, llmcore.Scope{
+		Network: d.CacheScope.Network, Channel: d.CacheScope.Channel,
+		Profile: d.CacheScope.Profile, OverlayHash: d.CacheScope.OverlayHash,
+	}, prefix)
+	if err != nil {
+		e.recordFailure(ctx, d, "ensure_cache", err)
+		return err
+	}
+
+	return e.runWithCache(ctx, d, tools, cache)
+}
+
+func (e *Executor) recordFailure(ctx context.Context, d router.RouteDecision, stage string, cause error) {
+	_ = e.cfg.Store.RecordUsage(ctx, persist.UsageRow{
+		Timestamp:   timeNow(),
+		Network:     d.Event.Network,
+		Channel:     d.Event.Channel,
+		Nick:        d.Event.Nick,
+		Profile:     d.Profile,
+		Model:       d.Model,
+		Status:      "fatal_fail",
+		ErrorDetail: stage + ": " + cause.Error(),
+	})
+}
+```
+
+Add a helper `timeNow` at the bottom of the file (separate so tests can override later):
+
+```go
+import "time"
+
+var timeNow = time.Now
+```
+
+(If `time` is already imported in this file, just use it directly without the variable.)
+
+- [ ] **Step 5: Add `runWithCache` (hydrate tail + run loop + deliver + persist)**
+
+```go
+func (e *Executor) runWithCache(ctx context.Context, d router.RouteDecision, tools []llmcore.ToolSchema, cache llmcore.CacheHandle) error {
+	history, err := e.cfg.Store.History(ctx, d.Event.Network, d.Event.Channel, d.Prompt.HistoryLimit)
+	if err != nil {
+		e.recordFailure(ctx, d, "history", err)
+		return err
+	}
+	memories, err := e.cfg.Store.Memories(ctx, d.Event.Network, d.Event.Channel, d.Prompt.UserNick)
+	if err != nil {
+		e.recordFailure(ctx, d, "memories", err)
+		return err
+	}
+	messages := buildTail(history, memories, d.Prompt.UserText, d.Prompt.UserNick)
+
+	var lastCached int
+	wrapped := &cacheCounter{Client: e.cfg.LLM, last: &lastCached}
+
+	text, err := runLoop(ctx, runLoopArgs{
+		LLM: wrapped, Tools: e.cfg.Tools, MaxIters: d.Delivery.MaxIters,
+		Messages: messages, ToolsList: tools, Model: d.Model, Cache: cache,
+	})
+	if err != nil {
+		e.recordFailure(ctx, d, "loop", err)
+		return err
+	}
+
+	if err := e.deliver(ctx, d, text); err != nil {
+		e.recordFailure(ctx, d, "deliver", err)
+		return err
+	}
+
+	if err := e.cfg.Store.AppendTurn(ctx, d.Event.Network, d.Event.Channel, d.Event.Nick, text); err != nil {
+		e.cfg.Log.Warn("append turn failed", "err", err)
+	}
+	_ = e.cfg.Store.RecordUsage(ctx, persist.UsageRow{
+		Timestamp:    timeNow(),
+		Network:      d.Event.Network,
+		Channel:      d.Event.Channel,
+		Nick:         d.Event.Nick,
+		Profile:      d.Profile,
+		Model:        d.Model,
+		CachedTokens: lastCached,
+		Status:       "success",
+	})
+	return nil
 }
 
 func buildTail(history []persist.HistoryEntry, memories []persist.Memory, userText, userNick string) []llmcore.Message {
@@ -2825,8 +3155,8 @@ type cacheCounter struct {
 	last *int
 }
 
-func (c *cacheCounter) Complete(ctx context.Context, messages []llmcore.Message, tools []string, model, cacheName string) (llmcore.Completion, error) {
-	out, err := c.Client.Complete(ctx, messages, tools, model, cacheName)
+func (c *cacheCounter) Complete(ctx context.Context, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
+	out, err := c.Client.Complete(ctx, messages, tools, model, cache)
 	if err == nil {
 		*c.last = out.CachedTokens
 	}
@@ -2834,23 +3164,23 @@ func (c *cacheCounter) Complete(ctx context.Context, messages []llmcore.Message,
 }
 ```
 
-- [ ] **Step 4: Run to pass**
+- [ ] **Step 6: Run all executor tests**
 
-Run: `go test ./exec/...`
-Expected: PASS for all executor tests.
+Run: `go test ./exec/... -race -v`
+Expected: PASS for all `TestRun*` tests including the panic test.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add go/exec/executor.go go/exec/executor_test.go
-git commit -m "feat(go): add exec.Executor.Run end-to-end wiring"
+git commit -m "feat(go): add exec.Executor.Run with overlay/cache/loop/deliver/persist"
 ```
 
 ---
 
 ## Phase 7 — Demo
 
-### Task 23: `cmd/routerdemo/main.go` — wires everything
+### Task 24: `cmd/routerdemo/main.go`
 
 **Files:**
 - Create: `go/cmd/routerdemo/main.go`
@@ -2859,8 +3189,7 @@ git commit -m "feat(go): add exec.Executor.Run end-to-end wiring"
 
 ```go
 // Command routerdemo wires the routing/intent layer with in-memory fakes
-// and runs one chat turn end-to-end. Useful for manual smoke and for
-// confirming the slice is internally consistent.
+// and runs one chat turn end-to-end.
 package main
 
 import (
@@ -2889,33 +3218,39 @@ func main() {
 	profile.RegisterBuiltins(reg)
 
 	llm := llmfake.New()
-	llm.CacheName = "fake-cache-1"
-	llm.Script = []llmcore.Completion{{Text: "hi alice, how can i help?", CachedTokens: 0}}
+	llm.CacheHandleOut = llmcore.CacheHandle{Name: "fake-cache-1", Provider: "gemini", ExpiresAt: time.Now().Add(time.Hour)}
+	llm.Script = []llmcore.Completion{{Text: "hi alice, how can i help?"}}
 
 	td := toolfake.New()
-	for _, n := range []string{"clear_instruction", "delete_memory", "fetch_url", "generate_image", "get_instruction", "list_memories", "save_memory", "search_web", "set_instruction", "update_memory"} {
+	for _, n := range []string{
+		"clear_instruction", "delete_memory", "fetch_url", "generate_image",
+		"get_instruction", "list_memories", "save_memory", "search_web",
+		"set_instruction", "update_memory",
+	} {
 		td.Schemas[n] = []byte(`{"name":"` + n + `"}`)
 	}
 
-	or := overlayfake.New()
-	or.Texts[overlay.Scope{Network: "afternet", Channel: "#demo", Profile: "chat", OverlayHash: ""}] = "be friendly"
+	res := overlayfake.New()
+	overlayText := "be friendly"
+	res.Texts[overlay.Scope{Network: "afternet", Channel: "#demo", Profile: "chat"}] = overlayText
 
 	st := persistfake.New()
 	sender := ircfake.New()
 
 	e := exec.New(exec.Config{
-		LLM: llm, Tools: td, Overlay: or, Store: st, IRC: sender, Log: log, Registry: reg,
+		LLM: llm, Tools: td, Overlay: res, Store: st, IRC: sender, Log: log, Registry: reg,
 	})
 
 	evt := router.IRCEvent{
 		Network: "afternet", Channel: "#demo", Nick: "alice",
 		Text: "vibebot: hi", MessageID: "m-1", ReceivedAt: time.Now(),
 	}
-	state := router.ChannelState{Profile: "chat", Overlay: "be friendly"}
+	state := router.ChannelState{Profile: "chat", Overlay: overlayText}
 	bot := router.BotState{SelfNick: "vibebot", Now: time.Now()}
 
 	d := router.Route(evt, state, bot, reg)
-	fmt.Printf("Decision: action=%s profile=%s tools=%d model=%s\n", d.Action, d.Profile, len(d.Tools), d.Model)
+	fmt.Printf("Decision: action=%s profile=%s tools=%d model=%s overlay_hash=%s\n",
+		d.Action, d.Profile, len(d.Tools), d.Model, d.CacheScope.OverlayHash)
 
 	if err := e.Run(context.Background(), d); err != nil {
 		log.Error("run failed", "err", err)
@@ -2924,55 +3259,76 @@ func main() {
 
 	fmt.Printf("Sent %d msg(s); first: %q\n", len(sender.Sent), sender.Sent[0].Text)
 	fmt.Printf("Typing events: %d\n", len(sender.TypingStates))
-	fmt.Printf("Usage rows: %d\n", len(st.Usage))
+	fmt.Printf("Usage rows: %d (cached_tokens=%d, status=%s)\n",
+		len(st.Usage), st.Usage[0].CachedTokens, st.Usage[0].Status)
 }
 ```
 
 - [ ] **Step 2: Build the demo**
 
-Run from `go/`: `go build ./cmd/routerdemo/`
+Run: `go build ./cmd/routerdemo/`
 Expected: success.
 
 - [ ] **Step 3: Run the demo**
 
-Run from `go/`: `go run ./cmd/routerdemo/`
+Run: `go run ./cmd/routerdemo/`
 Expected output (approximately):
 ```
-Decision: action=RespondChat profile=chat tools=10 model=gemini-2.5-flash
+Decision: action=RespondChat profile=chat tools=10 model=gemini-2.5-flash overlay_hash=<32-hex>
 Sent 1 msg(s); first: "hi alice, how can i help?"
 Typing events: 2
-Usage rows: 1
+Usage rows: 1 (cached_tokens=0, status=success)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add go/cmd/routerdemo/main.go
-git commit -m "feat(go): add routerdemo wiring sample for manual smoke"
+git commit -m "feat(go): add routerdemo wiring sample"
 ```
 
 ---
 
-### Task 24: Full test sweep + plan checkpoint
+### Task 25: Full sweep
 
-- [ ] **Step 1: Run all Go tests**
+- [ ] **Step 1: Run all Go tests with race detector**
 
 Run from `go/`: `make test`
-Expected: ALL packages PASS, race detector clean, no flakes.
+Expected: ALL packages PASS, race detector clean.
 
-- [ ] **Step 2: Run vet**
+- [ ] **Step 2: Vet**
 
-Run from `go/`: `make vet`
+Run: `make vet`
 Expected: no warnings.
 
-- [ ] **Step 3: Run format check**
+- [ ] **Step 3: Format check**
 
-Run from `go/`: `gofmt -l .`
-Expected: empty output (everything formatted).
+Run: `gofmt -l .`
+Expected: empty output.
 
-- [ ] **Step 4: Update repo-level docs**
+- [ ] **Step 4: Lint**
 
-Append the following line to `/Users/rdrake/workspace/afternet/vibebot-v8/AGENTS.md` under a new "Go rewrite (v9)" section (or create the section if absent):
+Run: `make lint`
+Expected: no findings (or only minor style nits depending on linter config).
+
+- [ ] **Step 5: Commit (any auto-format fixes if needed)**
+
+```bash
+git status
+# if anything is modified by gofmt:
+git add -A && git commit -m "style(go): apply gofmt"
+```
+
+---
+
+### Task 26: Repo-level docs note
+
+**Files:**
+- Modify: `AGENTS.md` (at repo root)
+
+- [ ] **Step 1: Append a new section to `AGENTS.md`**
+
+Add (or create) this section at the bottom of `AGENTS.md`:
 
 ```markdown
 ## Go rewrite (v9)
@@ -2982,25 +3338,25 @@ The Go rewrite lives in `go/`. Sub-project E (routing/intent layer) is the first
 Build/test: `cd go && make all`.
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add AGENTS.md
-git commit -m "docs: note Go rewrite v9 sub-project E landed"
+git commit -m "docs: note Go rewrite v9 sub-project E"
 ```
 
 ---
 
 ## Out of scope for this plan (deferred to sibling sub-projects)
 
-- **Sub-project A** — Real IRC client (ergochat/irc-go), CAP negotiation, SASL, multi-network, reconnect. Includes the **per-channel turn-lock dispatcher** that takes the `LastAmbientAt` snapshot, calls `router.Route`, atomically commits the ambient timestamp, and invokes `Executor.Run`. The spec's atomicity requirement lives at the dispatch boundary, which is in A.
+- **Sub-project A** — Real IRC client (ergochat/irc-go), CAP negotiation, SASL, multi-network, reconnect. Includes the **per-channel turn-lock dispatcher** that takes the `LastAmbientAt` snapshot, calls `router.Route`, atomically commits the ambient timestamp, and invokes `Executor.Run`. The spec's atomicity requirement lives at the dispatch boundary.
 - **Sub-project B** — Real LLM client (openai-go + Gemini OpenAI-compat for the hot path; `google.golang.org/genai` for `CachedContent` lifecycle). Provider abstraction for tool-call gaps. Emits typed errors (`ErrLLMTransient`, `ErrLLMFatal`, `ErrCacheStale`, `ErrBudgetExceeded`) that the executor can categorize for recovery.
-- **Sub-project C** — Real tool implementations (memory, instruction, search, fetch, draw, etc.) and rate-bucket dispatcher with per-tool timeout enforcement.
-- **Sub-project D** — Real overlay resolver (channel `assistantSystemPrompt`, scene/loom overlay layering). Includes the property test asserting `Get(scope)` is byte-stable across N calls and N goroutines.
+- **Sub-project C** — Real tool implementations and rate-bucket dispatcher with per-tool timeout enforcement. C is responsible for canonical schema bytes.
+- **Sub-project D** — Real overlay resolver. Includes the property test asserting `Get(scope)` is byte-stable across N calls and N goroutines.
 - **Sub-project F** — Real persistence (SQLite or similar) for history, memories, usage.
 - **Sub-project G** — Single-binary build, config loader, logging sink, optional Prometheus metrics, deploy scripts.
-- **Error-category recovery in executor** — The current `Executor.Run` returns raw wrapped errors. Once B emits typed `ErrLLMTransient` / `ErrLLMFatal` / `ErrCacheStale`, a follow-up task adds: retry-with-backoff for transient (3 tries, 1s/3s/9s), inline cache rebuild for stale, user-visible apology for fatal. Deferred because it can't be meaningfully tested against the current fake (fake doesn't emit categorized errors).
-- **Tier 3 integration** (real ergochat against local Ergo IRCd) — added in sub-project A's plan.
-- **Tier 4 live-Gemini smoke** — added in sub-project B's plan.
-- **Admin `@cmd` dispatcher** — separate spec ("admin commands").
-- **Mid-message mention detection** — deferred to a future "natural addressed detection" iteration per spec.
+- **Error-category recovery in executor** — Currently every step returns wrapped errors with `status=fatal_fail` recorded. Once B emits typed errors, a follow-up adds: retry-with-backoff for transient (3 tries, 1s/3s/9s), inline cache rebuild for stale, user-visible apology for fatal. Deferred because it can't be meaningfully tested against the current fakes.
+- **Tier 3 integration** (real ergochat against local Ergo IRCd) — sub-project A.
+- **Tier 4 live-Gemini smoke** — sub-project B.
+- **Admin `@cmd` dispatcher** — separate spec.
+- **Mid-message mention detection** — future iteration per spec.
