@@ -2977,3 +2977,122 @@ class TestExecutorCoverageGaps:
         )
         result = ex.execute("generate_image", {"prompt": "a cat"})
         assert '"ok"' in result.content
+
+
+class TestAssistantCompletionReadsModelKeyFromProfiles:
+    """assistant_completion must read model/api_key via PROFILES[route].
+
+    Swapping the PROFILES entry with a sentinel-keyed Profile and asserting
+    the sentinel key flows to plugin.registryValue() pins that the
+    migration is wired up — a future regression that hardcodes
+    'assistantModel' would break these tests.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    def test_model_setting_is_read_from_profile(
+        self, service: LLMService, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """For route_profile=PROFILE_CHAT, plugin.registryValue is called
+        with PROFILES[PROFILE_CHAT].model_setting — not a hardcoded string.
+        """
+        from llm.profile import PROFILE_CHAT, PROFILES, Profile
+
+        sentinel = Profile(
+            id=PROFILE_CHAT,
+            model_setting="SENTINEL_MODEL_KEY",
+            api_key_setting="SENTINEL_API_KEY",
+            prompt_id="chat",
+            overlay_setting=None,
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
+
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "ok"
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        # Capture every registryValue call so we can prove our sentinel
+        # keys were the ones used.
+        registry_calls: list[str] = []
+        original_registry_value = service.plugin.registryValue
+
+        def spy(key, *args, **kwargs):
+            registry_calls.append(key)
+            # Fall through to the real mock so existing test fixtures still
+            # control timeouts, maxSteps, etc.
+            return original_registry_value(key, *args, **kwargs)
+
+        mocker.patch.object(service.plugin, "registryValue", side_effect=spy)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        assert "SENTINEL_MODEL_KEY" in registry_calls
+        assert "SENTINEL_API_KEY" in registry_calls
+        assert "assistantModel" not in registry_calls
+        assert "assistantApiKey" not in registry_calls
+
+    def test_model_override_still_wins(
+        self, service: LLMService, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """An explicit model_override= bypasses Profile.model_setting,
+        matching the pre-refactor contract.
+        """
+        from llm.profile import PROFILE_CHAT, PROFILES, Profile
+
+        sentinel = Profile(
+            id=PROFILE_CHAT,
+            model_setting="SENTINEL_MODEL_KEY",
+            api_key_setting="assistantApiKey",
+            prompt_id="chat",
+            overlay_setting=None,
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
+
+        captured_model: list[str] = []
+
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "ok"
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        def capture(**kwargs):
+            captured_model.append(kwargs.get("model"))
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+            model_override="explicit-override-model",
+        )
+
+        # The override beat the Profile.model_setting lookup.
+        assert captured_model == ["explicit-override-model"]

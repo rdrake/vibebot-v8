@@ -33,11 +33,11 @@ from supybot.utils.file import AtomicFile
 
 from .assistant import (
     PROFILE_CHAT,
-    PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
 )
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
+from .profile import PROFILES
 from .prompts import MEMORY_CLEANUP_PROMPT, MEMORY_EXTRACTION_PROMPT, PROMPTS
 from .tracing import TraceFilter, extract_server_headers, request_id
 
@@ -3132,9 +3132,18 @@ Examples (echo → action_prompt: ""):
         stop_typing = self._begin_typing(irc, msg) if manage_typing else lambda: None
 
         try:
+            # PROFILES.get fallback preserves pre-refactor behavior: unknown
+            # route_profile values silently fall through to the chat profile. The
+            # pre-refactor framework lookup used the same .get(..., PROMPTS["chat"])
+            # pattern. Internal callers always pass a known PROFILE_* string, so
+            # the fallback should never fire — but we keep it to avoid changing
+            # observable behavior for a low-cost defensive read.
+            profile = PROFILES.get(route_profile, PROFILES[PROFILE_CHAT])
             target = self._channel_target(channel)
-            model = model_override or self.plugin.registryValue("assistantModel", target)
-            effective_api_key = api_key or self.plugin.registryValue("assistantApiKey", target)
+            model = model_override or self.plugin.registryValue(profile.model_setting, target)
+            effective_api_key = api_key or self.plugin.registryValue(
+                profile.api_key_setting, target
+            )
             if not effective_api_key:
                 return AssistantResult(
                     content="Error: No API key configured.",
@@ -3156,7 +3165,7 @@ Examples (echo → action_prompt: ""):
             # defaults (sentence-per-item, tool_calls=0). Cache cost is one
             # miss per channel-session at first verse turn; subsequent verse
             # turns share a verse-mode prefix and hit cache among themselves.
-            framework = PROMPTS.get(route_profile, PROMPTS["chat"]).format(bot_nick=bot_nick)
+            framework = PROMPTS[profile.prompt_id].format(bot_nick=bot_nick)
             if system_prompt:
                 # ``str.replace`` rather than ``.format`` so user-supplied text
                 # containing literal '{...}' (e.g. JSON examples) doesn't blow
@@ -3216,12 +3225,8 @@ Examples (echo → action_prompt: ""):
             # complete. forest/code/draw/verse are unbounded: forest+verse are
             # opt-in long-form; code/draw produce short summaries plus a URL
             # by design.
-            profile_max_output = {
-                PROFILE_CHAT: 2000,
-                PROFILE_REMIND_ACTION: 400,
-            }.get(route_profile)
-            if profile_max_output is not None:
-                optional_kwargs["max_tokens"] = profile_max_output
+            if profile.max_output_tokens is not None:
+                optional_kwargs["max_tokens"] = profile.max_output_tokens
 
             executor = AssistantToolExecutor(
                 db=db,
@@ -3244,11 +3249,11 @@ Examples (echo → action_prompt: ""):
                 schedule_llm_task_fn=schedule_llm_task_fn,
             )
 
-            profile_tools = get_tools_for_profile(route_profile, exclude=exclude_tools)
+            profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
             force_initial_search = (
-                route_profile in {PROFILE_CHAT, PROFILE_REMIND_ACTION}
+                profile.force_search_on_explicit
                 and search_fn is not None
                 and _has_tool(profile_tools, "search_web")
                 and EXPLICIT_SEARCH_RE.search(prompt) is not None
