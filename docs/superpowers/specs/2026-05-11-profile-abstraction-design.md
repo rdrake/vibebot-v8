@@ -110,10 +110,17 @@ PROFILES: dict[str, Profile] = {
     ),
     PROFILE_CODE: Profile(
         id=PROFILE_CODE,
-        model_setting="codeModel",
-        api_key_setting="codeApiKey",
+        # The @code chat-loop planner uses assistantModel/assistantApiKey;
+        # the codeModel/codeApiKey registry keys belong to the *inner*
+        # _code_for_assistant one-shot (plugin.py:2547), which is not a
+        # Profile-dispatched chat loop.
+        model_setting="assistantModel",
+        api_key_setting="assistantApiKey",
         prompt_id="code",
-        overlay_setting="codeSystemPrompt",
+        # The @code planner constructs system_prompt from
+        # user_instruction + CODE_SYSTEM_PROMPT (the planner facade
+        # prompt). It does not read a channel-overridable overlay.
+        overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,
     ),
@@ -122,7 +129,10 @@ PROFILES: dict[str, Profile] = {
         model_setting="assistantModel",
         api_key_setting="assistantApiKey",
         prompt_id="draw",
-        overlay_setting="assistantSystemPrompt",
+        # @draw, like @code, constructs its system_prompt from
+        # user_instruction + DRAW_SYSTEM_PROMPT and does not read a
+        # channel-overridable overlay. (Verify during Task 2 entry.)
+        overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,
     ),
@@ -147,15 +157,17 @@ PROFILES: dict[str, Profile] = {
 }
 ```
 
-Sources for these mappings (verified during exploration, pinned with tests):
+Sources for these mappings (verified during adversarial review, pinned with tests):
 
-- `PROFILE_CHAT` model/key — service.py:3136-3137; overlay — plugin.py:1442, service.py:4734.
-- `PROFILE_CODE` model/key — service.py:2628 area (codeApiKey check) and plugin.py:2547 overlay.
-- `PROFILE_DRAW`, `PROFILE_VERSE`, `PROFILE_REMIND_ACTION` — model/key default to `assistantModel`/`assistantApiKey` because callers don't pass overrides (and `service.assistant_completion` falls back to those when overrides are None).
-- `max_output_tokens` — service.py:3196 dict.
-- `force_search_on_explicit` — service.py:3232 set.
+- `PROFILE_CHAT` — @ask path via `_ask_impl` with `effective_profile=PROFILE_CHAT` (plugin.py around 3340-3415); overlay `assistantSystemPrompt` read at plugin.py:3385 with `effective_profile`.
+- `PROFILE_CODE` — @code planner at plugin.py around 3540 dispatches via `assistant_request` with `profile=PROFILE_CODE` and no `model_override`, so the `assistant_completion` fallback (`assistantModel`/`assistantApiKey`) applies. The planner constructs `system_prompt = user_instruction + CODE_SYSTEM_PROMPT` itself and never reads a channel overlay — hence `overlay_setting=None`. The `codeModel`/`codeApiKey`/`codeSystemPrompt` registry keys belong to the *inner* `_code_for_assistant` one-shot at plugin.py:2547, which is a tool callback, not a Profile dispatch.
+- `PROFILE_DRAW` — @draw at plugin.py around 3636 dispatches with `profile=PROFILE_DRAW` and no `model_override`. The system_prompt is constructed similarly to @code (no registry overlay read). Verify during Task 2 entry.
+- `PROFILE_VERSE` — verse path via `_ask_impl` with `profile_override=PROFILE_VERSE`. Overlay `assistantSystemPrompt` is read at plugin.py:3385 with the same dynamic `effective_profile`. **Important caller-side override:** plugin.py:3307 reads `verseModel` from registry and passes it as `model_override=verse_model` to `_ask_impl`. This is a *caller-side preference* that lives outside Profile — Profile's `model_setting="assistantModel"` describes only the assistant_completion fallback path. `verseModel` is preserved as-is in the refactor.
+- `PROFILE_REMIND_ACTION` — two fire paths: structured-reminder at plugin.py:1442 and scheduled-task at service.py:4734. Both construct `AssistantRequestContext(profile=PROFILE_REMIND_ACTION, ...)` and read `assistantSystemPrompt` as the overlay.
+- `max_output_tokens` — service.py:3196 dict (`{CHAT: 2000, REMIND_ACTION: 400}`).
+- `force_search_on_explicit` — service.py:3232 set (`{CHAT, REMIND_ACTION}`).
 
-A verification step at the start of Commit 2 will re-confirm draw/verse/remind_action's model/key reads by reading each caller in plugin.py before committing. If any caller reads a non-assistant model/key for these profiles, the registry entry will be corrected before the migration commit.
+A verification step at the start of Commit 2 will re-confirm @draw's model/key/overlay reads before committing the PROFILES mapping. If @draw turns out to use a registry overlay we haven't traced, the Profile entry will be corrected first.
 
 ## Migration sites
 
@@ -207,22 +219,25 @@ force_initial_search = (
 
 The PROFILE_VERSE overlay-footer branch (service.py:3169-3180) stays unchanged.
 
-### plugin.py overlay reads
+### plugin.py + service.py overlay reads
 
-Three caller sites + one in service.py:4734:
+Three call sites:
 
-- `plugin.py:1442` (ask path): `registryValue("assistantSystemPrompt", channel)` → `registryValue(PROFILES[PROFILE_CHAT].overlay_setting, channel)`
-- `plugin.py:2547` (code path): `registryValue("codeSystemPrompt", channel)` → `registryValue(PROFILES[PROFILE_CODE].overlay_setting, channel)`
-- `plugin.py:3385` (verse path): `registryValue("assistantSystemPrompt", channel)` → `registryValue(PROFILES[PROFILE_VERSE].overlay_setting, channel)`
-- `service.py:4734` (scheduled task fire): `registryValue("assistantSystemPrompt", row.channel)` → `registryValue(PROFILES[PROFILE_CHAT].overlay_setting, row.channel)`
+- `plugin.py:1442` (structured-reminder fire, `profile=PROFILE_REMIND_ACTION`): `registryValue("assistantSystemPrompt", channel)` → `registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)`
+- `plugin.py:3385` (`_ask_impl` — serves both @ask and verse via `effective_profile`): `registryValue("assistantSystemPrompt", channel)` → `registryValue(PROFILES[effective_profile].overlay_setting, channel)`. Dynamic — when the caller passes `profile_override=PROFILE_VERSE`, the lookup uses PROFILE_VERSE's overlay_setting (which today equals PROFILE_CHAT's, both `assistantSystemPrompt`). Future per-profile overlay divergence becomes a data change, not a code change.
+- `service.py:4734` (scheduled-task fire, `profile=PROFILE_REMIND_ACTION`): `registryValue("assistantSystemPrompt", row.channel)` → `registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, row.channel)`
+
+**`plugin.py:2547` is out of scope.** That call lives inside `_code_for_assistant`, a one-shot tool callback invoked by the @code planner. It reads `codeSystemPrompt` because it's the inner one-shot's own registry key — not a Profile dispatch.
 
 Behavior preserved (same string read, same channel target). The pairing "this caller belongs to that profile" becomes data-driven.
 
 ### Out of migration scope
 
+- `plugin.py:2547` (`_code_for_assistant`) — inner one-shot tool callback that reads `codeSystemPrompt`. Not a Profile dispatch; the `@code` planner's Profile is a separate code path.
 - Loom paths reading `assistantApiKey` directly (plugin.py:4983, 5080, 5870) — not profile dispatch, direct-model usage. Untouched.
 - One-shot `search_completion` (service.py:2271) — not a chat-loop profile. Untouched.
 - `image_completion` paths reading `imageModel`/`imageApiKey` — not a chat-loop profile. Untouched.
+- `verseModel` registry key (read at plugin.py:3307) — a caller-side preference override that fits Profile awkwardly (one profile out of five has an override channel-key, and it only takes effect when set). Stays as direct caller read; Profile's `model_setting` describes only the assistant_completion fallback.
 
 ## Testing strategy
 

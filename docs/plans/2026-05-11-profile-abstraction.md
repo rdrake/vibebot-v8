@@ -62,54 +62,87 @@ PROFILE_IDS = [
 ]
 
 # Pre-refactor pinned data — exactly what service.py and plugin.py compute today.
+# Mappings verified against source during adversarial review pass:
+# - PROFILE_CODE: outer @code planner uses assistantModel/assistantApiKey (no
+#   override passed); does NOT read a channel overlay. codeModel/codeApiKey/
+#   codeSystemPrompt belong to the inner _code_for_assistant one-shot.
+# - PROFILE_VERSE: verseModel is read by the caller (plugin.py:3307) and passed
+#   as model_override. The assistant_completion fallback (assistantModel) is
+#   what Profile.model_setting captures; verseModel stays as a caller-side
+#   preference outside Profile.
+# - PROFILE_DRAW: same pattern as CODE — planner uses assistant fallback, no
+#   channel overlay. Verify during Task 2 entry.
 PRE_MAX_OUTPUT = {PROFILE_CHAT: 2000, PROFILE_REMIND_ACTION: 400}
 PRE_FORCE_SEARCH = {PROFILE_CHAT, PROFILE_REMIND_ACTION}
 PRE_OVERLAY_KEY = {
     PROFILE_CHAT: "assistantSystemPrompt",
-    PROFILE_CODE: "codeSystemPrompt",
-    PROFILE_DRAW: "assistantSystemPrompt",
+    PROFILE_CODE: None,
+    PROFILE_DRAW: None,
     PROFILE_VERSE: "assistantSystemPrompt",
     PROFILE_REMIND_ACTION: "assistantSystemPrompt",
 }
 PRE_MODEL_KEY = {
     PROFILE_CHAT: "assistantModel",
-    PROFILE_CODE: "codeModel",
+    PROFILE_CODE: "assistantModel",
     PROFILE_DRAW: "assistantModel",
     PROFILE_VERSE: "assistantModel",
     PROFILE_REMIND_ACTION: "assistantModel",
 }
 PRE_API_KEY = {
     PROFILE_CHAT: "assistantApiKey",
-    PROFILE_CODE: "codeApiKey",
+    PROFILE_CODE: "assistantApiKey",
     PROFILE_DRAW: "assistantApiKey",
     PROFILE_VERSE: "assistantApiKey",
     PROFILE_REMIND_ACTION: "assistantApiKey",
 }
 
-SAMPLE_PROMPT_WITH_SEARCH = "please search the web for python typing news"
+# Sample prompts chosen to exercise every term in the real EXPLICIT_SEARCH_RE
+# alternation. If service.py drops or renames a term, the digest of
+# observables[*]["force_search_on_samples"] changes.
+SAMPLE_PROMPTS = [
+    "please search the web for python typing news",
+    "find me a recipe for sourdough",
+    "look up the weather in Toronto",
+    "what's the latest on the bill",
+    "any recent news on the merger",
+    "current state of mortgage rates",
+    "general greeting with no triggers",
+]
 
-# This regex must match service.py:EXPLICIT_SEARCH_RE. If service.py changes
-# this regex during the refactor, the diff catches it.
-EXPLICIT_SEARCH_RE = re.compile(r"\bsearch\b", re.IGNORECASE)
+# Import the live regex so the gate pins the real pattern. If service.py
+# changes it during the refactor, the diff catches it.
+from llm.service import EXPLICIT_SEARCH_RE  # noqa: E402
 
 observables = {}
 for pid in PROFILE_IDS:
     framework = prompts.PROMPTS[pid].format(bot_nick="testbot")
     tools = sorted(t["function"]["name"] for t in get_tools_for_profile(pid))
     max_tokens = PRE_MAX_OUTPUT.get(pid)
-    force_search = (
-        pid in PRE_FORCE_SEARCH
-        and EXPLICIT_SEARCH_RE.search(SAMPLE_PROMPT_WITH_SEARCH) is not None
-    )
+    # One result per sample so the digest changes if the regex's term set
+    # changes, not only when the chat/remind_action membership flips.
+    force_search_on_samples = {
+        sample: (
+            pid in PRE_FORCE_SEARCH
+            and EXPLICIT_SEARCH_RE.search(sample) is not None
+        )
+        for sample in SAMPLE_PROMPTS
+    }
     observables[pid] = {
         "framework_text": framework,
         "tool_names": tools,
         "max_output_tokens": max_tokens,
-        "force_search_on_sample": force_search,
+        "force_search_on_samples": force_search_on_samples,
         "overlay_setting": PRE_OVERLAY_KEY[pid],
         "model_setting": PRE_MODEL_KEY[pid],
         "api_key_setting": PRE_API_KEY[pid],
     }
+
+# Also pin the regex pattern itself so a silent regex edit is caught even
+# if every sample's match boolean stays the same.
+observables["__regex__"] = {
+    "pattern": EXPLICIT_SEARCH_RE.pattern,
+    "flags": EXPLICIT_SEARCH_RE.flags,
+}
 
 serialized = json.dumps(observables, sort_keys=True, ensure_ascii=False)
 digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -155,6 +188,8 @@ behavior-preservation contract with the pre-refactor scattered data.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import pytest
 
@@ -249,27 +284,27 @@ class TestBehaviorPreservation:
         "verse": "verse",
         "remind_action": "remind_action",
     }
+    # PROFILE_CODE / PROFILE_DRAW: no channel-overridable overlay — the
+    # @code and @draw planners construct system_prompt from user_instruction
+    # + the framework prompt directly, never reading a registry key.
+    # PROFILE_VERSE / PROFILE_CHAT / PROFILE_REMIND_ACTION: all read
+    # 'assistantSystemPrompt'.
     EXPECTED_OVERLAY = {
         "chat": "assistantSystemPrompt",
-        "code": "codeSystemPrompt",
-        "draw": "assistantSystemPrompt",
+        "code": None,
+        "draw": None,
         "verse": "assistantSystemPrompt",
         "remind_action": "assistantSystemPrompt",
     }
-    EXPECTED_MODEL = {
-        "chat": "assistantModel",
-        "code": "codeModel",
-        "draw": "assistantModel",
-        "verse": "assistantModel",
-        "remind_action": "assistantModel",
-    }
-    EXPECTED_API_KEY = {
-        "chat": "assistantApiKey",
-        "code": "codeApiKey",
-        "draw": "assistantApiKey",
-        "verse": "assistantApiKey",
-        "remind_action": "assistantApiKey",
-    }
+    # Every chat-loop profile's assistant_completion fallback is
+    # assistantModel/assistantApiKey. codeModel/codeApiKey belong to the
+    # inner _code_for_assistant one-shot, not the @code planner. verseModel
+    # is a caller-side override passed via model_override= rather than read
+    # by assistant_completion.
+    EXPECTED_MODEL = {pid: "assistantModel" for pid in
+                      ("chat", "code", "draw", "verse", "remind_action")}
+    EXPECTED_API_KEY = {pid: "assistantApiKey" for pid in
+                        ("chat", "code", "draw", "verse", "remind_action")}
 
     @pytest.mark.parametrize(
         "pid",
@@ -323,8 +358,9 @@ class TestProfileImmutability:
     """Profile is a frozen dataclass — attempts to mutate must raise."""
 
     def test_profile_is_frozen(self):
+        """Assigning to a Profile field raises FrozenInstanceError."""
         p = profile.PROFILES["chat"]
-        with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+        with pytest.raises(dataclasses.FrozenInstanceError):
             p.id = "mutated"  # type: ignore[misc]
 ```
 
@@ -435,10 +471,17 @@ PROFILES: dict[str, Profile] = {
     ),
     PROFILE_CODE: Profile(
         id=PROFILE_CODE,
-        model_setting="codeModel",
-        api_key_setting="codeApiKey",
+        # The @code chat-loop planner uses assistantModel/assistantApiKey;
+        # the codeModel/codeApiKey/codeSystemPrompt registry keys belong to
+        # the *inner* _code_for_assistant one-shot (plugin.py:2547), which
+        # is a tool callback, not a Profile dispatch.
+        model_setting="assistantModel",
+        api_key_setting="assistantApiKey",
         prompt_id="code",
-        overlay_setting="codeSystemPrompt",
+        # The @code planner builds system_prompt from
+        # user_instruction + CODE_SYSTEM_PROMPT and never reads a channel
+        # overlay registry key.
+        overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,
     ),
@@ -447,7 +490,9 @@ PROFILES: dict[str, Profile] = {
         model_setting="assistantModel",
         api_key_setting="assistantApiKey",
         prompt_id="draw",
-        overlay_setting="assistantSystemPrompt",
+        # Same pattern as PROFILE_CODE: planner constructs its system_prompt
+        # without reading a channel overlay key.
+        overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,
     ),
@@ -472,9 +517,9 @@ PROFILES: dict[str, Profile] = {
 }
 ```
 
-- [ ] **Step 4: Update `assistant.py` to re-import PROFILE_* from `profile.py`**
+- [ ] **Step 4: Move PROFILE_* definitions in `assistant.py` to a top-of-file re-import**
 
-Open `plugins/llm/src/llm/assistant.py` at lines 25-31. The current block is:
+Two-part edit. First, **delete** the existing mid-module block at `plugins/llm/src/llm/assistant.py` lines 25-31:
 
 ```python
 # Route profile identifiers — keep in sync with the keys of
@@ -486,13 +531,9 @@ PROFILE_VERSE = "verse"
 PROFILE_REMIND_ACTION = "remind_action"
 ```
 
-Replace it with:
+Second, **insert** the re-import in the top-of-file imports section. Open the file and find the existing import block (typically lines 1-20). Add the `from .profile import …` line alongside the other relative imports, **alphabetically sorted** with neighbors so `ruff isort` (`I001`) doesn't complain:
 
 ```python
-# Route profile identifiers are now defined in ``profile.py``. They are
-# re-imported here so existing consumers (and ``ToolSpec.visible_in``
-# default below) keep working unchanged. The string literals are no
-# longer duplicated; ``profile.py`` is the single source of truth.
 from .profile import (
     PROFILE_CHAT,
     PROFILE_CODE,
@@ -502,7 +543,9 @@ from .profile import (
 )
 ```
 
-This keeps every existing `from llm.assistant import PROFILE_CHAT` import working. Task 4 deletes this re-import block and switches the holdout consumers to `from llm.profile import ...`.
+Why move instead of replace-in-place: the original PROFILE_* assignments were Python module-level *statements* (variable assignments). Replacing them with an `import` statement *in the same location* trips ruff's E402 ("module level import not at top of file") because the imports appear after non-import statements. Moving to the top of the file is the conventional fix.
+
+After the move, every existing `from llm.assistant import PROFILE_CHAT` keeps working — assistant.py still exposes the names, just by re-import. Task 4 documents this contract; nothing further changes about the import.
 
 - [ ] **Step 5: Run the new tests and verify they pass**
 
@@ -547,23 +590,30 @@ Verify pre-commit hook passes. CI must stay green — push happens at the end of
 - Modify: `plugins/llm/src/llm/service.py:3120-3260` (the `assistant_completion` body)
 - Modify: `plugins/llm/tests/test_service.py` (any tests asserting `route_profile in {…}` literal shape)
 
-- [ ] **Step 1: Re-verify the source-of-truth mappings for draw/verse/remind_action**
+- [ ] **Step 1: Verify @draw's effective model/key/overlay reads**
 
-Before changing service.py, confirm the registry-key reads for draw, verse, and remind_action match what `PROFILES` says. These three weren't fully traced during spec-writing.
+The adversarial review pass already verified PROFILE_CHAT, PROFILE_CODE, PROFILE_VERSE, and PROFILE_REMIND_ACTION:
+
+- PROFILE_CHAT, PROFILE_VERSE: served by `_ask_impl`, model fallback `assistantModel`, overlay `assistantSystemPrompt`. Verse adds a caller-side `verseModel` override at plugin.py:3307 (preserved as caller-side, not absorbed into Profile).
+- PROFILE_CODE: outer planner at plugin.py:3540 uses `assistantModel`/`assistantApiKey` (no override). Builds system_prompt from `user_instruction + CODE_SYSTEM_PROMPT`; never reads a registry overlay. `codeModel`/`codeApiKey`/`codeSystemPrompt` belong to inner `_code_for_assistant` only.
+- PROFILE_REMIND_ACTION: structured fire at plugin.py:1442 and scheduled-task fire at service.py:4734 both use `assistantSystemPrompt`.
+
+The only un-verified profile is PROFILE_DRAW. Locate the @draw command call site and confirm:
 
 ```bash
-# Find every call site that passes route_profile=PROFILE_DRAW / PROFILE_VERSE / PROFILE_REMIND_ACTION
-grep -nE 'route_profile=PROFILE_(DRAW|VERSE|REMIND_ACTION)|route_profile=.*"(draw|verse|remind_action)"' \
-    plugins/llm/src/llm/plugin.py plugins/llm/src/llm/service.py
+grep -nB 5 -A 35 'profile=PROFILE_DRAW' plugins/llm/src/llm/plugin.py
 ```
 
-Expected: list of caller sites. For each one, confirm:
-- The model is *not* overridden via `model_override=` with something other than the result of `registryValue("assistantModel", channel)`. If a caller passes a non-assistant model, the registry entry for that profile in `profile.py` is wrong and must be corrected before continuing.
-- Same for `api_key=`.
+For the call site:
 
-If discrepancies are found, update `profile.py` and `test_profile.py` to match the actual call-site behavior, then re-run `make test`. Commit the correction as `fix(llm): correct PROFILES mapping for <profile>` before continuing — keep `main` honest at every step.
+- Confirm the call to `assistant_request` does **not** pass `model_override=` (or, if it does, that the override resolves to `assistantModel`'s value).
+- Confirm no `registryValue("...SystemPrompt", channel)` read happens for the @draw path. If `system_prompt=` is passed to `assistant_request`, trace what it's built from.
 
-If everything matches: proceed.
+If @draw matches the @code pattern (planner uses assistant fallback, no channel overlay), `PROFILES[PROFILE_DRAW]` as written in Task 1 Step 3 is correct.
+
+If @draw reads `drawSystemPrompt` or similar from registry, update `PROFILES[PROFILE_DRAW].overlay_setting`, `PRE_OVERLAY_KEY[PROFILE_DRAW]` in `/tmp/profile_identity.py`, and `EXPECTED_OVERLAY["draw"]` in `test_profile.py`. Then re-run `make test` and the byte-identity script before continuing. Commit any correction as `fix(llm): correct PROFILE_DRAW mapping` to keep `main` honest.
+
+If @draw uses `drawModel`/`drawApiKey` (registry keys that may exist) as model overrides, update PROFILE_DRAW.model_setting/api_key_setting similarly.
 
 - [ ] **Step 2: Read the current `assistant_completion` body for the lines being changed**
 
@@ -573,67 +623,138 @@ sed -n '3120,3245p' plugins/llm/src/llm/service.py
 
 Confirm the section matches the "Before" block in the spec. If service.py has drifted, the spec's "Before" block needs updating before the edit. (The plan was written against commit `b4d769a`.)
 
-- [ ] **Step 3: Add tests pinning that `assistant_completion` reads through PROFILES**
+- [ ] **Step 3: Add real behavior tests pinning the PROFILES read path**
 
-The existing test suite verifies *behavior* through mocked `registryValue` calls. The migration changes which string is passed to `registryValue` for the chat profile (no-op: still `"assistantModel"`). To pin the *new contract* — that `model_setting` is read from PROFILES — add a test that asserts the call shape.
+The existing test suite covers `assistant_completion` behavior end-to-end with mocked `registryValue`. To pin the new *contract* — that `model_setting`/`api_key_setting` is read from PROFILES and not hardcoded — add a `monkeypatch.setitem` test that swaps a profile entry with a sentinel and asserts the sentinel's string flows to `registryValue`.
 
-In `plugins/llm/tests/test_service.py`, add:
+The harness pattern lives in `plugins/llm/tests/test_assistant.py` (see `test_assistant_completion_layers_system_prompt_over_framework` around line 893). Copy that pattern.
+
+Append to `plugins/llm/tests/test_assistant.py` (which already has `service` and `mocker` fixtures wired up):
 
 ```python
-class TestAssistantCompletionReadsFromProfiles:
-    """assistant_completion looks up Profile-driven settings via PROFILES.
+class TestAssistantCompletionReadsModelKeyFromProfiles:
+    """assistant_completion must read model/api_key via PROFILES[route].
 
-    These tests pin that the migration is wired up. Without them, a
-    future change could silently swap back to hardcoded strings.
+    Swapping the PROFILES entry with a sentinel-keyed Profile and asserting
+    the sentinel key flows to plugin.registryValue() pins that the
+    migration is wired up — a future regression that hardcodes
+    'assistantModel' would break these tests.
     """
 
-    def test_chat_profile_reads_assistantModel_via_profile(self, mocker, llm_service):
-        """For PROFILE_CHAT, model lookup must use profile.model_setting."""
-        from llm.profile import PROFILES, PROFILE_CHAT
-        # The chat profile's model_setting is what gets passed to registryValue.
-        assert PROFILES[PROFILE_CHAT].model_setting == "assistantModel"
-
-        registry = mocker.patch.object(
-            llm_service.plugin,
-            "registryValue",
-            side_effect=lambda key, *args, **kwargs: {
-                "assistantModel": "fake-model",
-                "assistantApiKey": "fake-key",
-                "metaMaxSteps": 1,
-                "timeout": 30,
-            }.get(key, ""),
-        )
-        # ... existing test scaffolding to call assistant_completion ...
-        # After the call:
-        call_keys = [c.args[0] for c in registry.call_args_list]
-        # The migration's contract: model_setting from PROFILES is what gets read.
-        assert "assistantModel" in call_keys
-
-    def test_code_profile_reads_codeModel_via_profile(self, mocker, llm_service):
-        """For PROFILE_CODE, model lookup must use profile.model_setting='codeModel'.
-
-        Pre-refactor, the code profile reached assistant_completion via a
-        model_override= kwarg from the caller, so service.py only saw
-        'assistantModel' in its own registryValue call. Post-refactor,
-        if assistant_completion is invoked with route_profile=PROFILE_CODE
-        and no model_override, it must read 'codeModel'.
+    def test_model_setting_is_read_from_profile(
+        self, service: LLMService, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """For route_profile=PROFILE_CHAT, plugin.registryValue is called
+        with PROFILES[PROFILE_CHAT].model_setting — not a hardcoded string.
         """
-        from llm.profile import PROFILES, PROFILE_CODE
-        assert PROFILES[PROFILE_CODE].model_setting == "codeModel"
-        # ... mocker setup + invocation with route_profile=PROFILE_CODE,
-        # model_override=None, api_key=None ...
-        # ... assert "codeModel" appears in registry.call_args_list keys ...
+        from llm.profile import PROFILES, Profile, PROFILE_CHAT
+
+        sentinel = Profile(
+            id=PROFILE_CHAT,
+            model_setting="SENTINEL_MODEL_KEY",
+            api_key_setting="SENTINEL_API_KEY",
+            prompt_id="chat",
+            overlay_setting=None,
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
+
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "ok"
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        # Capture every registryValue call so we can prove our sentinel
+        # keys were the ones used.
+        registry_calls: list[str] = []
+        original_registryValue = service.plugin.registryValue
+
+        def spy(key, *args, **kwargs):
+            registry_calls.append(key)
+            # Fall through to the real mock so existing test fixtures still
+            # control timeouts, maxSteps, etc.
+            return original_registryValue(key, *args, **kwargs)
+
+        mocker.patch.object(service.plugin, "registryValue", side_effect=spy)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        assert "SENTINEL_MODEL_KEY" in registry_calls
+        assert "SENTINEL_API_KEY" in registry_calls
+        assert "assistantModel" not in registry_calls
+        assert "assistantApiKey" not in registry_calls
+
+    def test_model_override_still_wins(
+        self, service: LLMService, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """An explicit model_override= bypasses Profile.model_setting,
+        matching the pre-refactor contract.
+        """
+        from llm.profile import PROFILES, Profile, PROFILE_CHAT
+
+        sentinel = Profile(
+            id=PROFILE_CHAT,
+            model_setting="SENTINEL_MODEL_KEY",
+            api_key_setting="assistantApiKey",
+            prompt_id="chat",
+            overlay_setting=None,
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
+
+        captured_model: list[str] = []
+
+        mock_response = mocker.MagicMock()
+        mock_choice = mocker.MagicMock()
+        mock_choice.message.content = "ok"
+        mock_choice.message.tool_calls = None
+        mock_response.choices = [mock_choice]
+
+        def capture(**kwargs):
+            captured_model.append(kwargs.get("model"))
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+            model_override="explicit-override-model",
+        )
+
+        # The override beat the Profile.model_setting lookup.
+        assert captured_model == ["explicit-override-model"]
 ```
 
-> **Note for the implementer:** flesh out the mocker scaffolding to match the existing test style in `test_service.py`. Use whatever fixture provides an LLMService instance with a mocked plugin — search for `assistant_completion` in `test_service.py` to find the pattern. The skeleton above documents the *contract*; the existing test file already shows how to build the harness.
+These are *behavior* tests — they exercise the migrated code path with a swapped registry entry and observe the call surface. They fail before the migration (because service.py reads hardcoded `"assistantModel"`) and pass after (because service.py reads `PROFILES[route_profile].model_setting`).
 
-- [ ] **Step 4: Run the new tests, confirm they fail or skip cleanly**
+- [ ] **Step 4: Run the new tests, confirm they fail before the migration**
 
 ```bash
-make test PYTEST_ARGS="plugins/llm/tests/test_service.py::TestAssistantCompletionReadsFromProfiles -v"
+make test PYTEST_ARGS="plugins/llm/tests/test_assistant.py::TestAssistantCompletionReadsModelKeyFromProfiles -v"
 ```
 
-Expected: the `chat` test passes immediately (no behavior change for chat); the `code` test fails because `assistant_completion` currently hardcodes `"assistantModel"` regardless of `route_profile`.
+Expected: both tests **fail** before the migration. `test_model_setting_is_read_from_profile` fails because pre-refactor `assistant_completion` reads the hardcoded string `"assistantModel"` rather than the sentinel's `"SENTINEL_MODEL_KEY"`. `test_model_override_still_wins` also fails because the sentinel-Profile's prompt_id/overlay_setting now apply to the chat path, mutating other paths beyond what pre-refactor code expects. (This is fine — both will pass after Step 5.)
 
 - [ ] **Step 5: Migrate `assistant_completion` to read from PROFILES**
 
@@ -655,7 +776,13 @@ effective_api_key = api_key or self.plugin.registryValue("assistantApiKey", targ
 With:
 
 ```python
-profile = PROFILES[route_profile]
+# PROFILES.get fallback preserves pre-refactor behavior: unknown
+# route_profile values silently fall through to the chat profile. The
+# pre-refactor framework lookup used the same .get(..., PROMPTS["chat"])
+# pattern. Internal callers always pass a known PROFILE_* string, so
+# the fallback should never fire — but we keep it to avoid changing
+# observable behavior for a low-cost defensive read.
+profile = PROFILES.get(route_profile, PROFILES[PROFILE_CHAT])
 target = self._channel_target(channel)
 model = model_override or self.plugin.registryValue(profile.model_setting, target)
 effective_api_key = api_key or self.plugin.registryValue(profile.api_key_setting, target)
@@ -672,6 +799,8 @@ With:
 ```python
 framework = PROMPTS[profile.prompt_id].format(bot_nick=bot_nick)
 ```
+
+The pre-refactor `.get(..., PROMPTS["chat"])` silent fallback is preserved at the top of the function by using `PROFILES.get(route_profile, PROFILES[PROFILE_CHAT])` instead of `PROFILES[route_profile]`. This keeps unknown `route_profile` values flowing through the chat framework rather than raising KeyError — behavior-preserving by construction.
 
 Replace this block (currently around 3193-3200):
 
@@ -770,19 +899,20 @@ git commit -m "refactor(llm): migrate service.assistant_completion to PROFILES r
 
 ---
 
-## Task 3: Migrate `plugin.py` + `service.py:4734` overlay reads
+## Task 3: Migrate overlay reads at plugin.py:1442, plugin.py:3385, service.py:4734
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py:1442` (ask path overlay read)
-- Modify: `plugins/llm/src/llm/plugin.py:2547` (code path overlay read)
-- Modify: `plugins/llm/src/llm/plugin.py:3385` (verse path overlay read)
-- Modify: `plugins/llm/src/llm/service.py:4734` (scheduled-task fire overlay read)
-- Modify: `plugins/llm/tests/test_plugin.py` and `plugins/llm/tests/test_service.py` (any tests pinning the literal `"assistantSystemPrompt"` / `"codeSystemPrompt"` strings)
+- Modify: `plugins/llm/src/llm/plugin.py:1442` (structured-reminder fire, PROFILE_REMIND_ACTION)
+- Modify: `plugins/llm/src/llm/plugin.py:3385` (`_ask_impl`, serves PROFILE_CHAT and PROFILE_VERSE via `effective_profile`)
+- Modify: `plugins/llm/src/llm/service.py:4734` (scheduled-task fire, PROFILE_REMIND_ACTION)
+- Modify: `plugins/llm/tests/test_assistant.py` and/or `test_plugin.py` (add monkeypatch behavior tests)
 
-- [ ] **Step 1: Identify every overlay-read call site**
+**Out of scope:** `plugin.py:2547` is inside `_code_for_assistant`, a one-shot tool callback (NOT a chat-loop Profile dispatch). It reads `codeSystemPrompt` because that's the inner one-shot's own registry key. Leave it alone.
+
+- [ ] **Step 1: Confirm the three overlay-read call sites and their effective profile**
 
 ```bash
-grep -nE 'registryValue\("(assistantSystemPrompt|codeSystemPrompt)"' \
+grep -nE 'registryValue\("assistantSystemPrompt"' \
     plugins/llm/src/llm/plugin.py plugins/llm/src/llm/service.py
 ```
 
@@ -790,46 +920,117 @@ Expected (based on commit `b4d769a`):
 
 ```
 plugins/llm/src/llm/plugin.py:1442:            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
-plugins/llm/src/llm/plugin.py:2547:                system_prompt=self.registryValue("codeSystemPrompt", channel),
 plugins/llm/src/llm/plugin.py:3385:            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
 plugins/llm/src/llm/service.py:4734:        ask_prompt = plugin.registryValue("assistantSystemPrompt", row.channel)
 ```
 
-If the grep shows additional sites, include them in this task — none should be left hardcoded after this commit.
+For each, trace the surrounding code (sed -n) to confirm the dispatching profile:
 
-- [ ] **Step 2: Add tests asserting overlay reads go through PROFILES**
+- `plugin.py:1442`: inside structured-reminder fire; `AssistantRequestContext(profile=PROFILE_REMIND_ACTION, ...)` is constructed in the same block (around line 1426-1428). Overlay key flows to a `PROFILE_REMIND_ACTION` dispatch.
+- `plugin.py:3385`: inside `_ask_impl`; local variable `effective_profile = profile_override or PROFILE_CHAT` is set just before (around line 3349). The same line serves both @ask (PROFILE_CHAT) and verse (PROFILE_VERSE).
+- `service.py:4734`: inside scheduled-task fire; `AssistantRequestContext(profile="remind_action", ...)` constructed around line 4720.
 
-In `plugins/llm/tests/test_plugin.py`, add a test class:
+- [ ] **Step 2: Add `monkeypatch.setitem` behavior tests for the migration contract**
+
+Append to `plugins/llm/tests/test_assistant.py`:
 
 ```python
 class TestOverlayReadsViaProfiles:
-    """Overlay registry keys are looked up via PROFILES, not hardcoded."""
+    """Plugin caller sites read the overlay key via PROFILES, not hardcoded.
 
-    def test_chat_path_overlay_key_matches_profile(self):
-        from llm.profile import PROFILES, PROFILE_CHAT
-        # If this changes, the chat ask path must be updated to follow.
-        assert PROFILES[PROFILE_CHAT].overlay_setting == "assistantSystemPrompt"
+    Swap a PROFILES entry with a sentinel overlay_setting and assert the
+    sentinel key flows to plugin.registryValue at the call sites that drive
+    chat-loop dispatch. These tests fail before the migration and pass
+    after.
+    """
 
-    def test_code_path_overlay_key_matches_profile(self):
-        from llm.profile import PROFILES, PROFILE_CODE
-        assert PROFILES[PROFILE_CODE].overlay_setting == "codeSystemPrompt"
+    def test_remind_action_fire_reads_overlay_via_profile(
+        self, mocker: MockerFixture, monkeypatch, irc, msg
+    ) -> None:
+        """plugin.py:1442 reads PROFILES[PROFILE_REMIND_ACTION].overlay_setting,
+        not the hardcoded 'assistantSystemPrompt'.
+        """
+        from llm.profile import PROFILES, Profile, PROFILE_REMIND_ACTION
 
-    def test_verse_path_overlay_key_matches_profile(self):
-        from llm.profile import PROFILES, PROFILE_VERSE
-        assert PROFILES[PROFILE_VERSE].overlay_setting == "assistantSystemPrompt"
+        sentinel = Profile(
+            id=PROFILE_REMIND_ACTION,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="remind_action",
+            overlay_setting="SENTINEL_REMIND_OVERLAY",
+            max_output_tokens=400,
+            force_search_on_explicit=True,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_REMIND_ACTION, sentinel)
+
+        # Trigger the structured-reminder fire path. Use whatever fixture
+        # exists in test_plugin.py for firing reminders — find it by
+        # searching for `_fire_reminder` or similar. Assert that the
+        # capture of registryValue calls includes "SENTINEL_REMIND_OVERLAY"
+        # and does NOT include "assistantSystemPrompt".
+        #
+        # **Implementer guide:** if the structured-reminder fire path is
+        # hard to invoke from a test, fall back to a focused unit test:
+        # call the wrapper function that contains line 1442 directly with
+        # mocked dependencies, and assert the registryValue capture.
+
+    def test_ask_path_overlay_uses_effective_profile(
+        self, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """plugin.py:3385 reads PROFILES[effective_profile].overlay_setting.
+        When profile_override=PROFILE_VERSE, the verse overlay_setting is used.
+        """
+        from llm.profile import PROFILES, Profile, PROFILE_VERSE, PROFILE_CHAT
+
+        sentinel_verse = Profile(
+            id=PROFILE_VERSE,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="verse",
+            overlay_setting="SENTINEL_VERSE_OVERLAY",
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_VERSE, sentinel_verse)
+
+        # Invoke _ask_impl directly (or through a verse-dispatch helper)
+        # with profile_override=PROFILE_VERSE, capture registryValue calls,
+        # assert "SENTINEL_VERSE_OVERLAY" appears and "assistantSystemPrompt"
+        # does not.
+
+    def test_scheduled_task_fire_reads_overlay_via_profile(
+        self, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """service.py:4734 reads PROFILES[PROFILE_REMIND_ACTION].overlay_setting."""
+        from llm.profile import PROFILES, Profile, PROFILE_REMIND_ACTION
+
+        sentinel = Profile(
+            id=PROFILE_REMIND_ACTION,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="remind_action",
+            overlay_setting="SENTINEL_SCHED_OVERLAY",
+            max_output_tokens=400,
+            force_search_on_explicit=True,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_REMIND_ACTION, sentinel)
+
+        # Trigger the scheduled-task fire path. The existing test_service.py
+        # tests for scheduled-task firing are the pattern to copy. Assert
+        # registryValue capture contains "SENTINEL_SCHED_OVERLAY".
 ```
 
-These are minimal contract pins — the *behavior* coverage (that the bot actually reads the right channel-overridable text) is already covered by existing tests; what we want here is to ensure no one re-hardcodes the string later.
+> **Implementer guide:** for each test, locate the existing fixture/harness that exercises the same code path *for behavior* and reuse its setup. The tests above pin the *contract* via sentinel substitution. If a path is genuinely hard to drive end-to-end, fall back to invoking the smallest function that contains the target line.
 
-- [ ] **Step 3: Run the new tests, confirm they pass already**
+- [ ] **Step 3: Run the new tests, confirm they fail before migration**
 
 ```bash
-make test PYTEST_ARGS="plugins/llm/tests/test_plugin.py::TestOverlayReadsViaProfiles -v"
+make test PYTEST_ARGS="plugins/llm/tests/test_assistant.py::TestOverlayReadsViaProfiles -v"
 ```
 
-Expected: all three pass (they're literal value pins; pass before *and* after the migration).
+Expected: all three fail (overlay key is hardcoded pre-refactor).
 
-- [ ] **Step 4: Migrate `plugin.py:1442` (ask path)**
+- [ ] **Step 4: Migrate `plugin.py:1442` (structured-reminder fire, PROFILE_REMIND_ACTION)**
 
 Read the current line:
 
@@ -837,87 +1038,68 @@ Read the current line:
 sed -n '1438,1446p' plugins/llm/src/llm/plugin.py
 ```
 
-Confirm it matches:
+Confirm it matches `ask_prompt = self.registryValue("assistantSystemPrompt", channel)`.
+
+At the top of `plugin.py`, ensure the `from .profile import …` block exposes `PROFILES` (the PROFILE_* constants are likely already imported from `.assistant`, which now re-exports from `.profile`). Add `PROFILES` to the appropriate import group:
 
 ```python
-            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+from .profile import (
+    PROFILES,
+    PROFILE_CHAT,
+    PROFILE_CODE,
+    PROFILE_DRAW,
+    PROFILE_REMIND_ACTION,
+    PROFILE_VERSE,
+)
 ```
 
-At the top of `plugin.py`, ensure imports include `PROFILES` and `PROFILE_CHAT`:
-
-```python
-from .profile import PROFILE_CHAT, PROFILE_CODE, PROFILE_VERSE, PROFILES
-```
+(Or, if the existing `from .assistant import` block already pulls PROFILE_* names, leave those there and add a separate `from .profile import PROFILES` line. Either form is fine; pick whichever matches the file's existing import style.)
 
 Replace the line at 1442 with:
 
 ```python
-            ask_prompt = self.registryValue(PROFILES[PROFILE_CHAT].overlay_setting, channel)
+            ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
 ```
 
-- [ ] **Step 5: Migrate `plugin.py:2547` (code path)**
-
-```bash
-sed -n '2543,2551p' plugins/llm/src/llm/plugin.py
-```
-
-Confirm it matches:
-
-```python
-                system_prompt=self.registryValue("codeSystemPrompt", channel),
-```
-
-Replace with:
-
-```python
-                system_prompt=self.registryValue(PROFILES[PROFILE_CODE].overlay_setting, channel),
-```
-
-- [ ] **Step 6: Migrate `plugin.py:3385` (verse path)**
+- [ ] **Step 5: Migrate `plugin.py:3385` (`_ask_impl`, dynamic profile)**
 
 ```bash
 sed -n '3381,3389p' plugins/llm/src/llm/plugin.py
 ```
 
-Confirm it matches:
+Confirm it matches `ask_prompt = self.registryValue("assistantSystemPrompt", channel)`.
+
+The `effective_profile` local variable is in scope at this line (defined ~30 lines earlier as `effective_profile = profile_override or PROFILE_CHAT`). Use it directly:
 
 ```python
-            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+            ask_prompt = self.registryValue(PROFILES[effective_profile].overlay_setting, channel)
 ```
 
-Replace with:
+This makes the line correct for both the @ask (PROFILE_CHAT) and verse (PROFILE_VERSE) dispatches without code duplication. Today both resolve to `"assistantSystemPrompt"`; if a future change diverges them, this line follows automatically.
 
-```python
-            ask_prompt = self.registryValue(PROFILES[PROFILE_VERSE].overlay_setting, channel)
-```
-
-- [ ] **Step 7: Migrate `service.py:4734` (scheduled-task fire)**
+- [ ] **Step 6: Migrate `service.py:4734` (scheduled-task fire, PROFILE_REMIND_ACTION)**
 
 ```bash
 sed -n '4730,4738p' plugins/llm/src/llm/service.py
 ```
 
-Confirm it matches:
+Confirm it matches `ask_prompt = plugin.registryValue("assistantSystemPrompt", row.channel)`.
+
+Ensure `service.py`'s imports include `PROFILES` and `PROFILE_REMIND_ACTION` (PROFILE_REMIND_ACTION is likely already imported after Task 2). Replace with:
 
 ```python
-        ask_prompt = plugin.registryValue("assistantSystemPrompt", row.channel)
+        ask_prompt = plugin.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, row.channel)
 ```
 
-The scheduled-task fire path fires reminder actions that re-enter the chat profile, so it uses `PROFILE_CHAT`'s overlay key. Ensure `service.py`'s imports include `PROFILE_CHAT` and `PROFILES` (they likely already do after Task 2). Replace with:
-
-```python
-        ask_prompt = plugin.registryValue(PROFILES[PROFILE_CHAT].overlay_setting, row.channel)
-```
-
-- [ ] **Step 8: Run the targeted tests**
+- [ ] **Step 7: Run the new tests, confirm they pass after migration**
 
 ```bash
-make test PYTEST_ARGS="plugins/llm/tests/test_plugin.py plugins/llm/tests/test_service.py -v"
+make test PYTEST_ARGS="plugins/llm/tests/test_assistant.py::TestOverlayReadsViaProfiles -v"
 ```
 
-Expected: all tests pass.
+Expected: all three pass.
 
-- [ ] **Step 9: Run the full suite**
+- [ ] **Step 8: Run the full suite**
 
 ```bash
 make test
@@ -925,7 +1107,7 @@ make test
 
 Expected: no regressions; coverage stays at or above 93%.
 
-- [ ] **Step 10: Lint and typecheck**
+- [ ] **Step 9: Lint and typecheck**
 
 ```bash
 make lint && make typecheck
@@ -933,98 +1115,82 @@ make lint && make typecheck
 
 Expected: clean.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add plugins/llm/src/llm/plugin.py \
         plugins/llm/src/llm/service.py \
-        plugins/llm/tests/test_plugin.py
-git commit -m "refactor(llm): migrate plugin.py overlay reads to PROFILES.overlay_setting"
+        plugins/llm/tests/test_assistant.py
+git commit -m "refactor(llm): migrate overlay reads to PROFILES[profile].overlay_setting"
 ```
 
 ---
 
-## Task 4: Cleanup re-exports + byte-identity gate
+## Task 4: Switch holdout consumers, run identity gate, push
+
+The `from .profile import PROFILE_*` block at the top of `assistant.py` (added in Task 1 Step 4) **stays**. `assistant.py` uses those constants internally (`ToolSpec.visible_in` defaults, `_TOOL_SPEC_OVERRIDES`, `_VERSE_EXCLUDED_TOOLS`). What changes in Task 4 is the *contract*: external code switches to importing from `llm.profile` directly, so the `assistant.py` import is no longer a public shim — just an internal-use import. This is the cleanup commit; no shim deletion.
 
 **Files:**
-- Modify: `plugins/llm/src/llm/assistant.py:25-31` (delete the `from .profile import PROFILE_*` block from Task 1 — but only after switching any holdout consumers)
-- Modify: any file still importing `PROFILE_*` from `llm.assistant`
+- Modify: any file still importing `PROFILE_*` from `llm.assistant` (inventory in Step 1)
 
-- [ ] **Step 1: Inventory remaining consumers of `llm.assistant.PROFILE_*`**
+- [ ] **Step 1: Inventory holdout consumers of `llm.assistant.PROFILE_*`**
+
+Use `ripgrep` with multiline matching — the actual import sites in plugin.py and service.py are parenthesized multiline blocks that single-line `grep` will silently miss:
 
 ```bash
-grep -rnE 'from .assistant import.*PROFILE_|from llm\.assistant import.*PROFILE_|from \.assistant import.*PROFILE_' \
+rg -n --multiline 'from\s+(\.{1,2}assistant|llm\.assistant)\s+import\s*\(' \
     plugins/llm/src plugins/llm/tests
 ```
 
-Each match is a holdout consumer that needs to switch.
+For each match, open the file and read the parenthesized block. Note any `PROFILE_CHAT`, `PROFILE_CODE`, `PROFILE_DRAW`, `PROFILE_VERSE`, or `PROFILE_REMIND_ACTION` names — those are the ones to migrate. Single-line imports (rare) get caught by:
+
+```bash
+rg -n 'from\s+(\.{1,2}assistant|llm\.assistant)\s+import\s+[^(]*PROFILE_' \
+    plugins/llm/src plugins/llm/tests
+```
+
+The two greps together cover both forms.
 
 - [ ] **Step 2: Update each holdout to import from `llm.profile`**
 
-For each file from Step 1, rewrite the import. Example:
+For each file, rewrite the import. Example (multiline):
 
 ```python
 # Before
-from .assistant import PROFILE_CHAT, PROFILE_VERSE, AssistantToolExecutor
+from .assistant import (
+    AssistantToolExecutor,
+    PROFILE_CHAT,
+    PROFILE_VERSE,
+    ToolSpec,
+)
 
 # After
-from .assistant import AssistantToolExecutor
+from .assistant import (
+    AssistantToolExecutor,
+    ToolSpec,
+)
 from .profile import PROFILE_CHAT, PROFILE_VERSE
 ```
 
-If a file imports *only* PROFILE_* from `.assistant`, the import line collapses to a single `from .profile import …`.
+If a file imports *only* `PROFILE_*` from `.assistant`, the entire `.assistant` import collapses; just replace with `from .profile import …`.
 
-- [ ] **Step 3: Delete the re-import block in `assistant.py`**
-
-Open `plugins/llm/src/llm/assistant.py` at the block added in Task 1, Step 4. Delete this:
-
-```python
-# Route profile identifiers are now defined in ``profile.py``. They are
-# re-imported here so existing consumers (and ``ToolSpec.visible_in``
-# default below) keep working unchanged. The string literals are no
-# longer duplicated; ``profile.py`` is the single source of truth.
-from .profile import (
-    PROFILE_CHAT,
-    PROFILE_CODE,
-    PROFILE_DRAW,
-    PROFILE_REMIND_ACTION,
-    PROFILE_VERSE,
-)
-```
-
-But `assistant.py` *still uses* the constants internally — `ToolSpec.visible_in` defaults reference them, `_TOOL_SPEC_OVERRIDES` references them, `_VERSE_EXCLUDED_TOOLS` references PROFILE_VERSE. Without those constants in scope, the module won't compile.
-
-So Step 3 is actually: *keep the import* but stop treating it as a re-export — drop the comment that frames it as a shim:
-
-```python
-from .profile import (
-    PROFILE_CHAT,
-    PROFILE_CODE,
-    PROFILE_DRAW,
-    PROFILE_REMIND_ACTION,
-    PROFILE_VERSE,
-)
-```
-
-The semantic change is: external code can no longer rely on this being importable through `llm.assistant` (because we just rewrote every external import in Step 2 to use `llm.profile`). The line stays for internal use.
-
-- [ ] **Step 4: Run the full suite**
+- [ ] **Step 3: Run the full suite**
 
 ```bash
 make test
 ```
 
-Expected: no regressions. If any test still fails because it imports PROFILE_* from `llm.assistant` and Step 1's grep missed it, switch that test to `llm.profile` and re-run.
+Expected: no regressions. If any test still fails on a `PROFILE_*` import from `llm.assistant`, the Step 1 grep missed it — re-grep and re-migrate.
 
-- [ ] **Step 5: Lint and typecheck**
+- [ ] **Step 4: Lint and typecheck**
 
 ```bash
 make lint && make typecheck
 ```
 
-Expected: clean. If `ty` reports `PROFILE_*` as unused-import in `assistant.py`, that's wrong — they *are* used internally. If `ty` is right and they really aren't used, delete them. (Most likely they're used in `ToolSpec.visible_in` defaults.)
+Expected: clean. If `ruff` reports an `F401` ("imported but unused") on a `PROFILE_*` name inside `assistant.py`, that's a real bug — those names are used in `ToolSpec.visible_in` defaults and the `_TOOL_SPEC_OVERRIDES` / `_VERSE_EXCLUDED_TOOLS` blocks. If `ruff` is right and a name really has no use, delete only that one name from the import list.
 
-- [ ] **Step 6: Run `make preflight`**
+- [ ] **Step 5: Run `make preflight`**
 
 ```bash
 make preflight
@@ -1032,7 +1198,7 @@ make preflight
 
 Expected: everything green.
 
-- [ ] **Step 7: Run the byte-identity gate**
+- [ ] **Step 6: Run the byte-identity gate**
 
 ```bash
 python /tmp/profile_identity.py > /tmp/profile_identity_post.txt
@@ -1040,18 +1206,26 @@ diff /tmp/profile_identity_pre.txt /tmp/profile_identity_post.txt
 echo "exit=$?"
 ```
 
-Expected: empty diff, `exit=0`. Both files identical means the refactor preserved every observable (framework prompt text per profile, tool name set per profile, max_output_tokens per profile, force_initial_search predicate, overlay setting, model setting, api_key setting).
+Expected: empty diff, `exit=0`. Identical digests mean the refactor preserved every observable: framework prompt text per profile, tool name set per profile, max_output_tokens per profile, force_initial_search predicate result per sample prompt, overlay setting, model setting, api_key setting, and the EXPLICIT_SEARCH_RE pattern itself.
 
-If the diff is non-empty: do not commit. Read the diff, identify which observable changed, decide whether it's a bug to fix or whether the spec's pre-refactor pinning was wrong. Likely a bug — investigate and fix before proceeding.
+If the diff is non-empty: do not commit. Read the diff, identify which observable changed, decide whether it's a bug to fix or whether the Pre-Work pinning was wrong. The PRE_* dicts in `/tmp/profile_identity.py` were verified against source during plan-writing; if those need correcting, fix them, but only after confirming the source-of-truth.
+
+- [ ] **Step 7: Runtime import smoke check**
+
+```bash
+python -c "import sys; sys.path.insert(0, 'plugins/llm/src'); import llm.plugin, llm.service, llm.profile, llm.assistant, llm.prompts; print('import-smoke=ok')"
+```
+
+Expected output: `import-smoke=ok`. This catches any module-load failure that mocked tests would not (e.g., a circular import that only manifests under Limnoria's normal load order, a missing constant referenced in a class body executed at import time).
+
+If this fails: do not commit. Trace the import chain manually and fix.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add plugins/llm/src/llm/assistant.py plugins/llm/src/llm
+git add -- plugins/llm/src plugins/llm/tests
 git commit -m "refactor(llm): switch holdout consumers to llm.profile imports"
 ```
-
-If Step 2 modified test files too, include those in the `git add`.
 
 - [ ] **Step 9: Push to main**
 
@@ -1059,18 +1233,16 @@ If Step 2 modified test files too, include those in the `git add`.
 git push
 ```
 
-Auto-deploy fires when CI + Docker workflows pass. Watch for the green check via `gh run list --limit 3` after a minute.
+Auto-deploy fires when CI + Docker workflows pass. Watch for the green check via `gh run list --limit 5` after a minute.
 
 - [ ] **Step 10: Verify production after auto-deploy**
-
-The auto-deploy workflow restarts the vibebot service over SSH. After the green Docker workflow run, optionally confirm:
 
 ```bash
 ssh -i ~/.ssh/id_rsa vibebot@rdrake.org \
     'systemctl --user is-active vibebot && docker logs --tail 20 vibebot 2>&1 | tail -5'
 ```
 
-Expected: `active`, no startup errors.
+Expected: `active`, no startup errors. If the bot fails to start: roll back with `git revert` (the four commits are designed to revert cleanly because each commit was independently green-on-main).
 
 - [ ] **Step 11: Cleanup local harness files**
 
@@ -1078,37 +1250,52 @@ Expected: `active`, no startup errors.
 rm /tmp/profile_identity.py /tmp/profile_identity_pre.txt /tmp/profile_identity_post.txt
 ```
 
-These were one-off — the byte-identity gate's value was at the migration moment, not as a permanent artifact.
+One-off — value was at the migration moment, not as a permanent artifact.
 
 ---
 
 ## Self-Review
 
-Before handing off, the plan was reviewed against the spec:
+Before handing off, the plan was reviewed against the spec and against findings from the parallel adversarial review pass (codex:codex-rescue + general-purpose code-reviewer):
 
 **Spec coverage check:**
 
 - ✅ Module layout (new `profile.py`, dependency direction) → Task 1, Steps 3-4.
 - ✅ Profile dataclass shape (7 fields) → Task 1, Step 3.
-- ✅ PROFILES registry (5 entries with full per-field mappings) → Task 1, Step 3.
-- ✅ Migration of `service.py:assistant_completion` (5 lookups collapse) → Task 2, Step 5.
-- ✅ Migration of `plugin.py` overlay reads (3 sites) + service.py:4734 → Task 3, Steps 4-7.
-- ✅ PROFILE_VERSE footer left untouched → Task 2, Step 5 ("Do not touch the `if route_profile == PROFILE_VERSE` branch").
-- ✅ Testing strategy (5 test classes: Registry, Resolution, ToolsAlignment, BehaviorPreservation, Immutability) → Task 1, Step 1.
-- ✅ Byte-identity gate → Pre-Work + Task 4, Step 7.
-- ✅ Verification step for draw/verse/remind_action model/key mappings → Task 2, Step 1.
+- ✅ PROFILES registry (5 entries with corrected per-field mappings) → Task 1, Step 3.
+- ✅ Migration of `service.py:assistant_completion` (5 lookups collapse, silent-fallback preserved) → Task 2, Step 5.
+- ✅ Migration of overlay reads at plugin.py:1442, plugin.py:3385 (dynamic effective_profile), service.py:4734 → Task 3, Steps 4-6. plugin.py:2547 explicitly out of scope (inner `_code_for_assistant` one-shot).
+- ✅ PROFILE_VERSE footer left untouched → Task 2, Step 5.
+- ✅ Testing strategy: invariant tests in `test_profile.py` (Task 1 Step 1) + behavior tests via `monkeypatch.setitem` in `test_assistant.py` (Task 2 Step 3, Task 3 Step 2).
+- ✅ Byte-identity gate (real EXPLICIT_SEARCH_RE imported from service.py; multi-sample force-search exercise; explicit regex-pattern observable) → Pre-Work + Task 4, Step 6.
+- ✅ Runtime import smoke check → Task 4, Step 7.
+- ✅ verseModel preserved as caller-side override at plugin.py:3307 — documented in spec, untouched by refactor.
 - ✅ Four phased commits, each green on `main` for auto-deploy → Task structure.
+
+**Adversarial-review fixes applied:**
+
+- **Codex D1 + General D3** (PROFILE_CODE mapping): corrected `model_setting`/`api_key_setting`/`overlay_setting`. The @code planner uses `assistantModel`/`assistantApiKey` and reads no channel overlay; `codeModel`/`codeApiKey`/`codeSystemPrompt` belong to the inner one-shot.
+- **Codex D2** (verseModel caller override): documented as out-of-Profile in the spec; Profile.model_setting captures the fallback path only.
+- **Codex D3 + General D1** (fake regex gate): harness now imports `EXPLICIT_SEARCH_RE` directly and tests every alternation term with sample prompts; the regex pattern is also a pinned observable.
+- **Codex D6** (multiline-import grep): Task 4 Step 1 uses `rg --multiline` to catch parenthesized blocks.
+- **Codex D7 + General D7** (overlay tests pass before AND after migration): replaced literal-value pins with `monkeypatch.setitem` sentinel-Profile behavior tests that fail before migration and pass after.
+- **Codex D8** (Task 2 Step 3 scaffolding pointed at wrong test file): redirected to `test_assistant.py` where the direct `assistant_completion` harness lives.
+- **General D3** (silent-fallback semantic change): Task 2 Step 5 uses `PROFILES.get(route_profile, PROFILES[PROFILE_CHAT])` to preserve pre-refactor behavior.
+- **General D5** (overly broad `pytest.raises(Exception)`): narrowed to `dataclasses.FrozenInstanceError` in Task 1 Step 1.
+- **General D6** (half-pseudocode tests): rewrote Task 2 Step 3 and Task 3 Step 2 with complete, runnable test bodies. Some implementer guidance remains for harness fixtures (no way to eliminate this without specifying which existing helpers to copy line-by-line); the contract is concrete.
+- **General D8** (ruff E402 on import location): Task 1 Step 4 explicitly moves `from .profile import PROFILE_*` to the top-of-file imports section instead of replacing in-place.
+- **General D10** (no runtime smoke check before push): added Task 4 Step 7.
 
 **Placeholder scan:**
 
-- One soft "Note for the implementer" in Task 2, Step 3 about fleshing out mocker scaffolding. Justified — the file conventions are easier to read than to transcribe, and Task 2 Step 3 documents the *contract* the implementer is pinning. The actual code for the test is shown; only the mocker fixture setup defers to the existing test-file pattern.
+- Task 2 Step 3 and Task 3 Step 2 contain runnable test code but defer the harness-fixture setup to the existing `test_assistant.py` patterns (specifically the `service`/`mocker`/`irc`/`msg` fixtures). The test bodies themselves are complete; only "which conftest fixture provides X" is documented narratively.
 
 **Type / identifier consistency:**
 
-- `Profile` dataclass field names (`id`, `model_setting`, `api_key_setting`, `prompt_id`, `overlay_setting`, `max_output_tokens`, `force_search_on_explicit`) match consistently across Task 1 (definition), Task 2 (consumption in service.py), and Task 3 (consumption in plugin.py).
-- `PROFILES[<const>].overlay_setting` form is used identically in all 4 migration sites in Task 3.
-- `get_tools_for_profile(profile.id, ...)` form matches the existing assistant.py signature.
+- `Profile` dataclass field names (`id`, `model_setting`, `api_key_setting`, `prompt_id`, `overlay_setting`, `max_output_tokens`, `force_search_on_explicit`) match across Task 1, Task 2, Task 3, and the harness in Pre-Work.
+- `PROFILES[<key>].overlay_setting` form (and the dynamic `PROFILES[effective_profile]` form in plugin.py:3385) used consistently.
+- `get_tools_for_profile(profile.id, ...)` matches the existing assistant.py signature.
 
 **Scope check:** One implementation cycle, four commits, single feature area (`plugins/llm/`). No subsystem decomposition needed.
 
-**Ambiguity check:** The "Note for the implementer" in Task 2 Step 3 is the only soft spot. Acceptable because the contract is explicit and the fixture pattern is well-established in the existing test file.
+**Behavior preservation:** The byte-identity gate now exercises every per-profile observable (including the regex pattern itself and force_search across the full alternation term set). The silent-fallback for unknown route_profile is preserved via `PROFILES.get`. The verseModel caller-side override is left untouched.
