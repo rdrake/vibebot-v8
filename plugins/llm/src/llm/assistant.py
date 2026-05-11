@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from .profile import (
+    PROFILE_CHAT,
+    PROFILE_CODE,
+    PROFILE_DRAW,
+    PROFILE_REMIND_ACTION,
+    PROFILE_VERSE,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -20,15 +28,6 @@ if TYPE_CHECKING:
     from .persistence import LLMDatabase, UsageSummary
 
 _log = logging.getLogger("supybot.plugins.LLM.assistant")
-
-
-# Route profile identifiers — keep in sync with the keys of
-# ``profile_frameworks`` in service.py and the ``visible_in`` sets below.
-PROFILE_CHAT = "chat"
-PROFILE_CODE = "code"
-PROFILE_DRAW = "draw"
-PROFILE_VERSE = "verse"
-PROFILE_REMIND_ACTION = "remind_action"
 
 
 # Tool definitions in OpenAI function-calling format.
