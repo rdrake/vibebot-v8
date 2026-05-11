@@ -31,14 +31,14 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from .assistant import (
+from .context import Role
+from .persistence import ScheduledLlmTaskRow
+from .profile import (
     PROFILE_CHAT,
     PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
+    PROFILES,
 )
-from .context import Role
-from .persistence import ScheduledLlmTaskRow
-from .profile import PROFILES
 from .prompts import MEMORY_CLEANUP_PROMPT, MEMORY_EXTRACTION_PROMPT, PROMPTS
 from .tracing import TraceFilter, extract_server_headers, request_id
 

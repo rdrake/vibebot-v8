@@ -32,17 +32,17 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
-from .assistant import (
+from .context import ContextConfig, ConversationContext, Role
+from .executor import LLMExecutor
+from .persistence import LLMDatabase, ReminderRow
+from .profile import (
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
+    PROFILES,
 )
-from .context import ContextConfig, ConversationContext, Role
-from .executor import LLMExecutor
-from .persistence import LLMDatabase, ReminderRow
-from .profile import PROFILES
 from .service import (
     AssistantRequestContext,
     AssistantResult,

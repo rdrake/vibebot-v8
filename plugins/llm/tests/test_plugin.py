@@ -2824,8 +2824,8 @@ class TestInvalidCommand:
         for the explicit @ask command, so unprefixed messages in a verse
         channel produced narration without canon. Fixed by routing every
         addressed-text entry point through _dispatch_with_verse_routing."""
-        from llm.assistant import PROFILE_VERSE
         from llm.plugin import VerseRoute
+        from llm.profile import PROFILE_VERSE
 
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
@@ -7136,7 +7136,7 @@ class TestAskWithVerseRoute:
         in assistant.py, so it bypasses the token cap applied to PROFILE_CHAT.
         We verify by checking the profile on the request_context passed to assistant_request.
         """
-        from llm.assistant import PROFILE_VERSE
+        from llm.profile import PROFILE_VERSE
 
         plugin, irc, msg, _store = verse_ask_env
 
@@ -7265,7 +7265,7 @@ class TestAskOnVerseChannelWithoutOptIn:
         framework must remain the chat profile for non-opted-in speakers —
         forcing PROFILE_VERSE on them would lose the chat framework's
         length cap and tool-behavior rules."""
-        from llm.assistant import PROFILE_CHAT
+        from llm.profile import PROFILE_CHAT
 
         plugin, irc, msg = env
         plugin.ask(irc, msg, ["hello"])
