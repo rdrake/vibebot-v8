@@ -348,9 +348,12 @@ type Client interface {
 	// not support, or scope already has live coverage cheaper than refresh).
 	EnsureCache(ctx context.Context, scope Scope, prefix CachedPrefix) (CacheHandle, error)
 
-	// Complete sends the uncached tail. When cache.IsCached(), the prefix
-	// bytes are NOT sent inline; when zero, the prefix is sent inline.
-	Complete(ctx context.Context, messages []Message, tools []ToolSchema, model string, cache CacheHandle) (Completion, error)
+	// Complete runs one LLM completion. The prefix is passed every call so
+	// that providers without explicit cache (e.g. xAI) can inline
+	// Canonical(prefix) ahead of messages; providers with cache use the
+	// CacheHandle and ignore the prefix bytes. B is the only layer that
+	// knows the provider's caching mode.
+	Complete(ctx context.Context, prefix CachedPrefix, messages []Message, tools []ToolSchema, model string, cache CacheHandle) (Completion, error)
 }
 ```
 
@@ -622,7 +625,7 @@ func TestScriptedCompletions(t *testing.T) {
 		{Text: "done"},
 	}
 	for i, want := range c.Script {
-		got, err := c.Complete(context.Background(), nil, nil, "m", llmcore.CacheHandle{})
+		got, err := c.Complete(context.Background(), llmcore.CachedPrefix{}, nil, nil, "m", llmcore.CacheHandle{})
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
@@ -683,6 +686,7 @@ type EnsureCacheCall struct {
 }
 
 type CompleteCall struct {
+	Prefix   llmcore.CachedPrefix
 	Messages []llmcore.Message
 	Tools    []llmcore.ToolSchema
 	Model    string
@@ -701,10 +705,10 @@ func (c *Client) EnsureCache(ctx context.Context, scope llmcore.Scope, prefix ll
 	return c.CacheHandleOut, nil
 }
 
-func (c *Client) Complete(ctx context.Context, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
+func (c *Client) Complete(ctx context.Context, prefix llmcore.CachedPrefix, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.CompleteCalls = append(c.CompleteCalls, CompleteCall{messages, tools, model, cache})
+	c.CompleteCalls = append(c.CompleteCalls, CompleteCall{prefix, messages, tools, model, cache})
 	if c.CompleteErr != nil {
 		return llmcore.Completion{}, c.CompleteErr
 	}
@@ -2637,6 +2641,7 @@ type runLoopArgs struct {
 	LLM          llmcore.Client
 	Tools        tooling.Dispatcher
 	MaxIters     int
+	Prefix       llmcore.CachedPrefix
 	Messages     []llmcore.Message
 	ToolsList    []llmcore.ToolSchema
 	Model        string
@@ -2647,7 +2652,7 @@ type runLoopArgs struct {
 func runLoop(ctx context.Context, args runLoopArgs) (string, error) {
 	messages := append([]llmcore.Message(nil), args.Messages...)
 	for i := 1; i <= args.MaxIters; i++ {
-		completion, err := args.LLM.Complete(ctx, messages, args.ToolsList, args.Model, args.Cache)
+		completion, err := args.LLM.Complete(ctx, args.Prefix, messages, args.ToolsList, args.Model, args.Cache)
 		if err != nil {
 			return "", err
 		}
@@ -2703,6 +2708,8 @@ git commit -m "feat(go): add exec.runLoop tool-call loop"
 ---
 
 ### Task 23: `exec/executor.go` — Executor wiring (split into 4 implementation steps)
+
+> **Note:** Implementation steps 3, 4, and 5 compose into the final file. Steps 3 and 4 leave `executor.go` in an incomplete state (Step 3's `runInner` is a stub; Step 4 references `runWithCache` which Step 5 defines). Do not run executor tests until after Step 5; the failing-tests assertion in Step 2 is the only test step until then. Steps 3–5 together replace the file's content; final compile/test happens in Step 6.
 
 **Files:**
 - Create: `go/exec/executor.go`
@@ -3035,7 +3042,7 @@ func (e *Executor) runInner(ctx context.Context, d router.RouteDecision) error {
 		return err
 	}
 
-	return e.runWithCache(ctx, d, tools, cache)
+	return e.runWithCache(ctx, d, prefix, tools, cache)
 }
 
 func (e *Executor) recordFailure(ctx context.Context, d router.RouteDecision, stage string, cause error) {
@@ -3052,20 +3059,12 @@ func (e *Executor) recordFailure(ctx context.Context, d router.RouteDecision, st
 }
 ```
 
-Add a helper `timeNow` at the bottom of the file (separate so tests can override later):
-
-```go
-import "time"
-
-var timeNow = time.Now
-```
-
-(If `time` is already imported in this file, just use it directly without the variable.)
+Add `"time"` to the imports if not already present, and add `var timeNow = time.Now` at the bottom of the file (separate so tests can override later). `recordFailure` uses `timeNow()`.
 
 - [ ] **Step 5: Add `runWithCache` (hydrate tail + run loop + deliver + persist)**
 
 ```go
-func (e *Executor) runWithCache(ctx context.Context, d router.RouteDecision, tools []llmcore.ToolSchema, cache llmcore.CacheHandle) error {
+func (e *Executor) runWithCache(ctx context.Context, d router.RouteDecision, prefix llmcore.CachedPrefix, tools []llmcore.ToolSchema, cache llmcore.CacheHandle) error {
 	history, err := e.cfg.Store.History(ctx, d.Event.Network, d.Event.Channel, d.Prompt.HistoryLimit)
 	if err != nil {
 		e.recordFailure(ctx, d, "history", err)
@@ -3083,7 +3082,7 @@ func (e *Executor) runWithCache(ctx context.Context, d router.RouteDecision, too
 
 	text, err := runLoop(ctx, runLoopArgs{
 		LLM: wrapped, Tools: e.cfg.Tools, MaxIters: d.Delivery.MaxIters,
-		Messages: messages, ToolsList: tools, Model: d.Model, Cache: cache,
+		Prefix: prefix, Messages: messages, ToolsList: tools, Model: d.Model, Cache: cache,
 	})
 	if err != nil {
 		e.recordFailure(ctx, d, "loop", err)
@@ -3155,8 +3154,8 @@ type cacheCounter struct {
 	last *int
 }
 
-func (c *cacheCounter) Complete(ctx context.Context, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
-	out, err := c.Client.Complete(ctx, messages, tools, model, cache)
+func (c *cacheCounter) Complete(ctx context.Context, prefix llmcore.CachedPrefix, messages []llmcore.Message, tools []llmcore.ToolSchema, model string, cache llmcore.CacheHandle) (llmcore.Completion, error) {
+	out, err := c.Client.Complete(ctx, prefix, messages, tools, model, cache)
 	if err == nil {
 		*c.last = out.CachedTokens
 	}
