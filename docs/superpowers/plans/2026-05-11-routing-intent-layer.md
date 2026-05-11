@@ -280,7 +280,7 @@ type CachedPrefix struct {
 func Canonical(cp CachedPrefix) []byte {
 	const sep = "\n\n---\n\n"
 	var buf bytes.Buffer
-	buf.Grow(len(cp.FrameworkPrompt) + len(cp.Overlay) + len(cp.ToolSchemasJSON) + len(cp.ChannelContext) + 4*len(sep))
+	buf.Grow(len(cp.FrameworkPrompt) + len(cp.Overlay) + len(cp.ToolSchemasJSON) + len(cp.ChannelContext) + 3*len(sep))
 	buf.WriteString(cp.FrameworkPrompt)
 	buf.WriteString(sep)
 	buf.WriteString(cp.Overlay)
