@@ -428,12 +428,11 @@ def build_verse_system_prompt(
         other_bullets = "- (no other avatars present)"
 
     # The verse_record / verse_act behavior rules and the length-cap
-    # exception live in the chat framework's VERSE MODE block (see
-    # CHAT_SYSTEM_PROMPT in assistant.py) so they get the framework
-    # footer's "rules above still apply — personality changes voice, not
-    # structure" weight. The personality overlay only carries scene
-    # context; per-call tool argument shapes come from the tool schemas
-    # themselves.
+    # exception live in the verse framework (VERSE_SYSTEM_PROMPT in
+    # prompts.py) so they get the framework footer's "rules above still
+    # apply — personality changes voice, not structure" weight. The
+    # personality overlay only carries scene context; per-call tool
+    # argument shapes come from the tool schemas themselves.
 
     parts = [
         identity_line,

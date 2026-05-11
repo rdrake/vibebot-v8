@@ -31,18 +31,6 @@ PROFILE_VERSE = "verse"
 PROFILE_REMIND_ACTION = "remind_action"
 
 
-# Prompt constants moved to ``prompts.py``. Re-exported here so existing
-# imports (``from llm.assistant import CHAT_SYSTEM_PROMPT``) keep working
-# during the consolidation migration. Remove this block once every
-# consumer has been switched to import from ``llm.prompts`` directly.
-from .prompts import (  # noqa: F401,E402
-    CHAT_SYSTEM_PROMPT,
-    CODE_SYSTEM_PROMPT,
-    DRAW_SYSTEM_PROMPT,
-    REMIND_ACTION_SYSTEM_PROMPT,
-    VERSE_SYSTEM_PROMPT,
-)
-
 # Tool definitions in OpenAI function-calling format.
 # LiteLLM passes these through to any provider that supports tool calling.
 ASSISTANT_TOOLS: list[dict[str, Any]] = [

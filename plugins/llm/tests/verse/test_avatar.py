@@ -411,13 +411,13 @@ class TestSystemPrompt:
 
     def test_personality_overlay_carries_only_scene_context(self, store: VerseStore) -> None:
         """The verse-mode tool rules and length-cap exception live in
-        CHAT_SYSTEM_PROMPT's VERSE MODE block (see test_assistant.py),
+        the verse framework (VERSE_SYSTEM_PROMPT in prompts.py — see
+        test_prompts.py for the framework/overlay separation invariant),
         not in the personality overlay. The overlay carries identity,
         persona, scene, recent events, and other avatars — pure context.
-        This split keeps the cacheable framework prefix byte-identical
-        between chat and verse turns; verse-only rules are dormant in
-        chat (no verse tools advertised) and active in verse (tools
-        present)."""
+        This split keeps the cacheable framework prefix stable across
+        turns; verse-only rules ship with the verse framework, and the
+        chat framework deliberately omits them."""
         alice_id = _opt_in(store, nick="alice")
         prompt = build_verse_system_prompt(store, alice_id, "a traveller")
         # Scene context is present.
