@@ -111,3 +111,9 @@ Keep those boundaries intact:
 ## Legacy Claude Files
 
 This repository still contains `.claude/` settings for Claude Code users. Codex should treat `AGENTS.md` as the canonical project instruction file.
+
+## Go rewrite (v9)
+
+The Go rewrite lives in `go/`. Sub-project E (routing/intent layer) is the first slice — see `docs/superpowers/plans/2026-05-11-routing-intent-layer.md` for the implementation plan and `docs/superpowers/specs/2026-05-11-routing-intent-layer-design.md` for the design. All other sub-projects (A IRC, B LLM, C tools, D overlay, F persistence, G deploy) ship as separate specs/plans.
+
+Build/test: `cd go && make all`.
