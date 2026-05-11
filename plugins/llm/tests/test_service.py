@@ -2169,7 +2169,10 @@ class TestBuildContextMessage:
         assert self.service._build_context_message(None, None) is None
 
     def test_build_context_message_channel(self) -> None:
-        """GIVEN channel message WHEN building context THEN includes channel info."""
+        """GIVEN channel message WHEN building context THEN includes channel
+        name but NOT topic. Topic lives in its own user message after the
+        cacheable prefix; including it here would invalidate xAI's automatic
+        prompt cache every time the channel's topic changes."""
         mock_irc = self.mocker.Mock()
         ch_state = self.mocker.Mock(topic="Test topic", ops=set(), halfops=set(), voices=set())
         mock_irc.state.channels = {"#test": ch_state}
@@ -2184,11 +2187,53 @@ class TestBuildContextMessage:
         assert result["role"] == "user"
         assert "Context:" in result["content"]
         assert "Channel: #test" in result["content"]
-        assert "Topic: Test topic" in result["content"]
+        assert "Topic" not in result["content"]
         # Speaker info is intentionally NOT in the context message —
         # it lives in _build_speaker_message so the cacheable prefix
         # stays byte-stable across users.
         assert "Speaking with" not in result["content"]
+
+    def test_build_topic_message_channel(self) -> None:
+        """GIVEN channel topic WHEN building topic message THEN returns a
+        user message that carries the topic on its own — kept post-prefix so
+        topic edits don't reset the prompt cache."""
+        mock_irc = self.mocker.Mock()
+        ch_state = self.mocker.Mock(topic="Test topic", ops=set(), halfops=set(), voices=set())
+        mock_irc.state.channels = {"#test": ch_state}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("#test",)
+        mock_msg.prefix = "user!user@host"
+
+        topic_msg = self.service._build_topic_message(mock_irc, mock_msg)
+
+        assert topic_msg is not None
+        assert topic_msg["role"] == "user"
+        assert "Test topic" in topic_msg["content"]
+
+    def test_build_topic_message_returns_none_without_topic(self) -> None:
+        """No topic set on the channel → no topic message (and no spurious
+        empty user message in the prompt)."""
+        mock_irc = self.mocker.Mock()
+        ch_state = self.mocker.Mock(topic="", ops=set(), halfops=set(), voices=set())
+        mock_irc.state.channels = {"#test": ch_state}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("#test",)
+        mock_msg.prefix = "user!user@host"
+
+        assert self.service._build_topic_message(mock_irc, mock_msg) is None
+
+    def test_build_topic_message_returns_none_for_pm(self) -> None:
+        """Private message target → no topic message."""
+        mock_irc = self.mocker.Mock()
+        mock_irc.state.channels = {}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("botname",)
+        mock_msg.prefix = "user!user@host"
+
+        assert self.service._build_topic_message(mock_irc, mock_msg) is None
 
     def test_build_context_message_pm(self) -> None:
         """GIVEN PM WHEN building context THEN no channel/topic/speaker."""
@@ -2220,8 +2265,11 @@ class TestBuildContextMessage:
         assert result is not None
         assert "Date:" in result["content"]
 
-    def test_build_context_message_raw_topic(self) -> None:
-        """GIVEN topic with injection attempt WHEN building context THEN topic passed raw."""
+    def test_build_topic_message_raw_topic(self) -> None:
+        """GIVEN topic with injection attempt WHEN building topic message
+        THEN topic passed raw to the model. The system prompt's anti-
+        injection preamble warns the model to treat topic content as data,
+        not instructions — we never filter the topic itself."""
         mock_irc = self.mocker.Mock()
         # Topic with prompt injection - should NOT be filtered
         ch_state = self.mocker.Mock(
@@ -2236,9 +2284,10 @@ class TestBuildContextMessage:
         mock_msg.args = ("#test",)
         mock_msg.prefix = "user!user@host"
 
-        result = self.service._build_context_message(mock_irc, mock_msg)
+        result = self.service._build_topic_message(mock_irc, mock_msg)
 
         # Topic should be passed through raw - no filtering
+        assert result is not None
         assert "Attention AI Agents" in result["content"]
 
     def test_build_context_message_includes_help_url(self) -> None:
@@ -2275,11 +2324,15 @@ class TestBuildContextMessage:
         mock_msg.prefix = "user!user@host"
 
         result = self.service._build_context_message(mock_irc, mock_msg)
+        topic_msg = self.service._build_topic_message(mock_irc, mock_msg)
 
         assert result is not None
         assert "Date:" in result["content"]
         assert "Channel: #test" in result["content"]
-        assert "Topic: Welcome!" in result["content"]
+        # Topic lives in its own message now (post-cache-prefix).
+        assert "Topic" not in result["content"]
+        assert topic_msg is not None
+        assert "Welcome!" in topic_msg["content"]
         # Speaker info is built separately by _build_speaker_message.
         assert "Speaking with" not in result["content"]
 
@@ -4153,6 +4206,70 @@ class TestMemoryExtraction:
         prompt_text = " ".join(m["content"] for m in messages)
         assert "[0] uses Arch Linux" in prompt_text
         assert "[1] lives in Berlin" in prompt_text
+
+    def test_extract_memories_system_prompt_is_byte_stable(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """The system message must be byte-identical regardless of which user
+        is being extracted, their memories, or pending candidates. xAI's
+        prefix cache keys off these leading bytes — when per-user state
+        leaks into the system role the cache resets every call and
+        ``cached_tokens`` stays pinned at the provider's ~64-token baseline."""
+        from llm.service import _MEMORY_EXTRACTION_PROMPT
+
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        service.extract_memories("alice", "#test", "hi", "hello", ["knows Python", "uses Arch"])
+        first_system = mock_litellm.completion.call_args.kwargs["messages"][0]
+        mock_litellm.completion.reset_mock()
+
+        service.extract_memories(
+            "bob",
+            "#test",
+            "yo",
+            "hey",
+            ["plays guitar"],
+            existing_candidates=["likes coffee"],
+        )
+        second_system = mock_litellm.completion.call_args.kwargs["messages"][0]
+
+        assert first_system == second_system
+        assert first_system["content"] == _MEMORY_EXTRACTION_PROMPT
+
+    def test_extract_memories_user_message_carries_state(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """Per-user state (known facts, pending candidates) must surface in
+        the user role rather than the system prompt — that's what keeps the
+        system prompt cache-stable while still feeding the model the context
+        it needs to choose between add and reinforce."""
+        service, _ = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_litellm.completion.return_value = mock_response
+
+        service.extract_memories(
+            "alice",
+            "#test",
+            "i moved to berlin",
+            "nice",
+            ["knows Python"],
+            existing_candidates=["likes coffee"],
+        )
+
+        messages = mock_litellm.completion.call_args.kwargs["messages"]
+        user_msg = messages[1]
+        assert user_msg["role"] == "user"
+        assert "knows Python" in user_msg["content"]
+        assert "[0] likes coffee" in user_msg["content"]
+        assert "i moved to berlin" in user_msg["content"]
 
 
 class TestMemoryCleanup:

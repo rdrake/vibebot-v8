@@ -7163,6 +7163,119 @@ class TestAskWithVerseRoute:
         assert kwargs.get("model_override") is None
 
 
+class TestAskOnVerseChannelWithoutOptIn:
+    """Verse-enabled channel + speaker who hasn't opted in: the tool surface
+    must still carry verse schemas (cache stability across speakers) but each
+    invocation must route to a denying handler so non-opted-in users can't
+    drive the canon."""
+
+    @staticmethod
+    def _make_result() -> AssistantResult:
+        return AssistantResult(
+            content="reply",
+            grounding_used=False,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost=0.001,
+            model="gpt-4",
+        )
+
+    @pytest.fixture
+    def env(self, plugin_env, tmp_path, mocker: MockerFixture):
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        # Verse store exists for the channel but the speaker has no avatar —
+        # _verse_route_for will return None on that gate.
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            if key == "verseAutoEntityMaxNamesPerCall":
+                return 8
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@ask hello")
+        msg.prefix = "bob!user@host"
+        msg.nick = "bob"
+        msg.server_tags = {}
+
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_result()
+
+        return plugin, irc, msg
+
+    def test_extra_tools_include_all_verse_schemas(self, env) -> None:
+        """GIVEN verse-enabled channel + non-opted-in speaker WHEN @ask THEN
+        the five verse tool schemas are passed to assistant_request so the
+        prefix bytes match the opted-in cohort."""
+        plugin, irc, msg = env
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        extra_tools = kwargs.get("extra_tools") or []
+        names = {t["function"]["name"] for t in extra_tools}
+        assert {
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        }.issubset(names)
+
+    def test_extra_handlers_deny_verse_tools(self, env) -> None:
+        """GIVEN verse-enabled channel + non-opted-in speaker WHEN @ask THEN
+        every verse tool name in extra_handlers returns an ``{"error": ...}``
+        payload mentioning opt-in (so the model can self-correct)."""
+        import json
+
+        plugin, irc, msg = env
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        handlers = kwargs.get("extra_handlers") or {}
+        for name in (
+            "verse_act",
+            "verse_move",
+            "verse_look",
+            "verse_recall",
+            "verse_record",
+        ):
+            assert name in handlers, name
+            payload = json.loads(handlers[name]({}).content)
+            assert "error" in payload
+            assert "opt-in" in payload["error"].lower()
+
+    def test_profile_stays_chat_for_non_opted_in_speaker(self, env) -> None:
+        """The advertised tool surface widens, but the system prompt /
+        framework must remain the chat profile for non-opted-in speakers —
+        forcing PROFILE_VERSE on them would lose the chat framework's
+        length cap and tool-behavior rules."""
+        from llm.assistant import PROFILE_CHAT
+
+        plugin, irc, msg = env
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        request_context = kwargs.get("request_context")
+        assert request_context is not None
+        assert request_context.profile == PROFILE_CHAT
+
+
 class TestCompactionTimerWiring:
     """E3: plugin wires the daily compaction timer + walks verse-enabled channels."""
 

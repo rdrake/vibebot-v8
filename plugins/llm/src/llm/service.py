@@ -732,14 +732,16 @@ class LLMService:
         if help_url:
             lines.append(f"Bot help: {help_url}")
 
-        # Channel and topic
+        # Channel name lives in the prefix (it's stable per request path).
+        # NB: the channel topic intentionally moved to ``_build_topic_message``
+        # — when topic edits flow into the prefix bytes, xAI's automatic prompt
+        # cache resets for every turn after the change, and active channels can
+        # see multiple topic edits a day. Keeping topic post-prefix lets the
+        # day-granular date + deploy-stable build + channel name carry the
+        # cache for ~24h on a stable build.
         channel = msg.args[0] if msg.args else None
         if channel and ircutils.isChannel(channel):
             lines.append(f"Channel: {channel}")
-            topic = self._get_channel_topic(irc, channel)
-            if topic:
-                topic_trimmed = topic[:300] + "..." if len(topic) > 300 else topic
-                lines.append(f"Topic: {topic_trimmed}")
 
         # NB: Caller nick and access level intentionally moved to
         # _build_speaker_message so the cacheable prefix
@@ -748,6 +750,30 @@ class LLMService:
         # in messages[:3] bust xAI's automatic prompt cache for that
         # request and everything after it.
         return {"role": Role.USER, "content": "Context:\n" + "\n".join(lines)}
+
+    def _build_topic_message(
+        self,
+        irc: Irc | None,
+        msg: IrcMsg | None,
+    ) -> dict[str, str] | None:
+        """Return the channel topic as a standalone user message, or None.
+
+        Lives *outside* the cacheable prefix (system + context + ack) so
+        topic edits don't reset xAI's automatic prompt cache. The anti-
+        injection preamble in the system prompt still warns the model to
+        treat topic content as data, not instructions — that warning is
+        unaffected by where the topic sits in the message stream.
+        """
+        if not irc or not msg:
+            return None
+        channel = msg.args[0] if msg.args else None
+        if not channel or not ircutils.isChannel(channel):
+            return None
+        topic = self._get_channel_topic(irc, channel)
+        if not topic:
+            return None
+        topic_trimmed = topic[:300] + "..." if len(topic) > 300 else topic
+        return {"role": Role.USER, "content": f"Channel topic: {topic_trimmed}"}
 
     def _build_speaker_message(
         self,
@@ -4080,6 +4106,16 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             messages.append(context_msg)
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
+        # Topic lands *after* the cacheable prefix (system + context + ack).
+        # Channel topics change frequently on active channels and would
+        # otherwise invalidate xAI's automatic prompt cache for every turn
+        # after a topic edit. Keeping it post-prefix preserves the day-
+        # granular cache window.
+        topic_msg = self._build_topic_message(irc, msg)
+        if topic_msg:
+            messages.append(topic_msg)
+            messages.append({"role": Role.ASSISTANT, "content": "Got it."})
+
         # Add shared channel context (allows following group conversations)
         if channel_history:
             channel_summary = self._format_channel_history(channel_history)
@@ -4253,29 +4289,31 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         Returns:
             ExtractionResult with new candidate facts and reinforcement indices.
         """
-        existing_section = ""
-        if existing_memories:
-            existing_section = "\n\nAlready known facts (do not re-add):\n" + "\n".join(
-                f"- {m}" for m in existing_memories
-            )
-
-        candidates_section = ""
+        # Per-user state (known facts, pending candidates) lives in the user
+        # message so the system prompt stays byte-identical across every call.
+        # The xAI prefix cache keys off the leading bytes; previously the
+        # appended existing/candidates sections varied per call and kept
+        # ``cached_tokens`` pinned at the ~64-token provider baseline. With
+        # the constant system prompt, follow-up extractions can actually hit
+        # the cache.
         candidate_count = 0
+        user_sections: list[str] = []
+        if existing_memories:
+            user_sections.append(
+                "Already known facts (do not re-add):\n"
+                + "\n".join(f"- {m}" for m in existing_memories)
+            )
         if existing_candidates:
             candidate_count = len(existing_candidates)
-            candidates_section = "\n\nPending candidate facts (index → fact):\n" + "\n".join(
-                f"[{i}] {c}" for i, c in enumerate(existing_candidates)
+            user_sections.append(
+                "Pending candidate facts (index → fact):\n"
+                + "\n".join(f"[{i}] {c}" for i, c in enumerate(existing_candidates))
             )
+        user_sections.append(f"User ({nick}): {user_message}\nAssistant: {assistant_response}")
 
         messages = [
-            {
-                "role": "system",
-                "content": _MEMORY_EXTRACTION_PROMPT + existing_section + candidates_section,
-            },
-            {
-                "role": "user",
-                "content": f"User ({nick}): {user_message}\nAssistant: {assistant_response}",
-            },
+            {"role": "system", "content": _MEMORY_EXTRACTION_PROMPT},
+            {"role": "user", "content": "\n\n".join(user_sections)},
         ]
 
         try:

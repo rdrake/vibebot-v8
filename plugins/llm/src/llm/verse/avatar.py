@@ -620,3 +620,36 @@ def make_verse_extra_handlers(
         return _call
 
     return {name: _handler(name) for name in _verse_names}
+
+
+def make_verse_denial_handlers(
+    verse_tool_specs: list[dict],
+) -> dict[str, Callable[[dict[str, Any]], _VerseToolResult]]:
+    """Return handlers that reject every verse tool call.
+
+    Used when verse tool *schemas* are advertised to the model on a
+    verse-enabled channel for cache stability (so the channel's tool
+    bytes don't vary with per-user opt-in state), but the caller hasn't
+    actually joined the verse and any invocation must be rejected.
+
+    Each handler returns ``{"error": ...}`` with the same channel-level
+    onboarding hint so the model can self-correct and tell the user how
+    to opt in.
+    """
+    message = (
+        "You haven't joined the forest-verse on this channel. Tell the "
+        "speaker to use @verse opt-in <persona> to participate before "
+        "calling this tool again."
+    )
+    payload = json.dumps({"error": message})
+
+    def _denied(_args: dict[str, Any]) -> _VerseToolResult:
+        return _VerseToolResult(content=payload)
+
+    names: list[str] = []
+    for spec in verse_tool_specs:
+        try:
+            names.append(spec["function"]["name"])
+        except (KeyError, TypeError):
+            continue
+    return dict.fromkeys(names, _denied)

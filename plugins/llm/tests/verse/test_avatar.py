@@ -16,6 +16,7 @@ from llm.verse.avatar import (
     build_verse_system_prompt,
     dispatch_verse_tool_call,
     is_ooc,
+    make_verse_denial_handlers,
     make_verse_extra_handlers,
     make_verse_tool_specs,
     verse_act,
@@ -658,6 +659,42 @@ class TestVerseToolDispatch:
         payload = json.loads(result.content)
         assert payload["status"] == "ok"
         assert payload["tool"] == "verse_act"
+
+    def test_make_verse_denial_handlers_rejects_each_advertised_tool(self) -> None:
+        """GIVEN verse tool schemas WHEN denial handlers are built THEN every
+        tool name maps to a callable that returns ``{"error": ...}`` with
+        opt-in onboarding text.
+
+        Used on verse-enabled channels for speakers who haven't joined the
+        verse — advertising the schemas keeps the channel's tool surface
+        cache-stable, and these handlers turn any actual invocation into a
+        rejection the model can self-correct on."""
+        import json
+
+        specs = make_verse_tool_specs()
+        handlers = make_verse_denial_handlers(specs)
+
+        spec_names = {spec["function"]["name"] for spec in specs}
+        assert set(handlers.keys()) == spec_names
+
+        for name, handler in handlers.items():
+            result = handler({"unused": "args"})
+            assert hasattr(result, "content"), name
+            payload = json.loads(result.content)
+            assert "error" in payload, name
+            assert "opt-in" in payload["error"].lower(), name
+
+    def test_make_verse_denial_handlers_skips_malformed_specs(self) -> None:
+        """Malformed schema entries are skipped rather than blowing up — the
+        dispatcher passes whatever extra_tools_override carries and we don't
+        want a stray entry to crash the request path."""
+        bad_specs: list[dict] = [
+            {"type": "function"},  # missing "function" body
+            {"function": {}},  # missing "name"
+            {"function": {"name": "verse_act"}},  # only this one is valid
+        ]
+        handlers = make_verse_denial_handlers(bad_specs)
+        assert set(handlers.keys()) == {"verse_act"}
 
 
 # ---------------------------------------------------------------------------

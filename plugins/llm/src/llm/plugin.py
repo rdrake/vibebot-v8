@@ -57,6 +57,7 @@ from .verse.aging import AgingOutcome
 from .verse.avatar import (
     build_verse_system_prompt,
     is_ooc,
+    make_verse_denial_handlers,
     make_verse_extra_handlers,
     make_verse_tool_specs,
 )
@@ -3274,6 +3275,27 @@ class LLM(callbacks.Plugin):
                 preflight.channel, preflight.nick, preflight.account, text
             )
             if route is None:
+                # Verse-enabled channel + non-opted-in speaker: advertise the
+                # verse tool *schemas* anyway so the channel's tool surface is
+                # byte-identical across all speakers. Invocations land on
+                # denial handlers (see ``_ask_impl``). Without this branch the
+                # tools list flips between roughly 15 and 23 entries depending
+                # on opt-in state, which fragments xAI's automatic prompt
+                # cache per-user instead of per-channel.
+                if self.registryValue("verseEnabled", preflight.channel):
+                    max_actors = self.registryValue(
+                        "verseAutoEntityMaxNamesPerCall", preflight.channel
+                    )
+                    verse_specs = make_verse_tool_specs(max_actors=max_actors)
+                    self._ask_impl(
+                        irc,
+                        msg,
+                        text,
+                        preflight,
+                        entry_route=entry_route,
+                        extra_tools_override=verse_specs,
+                    )
+                    return
                 self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
                 return
             # Per-channel verse model override. Empty string falls back to
@@ -3398,11 +3420,25 @@ class LLM(callbacks.Plugin):
                 # C7d: merge verse handlers into extra_handlers so the
                 # assistant_request loop can dispatch verse tool calls
                 # in-flight rather than passing them to the generic executor.
+                #
+                # When verse tool *schemas* are advertised on a verse-enabled
+                # channel but the caller hasn't opted in (verse_route is None
+                # while extra_tools_override carries verse specs), wire denial
+                # handlers so the model gets a clean rejection. Advertising
+                # the same tool surface to every speaker keeps the channel's
+                # cacheable prefix byte-stable across opted-in/non-opted-in
+                # users — the cohort split that was costing prompt-cache hits.
                 if verse_route is not None:
                     verse_handlers = self._build_verse_handlers_for_route(channel, verse_route)
                     combined_handlers: dict | None = {
                         **(bridge_handlers or {}),
                         **verse_handlers,
+                    }
+                elif verse_list:
+                    denial_handlers = make_verse_denial_handlers(verse_list)
+                    combined_handlers = {
+                        **(bridge_handlers or {}),
+                        **denial_handlers,
                     }
                 else:
                     combined_handlers = bridge_handlers
