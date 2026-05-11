@@ -3552,7 +3552,7 @@ class LLM(callbacks.Plugin):
                 # prompt that tells the planner to call generate_code) — not
                 # the registry codeSystemPrompt, which is the inner-call
                 # prompt used by _code_for_assistant.
-                from .assistant import CODE_SYSTEM_PROMPT
+                from .prompts import CODE_SYSTEM_PROMPT
 
                 effective_prompt = (
                     f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
