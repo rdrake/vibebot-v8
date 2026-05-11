@@ -3096,3 +3096,252 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
 
         # The override beat the Profile.model_setting lookup.
         assert captured_model == ["explicit-override-model"]
+
+
+class TestOverlayReadsViaProfiles:
+    """Plugin caller sites read the overlay key via PROFILES, not hardcoded.
+
+    Swap a PROFILES entry with a sentinel ``overlay_setting`` and assert the
+    sentinel key flows to ``plugin.registryValue`` at the call sites that
+    drive chat-loop dispatch:
+
+    - ``plugin.py`` structured-reminder fire (PROFILE_REMIND_ACTION)
+    - ``plugin.py`` ``_ask_impl`` (PROFILE_CHAT or PROFILE_VERSE via
+      ``effective_profile``)
+    - ``service.py`` scheduled-task fire (PROFILE_REMIND_ACTION)
+
+    These tests pin the Task 3 migration contract: a future regression
+    that hardcodes ``"assistantSystemPrompt"`` at any of those sites
+    would break here even though the runtime string is the same today.
+    """
+
+    def test_remind_action_fire_reads_overlay_via_profile(
+        self, mock_irc: MagicMock, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """plugin.py structured-reminder fire reads
+        ``PROFILES[PROFILE_REMIND_ACTION].overlay_setting``, not the
+        hardcoded ``"assistantSystemPrompt"``.
+        """
+        from llm.profile import PROFILE_REMIND_ACTION, PROFILES, Profile
+        from llm.service import AssistantResult
+
+        sentinel = Profile(
+            id=PROFILE_REMIND_ACTION,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="remind_action",
+            overlay_setting="SENTINEL_REMIND_OVERLAY",
+            max_output_tokens=400,
+            force_search_on_explicit=True,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_REMIND_ACTION, sentinel)
+
+        # Capture registryValue keys while still serving defaults so the
+        # rest of the fire path (rate limits, history, etc.) works.
+        registry_calls: list[str] = []
+
+        def spy(key, *args, **kwargs):
+            registry_calls.append(key)
+            # Return a sentinel-overlay-aware value: when the migrated
+            # key is queried, return a marker so we can also verify the
+            # value reached effective_prompt assembly downstream.
+            if key == "SENTINEL_REMIND_OVERLAY":
+                return "SENTINEL_OVERLAY_VALUE"
+            return make_registry_side_effect()(key, *args, **kwargs)
+
+        mocker.patch.object(LLM, "registryValue", side_effect=spy)
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        mocker.patch.object(plugin, "_gather_history", return_value=([], []))
+        mocker.patch.object(plugin, "_get_user_memories", return_value=[])
+        plugin.db.get_instruction.return_value = ""
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
+
+        event_name = "llm_remind_action_sentinel"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="m",
+            action_prompt="do x",
+            account=None,
+        )
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "m",
+            event_name,
+            action_prompt="do x",
+            account=None,
+        )
+        deliver()
+
+        # Sentinel key was looked up; hardcoded key was NOT.
+        assert "SENTINEL_REMIND_OVERLAY" in registry_calls
+        assert "assistantSystemPrompt" not in registry_calls
+        # And the sentinel-keyed value actually reached the system prompt.
+        plugin.llm_service.assistant_request.assert_called_once()
+        sys_prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert sys_prompt == "SENTINEL_OVERLAY_VALUE"
+
+    def test_ask_path_overlay_uses_effective_profile(
+        self, plugin_env, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """plugin.py _ask_impl reads ``PROFILES[effective_profile].overlay_setting``.
+
+        When ``profile_override=PROFILE_VERSE`` is passed, the verse
+        profile's sentinel overlay key flows to ``registryValue`` — proving
+        the read is dispatched on ``effective_profile``, not hardcoded.
+        """
+        from llm.profile import PROFILE_VERSE, PROFILES, Profile
+        from llm.service import AssistantResult
+
+        plugin, mock_irc, mock_msg = plugin_env
+
+        sentinel_verse = Profile(
+            id=PROFILE_VERSE,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="verse",
+            overlay_setting="SENTINEL_VERSE_OVERLAY",
+            max_output_tokens=None,
+            force_search_on_explicit=False,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_VERSE, sentinel_verse)
+
+        registry_calls: list[str] = []
+        default_lookup = make_registry_side_effect()
+
+        def spy(key, *args, **kwargs):
+            registry_calls.append(key)
+            if key == "SENTINEL_VERSE_OVERLAY":
+                return "SENTINEL_VERSE_VALUE"
+            return default_lookup(key, *args, **kwargs)
+
+        plugin.registryValue.side_effect = spy
+
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+
+        # Build a PreflightResult inline. Match the shape used by other
+        # tests that drive _ask_impl through plugin.ask().
+        from llm.plugin import PreflightResult
+
+        pf = PreflightResult(
+            blocked=False,
+            nick="testnick",
+            channel="#test",
+            account=None,
+        )
+
+        plugin._ask_impl(
+            mock_irc,
+            mock_msg,
+            "hello",
+            pf,
+            entry_route="verse",
+            system_prompt_override="SCENE_CONTEXT",
+            profile_override=PROFILE_VERSE,
+        )
+
+        assert "SENTINEL_VERSE_OVERLAY" in registry_calls
+        # The hardcoded key must not have been read at the migrated site.
+        # (It may still appear elsewhere — e.g. nothing else in _ask_impl
+        # reads it — so a plain absence assertion is the right shape.)
+        assert "assistantSystemPrompt" not in registry_calls
+
+    def test_scheduled_task_fire_reads_overlay_via_profile(
+        self, make_service, mocker: MockerFixture, monkeypatch
+    ) -> None:
+        """service.py scheduled-task fire reads
+        ``PROFILES[PROFILE_REMIND_ACTION].overlay_setting``.
+        """
+        from llm.persistence import ScheduledLlmTaskRow
+        from llm.profile import PROFILE_REMIND_ACTION, PROFILES, Profile
+
+        sentinel = Profile(
+            id=PROFILE_REMIND_ACTION,
+            model_setting="assistantModel",
+            api_key_setting="assistantApiKey",
+            prompt_id="remind_action",
+            overlay_setting="SENTINEL_SCHED_OVERLAY",
+            max_output_tokens=400,
+            force_search_on_explicit=True,
+        )
+        monkeypatch.setitem(PROFILES, PROFILE_REMIND_ACTION, sentinel)
+
+        service, plugin = make_service()
+
+        registry_calls: list[str] = []
+        default_lookup = make_registry_side_effect()
+
+        def spy(key, *args, **kwargs):
+            registry_calls.append(key)
+            if key == "SENTINEL_SCHED_OVERLAY":
+                return "SENTINEL_SCHED_VALUE"
+            if key == "bridgeScheduledTaskLimit":
+                return 5
+            return default_lookup(key, *args, **kwargs)
+
+        plugin.registryValue.side_effect = spy
+
+        # Stub plugin internals the dispatch path touches.
+        plugin._check_rate_limit.return_value = False
+        plugin._gather_history.return_value = ([], [])
+        plugin._get_user_memories.return_value = []
+        plugin.db.get_instruction.return_value = ""
+        plugin._pending_task_fns.return_value = {}
+        mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(
+            service,
+            "assistant_request",
+            return_value=mocker.MagicMock(
+                content="ok",
+                model="m",
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost=0.0,
+                error=None,
+            ),
+        )
+
+        # Drive the scheduled-task dispatch directly with a minimal row.
+        irc = mocker.MagicMock()
+        irc.network = "afternet"
+        msg = mocker.MagicMock()
+        msg.tagged.return_value = None
+        fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
+        fake_world.getIrc.return_value = irc
+        fake_world.ircs = [irc]
+
+        row = ScheduledLlmTaskRow(
+            id=1,
+            event_name="scheduled_llm_task_1",
+            creator_nick="rdrake",
+            account="rdrake_a",
+            channel="#t",
+            network="afternet",
+            wire_msg=":rdrake!u@h PRIVMSG #t :@ask do x",
+            prompt="do x",
+            fire_at=0.0,
+            created_at=0.0,
+            recurrence_seconds=None,
+            recurrence_rrule=None,
+            chain_position=1,
+            watch_mode=False,
+            reply_target=None,
+        )
+
+        service._dispatch_scheduled_task(irc, msg, row)
+
+        assert "SENTINEL_SCHED_OVERLAY" in registry_calls
+        assert "assistantSystemPrompt" not in registry_calls

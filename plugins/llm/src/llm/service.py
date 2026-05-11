@@ -33,6 +33,7 @@ from supybot.utils.file import AtomicFile
 
 from .assistant import (
     PROFILE_CHAT,
+    PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
 )
 from .context import Role
@@ -4736,7 +4737,9 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         history, channel_history = plugin._gather_history(row.creator_nick, row.channel)
         memories = plugin._get_user_memories(row.creator_nick)
         user_instruction = plugin.db.get_instruction(row.creator_nick)
-        ask_prompt = plugin.registryValue("assistantSystemPrompt", row.channel)
+        ask_prompt = plugin.registryValue(
+            PROFILES[PROFILE_REMIND_ACTION].overlay_setting, row.channel
+        )
         effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
         # Local import avoids a service.py -> plugin.py import cycle at module load.
         from .plugin import Identity

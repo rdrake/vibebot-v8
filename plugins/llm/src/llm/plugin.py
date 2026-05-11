@@ -42,6 +42,7 @@ from .assistant import (
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor
 from .persistence import LLMDatabase, ReminderRow
+from .profile import PROFILES
 from .service import (
     AssistantRequestContext,
     AssistantResult,
@@ -1439,7 +1440,9 @@ class LLM(callbacks.Plugin):
             history, channel_history = self._gather_history(nick, channel)
             memories = self._get_user_memories(nick)
             user_instruction = self.db.get_instruction(nick)
-            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+            ask_prompt = self.registryValue(
+                PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel
+            )
             effective_prompt = (
                 f"User instruction: {user_instruction}\n\n{ask_prompt}"
                 if user_instruction
@@ -3382,7 +3385,7 @@ class LLM(callbacks.Plugin):
             # personality overlay, not the framework. So we PREPEND the
             # channel overlay (and @instruct) to the verse scene context;
             # the framework's verse-mode rules still apply on top.
-            ask_prompt = self.registryValue("assistantSystemPrompt", channel)
+            ask_prompt = self.registryValue(PROFILES[effective_profile].overlay_setting, channel)
             if system_prompt_override is not None:
                 parts: list[str] = []
                 if user_instruction:
