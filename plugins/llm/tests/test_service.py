@@ -4052,10 +4052,10 @@ class TestMemoryExtraction:
         self, make_service, mocker: MockerFixture
     ) -> None:
         """GIVEN extraction prompt WHEN checked THEN contains strictness markers."""
-        from llm.service import _MEMORY_EXTRACTION_PROMPT
+        from llm.prompts import MEMORY_EXTRACTION_PROMPT
 
-        assert "at most 2" in _MEMORY_EXTRACTION_PROMPT.lower()
-        assert "DO NOT SAVE" in _MEMORY_EXTRACTION_PROMPT
+        assert "at most 2" in MEMORY_EXTRACTION_PROMPT.lower()
+        assert "DO NOT SAVE" in MEMORY_EXTRACTION_PROMPT
 
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
@@ -4218,7 +4218,7 @@ class TestMemoryExtraction:
         prefix cache keys off these leading bytes — when per-user state
         leaks into the system role the cache resets every call and
         ``cached_tokens`` stays pinned at the provider's ~64-token baseline."""
-        from llm.service import _MEMORY_EXTRACTION_PROMPT
+        from llm.prompts import MEMORY_EXTRACTION_PROMPT
 
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
@@ -4242,7 +4242,7 @@ class TestMemoryExtraction:
         second_system = mock_litellm.completion.call_args.kwargs["messages"][0]
 
         assert first_system == second_system
-        assert first_system["content"] == _MEMORY_EXTRACTION_PROMPT
+        assert first_system["content"] == MEMORY_EXTRACTION_PROMPT
 
     def test_extract_memories_user_message_carries_state(
         self, make_service, mocker: MockerFixture
@@ -4528,10 +4528,10 @@ class TestMemoryCleanup:
 
     def test_cleanup_prompt_uses_new_format(self) -> None:
         """GIVEN cleanup prompt WHEN checked THEN uses new merge format without keep."""
-        from llm.service import _MEMORY_CLEANUP_PROMPT
+        from llm.prompts import MEMORY_CLEANUP_PROMPT
 
-        assert "keep" not in _MEMORY_CLEANUP_PROMPT.lower()
-        assert "Be aggressive" in _MEMORY_CLEANUP_PROMPT
+        assert "keep" not in MEMORY_CLEANUP_PROMPT.lower()
+        assert "Be aggressive" in MEMORY_CLEANUP_PROMPT
 
 
 class TestCompletionValidation:

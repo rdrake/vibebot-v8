@@ -8,17 +8,13 @@ import pytest
 from llm.assistant import (
     ASSISTANT_TOOL_SPECS,
     ASSISTANT_TOOLS,
-    CHAT_SYSTEM_PROMPT,
-    CODE_SYSTEM_PROMPT,
-    DRAW_SYSTEM_PROMPT,
-    REMIND_ACTION_SYSTEM_PROMPT,
-    VERSE_SYSTEM_PROMPT,
     AssistantToolExecutor,
     ToolCallbackResult,
     ToolResult,
     get_tools_for_profile,
 )
 from llm.plugin import LLM, Identity
+from llm.prompts import CHAT_SYSTEM_PROMPT
 from llm.service import LLMService
 
 from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
@@ -2343,84 +2339,6 @@ class TestToolResult:
         result = ToolResult(content="immutable")
         with pytest.raises(AttributeError):
             result.content = "changed"  # type: ignore[misc]
-
-
-class TestProfileSystemPrompts:
-    """GIVEN per-profile system prompts WHEN inspected THEN they have correct content."""
-
-    def test_chat_system_prompt_no_not_meta(self) -> None:
-        """GIVEN CHAT_SYSTEM_PROMPT WHEN checked THEN does not contain NOT_META."""
-        assert "NOT_META" not in CHAT_SYSTEM_PROMPT
-
-    def test_chat_system_prompt_has_bot_nick_placeholder(self) -> None:
-        """GIVEN CHAT_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick} placeholder."""
-        assert "{bot_nick}" in CHAT_SYSTEM_PROMPT
-
-    def test_code_system_prompt_mentions_generate_code(self) -> None:
-        """GIVEN CODE_SYSTEM_PROMPT WHEN checked THEN mentions generate_code tool."""
-        assert "generate_code" in CODE_SYSTEM_PROMPT
-
-    def test_draw_system_prompt_mentions_generate_image(self) -> None:
-        """GIVEN DRAW_SYSTEM_PROMPT WHEN checked THEN mentions generate_image tool."""
-        assert "generate_image" in DRAW_SYSTEM_PROMPT
-
-    def test_verse_prompt_is_dedicated_framework_not_shared(self) -> None:
-        """Verse mode has a dedicated framework distinct from CHAT_SYSTEM_PROMPT.
-
-        Earlier iterations of this prompt accreted ten-plus competing rules
-        (DEFAULT LONG, 300-word minimum, scene-invitation lectures, multi-turn
-        permission/forbidden, emoji-cluster failure mode, etc). Empirically that
-        bloat made the model output WORSE — single-step turns dropped to ~40
-        visible tokens. The minimal version trusts the channel personality
-        overlay to drive length/energy and keeps only structural essentials:
-        in-character framing, plain-text rules, the verse_record HARD RULE,
-        and the avatar-tool split."""
-        # Dedicated, not shared.
-        assert "VERSE MODE" not in CHAT_SYSTEM_PROMPT
-        assert "verse_record" not in CHAT_SYSTEM_PROMPT
-        # Verse framework is built around in-world roleplay.
-        assert "in-world roleplay" in VERSE_SYSTEM_PROMPT
-        assert "Stay in character" in VERSE_SYSTEM_PROMPT
-        # No chat-mode 3-line cap.
-        assert "Length cap: 3 lines" not in VERSE_SYSTEM_PROMPT
-        # HARD RULE for verse_record at framework level.
-        assert "HARD RULE" in VERSE_SYSTEM_PROMPT
-        assert "verse_record" in VERSE_SYSTEM_PROMPT
-        # Both directions covered.
-        assert "user describes" in VERSE_SYSTEM_PROMPT
-        assert "narrate" in VERSE_SYSTEM_PROMPT
-        # Adopt user offers as canon.
-        assert "Adopt user-offered details" in VERSE_SYSTEM_PROMPT
-        # bot_nick placeholder for service.py's str.replace formatting.
-        assert "{bot_nick}" in VERSE_SYSTEM_PROMPT
-        # Avatar-tool split (verse_act/move/look/recall vs verse_record).
-        assert "verse_act" in VERSE_SYSTEM_PROMPT
-        assert "verse_recall" in VERSE_SYSTEM_PROMPT
-        # Recall vs narrate. "what happened at X" style questions are
-        # retellings of existing canon, not new events; without this
-        # carve-out the model fires verse_record on the question and
-        # replies with a brief "canon locked in" acknowledgement instead
-        # of the actual retell.
-        assert "RECALL" in VERSE_SYSTEM_PROMPT
-        # Forbid splitting prose across assistant turns. Empirically the
-        # model emits a tool_call + sentence fragment in step 1 then a
-        # brief finalize in step 2; only step 2's content reaches IRC,
-        # so the user sees a truncated mid-sentence reply.
-        assert "single message" in VERSE_SYSTEM_PROMPT
-
-    def test_remind_action_prompt_omits_set_reminder_for_structured_rows(self) -> None:
-        """GIVEN structured-row prompt WHEN checked THEN no set_reminder paragraph.
-
-        Structured rows reschedule mechanically; the action LLM must NOT see
-        a 'you MAY call set_reminder' rule. The set_reminder tool is also
-        filtered from the tool surface for those fires (see plugin.py).
-        """
-        assert "set_reminder" not in REMIND_ACTION_SYSTEM_PROMPT
-        assert "Recurrence is handled mechanically" in REMIND_ACTION_SYSTEM_PROMPT
-
-    def test_remind_action_prompt_has_bot_nick_placeholder(self) -> None:
-        """GIVEN REMIND_ACTION_SYSTEM_PROMPT WHEN checked THEN contains {bot_nick}."""
-        assert "{bot_nick}" in REMIND_ACTION_SYSTEM_PROMPT
 
 
 class TestToolSpecVisibility:

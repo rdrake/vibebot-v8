@@ -33,13 +33,12 @@ from supybot.utils.file import AtomicFile
 
 from .assistant import (
     PROFILE_CHAT,
-    PROFILE_CODE,
-    PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
 )
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
+from .prompts import MEMORY_CLEANUP_PROMPT, MEMORY_EXTRACTION_PROMPT, PROMPTS
 from .tracing import TraceFilter, extract_server_headers, request_id
 
 # MUST be set before any LiteLLM calls create HTTPHandler
@@ -148,59 +147,6 @@ _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 
 # Pre-generated Pygments CSS for monokai theme (constant across calls)
 _PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
-
-# System prompt for memory extraction LLM calls.
-#
-# Two-stage memory: extracted facts enter ``memory_candidates`` with a
-# mention count. They are only promoted to durable ``memories`` once the
-# extractor reinforces them across multiple exchanges. The prompt asks the
-# LLM to pick between adding a brand-new candidate and reinforcing an
-# existing one to keep paraphrases from spawning duplicates.
-_MEMORY_EXTRACTION_PROMPT = (
-    "You are a fact extractor. Given a conversation between a user and an assistant, "
-    "decide what (if anything) to record about the user.\n\n"
-    "You have two outputs:\n"
-    '- "add": brand-new candidate facts to start tracking.\n'
-    '- "reinforce": indices of existing candidates this exchange confirms or '
-    "restates (even paraphrased).\n\n"
-    "A fact is only kept long-term after it has been reinforced across multiple "
-    "exchanges, so prefer REINFORCE over ADD whenever a candidate already covers "
-    "the information — even loosely. Do NOT add a new candidate if an existing "
-    "candidate or known fact already covers the same subject.\n\n"
-    "SAVE (as add or reinforce): occupation, technical skills, OS/tool preferences, "
-    "location, pets, hobbies, strong opinions they have stated directly.\n\n"
-    "DO NOT SAVE:\n"
-    "- Conversation topics or questions they asked (not facts about them)\n"
-    "- Jokes, sarcasm, or hypotheticals taken literally\n"
-    "- Transient activities (working on X right now, debugging Y)\n"
-    "- One-time preferences or situational advice\n"
-    "- Vague or trivial observations\n"
-    "- Facts already known (listed below) — those are durable, leave them alone\n"
-    "- Facts that contradict or update existing facts (periodic cleanup handles that)\n\n"
-    "Return ONLY a JSON object with both keys:\n"
-    '- "add": array of brief NEW candidate facts, max 8 words each '
-    "(at most 2 per exchange)\n"
-    '- "reinforce": array of integer indices into the candidate list below\n\n'
-    'If nothing applies: {"add": [], "reinforce": []}\n'
-    "Prefer saving nothing over saving junk.\n"
-)
-
-_MEMORY_CLEANUP_PROMPT = (
-    "You are a memory curator. Review these stored facts about an IRC user and "
-    "return edit operations as JSON.\n\n"
-    "Rules:\n"
-    "- ONLY reference facts by their index numbers below\n"
-    "- Do NOT invent new facts — merge text must combine existing information only\n"
-    "- Facts are listed newest-first; when facts contradict, prefer the newer one "
-    "(lower index)\n"
-    "- Merge related facts into single consolidated statements\n"
-    "- Rewrite verbose facts to be concise (max 8 words each)\n"
-    "- Drop jokes, transient info, vague observations, or anything not a durable "
-    "fact about the user\n"
-    "- Be aggressive — fewer high-quality facts beat many low-quality ones\n\n"
-    'Return JSON: {"drop": [...], "merge": [{"indices": [idx, ...], "text": "merged"}, ...]}\n'
-    "Indices not mentioned in drop or merge are kept as-is.\n"
-)
 
 # JSON schema for structured output from memory extraction
 _EXTRACTION_SCHEMA: dict = {
@@ -3176,11 +3122,6 @@ Examples (echo → action_prompt: ""):
             AssistantResult with the final text, is_meta flag, and usage stats
         """
         from .assistant import (
-            CHAT_SYSTEM_PROMPT,
-            CODE_SYSTEM_PROMPT,
-            DRAW_SYSTEM_PROMPT,
-            REMIND_ACTION_SYSTEM_PROMPT,
-            VERSE_SYSTEM_PROMPT,
             AssistantToolExecutor,
             get_tools_for_profile,
         )
@@ -3215,16 +3156,7 @@ Examples (echo → action_prompt: ""):
             # defaults (sentence-per-item, tool_calls=0). Cache cost is one
             # miss per channel-session at first verse turn; subsequent verse
             # turns share a verse-mode prefix and hit cache among themselves.
-            profile_frameworks = {
-                PROFILE_CHAT: CHAT_SYSTEM_PROMPT,
-                PROFILE_CODE: CODE_SYSTEM_PROMPT,
-                PROFILE_DRAW: DRAW_SYSTEM_PROMPT,
-                PROFILE_REMIND_ACTION: REMIND_ACTION_SYSTEM_PROMPT,
-                PROFILE_VERSE: VERSE_SYSTEM_PROMPT,
-            }
-            framework = profile_frameworks.get(route_profile, CHAT_SYSTEM_PROMPT).format(
-                bot_nick=bot_nick
-            )
+            framework = PROMPTS.get(route_profile, PROMPTS["chat"]).format(bot_nick=bot_nick)
             if system_prompt:
                 # ``str.replace`` rather than ``.format`` so user-supplied text
                 # containing literal '{...}' (e.g. JSON examples) doesn't blow
@@ -4352,7 +4284,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         user_sections.append(f"User ({nick}): {user_message}\nAssistant: {assistant_response}")
 
         messages = [
-            {"role": "system", "content": _MEMORY_EXTRACTION_PROMPT},
+            {"role": "system", "content": MEMORY_EXTRACTION_PROMPT},
             {"role": "user", "content": "\n\n".join(user_sections)},
         ]
 
@@ -4420,7 +4352,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         memory_section = "\n".join(f"[{i}] {r.fact}" for i, r in enumerate(memory_rows))
 
         messages = [
-            {"role": "system", "content": _MEMORY_CLEANUP_PROMPT},
+            {"role": "system", "content": MEMORY_CLEANUP_PROMPT},
             {
                 "role": "user",
                 "content": f"Current memories for {nick}:\n{memory_section}",
