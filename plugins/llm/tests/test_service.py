@@ -711,7 +711,10 @@ class TestXAIResponsesCall:
         )
 
         kwargs = responses.call_args.kwargs
-        assert kwargs.get("extra_body") == {"prompt_cache_key": "chan:#dev"}
+        # ``kind="search"`` maps to the ``grounded`` cache lane so the
+        # short search prefix doesn't compete with assistant_step_* on the
+        # same server.
+        assert kwargs.get("extra_body") == {"prompt_cache_key": "chan:#dev:grounded"}
         assert "extra_headers" not in kwargs
 
     def test_responses_omits_cache_key_without_channel(self) -> None:
@@ -4758,13 +4761,40 @@ class TestXaiConvIdHeader:
             "llm.service.litellm.completion", return_value=self.mocker.Mock()
         )
         self.service._timed_completion(
-            "op",
+            "assistant_step_1",
             model="xai/grok-4.3",
             messages=[{"role": "user", "content": "hi"}],
             channel="#dev",
         )
         kwargs = mock_completion.call_args.kwargs
-        assert kwargs["extra_headers"] == {"x-grok-conv-id": "chan:#dev"}
+        assert kwargs["extra_headers"] == {"x-grok-conv-id": "chan:#dev:main"}
+
+    def test_header_lane_per_op(self) -> None:
+        """Different ops route to different cache lanes on the same channel.
+
+        This is the eviction-prevention split: ``extract_memories`` and
+        ``ask_helper`` no longer share a server with ``assistant_step_*``,
+        so their short distinct prefixes can't kick the long main prefix
+        out of the per-server cache between turns.
+        """
+        mock_completion = self.mocker.patch(
+            "llm.service.litellm.completion", return_value=self.mocker.Mock()
+        )
+        lanes: dict[str, str] = {}
+        for op in ("assistant_step_1", "ask_helper", "extract_memories", "prompt_rewrite"):
+            self.service._timed_completion(
+                op,
+                model="xai/grok-4.3",
+                messages=[{"role": "user", "content": "hi"}],
+                channel="#dev",
+            )
+            lanes[op] = mock_completion.call_args.kwargs["extra_headers"]["x-grok-conv-id"]
+        assert lanes == {
+            "assistant_step_1": "chan:#dev:main",
+            "ask_helper": "chan:#dev:helper",
+            "extract_memories": "chan:#dev:memory",
+            "prompt_rewrite": "chan:#dev:rewrite",
+        }
 
     def test_header_omitted_for_non_xai(self) -> None:
         mock_completion = self.mocker.patch(
@@ -4794,7 +4824,7 @@ class TestXaiConvIdHeader:
             "llm.service.litellm.completion", return_value=self.mocker.Mock()
         )
         self.service._timed_completion(
-            "op",
+            "assistant_step_1",
             model="xai/grok-4.3",
             messages=[{"role": "user", "content": "hi"}],
             channel="#dev",
@@ -4803,7 +4833,7 @@ class TestXaiConvIdHeader:
         kwargs = mock_completion.call_args.kwargs
         assert kwargs["extra_headers"] == {
             "x-trace-id": "abc",
-            "x-grok-conv-id": "chan:#dev",
+            "x-grok-conv-id": "chan:#dev:main",
         }
 
 

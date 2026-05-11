@@ -1261,23 +1261,63 @@ class LLMService:
         """True if ``model`` is an xAI ``provider/name`` identifier."""
         return "/" in model and model.split("/", 1)[0].lower() == "xai"
 
-    @staticmethod
-    def _xai_cache_key(model: str, channel: str | None) -> str | None:
+    # Op label → cache lane. Each lane pins to a (potentially) distinct
+    # backend, so the bot's short-prompt ops (memory, helper) stop evicting
+    # the long-prefix main-reply cache on the same server. See ``_xai_cache_key``.
+    _XAI_LANE_BY_OP: dict[str, str] = {
+        "ask_helper": "helper",
+        "extract_memories": "memory",
+        "cleanup_memories": "memory",
+        "prompt_rewrite": "rewrite",
+        "xai_responses_search": "grounded",
+        "xai_responses_url": "grounded",
+    }
+
+    @classmethod
+    def _xai_lane(cls, op: str) -> str:
+        """Return the cache lane for a given op label.
+
+        Lanes partition the conv-id space so each op flavor pins to its own
+        sticky server. The default is ``main`` (long-prefix reply path); short
+        side calls (helper, memory, rewrite) get their own lane so they don't
+        compete with the main prefix for per-server cache slots.
+        """
+        lane = cls._XAI_LANE_BY_OP.get(op)
+        if lane:
+            return lane
+        # ``assistant_step_1``, ``assistant_step_2``, ``assistant_step_N``,
+        # ``run_completion_*``, ``grounded_*``, ``pending_retry``, ``completion``
+        # all share the long-prefix main reply path.
+        return "main"
+
+    @classmethod
+    def _xai_cache_key(
+        cls,
+        model: str,
+        channel: str | None,
+        op: str = "completion",
+    ) -> str | None:
         """Return a stable xAI prompt-cache routing key, or ``None``.
 
         xAI's prompt cache is per-backend-server. Without a stable key,
         the load balancer scatters requests and the cache rarely hits.
-        Scoping by channel keeps a conversation glued to one server,
-        lifting cached_tokens from ~128 (a fixed provider-side baseline)
-        to ~99% of the cacheable prefix on follow-up turns.
+        Scoping by channel+op keeps each op flavor glued to its own server,
+        lifting cached_tokens off the provider baseline on follow-up turns.
+
+        Lanes (see ``_xai_lane``) split the conv-id so the bot's short side
+        calls (``extract_memories``, ``ask_helper``, etc.) don't write
+        distinct prefixes to the same server as ``assistant_step_*`` and
+        evict the long-prefix main cache between turns. xAI eviction is
+        memory-pressure based, so reducing distinct-prefix churn per server
+        is what actually moves cross-turn hit rate.
 
         Callers attach the key per API surface — Chat Completions sends
         it as ``x-grok-conv-id`` HTTP header; Responses API sends it as
         the ``prompt_cache_key`` body field.
         """
-        if not channel or not LLMService._is_xai_model(model):
+        if not channel or not cls._is_xai_model(model):
             return None
-        return f"chan:{channel}"
+        return f"chan:{channel}:{cls._xai_lane(op)}"
 
     def _check_grounding_used(self, response: Any) -> bool:
         """Check if Google grounding/search was used in the response.
@@ -1489,7 +1529,7 @@ class LLMService:
         **kwargs: Any,
     ) -> Any:
         """Run litellm.completion and emit a completion_timing log line."""
-        cache_key = self._xai_cache_key(model, channel)
+        cache_key = self._xai_cache_key(model, channel, op)
         if cache_key:
             existing = kwargs.get("extra_headers") or {}
             kwargs["extra_headers"] = {**existing, "x-grok-conv-id": cache_key}
@@ -2360,7 +2400,7 @@ class LLMService:
                 len(input_text),
             )
             t0 = time.monotonic()
-            cache_key = self._xai_cache_key(model, channel)
+            cache_key = self._xai_cache_key(model, channel, f"xai_responses_{kind}")
             extra_body = {"prompt_cache_key": cache_key} if cache_key else None
             try:
                 response = litellm.responses(
