@@ -1,0 +1,6 @@
+# Go build artifacts
+*.test
+*.out
+/bin/
+/dist/
+coverage.txt
