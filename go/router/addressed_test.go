@@ -18,9 +18,9 @@ func TestAddressedFirstTokenMatch(t *testing.T) {
 		{"vibebot; what?", true},
 		{"VIBEBOT hi", true},
 		{"  vibebot   hi", true},
-		{"vibebot:\nhello", true},     // newline whitespace
-		{"vibebot:\thi", true},        // tab
-		{"hi vibebot", false},         // mid-message — out of scope for v1
+		{"vibebot:\nhello", true}, // newline whitespace
+		{"vibebot:\thi", true},    // tab
+		{"hi vibebot", false},     // mid-message — out of scope for v1
 		{"vibebotsomething hi", false},
 		{"", false},
 	}
