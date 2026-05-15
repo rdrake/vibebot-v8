@@ -82,7 +82,7 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
-    "hypothesis>=6.100",
+    "hypothesis>=6.152.7",
     "mkdocs-material>=9.6",
     "prek>=0.3.13",
     "pytest>=9.0.3",
