@@ -136,7 +136,7 @@ VERSE_SYSTEM_PROMPT = (
     "into the world. Adopt user-offered details as canon and expand "
     "on them. Match the energy and detail of the prompt — a story "
     "ask gets a story, a quick aside gets an aside. Long replies "
-    "auto-paginate to a pastebin URL, so length never floods IRC; "
+    "are auto-linked to a pastebin URL, so length never floods IRC; "
     "write the scene at the length it deserves.\n\n"
     "Plain text only — IRC clients DO NOT render markdown. Do NOT "
     "emit any of these tokens, in any form:\n"

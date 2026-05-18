@@ -576,250 +576,87 @@ class TestCodeCommand:
 
 
 # ---------------------------------------------------------------------------
-# _send_long_reply (multiline batch helper)
+# _send_long_reply (single-line or pastebin teaser)
 # ---------------------------------------------------------------------------
 
 
-def _privmsgs_in_batch(batch_call_args) -> list:
-    """Pull the PRIVMSG entries out of a queueBatch ``args[0]`` list.
-
-    Each batch is ``[BATCH +, msg, msg, ..., BATCH -]``; the helper returns
-    just the inner messages so tests can assert on user-visible content.
-    """
-    msgs = batch_call_args.args[0]
-    return [m for m in msgs if m.command == "PRIVMSG"]
-
-
-def _enable_multiline(mock_irc) -> None:
-    """Mock the cap state our manual batch builder needs."""
-    mock_irc.state.capabilities_ack = {"draft/multiline"}
-    mock_irc.state.capabilities_ls = {"draft/multiline": "max-bytes=4096"}
-
-
 class TestSendLongReply:
-    """Tests for _send_long_reply — multiline-or-paginated reply helper."""
+    """Tests for _send_long_reply — single-line-or-pastebin-teaser helper.
 
-    @pytest.fixture(autouse=True)
-    def _restore_experimental_extensions(self):
-        """Save/restore experimentalExtensions across each test."""
-        import supybot.conf as supy_conf
-
-        knob = supy_conf.supybot.protocols.irc.experimentalExtensions
-        original = knob()
-        try:
-            yield
-        finally:
-            knob.setValue(original)
+    The bot never paginates: replies that fit one IRC line go via irc.reply
+    as-is; anything multi-line (or that wraps past one wire-line) is saved
+    to the HTTP pastebin and the channel sees one teaser+URL line.
+    """
 
     def test_short_text_uses_irc_reply(self, plugin_env):
-        """GIVEN one-line short text WHEN sent THEN goes via irc.reply (no batch)."""
+        """GIVEN one-line short text WHEN sent THEN goes via irc.reply, no pastebin."""
         plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
 
         plugin._send_long_reply(mock_irc, mock_msg, "hello world")
 
         mock_irc.reply.assert_called_once_with("hello world", prefixNick=False)
-        mock_irc.queueBatch.assert_not_called()
-
-    def test_multiline_text_uses_multiline_batch_when_supported(self, plugin_env, mocker):
-        """GIVEN \\n in text AND multiline negotiated WHEN sent THEN batch path used."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-
-        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two\nline three")
-
-        mock_irc.queueBatch.assert_called_once()
-        privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        assert len(privmsgs) == 3
-        # Distinct logical lines never carry draft/multiline-concat.
-        for m in privmsgs:
-            assert "draft/multiline-concat" not in m.server_tags
-        mock_irc.reply.assert_not_called()
-
-    def test_blank_lines_are_dropped_from_multiline_batch(self, plugin_env, mocker):
-        """Blank/whitespace lines never become their own IRC message."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-
-        plugin._send_long_reply(mock_irc, mock_msg, "line one\n\n   \nline two")
-
-        mock_irc.queueBatch.assert_called_once()
-        privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        assert len(privmsgs) == 2
-        mock_irc.reply.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
 
     def test_single_logical_line_with_blank_padding_uses_irc_reply(self, plugin_env):
         """Padding blank lines around one real line collapse to a single irc.reply."""
         plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
 
         plugin._send_long_reply(mock_irc, mock_msg, "\n\nhello\n\n")
 
         mock_irc.reply.assert_called_once_with("hello", prefixNick=False)
-        mock_irc.queueBatch.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
 
-    def test_multiline_falls_back_when_cap_not_negotiated(self, plugin_env, mocker):
-        """GIVEN \\n in text AND multiline NOT negotiated THEN falls back to irc.reply."""
-        import supybot.conf as supy_conf
-
+    def test_multiline_text_pastebins_and_sends_teaser(self, plugin_env, mocker):
+        """GIVEN \\n in text WHEN sent THEN whole text goes to pastebin and one teaser+URL line is replied."""
         plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.capabilities_ack = set()  # no draft/multiline
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-
-        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
-
-        mock_irc.reply.assert_called_once_with("line one | line two", prefixNick=False)
-        mock_irc.queueBatch.assert_not_called()
-
-    def test_multiline_falls_back_when_experimental_disabled(self, plugin_env, mocker):
-        """GIVEN multiline cap acked but experimentalExtensions off THEN falls back."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(False)
-
-        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two")
-
-        mock_irc.reply.assert_called_once_with("line one | line two", prefixNick=False)
-        mock_irc.queueBatch.assert_not_called()
-
-    def test_long_reply_uses_teaser_and_full_answer_link(self, plugin_env, mocker):
-        """GIVEN reply over line threshold AND teaser mode WHEN sent THEN channel gets teaser plus link."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(
-                {
-                    "longReplyLineThreshold": 6,
-                    "longReplyTeaserMaxChars": 220,
-                    "longReplyLinkMode": "teaser",
-                }
-            )
-        )
-        mock_irc.state.capabilities_ack = {"draft/multiline"}
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-        long_text = "\n".join(
-            [
-                "### Abbreviated History of Liberia",
-                "- 1822: Founded by freed US slaves.",
-                "- 1847: Declared independence.",
-                "- 1870s: Expanded inland.",
-                "- 1920s: Forced labor scandal.",
-                "- 1980: Doe coup.",
-                "- 2003: Civil war ends.",
-            ]
-        )
         plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
-        plugin.llm_service.summarize_for_irc.return_value = (
-            "Liberia's history spans colonization, independence, coups, civil war, and recovery."
-        )
+        plugin.llm_service.summarize_for_irc.return_value = "Three short lines about A, B, and C."
 
-        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two\nline three")
 
-        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
-        plugin.llm_service.summarize_for_irc.assert_called_once_with(
-            long_text, channel="#test", max_chars=220
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(
+            "line one\nline two\nline three"
         )
         mock_irc.reply.assert_called_once_with(
-            "Liberia's history spans colonization, independence, coups, civil war, and recovery. "
-            "- Full answer: https://example.com/llm/full.html",
+            "Three short lines about A, B, and C. - Full answer: https://example.com/llm/full.html",
             prefixNick=False,
         )
-        mock_irc.queueBatch.assert_not_called()
 
-    def test_long_reply_footer_mode_appends_url_to_full_reply(self, plugin_env, mocker):
-        """GIVEN footer mode AND over threshold THEN reply is capped at threshold + URL footer."""
-        import supybot.conf as supy_conf
-
+    def test_blank_lines_do_not_force_pastebin(self, plugin_env):
+        """A single real line padded with blanks stays a one-line irc.reply."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"longReplyLineThreshold": 6})
-        )
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-        long_text = "\n".join(f"line {i}" for i in range(1, 8))
-        plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
 
-        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+        plugin._send_long_reply(mock_irc, mock_msg, "line one\n\n   \n")
 
-        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_text)
-        plugin.llm_service.summarize_for_irc.assert_not_called()
-        mock_irc.queueBatch.assert_called_once()
-        privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        # Threshold caps content at 6 lines + 1 footer.
-        assert len(privmsgs) == 7
-        assert [m.args[1] for m in privmsgs[:6]] == [f"line {i}" for i in range(1, 7)]
-        assert privmsgs[-1].args[1] == "Full answer: https://example.com/llm/full.html"
-        # Footer is its own logical line — no concat tag.
-        assert "draft/multiline-concat" not in privmsgs[-1].server_tags
-        mock_irc.reply.assert_not_called()
-
-    def test_long_reply_threshold_zero_disables_linking(self, plugin_env, mocker):
-        """GIVEN threshold disabled WHEN long reply sent THEN existing multiline path is used."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"longReplyLineThreshold": 0})
-        )
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-        long_text = "\n".join(f"line {i}" for i in range(1, 8))
-
-        plugin._send_long_reply(mock_irc, mock_msg, long_text)
-
+        mock_irc.reply.assert_called_once_with("line one", prefixNick=False)
         plugin.llm_service.save_markdown_to_http.assert_not_called()
-        mock_irc.queueBatch.assert_called_once()
-        mock_irc.reply.assert_not_called()
 
-    def test_long_reply_falls_back_when_http_save_fails(self, plugin_env, mocker):
-        """GIVEN full answer cannot be saved WHEN long reply sent THEN existing path is used."""
-        import supybot.conf as supy_conf
-
+    def test_long_wrapped_single_line_pastebins(self, plugin_env, mocker):
+        """A single logical line that wraps past one wire-line still pastebins."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"longReplyLineThreshold": 6})
+        # Force a 100-byte wrap budget. 250 chars of payload wrap into 3
+        # wire-lines, but 100 still leaves room for "<teaser> - Full answer: <url>".
+        mocker.patch("llm.plugin.conf.get", return_value=100)
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Long line."
+
+        long_line = "alpha " * 50  # ~300 chars
+        plugin._send_long_reply(mock_irc, mock_msg, long_line)
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_line)
+        mock_irc.reply.assert_called_once_with(
+            "Long line. - Full answer: https://e.co/x.html",
+            prefixNick=False,
         )
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-        long_text = "\n".join(f"line {i}" for i in range(1, 8))
-        plugin.llm_service.save_markdown_to_http.return_value = None
-
-        plugin._send_long_reply(mock_irc, mock_msg, long_text)
-
-        plugin.llm_service.summarize_for_irc.assert_not_called()
-        mock_irc.queueBatch.assert_called_once()
-        mock_irc.reply.assert_not_called()
 
     def test_long_reply_uses_fallback_teaser_when_summary_fails(self, plugin_env, mocker):
-        """GIVEN teaser generation fails WHEN long reply linked THEN first heading is used."""
+        """GIVEN summarize returns None THEN first non-blank line is used as the teaser."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(
-                {
-                    "longReplyLineThreshold": 6,
-                    "longReplyTeaserMaxChars": 220,
-                    "longReplyLinkMode": "teaser",
-                }
-            )
-        )
         long_text = "\n".join(
             [
                 "### Abbreviated History of Liberia",
                 "- 1822: Founded by freed US slaves.",
                 "- 1847: Declared independence.",
-                "- 1870s: Expanded inland.",
-                "- 1920s: Forced labor scandal.",
-                "- 1980: Doe coup.",
-                "- 2003: Civil war ends.",
             ]
         )
         plugin.llm_service.save_markdown_to_http.return_value = "https://example.com/llm/full.html"
@@ -831,20 +668,21 @@ class TestSendLongReply:
             "Abbreviated History of Liberia - Full answer: https://example.com/llm/full.html",
             prefixNick=False,
         )
-        mock_irc.queueBatch.assert_not_called()
+
+    def test_long_reply_drops_url_when_pastebin_save_fails(self, plugin_env, mocker):
+        """GIVEN save returns None THEN reply is a teaser only — no broken URL."""
+        plugin, mock_irc, mock_msg = plugin_env
+        long_text = "\n".join(f"line {i}" for i in range(1, 5))
+        plugin.llm_service.save_markdown_to_http.return_value = None
+        plugin.llm_service.summarize_for_irc.return_value = "Four short lines."
+
+        plugin._send_long_reply(mock_irc, mock_msg, long_text)
+
+        mock_irc.reply.assert_called_once_with("Four short lines.", prefixNick=False)
 
     def test_long_reply_caps_teaser_to_link_budget(self, plugin_env, mocker):
         """GIVEN a tight IRC line budget WHEN linked THEN teaser leaves room for the URL."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(
-                {
-                    "longReplyLineThreshold": 6,
-                    "longReplyTeaserMaxChars": 220,
-                    "longReplyLinkMode": "teaser",
-                }
-            )
-        )
         mocker.patch("llm.plugin.conf.get", return_value=80)
         long_text = "\n".join(f"line {i}" for i in range(1, 8))
         url = "https://example.com/llm/full.html"
@@ -862,86 +700,6 @@ class TestSendLongReply:
         final_reply = mock_irc.reply.call_args.args[0]
         assert len(final_reply) <= 80
         assert final_reply.endswith(suffix)
-        mock_irc.queueBatch.assert_not_called()
-
-    def test_spaced_markdown_does_not_inflate_threshold_via_blank_lines(self, plugin_env, mocker):
-        """Blank separators no longer push line/chunk count over the threshold."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(
-                {"longReplyLineThreshold": 6, "longReplyTeaserMaxChars": 220}
-            )
-        )
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-        long_text = "\n\n".join(
-            [
-                "### Abbreviated History of Liberia",
-                "- 1822: Founded by freed US slaves.",
-                "- 1847: Declared independence.",
-                "- 1870s: Expanded inland.",
-                "- 1920s: Forced labor scandal.",
-                "- 2003: Civil war ends.",
-            ]
-        )
-
-        plugin._send_long_reply(mock_irc, mock_msg, long_text)
-
-        plugin.llm_service.save_markdown_to_http.assert_not_called()
-        mock_irc.queueBatch.assert_called_once()
-        privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        assert len(privmsgs) == 6
-
-    def test_wrap_continuations_carry_concat_distinct_lines_do_not(self, plugin_env, mocker):
-        """A logical line wider than ``allowed`` is wire-split with concat;
-        adjacent distinct lines stay free of the tag.
-        """
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        # Tight wrap so we can force two wrap-fragments without huge fixtures.
-        mocker.patch("llm.plugin.conf.get", return_value=20)
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-
-        # First logical line is 30 chars → wraps into two pieces. Second is short.
-        long_line = "alpha bravo charlie delta echo"  # 30 chars
-        plugin._send_long_reply(mock_irc, mock_msg, f"{long_line}\nshort")
-
-        mock_irc.queueBatch.assert_called_once()
-        privmsgs = _privmsgs_in_batch(mock_irc.queueBatch.call_args)
-        # Two wrap-fragments + one distinct line = 3 PRIVMSGs.
-        assert len(privmsgs) == 3
-        assert "draft/multiline-concat" not in privmsgs[0].server_tags
-        # Continuation of the wrapped first logical line.
-        assert "draft/multiline-concat" in privmsgs[1].server_tags
-        # Distinct second logical line.
-        assert "draft/multiline-concat" not in privmsgs[2].server_tags
-
-    def test_batch_frames_are_well_formed(self, plugin_env, mocker):
-        """The queued list is BATCH+, PRIVMSG..., BATCH-, with matching name."""
-        import supybot.conf as supy_conf
-
-        plugin, mock_irc, mock_msg = plugin_env
-        _enable_multiline(mock_irc)
-        supy_conf.supybot.protocols.irc.experimentalExtensions.setValue(True)
-
-        plugin._send_long_reply(mock_irc, mock_msg, "a\nb\nc")
-
-        msgs = mock_irc.queueBatch.call_args.args[0]
-        assert msgs[0].command == "BATCH"
-        assert msgs[0].args[0].startswith("+")
-        assert msgs[0].args[1] == "draft/multiline"
-        assert msgs[0].args[2] == "#test"
-        assert msgs[-1].command == "BATCH"
-        assert msgs[-1].args[0].startswith("-")
-        # Same batch name on open and close.
-        assert msgs[0].args[0][1:] == msgs[-1].args[0][1:]
-        # All inner messages belong to the batch.
-        for m in msgs[1:-1]:
-            assert m.server_tags.get("batch") == msgs[0].args[0][1:]
 
 
 # ---------------------------------------------------------------------------

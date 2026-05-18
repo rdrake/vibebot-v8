@@ -2238,138 +2238,49 @@ class LLM(callbacks.Plugin):
         *,
         prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
     ) -> None:
-        """Reply with ``text``, using draft/multiline batches when supported.
+        """Reply with ``text`` as one IRC line, pastebinning anything longer.
 
-        When the connection has negotiated ``draft/multiline`` (and
-        experimentalExtensions is enabled), a long or multi-line reply is
-        delivered as a single multiline batch — clients render it as one
-        logical message instead of forcing the user through ``@more``.
-        Falls back to ``irc.reply`` (Limnoria's pagination) otherwise, or
-        when the reply is short enough to fit one IRC line.
+        Replies are NEVER paginated across multiple IRC messages: if ``text``
+        fits in a single wire-line it is sent as-is; otherwise the whole
+        answer is saved to the bot's HTTP server and the channel receives a
+        one-line teaser plus the URL. When the save fails, we collapse to a
+        single line ("teaser only") so we never trip Excess Flood with a raw
+        multi-line body.
         """
         target = msg.channel if msg.channel else msg.nick
         allowed = (
             conf.get(conf.supybot.reply.mores.length, channel=target, network=irc.network) or 400
         )
 
-        # Build chunks: respect explicit \n boundaries, then byte-wrap each
-        # line so individual messages fit IRC's per-line limit. Blank lines
-        # are dropped — they're noise on IRC, not visual breathing room.
-        # Each entry is ``(text, is_concat)``: ``is_concat=True`` marks a
-        # wrap-continuation of the previous logical line (the IRCv3
-        # ``draft/multiline-concat`` case), so receivers re-join it with no
-        # newline. Distinct ``\n``-separated lines stay ``False``.
+        # Count rendered wire-lines: respect explicit \n, then byte-wrap each
+        # line to allowed. Blank lines are noise on IRC and never count.
         raw_lines = text.split("\n") if "\n" in text else [text]
         logical_lines = [line for line in raw_lines if line.strip()]
-        chunks: list[tuple[str, bool]] = []
+        wire_line_count = 0
+        single_line: str | None = logical_lines[0] if len(logical_lines) == 1 else None
         for line in logical_lines:
             wrapped = ircutils.wrap(line, allowed) or [line]
-            for i, piece in enumerate(wrapped):
-                chunks.append((piece, i > 0))
+            wire_line_count += len(wrapped)
+            if wire_line_count > 1:
+                single_line = None
+                break
 
-        line_threshold = int(self.registryValue("longReplyLineThreshold", target) or 0)
-        over_threshold = line_threshold > 0 and len(chunks) > line_threshold
-        if over_threshold:
-            link_mode = self.registryValue("longReplyLinkMode", target) or "footer"
-            url = self.llm_service.save_markdown_to_http(text)
-            if url and link_mode == "teaser":
-                suffix = f" - {_FULL_ANSWER_LABEL}: {url}"
-                configured_max_chars = int(
-                    self.registryValue("longReplyTeaserMaxChars", target) or 220
-                )
-                max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
-                if max_chars <= 0:
-                    irc.reply(f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
-                    return
-                teaser = self.llm_service.summarize_for_irc(
-                    text, channel=target, max_chars=max_chars
-                ) or self._fallback_long_reply_teaser(text, max_chars)
-                teaser = self._trim_long_reply_teaser(teaser, max_chars)
-                irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
-                return
-            if url:
-                # "footer" mode: cap content at the threshold so the
-                # registry value is a hard line cap (not just a trigger
-                # for attaching a URL), then append the pastebin URL as
-                # a final, distinct logical line. Without the cap a
-                # threshold of N would still emit all original lines
-                # plus the footer, totalling N+1+ wire lines.
-                footer = f"{_FULL_ANSWER_LABEL}: {url}"
-                chunks = chunks[:line_threshold]
-                logical_lines = [c for c, _ in chunks]
-                logical_lines.append(footer)
-                chunks.append((footer, False))
-
-        if len(chunks) <= 1:
-            irc.reply(chunks[0][0] if chunks else text, prefixNick=prefixNick)
+        if single_line is not None:
+            irc.reply(single_line, prefixNick=prefixNick)
             return
 
-        multiline_supported = (
-            conf.supybot.protocols.irc.experimentalExtensions()
-            and "draft/multiline" in irc.state.capabilities_ack
-        )
-        if not multiline_supported:
-            # No draft/multiline negotiated — flatten to one line and let
-            # supybot.reply.mores paginate by length. Raw \n in a PRIVMSG
-            # body trips Excess Flood on AfterNET.
-            irc.reply(" | ".join(logical_lines), prefixNick=prefixNick)
+        url = self.llm_service.save_markdown_to_http(text)
+        suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
+        configured_max_chars = int(self.registryValue("longReplyTeaserMaxChars", target) or 220)
+        max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
+        if max_chars <= 0 and url:
+            irc.reply(f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
             return
-
-        self._queue_multiline_with_per_chunk_concat(irc, target, chunks)
-
-    def _queue_multiline_with_per_chunk_concat(
-        self,
-        irc: callbacks.Irc,
-        target: str,
-        chunks: list[tuple[str, bool]],
-    ) -> None:
-        """Send ``chunks`` as one or more ``draft/multiline`` batches, applying
-        ``draft/multiline-concat`` per-chunk.
-
-        Limnoria's ``queueMultilineBatches`` only takes a single batch-wide
-        ``concat`` boolean and overwrites every message's ``server_tags``,
-        which means we can't tell it "concat this chunk but not that one."
-        Per the IRCv3 spec the tag is only valid on wire-split fragments of
-        a single logical line, so we build the BATCH frames ourselves here.
-
-        Behaviour matches Limnoria's batch sizing: split chunks across
-        batches when the total would exceed the server's ``max-bytes``,
-        and force ``concat=False`` on the first chunk of each batch (a
-        ``draft/multiline-concat`` on the opening line of a batch is
-        ill-defined — there's nothing to concat to).
-        """
-        from supybot import utils as supy_utils
-
-        cap_value = irc.state.capabilities_ls["draft/multiline"]
-        multiline_cap_values = ircutils.parseCapabilityKeyValue(cap_value)
-        max_bytes_per_batch = int(multiline_cap_values["max-bytes"])
-        largest = max((len(c) for c, _ in chunks), default=1) or 1
-        per_batch = max(1, max_bytes_per_batch // largest)
-
-        for batch_chunks in supy_utils.iter.grouper(chunks, per_batch):
-            batch_name = ircutils.makeLabel()
-            batch: list[ircmsgs.IrcMsg] = [
-                ircmsgs.IrcMsg(
-                    command="BATCH",
-                    args=("+" + batch_name, "draft/multiline", target),
-                )
-            ]
-            sent = 0
-            for entry in batch_chunks:
-                if entry is None:
-                    continue  # grouper pads with None at the end
-                chunk_text, is_concat = entry
-                line_msg = ircmsgs.privmsg(target, ircutils.safeArgument(chunk_text))
-                line_msg.server_tags = {"batch": batch_name}
-                if is_concat and sent > 0:
-                    # Continuation of a wrapped logical line. Skip on the
-                    # batch's opening line — concat needs a predecessor in
-                    # the same batch.
-                    line_msg.server_tags["draft/multiline-concat"] = None
-                batch.append(line_msg)
-                sent += 1
-            batch.append(ircmsgs.IrcMsg(command="BATCH", args=("-" + batch_name,)))
-            irc.queueBatch(batch)
+        teaser = self.llm_service.summarize_for_irc(
+            text, channel=target, max_chars=max_chars
+        ) or self._fallback_long_reply_teaser(text, max_chars)
+        teaser = self._trim_long_reply_teaser(teaser, max_chars)
+        irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
 
     def _dispatch_assistant_reply(
         self,

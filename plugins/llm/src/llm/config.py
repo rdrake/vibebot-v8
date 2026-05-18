@@ -616,42 +616,11 @@ conf.registerGlobalValue(
 
 conf.registerChannelValue(
     LLM,
-    "longReplyLineThreshold",
-    registry.NonNegativeInteger(
-        3,
-        _("""Maximum rendered IRC wire-lines for a chat reply before the full
-        answer is saved as HTML and linked. In "teaser" mode the reply collapses
-        to a one-line summary plus link. In "footer" mode content is capped at
-        this many wire-lines and the link is appended as a final line (total
-        sent: threshold + 1). Lines longer than the IRC byte limit count as
-        multiple wire-lines. Set to 0 to disable hybrid long-reply linking."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "longReplyTeaserMaxChars",
     registry.PositiveInteger(
         220,
         _("""Maximum characters for the one-line teaser shown in IRC when a
         long reply is linked to the full HTML answer."""),
-    ),
-)
-
-
-class _LongReplyLinkMode(registry.OnlySomeStrings):
-    validStrings = ("footer", "teaser")  # noqa: N815  (supybot registry API)
-
-
-conf.registerChannelValue(
-    LLM,
-    "longReplyLinkMode",
-    _LongReplyLinkMode(
-        "teaser",
-        _("""How to surface the saved HTML answer when a reply exceeds
-        longReplyLineThreshold. "footer" sends the full multi-line
-        reply with the URL appended as a final line. "teaser" (default) replaces
-        the reply with a one-line teaser plus URL — quieter but hides content."""),
     ),
 )
 
