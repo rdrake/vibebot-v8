@@ -77,6 +77,45 @@ def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
     return any(tool.get("function", {}).get("name") == name for tool in tools)
 
 
+# Degenerate-echo guard. Fast non-reasoning models (observed on
+# xai/grok-4-1-fast-non-reasoning) intermittently return the user's own
+# message verbatim instead of answering it — e.g. a follow-up "finish the
+# story" comes back as the literal reply "finish the story". Such a reply
+# is never valid, so the assistant loop nudges and retries once, then
+# surfaces an error rather than relaying the user's words to the channel.
+_MAX_ECHO_RETRIES = 1
+_ECHO_RETRY_NUDGE = (
+    "Your previous reply only repeated my message back to me verbatim. "
+    "That is never a useful answer. Respond to the request properly now — "
+    "give a complete reply, not an echo."
+)
+_ECHO_TRIM_CHARS = "\"'“”‘’` \t"
+
+
+def _normalize_for_echo(text: str) -> str:
+    """Normalize text for degenerate-echo comparison.
+
+    Casefold, strip surrounding quotes/whitespace, collapse internal
+    whitespace, and drop trailing sentence punctuation so a reply that
+    parrots the prompt back is recognized regardless of trivial
+    capitalization, spacing, or punctuation differences.
+    """
+    cleaned = re.sub(r"\s+", " ", text.strip()).strip(_ECHO_TRIM_CHARS)
+    return cleaned.casefold().rstrip(".!?,;: ")
+
+
+def _is_echo_reply(prompt: str, content: str) -> bool:
+    """Return True iff ``content`` is just ``prompt`` parroted back.
+
+    Returns False when the prompt is empty so an empty/degenerate prompt
+    never matches a (separately handled) empty reply.
+    """
+    norm_prompt = _normalize_for_echo(prompt)
+    if not norm_prompt:
+        return False
+    return _normalize_for_echo(content) == norm_prompt
+
+
 def account_from_server_tags(msg: IrcMsg) -> str | None:
     """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
 
@@ -3267,6 +3306,9 @@ Examples (echo → action_prompt: ""):
             # encode errors as JSON {"error": ...}; success uses
             # {"status": "ok", ...}.
             last_successful_tool: str | None = None
+            # Count of degenerate-echo retries spent this invocation (see
+            # _is_echo_reply / _MAX_ECHO_RETRIES).
+            echo_retries = 0
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -3307,12 +3349,54 @@ Examples (echo → action_prompt: ""):
 
                 # If the LLM returned text (no tool calls), we're done
                 if not message.tool_calls:
+                    content = message.content or ""
+
+                    # Degenerate-echo guard: a reply that just parrots the
+                    # user's message back is never valid. Nudge and retry
+                    # once within the loop; the post-retry occurrence falls
+                    # through to the error return below.
+                    if _is_echo_reply(prompt, content) and echo_retries < _MAX_ECHO_RETRIES:
+                        echo_retries += 1
+                        self.log.warning(
+                            "assistant_completion: model echoed the prompt "
+                            "verbatim, nudging and retrying (%d/%d) model=%s "
+                            "channel=%s",
+                            echo_retries,
+                            _MAX_ECHO_RETRIES,
+                            model,
+                            channel,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _ECHO_RETRY_NUDGE})
+                        continue
+
                     # Fold in any costs accumulated by leaf tool calls
                     total_prompt_tokens += executor.accumulated_prompt_tokens
                     total_completion_tokens += executor.accumulated_completion_tokens
                     total_cost += executor.accumulated_cost
 
-                    content = message.content or ""
+                    # Still echoing after the retry budget — return an error
+                    # result (empty content) so the caller surfaces a
+                    # "try again" message instead of relaying the user's
+                    # own words back to the channel.
+                    if _is_echo_reply(prompt, content):
+                        self.log.warning(
+                            "assistant_completion: model still echoed the "
+                            "prompt after retry, returning error model=%s "
+                            "channel=%s",
+                            model,
+                            channel,
+                        )
+                        return AssistantResult(
+                            content="",
+                            prompt_tokens=total_prompt_tokens,
+                            completion_tokens=total_completion_tokens,
+                            cost=total_cost,
+                            model=model,
+                            grounding_used=executor.grounding_used,
+                            error="Model echoed the prompt instead of replying.",
+                            last_successful_tool=last_successful_tool,
+                        )
 
                     return AssistantResult(
                         content=self.sanitize_output(content),
@@ -3441,9 +3525,11 @@ Examples (echo → action_prompt: ""):
             total_prompt_tokens += executor.accumulated_prompt_tokens
             total_completion_tokens += executor.accumulated_completion_tokens
             total_cost += executor.accumulated_cost
-            fallback = last_assistant_text.strip() or (
-                "I couldn't pull enough context to answer that — give me more detail."
-            )
+            fallback = last_assistant_text.strip()
+            # Never let a degenerate echo of the prompt leak out as the
+            # step-cap fallback either.
+            if not fallback or _is_echo_reply(prompt, fallback):
+                fallback = "I couldn't pull enough context to answer that — give me more detail."
             return AssistantResult(
                 content=self.sanitize_output(fallback),
                 prompt_tokens=total_prompt_tokens,

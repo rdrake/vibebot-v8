@@ -15,7 +15,7 @@ from llm.assistant import (
 )
 from llm.plugin import LLM, Identity
 from llm.prompts import CHAT_SYSTEM_PROMPT
-from llm.service import LLMService
+from llm.service import LLMService, _is_echo_reply, _normalize_for_echo
 
 from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
 
@@ -1543,6 +1543,114 @@ class TestMetaCompletion:
         )
 
         assert result.last_successful_tool == "run_limnoria_command"
+
+
+class TestAssistantCompletionEchoGuard:
+    """Tests for the degenerate-echo guard in assistant_completion.
+
+    Fast non-reasoning models intermittently reply with the user's own
+    message verbatim (observed on xai/grok-4-1-fast-non-reasoning — a
+    follow-up "finish the story" came back as the literal reply "finish
+    the story"). _is_echo_reply detects that; the loop nudges and retries
+    once, then surfaces an error rather than relaying the echo.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    @staticmethod
+    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
+        """Build a mock completion response carrying ``content`` and no tools."""
+        resp = mocker.MagicMock()
+        choice = mocker.MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = None
+        resp.choices = [choice]
+        return resp
+
+    def test_normalize_for_echo_collapses_case_space_punctuation(self) -> None:
+        """GIVEN trivially varied text WHEN normalized THEN forms collapse to one."""
+        assert _normalize_for_echo("  Finish   the Story!  ") == _normalize_for_echo(
+            "finish the story"
+        )
+
+    def test_is_echo_reply_detects_verbatim_echo(self) -> None:
+        """GIVEN a reply equal to the prompt WHEN checked THEN it is an echo."""
+        assert _is_echo_reply("finish the story", "finish the story") is True
+        assert _is_echo_reply("finish the story", '"Finish the story."') is True
+
+    def test_is_echo_reply_false_for_real_answer(self) -> None:
+        """GIVEN a substantive reply WHEN checked THEN it is not an echo."""
+        assert _is_echo_reply("finish the story", "The lads charged the pitch.") is False
+
+    def test_is_echo_reply_false_for_empty_prompt(self) -> None:
+        """GIVEN an empty prompt WHEN checked THEN it is never an echo."""
+        assert _is_echo_reply("", "") is False
+        assert _is_echo_reply("   ", "anything") is False
+
+    def test_retries_and_recovers_when_model_echoes_prompt(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN the model echoes the prompt once WHEN it answers on retry
+        THEN assistant_completion returns the real answer, not the echo."""
+        responses = [
+            self._text_response(mocker, "finish the story"),
+            self._text_response(mocker, "The lads stormed the pitch in a fog of farts."),
+        ]
+        seen_messages: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen_messages) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="finish the story",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.content == "The lads stormed the pitch in a fog of farts."
+        assert result.error is None
+        # Exactly one retry: two model calls.
+        assert len(seen_messages) == 2
+        # The retry call carries the corrective nudge as a user message.
+        assert any(
+            m.get("role") == "user" and "repeated my message" in str(m.get("content", ""))
+            for m in seen_messages[1]
+        )
+
+    def test_returns_error_when_model_keeps_echoing(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN the model echoes the prompt on every step WHEN the retry
+        budget is spent THEN an error result with empty content is returned —
+        so the caller surfaces "try again" instead of relaying the echo."""
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=lambda **_kw: self._text_response(mocker, "Finish the story."),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="finish the story",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.content == ""
+        assert result.error is not None
+        assert "echo" in result.error.lower()
 
 
 # =========================================================================
