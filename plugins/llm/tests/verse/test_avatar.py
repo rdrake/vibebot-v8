@@ -19,6 +19,7 @@ from llm.verse.avatar import (
     make_verse_denial_handlers,
     make_verse_extra_handlers,
     make_verse_tool_specs,
+    strip_ooc,
     verse_act,
     verse_look,
     verse_move,
@@ -461,6 +462,26 @@ class TestOOC:
     def test_constants_exported(self) -> None:
         assert OOC_PREFIX == "(("
         assert OOC_SUFFIX == "))"
+
+    def test_strip_ooc_removes_wrapper(self) -> None:
+        assert strip_ooc("((hi))") == "hi"
+
+    def test_strip_ooc_strips_inner_whitespace(self) -> None:
+        assert strip_ooc("((  what model are you running?  ))") == ("what model are you running?")
+
+    def test_strip_ooc_tolerates_outer_whitespace(self) -> None:
+        assert strip_ooc("  ((hi))  ") == "hi"
+
+    def test_strip_ooc_empty_wrapper_yields_empty(self) -> None:
+        assert strip_ooc("(())") == ""
+
+    def test_strip_ooc_passthrough_when_not_wrapped(self) -> None:
+        # Not OOC-wrapped — returned stripped but otherwise unchanged.
+        assert strip_ooc("  hi  ") == "hi"
+        assert strip_ooc("((hi") == "((hi"
+
+    def test_strip_ooc_keeps_inner_parentheses(self) -> None:
+        assert strip_ooc("(((nested)))") == "(nested)"
 
 
 class TestMakeVerseToolSpecs:

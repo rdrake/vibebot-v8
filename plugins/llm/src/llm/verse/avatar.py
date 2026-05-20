@@ -350,6 +350,20 @@ def is_ooc(message: str) -> bool:
     return s.startswith(OOC_PREFIX) and s.endswith(OOC_SUFFIX)
 
 
+def strip_ooc(message: str) -> str:
+    """Return the inner text of an OOC-wrapped message, parentheses removed.
+
+    Strips the outer ``((``/``))`` wrapper and surrounding whitespace. A
+    degenerate empty wrapper ``(())`` yields an empty string. A message
+    that is not OOC-wrapped is returned stripped but otherwise unchanged,
+    so the call is safe even when ``is_ooc`` was not checked first.
+    """
+    s = message.strip()
+    if not (s.startswith(OOC_PREFIX) and s.endswith(OOC_SUFFIX)):
+        return s
+    return s[len(OOC_PREFIX) : -len(OOC_SUFFIX)].strip()
+
+
 # ---------------------------------------------------------------------------
 # System prompt builder
 # ---------------------------------------------------------------------------

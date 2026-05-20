@@ -61,6 +61,7 @@ from .verse.avatar import (
     make_verse_denial_handlers,
     make_verse_extra_handlers,
     make_verse_tool_specs,
+    strip_ooc,
 )
 from .verse.compaction import CompactionOutcome
 from .verse.store import VerseStore
@@ -3189,6 +3190,15 @@ class LLM(callbacks.Plugin):
                 preflight.channel, preflight.nick, preflight.account, text
             )
             if route is None:
+                verse_enabled = self.registryValue("verseEnabled", preflight.channel)
+                # OOC opt-out (((like this))): _verse_route_for returns None
+                # for an avatar-holder who wrapped a message to skip the verse
+                # engine. Strip the wrapper here so the chat model receives a
+                # clean prompt instead of literal parentheses. Gated on
+                # verseEnabled because ((...)) only carries OOC meaning on a
+                # verse channel — elsewhere it is ordinary text.
+                if verse_enabled and is_ooc(text):
+                    text = strip_ooc(text)
                 # Verse-enabled channel + non-opted-in speaker: advertise the
                 # verse tool *schemas* anyway so the channel's tool surface is
                 # byte-identical across all speakers. Invocations land on
@@ -3196,7 +3206,7 @@ class LLM(callbacks.Plugin):
                 # tools list flips between roughly 15 and 23 entries depending
                 # on opt-in state, which fragments xAI's automatic prompt
                 # cache per-user instead of per-channel.
-                if self.registryValue("verseEnabled", preflight.channel):
+                if verse_enabled:
                     max_actors = self.registryValue(
                         "verseAutoEntityMaxNamesPerCall", preflight.channel
                     )
