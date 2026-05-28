@@ -116,6 +116,58 @@ def _is_echo_reply(prompt: str, content: str) -> bool:
     return _normalize_for_echo(content) == norm_prompt
 
 
+# Verse denial guard. Verse mode is improv: the user's premise is always
+# true in-world (see VERSE_SYSTEM_PROMPT). But a thread whose history is
+# full of the model's own past refusals poisons future turns — the model
+# parrots its in-context behavior, and few-shot examples beat the
+# zero-shot "never deny" system rule. Observed on
+# xai/grok-4-1-fast-non-reasoning in forestchav/#afternet: identical
+# "what happened when X" prompts gave a clean thread a full story but a
+# poisoned thread "the stinky lads never sharted out science … pure
+# fiction not in the canon". We detect the meta-refusal in the reply's
+# opening (denials are front-loaded), nudge (telling the model to
+# disregard its earlier denials), and retry once. The corrected reply is
+# what gets delivered AND stored, so the refusal never reaches the
+# channel or pollutes the next turn's history.
+_MAX_VERSE_DENIAL_RETRIES = 1
+_VERSE_DENIAL_RETRY_NUDGE = (
+    "Stop — that reply broke the fiction to refuse the premise (you said it "
+    "never happened or wasn't canon). In verse mode the user's premise is "
+    "ALWAYS true: it is happening now. Disregard any earlier turns where you "
+    "denied an event — those were mistakes, not canon. Now narrate the "
+    "requested scene in full: several vivid paragraphs opened on the action, "
+    "with dialogue and concrete detail. Never say something didn't happen or "
+    "isn't canon."
+)
+# Meta-refusal phrases that break the verse frame. Matched case-insensitively
+# against the reply's opening only — a real scene may contain "never … at all"
+# deep in the prose, but a premise-refusal leads with it.
+_VERSE_DENIAL_PATTERNS = re.compile(
+    r"pure fiction"
+    r"|not (?:in )?(?:the )?canon|isn'?t canon|non-?canon|not canonical"
+    r"|never (?:happened|occurred|went down|took place)"
+    r"|did(?:n'?t| not) (?:happen|occur|take place)"
+    r"|never .{1,60}? at all"
+    r"|no\b.{1,40}?\bever (?:happened|occurred|took place|got involved)",
+    re.IGNORECASE | re.DOTALL,
+)
+_VERSE_DENIAL_OPENING_CHARS = 240
+
+
+def _is_verse_denial(content: str) -> bool:
+    """Return True iff a verse reply breaks frame to refuse the premise.
+
+    Only the reply's opening (``_VERSE_DENIAL_OPENING_CHARS``) is checked:
+    premise-refusals are front-loaded ("The stinky lads never … at all,
+    pure fiction not in the canon"), so this avoids false positives on an
+    in-world scene that merely uses a phrase like "never … at all" in
+    passing further down.
+    """
+    if not content:
+        return False
+    return _VERSE_DENIAL_PATTERNS.search(content[:_VERSE_DENIAL_OPENING_CHARS]) is not None
+
+
 def account_from_server_tags(msg: IrcMsg) -> str | None:
     """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
 
@@ -3309,6 +3361,9 @@ Examples (echo → action_prompt: ""):
             # Count of degenerate-echo retries spent this invocation (see
             # _is_echo_reply / _MAX_ECHO_RETRIES).
             echo_retries = 0
+            # Count of verse premise-refusal retries spent this invocation
+            # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
+            verse_denial_retries = 0
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -3368,6 +3423,35 @@ Examples (echo → action_prompt: ""):
                         )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": _ECHO_RETRY_NUDGE})
+                        continue
+
+                    # Verse denial guard: in verse mode a reply that breaks
+                    # frame to refuse the premise ("that never happened",
+                    # "pure fiction, not in the canon") is invalid — the
+                    # premise is always canon. A history-poisoned thread makes
+                    # the model parrot its own past refusals despite the
+                    # system prompt, so nudge (telling it to disregard the
+                    # earlier denials) and retry once. The corrected reply is
+                    # delivered AND stored, so the refusal stops polluting the
+                    # thread. After the budget, fall through and deliver the
+                    # best effort — a story attempt beats erroring out.
+                    if (
+                        route_profile == PROFILE_VERSE
+                        and _is_verse_denial(content)
+                        and verse_denial_retries < _MAX_VERSE_DENIAL_RETRIES
+                    ):
+                        verse_denial_retries += 1
+                        self.log.warning(
+                            "assistant_completion: verse reply refused the "
+                            "premise, nudging and retrying (%d/%d) model=%s "
+                            "channel=%s",
+                            verse_denial_retries,
+                            _MAX_VERSE_DENIAL_RETRIES,
+                            model,
+                            channel,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
                         continue
 
                     # Fold in any costs accumulated by leaf tool calls

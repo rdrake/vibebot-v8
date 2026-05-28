@@ -15,7 +15,12 @@ from llm.assistant import (
 )
 from llm.plugin import LLM, Identity
 from llm.prompts import CHAT_SYSTEM_PROMPT
-from llm.service import LLMService, _is_echo_reply, _normalize_for_echo
+from llm.service import (
+    LLMService,
+    _is_echo_reply,
+    _is_verse_denial,
+    _normalize_for_echo,
+)
 
 from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
 
@@ -1651,6 +1656,175 @@ class TestAssistantCompletionEchoGuard:
         assert result.content == ""
         assert result.error is not None
         assert "echo" in result.error.lower()
+
+
+class TestVerseDenialGuard:
+    """Tests for the verse premise-refusal guard in assistant_completion.
+
+    Verse mode is improv — the user's premise is always true in-world. A
+    history-poisoned thread makes the model parrot its own past refusals
+    ("that never happened … pure fiction not in the canon") despite the
+    system prompt. _is_verse_denial detects the meta-refusal; the loop
+    nudges and retries once (verse profile only), so the refusal never
+    reaches the channel or pollutes the next turn's history.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    @staticmethod
+    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
+        resp = mocker.MagicMock()
+        choice = mocker.MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = None
+        resp.choices = [choice]
+        return resp
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "The stinky lads never sharted out science last week at all, pure "
+            "fiction not in the canon. We was too busy with the noro nuke night.",
+            "The stinky lads never had any assgas assembly at all, pure fiction not in the canon.",
+            "Nah mate, that raw chicken double PE caper never went down at all.",
+            "Alton Towers trip never happened as the Year 8 lads were busy.",
+            "No assgas assembly ever happened, the lads focused on mayhem.",
+            "That didn't happen — it isn't canon.",
+        ],
+    )
+    def test_is_verse_denial_detects_premise_refusal(self, reply: str) -> None:
+        """GIVEN a frame-breaking refusal WHEN checked THEN it is a denial."""
+        assert _is_verse_denial(reply) is True
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "The lab lights flickered as the Year 7 Stinky Lads stormed the "
+            "science block, lab coats flapping like capes in a hurricane.",
+            "Stinky Dan kicked the door wide, unleashing a volley of guff-grenades.",
+            "",
+        ],
+    )
+    def test_is_verse_denial_false_for_real_scene(self, reply: str) -> None:
+        """GIVEN an in-world scene WHEN checked THEN it is not a denial."""
+        assert _is_verse_denial(reply) is False
+
+    def test_is_verse_denial_ignores_phrase_deep_in_prose(self) -> None:
+        """A refusal phrase far past the opening must not trip the guard —
+        the opening is the action, the phrase is incidental story text."""
+        scene = (
+            "The lads stormed the lab in a fog of methane, breakdancing across "
+            "the benches while disco demons grinded on the safety posters. "
+        ) * 3 + "Professor Blenkinsop swore it never happened, but it did."
+        assert _is_verse_denial(scene) is False
+
+    def test_retries_and_recovers_when_verse_reply_denies_premise(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a verse reply refuses the premise once WHEN it narrates on
+        retry THEN assistant_completion returns the scene, not the refusal."""
+        from llm.service import PROFILE_VERSE
+
+        story = (
+            "The lab lights flickered as the Stinky Lads stormed the science "
+            "block in a fog of guff-grenades and disco demons."
+        )
+        responses = [
+            self._text_response(
+                mocker,
+                "The stinky lads never sharted out science at all, pure fiction not in the canon.",
+            ),
+            self._text_response(mocker, story),
+        ]
+        seen_messages: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen_messages) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="what happened when the stinky lads sharted out science",
+            nick="fc42",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+        )
+
+        assert result.content == story
+        assert result.error is None
+        assert len(seen_messages) == 2
+        # The retry call carries the corrective nudge as a user message.
+        assert any(
+            m.get("role") == "user" and "premise is" in str(m.get("content", ""))
+            for m in seen_messages[1]
+        )
+
+    def test_chat_profile_does_not_retry_denial(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a denial-shaped reply on the CHAT profile WHEN completed THEN
+        it is returned as-is — the guard is verse-only (a chat answer may
+        legitimately say something never happened)."""
+        from llm.service import PROFILE_CHAT
+
+        denial = "No, the moon landing hoax never happened — it isn't canon to history."
+        calls = {"n": 0}
+
+        def fake_completion(**_kw: object) -> MagicMock:
+            calls["n"] += 1
+            return self._text_response(mocker, denial)
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="did the moon landing hoax happen",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        assert result.content == denial
+        assert calls["n"] == 1
+
+    def test_returns_best_effort_when_verse_keeps_denying(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a verse reply denies on every step WHEN the retry budget is
+        spent THEN the last attempt is delivered (not an error) — a coherent
+        story attempt beats surfacing 'try again' in roleplay."""
+        from llm.service import PROFILE_VERSE
+
+        denial = "That never happened at all, pure fiction not in the canon."
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=lambda **_kw: self._text_response(mocker, denial),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="what happened at alton towers",
+            nick="fc42",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+        )
+
+        assert result.content == denial
+        assert result.error is None
 
 
 # =========================================================================
