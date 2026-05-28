@@ -168,6 +168,30 @@ def _is_verse_denial(content: str) -> bool:
     return _VERSE_DENIAL_PATTERNS.search(content[:_VERSE_DENIAL_OPENING_CHARS]) is not None
 
 
+def _strip_verse_denials(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop the model's own past premise-refusals from verse history.
+
+    The retry guard (`_is_verse_denial`) stops a refusal reaching the
+    channel, but the root cause of poisoning is that a non-reasoning model
+    parrots its own in-context behaviour: any denial left in the thread
+    makes the next turn deny too. Filtering assistant turns that broke the
+    frame — every turn, before the model sees them — de-poisons even a
+    thread that was already polluted (fc42's had 20+) and any best-effort
+    denial that slipped through the retry budget. User turns are kept; only
+    the model's own frame-breaking replies are removed, so the premise the
+    user offered still anchors the scene.
+    """
+    if not history:
+        return history
+    return [
+        m
+        for m in history
+        if not (m.get("role") == Role.ASSISTANT and _is_verse_denial(str(m.get("content", ""))))
+    ]
+
+
 def account_from_server_tags(msg: IrcMsg) -> str | None:
     """Layer 1 of the account resolver — IRCv3 ``account-tag`` only.
 
@@ -3289,6 +3313,13 @@ Examples (echo → action_prompt: ""):
             # message after the static system+context prefix — keeps the
             # system prompt cache-stable across users.
             effective_prompt = framework
+
+            # De-poison verse history before the model sees it: strip the
+            # bot's own past premise-refusals so they can't seed another
+            # refusal (the retry guard catches new ones; this clears legacy
+            # ones and any best-effort denial that slipped the budget).
+            if route_profile == PROFILE_VERSE:
+                history = _strip_verse_denials(history)
 
             messages = self._build_messages(
                 prompt,

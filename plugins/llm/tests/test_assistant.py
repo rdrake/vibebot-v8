@@ -20,6 +20,7 @@ from llm.service import (
     _is_echo_reply,
     _is_verse_denial,
     _normalize_for_echo,
+    _strip_verse_denials,
 )
 
 from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
@@ -1825,6 +1826,47 @@ class TestVerseDenialGuard:
 
         assert result.content == denial
         assert result.error is None
+
+    def test_strip_verse_denials_removes_assistant_refusals(self) -> None:
+        """GIVEN a thread with past refusals WHEN stripped THEN only the
+        model's frame-breaking turns are dropped; user turns are kept."""
+        history = [
+            {"role": "user", "content": "what happened at alton towers"},
+            {
+                "role": "assistant",
+                "content": "Alton Towers trip never happened, pure fiction not in the canon.",
+            },
+            {"role": "user", "content": "tell me about the science lab"},
+            {
+                "role": "assistant",
+                "content": "The lads stormed the lab in a fog of guff-grenades.",
+            },
+        ]
+        stripped = _strip_verse_denials(history)
+        assert stripped == [
+            {"role": "user", "content": "what happened at alton towers"},
+            {"role": "user", "content": "tell me about the science lab"},
+            {
+                "role": "assistant",
+                "content": "The lads stormed the lab in a fog of guff-grenades.",
+            },
+        ]
+
+    def test_strip_verse_denials_handles_none_and_empty(self) -> None:
+        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
+        assert _strip_verse_denials(None) is None
+        assert _strip_verse_denials([]) == []
+
+    def test_strip_verse_denials_keeps_clean_thread_intact(self) -> None:
+        """GIVEN a thread with no refusals WHEN stripped THEN nothing drops."""
+        history = [
+            {"role": "user", "content": "what happened in the dorm"},
+            {
+                "role": "assistant",
+                "content": "Chaos erupted as the lads flooded the dorm.",
+            },
+        ]
+        assert _strip_verse_denials(history) == history
 
 
 # =========================================================================
