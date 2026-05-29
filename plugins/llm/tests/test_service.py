@@ -273,6 +273,25 @@ class TestLLMService:
         assert code_key not in sanitized
         assert sanitized.count("[REDACTED]") == 2
 
+    def test_api_key_sanitization_channel_specific_key(self) -> None:
+        """GIVEN a channel-scoped API key override (registerChannelValue) and a
+        global lookup that does not return it WHEN sanitized THEN the channel
+        key is still redacted."""
+        import supybot.conf as conf
+
+        chan_key = "sk-channel-override-secret-xyz"  # noqa: S105
+        val = conf.supybot.plugins.LLM.get("assistantApiKey")
+        val.get("#forest").setValue(chan_key)
+        # Global lookups return nothing — only the channel override holds the key.
+        self.mock_plugin.registryValue = self.mocker.Mock(side_effect=lambda key, channel=None: "")
+        try:
+            text = f"401 Unauthorized: key {chan_key} rejected"
+            sanitized = self.service._sanitize(text)
+            assert chan_key not in sanitized
+            assert "[REDACTED]" in sanitized
+        finally:
+            val.get("#forest").setValue("")
+
     def test_api_key_sanitization_no_keys_configured(self) -> None:
         """GIVEN no API keys configured WHEN sanitized THEN text unchanged."""
         self.mock_plugin.registryValue = self.mocker.Mock(

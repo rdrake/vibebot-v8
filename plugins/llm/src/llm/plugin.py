@@ -2178,14 +2178,20 @@ class LLM(callbacks.Plugin):
 
     @staticmethod
     def _format_bridge_debug_footer(trace: list) -> str:
-        """Render a one-line debug footer for the optional bridgeDebugInChannel mode."""
+        """Render a one-line debug footer for the optional bridgeDebugInChannel mode.
+
+        This footer is sent to a public channel. Bridge args are LLM-generated
+        and may carry secrets (e.g. an API key in a URL), so the raw arg_string
+        is NEVER echoed — only its length, as a leak-free "args were passed"
+        signal. Operators who need the content can read it from the DEBUG logs.
+        """
         if not trace:
             return ""
         parts = []
         for plugin_name, command_name, arg_string, status in trace:
             call = f"{plugin_name}.{command_name}"
             if arg_string:
-                call += f" {arg_string}"
+                call += f" ({len(arg_string)} chars)"
             parts.append(f"{call} [{status}]")
         return "[bridge: " + " ; ".join(parts) + "]"
 

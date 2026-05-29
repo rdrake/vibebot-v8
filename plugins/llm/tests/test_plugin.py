@@ -2201,6 +2201,30 @@ class TestSafeQueue:
         assert ok is True
 
 
+class TestBridgeDebugFooter:
+    """``_format_bridge_debug_footer`` is sent to a public channel, so it must
+    never echo raw bridge args — they are LLM-generated and may carry secrets
+    (e.g. an API key in a URL)."""
+
+    def test_footer_excludes_raw_args(self) -> None:
+        from llm.plugin import LLM
+
+        trace = [("Web", "fetch", "https://api.example.com/v1?key=sk-SECRET-XYZ", "ok")]
+        footer = LLM._format_bridge_debug_footer(trace)
+        assert "sk-SECRET-XYZ" not in footer
+        assert "Web.fetch" in footer
+        assert "[ok]" in footer
+
+    def test_footer_signals_args_present_without_content(self) -> None:
+        from llm.plugin import LLM
+
+        trace = [("Note", "send", "bob hello there", "ok")]
+        footer = LLM._format_bridge_debug_footer(trace)
+        assert "bob hello there" not in footer
+        # Length is a leak-free signal that args were passed.
+        assert str(len("bob hello there")) in footer
+
+
 class TestSafeReply:
     """``_safe_reply`` serializes worker-thread ``irc.reply`` sends on the same
     ``_irc_send_lock`` as ``_safe_queue`` and short-circuits while closing."""

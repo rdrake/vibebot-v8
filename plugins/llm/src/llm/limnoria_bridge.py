@@ -328,15 +328,19 @@ def dispatch(
     / ``_err`` (see assistant.py:676-683) so the assistant loop's
     ``last_successful_tool`` guard at service.py:2705-2710 fires correctly.
     """
+    # arg_string is LLM-generated and may carry secrets (e.g. a URL with an API
+    # key). Never log its content at INFO — only its length. Full content goes
+    # to DEBUG (off in production), mirroring the reply logging below.
     _log.info(
-        "bridge call: %s.%s args=%r nick=%s channel=%s allow_mutating=%s",
+        "bridge call: %s.%s args=%d chars nick=%s channel=%s allow_mutating=%s",
         plugin,
         command,
-        arg_string,
+        len(arg_string),
         getattr(msg, "nick", "?"),
         getattr(msg, "channel", "?"),
         allow_mutating,
     )
+    _log.debug("bridge call args: %s.%s %r", plugin, command, arg_string)
     cb = irc.getCallback(plugin)
     if cb is None:
         _log.info("bridge result: %s.%s -> error: unknown plugin", plugin, command)

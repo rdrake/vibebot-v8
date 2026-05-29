@@ -532,12 +532,48 @@ class LLMService:
         rid = request_id.get()
         return {"trace_id": rid} if rid else {}
 
+    _API_KEY_NAMES = (
+        "assistantApiKey",
+        "codeApiKey",
+        "imageApiKey",
+        "searchApiKey",
+    )
+
+    def _configured_api_keys(self) -> set[str]:
+        """Every configured API-key value across all scopes.
+
+        The four key settings are ``registerChannelValue`` (channel-overridable,
+        ``private=True``). A bare ``registryValue(name)`` only yields the global
+        default, so channel-specific keys would slip through redaction. Collect
+        the global value AND every channel override so ``_sanitize`` scrubs them
+        regardless of which channel's request produced the error.
+        """
+        keys: set[str] = set()
+        for name in self._API_KEY_NAMES:
+            try:
+                global_value = self.plugin.registryValue(name)
+            except Exception:  # noqa: BLE001 — redaction must never crash logging
+                global_value = None
+            if global_value:
+                keys.add(global_value)
+        try:
+            group = conf.supybot.plugins.LLM
+            for name in self._API_KEY_NAMES:
+                value = group.get(name)
+                for _child_name, child in value.getValues(getChildren=True):
+                    override = child()
+                    if override:
+                        keys.add(override)
+        except Exception:  # noqa: BLE001 — never let registry introspection break logging
+            pass
+        return keys
+
     def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
 
-        Collects actual configured API keys and replaces them with [REDACTED].
-        This is more reliable than regex patterns because it catches every key
-        format regardless of structure.
+        Collects actual configured API keys (global + per-channel overrides) and
+        replaces them with [REDACTED]. This is more reliable than regex patterns
+        because it catches every key format regardless of structure.
 
         Args:
             text: Text that may contain API keys
@@ -548,15 +584,8 @@ class LLMService:
         if not text:
             return ""
         result = str(text)
-        for key_name in (
-            "assistantApiKey",
-            "codeApiKey",
-            "imageApiKey",
-            "searchApiKey",
-        ):
-            key = self.plugin.registryValue(key_name)
-            if key:
-                result = result.replace(key, "[REDACTED]")
+        for key in self._configured_api_keys():
+            result = result.replace(key, "[REDACTED]")
         return result
 
     def _log_server_headers(self, source: object | None) -> None:

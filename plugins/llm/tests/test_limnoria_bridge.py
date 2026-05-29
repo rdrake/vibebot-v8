@@ -645,6 +645,30 @@ def test_dispatch_captures_reply(mocker):
     assert out == {"status": "ok", "reply": "pong"}
 
 
+def test_dispatch_does_not_log_raw_arg_string_at_info(mocker):
+    """LLM-generated arg_string can carry secrets (e.g. a URL with an API key);
+    it must never be logged at INFO. Only its length is INFO-logged."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+    cb._callCommand.side_effect = lambda command, proxy, _m, _t: proxy.reply("pong")
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+    log = mocker.patch.object(lb, "_log")
+
+    secret = "https://api.example.com/v1?key=sk-SUPER-SECRET-12345"  # noqa: S105
+    lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string=secret)
+
+    info_calls = [str(c.args) for c in log.info.call_args_list]
+    assert not any(secret in c for c in info_calls), (
+        f"raw arg_string leaked into INFO logs: {info_calls}"
+    )
+
+
 def test_dispatch_passes_command_as_list_and_tokens_positionally(mocker):
     """Regression: _callCommand requires a list-form command and positional tokens.
 
