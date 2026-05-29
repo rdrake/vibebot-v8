@@ -28,6 +28,35 @@ TEST_API_KEY = "test-key"
 TEST_URL_BASE = "https://example.com/llm"
 
 # =============================================================================
+# Autouse fixtures
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _run_dispatch_threads_inline(mocker: MockerFixture) -> None:
+    """Run ``_dispatch_addressed_async`` inline instead of on a daemon thread.
+
+    Production offloads addressed-message dispatch (doPrivmsg / invalidCommand)
+    to a ``world.SupyThread`` so the IRC driver thread is freed to flush the
+    ``+typing`` indicator immediately instead of blocking on LLM generation
+    (otherwise "is composing" only appears at the same instant as the reply).
+    Tests assert on dispatch side effects right after the call, so replacing
+    ``SupyThread`` with an inline runner avoids a worker-thread race. Tests
+    that need to inspect the offload itself re-patch ``SupyThread`` locally.
+    """
+
+    class _InlineThread:
+        def __init__(self, *args: object, target: object = None, **kwargs: object) -> None:
+            self._target = target
+
+        def start(self) -> None:
+            if callable(self._target):
+                self._target()
+
+    mocker.patch("llm.plugin.world.SupyThread", _InlineThread)
+
+
+# =============================================================================
 # Session-scoped fixtures
 # =============================================================================
 

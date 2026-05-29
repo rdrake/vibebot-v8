@@ -2309,6 +2309,50 @@ class TestInvalidCommandRouting:
 
         plugin._ask_impl.assert_not_called()
 
+    def test_addressed_dispatch_offloaded_to_daemon_thread(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Addressed dispatch runs on a daemon thread, not inline.
+
+        Regression for typing lag: doPrivmsg/invalidCommand execute on the
+        IRC driver thread, which only flushes the outbound queue after the
+        callback returns. Running LLM generation inline pins the driver so
+        the +typing indicator can't leave the socket until the reply is
+        ready. The dispatch must be offloaded so the driver is freed to
+        flush typing immediately.
+        """
+        msg = mocker.MagicMock()
+        captured: dict = {}
+
+        class _FakeThread:
+            def __init__(self, target, name=None, daemon=None):  # type: ignore[no-untyped-def]
+                captured["target"] = target
+                captured["name"] = name
+                captured["daemon"] = daemon
+                captured["started"] = False
+
+            def start(self) -> None:
+                captured["started"] = True
+
+        mocker.patch("llm.plugin.world.SupyThread", _FakeThread)
+        plugin._dispatch_with_verse_routing = mocker.MagicMock()
+
+        preflight = mocker.MagicMock(blocked=False, nick="u", channel="#c", account=None)
+        plugin._dispatch_addressed_async(
+            mock_irc, msg, "hi there", preflight, entry_route="addressed"
+        )
+
+        # Created as a started daemon thread; dispatch has NOT run inline on
+        # the calling (driver) thread.
+        assert captured["daemon"] is True
+        assert captured["started"] is True
+        plugin._dispatch_with_verse_routing.assert_not_called()
+
+        # Invoking the thread target performs the actual dispatch.
+        captured["target"]()
+        plugin._dispatch_with_verse_routing.assert_called_once()
+        assert plugin._dispatch_with_verse_routing.call_args.kwargs["entry_route"] == "addressed"
+
 
 # =========================================================================
 # Integration tests (real DB + context)

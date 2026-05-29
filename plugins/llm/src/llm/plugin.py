@@ -1851,7 +1851,7 @@ class LLM(callbacks.Plugin):
         if preflight.blocked:
             return
 
-        self._dispatch_with_verse_routing(irc, msg, text, preflight, entry_route="invalid_command")
+        self._dispatch_addressed_async(irc, msg, text, preflight, entry_route="invalid_command")
 
     @staticmethod
     def _strip_nick_prefix(bot_nick: str, text: str) -> str | None:
@@ -1882,7 +1882,64 @@ class LLM(callbacks.Plugin):
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if preflight.blocked:
             return
-        self._dispatch_with_verse_routing(irc, msg, text, preflight, entry_route="addressed")
+        self._dispatch_addressed_async(irc, msg, text, preflight, entry_route="addressed")
+
+    def _dispatch_addressed_async(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        text: str,
+        preflight: PreflightResult,
+        *,
+        entry_route: str,
+    ) -> None:
+        """Run addressed-text dispatch in a daemon thread so the IRC driver
+        thread is freed to flush the typing indicator immediately.
+
+        ``doPrivmsg`` (nick-addressed text and PMs) and ``invalidCommand``
+        (bare ``vibebot foo`` that isn't a known command) are ``do*`` /
+        invalid-command callbacks that Limnoria runs **synchronously** inside
+        ``Irc.feedMsg`` on the socket driver's thread. That driver only
+        flushes its outbound queue *after* the callback returns:
+        ``supybot.drivers.Socket._read`` loops ``feedMsg`` over every received
+        line, then calls ``_sendIfMsgs`` once at the end. Running the
+        multi-second LLM generation inline therefore pins the driver — the
+        ``+typing=active`` TAGMSG that ``_begin_typing`` enqueues cannot leave
+        the socket until generation finishes, so "is composing" only shows up
+        at the same instant as the reply. (Moving ``_begin_typing`` earlier in
+        the call chain — already done — can't fix this; the bottleneck is the
+        blocked flush, not call ordering.)
+
+        Explicit ``@``-prefixed commands don't lag because Limnoria already
+        runs them in a ``CommandThread`` (see ``callbacks.py``), which frees
+        the driver to flush right away — that's why ``@ask`` shows typing
+        promptly but nick-addressing doesn't. Offloading here mirrors that: a
+        daemon ``SupyThread`` runs the dispatch, the callback returns at once,
+        and the driver flushes the typing TAGMSG on its next loop iteration.
+        LLM concurrency stays bounded by the ``_llm_executor.permit()`` inside
+        ``_ask_impl`` (identical to the command path), so this unblocks the
+        driver without adding new concurrency.
+
+        Deliberately NOT routed through ``_llm_executor.submit``: that worker
+        acquires the concurrency semaphore itself, and ``_ask_impl`` acquires
+        it again via ``permit()``, so a submitted dispatch would double-acquire
+        and deadlock once the pool fills — ``submit`` guards against exactly
+        this nesting with ``RecursiveSubmitError``.
+        """
+
+        def _work() -> None:
+            try:
+                self._dispatch_with_verse_routing(
+                    irc, msg, text, preflight, entry_route=entry_route
+                )
+            except Exception:
+                self.log.exception("addressed dispatch failed in worker thread")
+
+        world.SupyThread(
+            target=_work,
+            name=f"llm-addressed-{entry_route}",
+            daemon=True,
+        ).start()
 
     def _account_from_msg(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
         """Resolve the requesting user's account name from an incoming message.
