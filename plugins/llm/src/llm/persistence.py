@@ -165,6 +165,11 @@ class LLMDatabase:
         """
         self.db_path = db_path
         self._local = threading.local()
+        # Set by close() (die()/__del__). A straggler worker or untracked
+        # daemon thread that touches the DB after teardown then fails loudly
+        # in _connect() instead of silently reopening a connection to a
+        # database the process is finished with.
+        self._closed = False
         self._migrate()
 
     def _connect(self) -> sqlite3.Connection:
@@ -182,6 +187,8 @@ class LLMDatabase:
         Returns:
             A sqlite3.Connection with WAL journal mode.
         """
+        if self._closed:
+            raise RuntimeError("LLMDatabase is closed")
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is not None:
             try:
@@ -507,7 +514,15 @@ class LLMDatabase:
         conn.commit()
 
     def close(self) -> None:
-        """Close the current thread's connection if open."""
+        """Close the current thread's connection and mark the DB closed.
+
+        Called only from ``die()`` and ``__del__`` (teardown), so marking
+        the whole object closed is safe — it does not interfere with the
+        per-connection transparent-reconnect path in ``_connect()``, which
+        operates on a caller-closed borrowed connection rather than this
+        method.
+        """
+        self._closed = True
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is not None:
             conn.close()

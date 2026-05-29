@@ -77,6 +77,19 @@ class TestDatabaseInit:
         assert Path(db_path).exists()
         db.close()
 
+    def test_connect_raises_after_close(self, tmp_path: Path) -> None:
+        """GIVEN a closed database WHEN a connection is requested THEN
+        _connect raises instead of silently reopening.
+
+        Teardown backstop: a straggler worker or untracked daemon thread
+        touching the DB after die() must fail loudly, not reopen a
+        connection to a database the process is finished with.
+        """
+        db = LLMDatabase(str(tmp_path / "test.db"))
+        db.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            db._connect()
+
     def test_creates_reminders_table(self, test_db: LLMDatabase) -> None:
         """GIVEN a new database WHEN initialized THEN reminders table exists."""
         conn = test_db._connect()

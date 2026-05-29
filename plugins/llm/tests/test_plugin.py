@@ -2804,6 +2804,9 @@ class TestInvalidCommand:
         plugin.registryValue = mocker.MagicMock(return_value=True)
         # Limnoria's MetaSynchronized requires this lock for synchronized methods
         plugin._MetaSynchronized_rlock = threading.RLock()
+        # _dispatch_addressed_async's worker checks _llm_executor.closing
+        # before doing any work; closing=False so the dispatch proceeds.
+        plugin._llm_executor = mocker.MagicMock(closing=False)
         # Stub out verse routing — TestInvalidCommand asserts only that the
         # chat path delegates to _ask_impl. Verse routing is covered by
         # TestVerseRouting / TestAskCommand fixtures.
@@ -7393,6 +7396,42 @@ class TestCompactionTimerWiring:
         attempt registration; the registered name is ``llm_verse_compact``."""
         plugin, _irc, _msg = plugin_env
         assert plugin._compaction_timer_name == "llm_verse_compact"
+
+    def test_compaction_tick_offloads_pass_to_executor(self, plugin_env, mocker) -> None:
+        """``_compaction_tick`` hands ``_run_compaction_pass`` to the executor
+        rather than running it inline.
+
+        The daily timer fires on Limnoria's scheduler thread (the IRC
+        driver's main loop); ``_run_compaction_pass`` makes a blocking LLM
+        call per verse-enabled channel, so running it inline would pin the
+        driver — the same bug class as the addressed-message typing lag.
+        """
+        plugin, _irc, _msg = plugin_env
+        plugin._run_compaction_pass = mocker.MagicMock()
+        plugin._register_compaction_timer = mocker.MagicMock()
+        plugin._llm_executor = mocker.MagicMock(closing=False)
+
+        plugin._compaction_tick()
+
+        plugin._run_compaction_pass.assert_not_called()  # offloaded, not inline
+        plugin._llm_executor.submit.assert_called_once_with(
+            "verse_compaction", plugin._run_compaction_pass
+        )
+        plugin._register_compaction_timer.assert_called_once()  # timer always re-arms
+
+    def test_compaction_tick_skips_submit_when_closing(self, plugin_env, mocker) -> None:
+        """During shutdown the pass is not submitted (executor closing), but
+        the timer re-arm still runs in ``finally``."""
+        plugin, _irc, _msg = plugin_env
+        plugin._run_compaction_pass = mocker.MagicMock()
+        plugin._register_compaction_timer = mocker.MagicMock()
+        plugin._llm_executor = mocker.MagicMock(closing=True)
+
+        plugin._compaction_tick()
+
+        plugin._llm_executor.submit.assert_not_called()
+        plugin._run_compaction_pass.assert_not_called()
+        plugin._register_compaction_timer.assert_called_once()
 
     def test_compaction_callback_walks_verse_enabled_channels(
         self, plugin_env, mocker, monkeypatch

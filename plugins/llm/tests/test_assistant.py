@@ -2353,6 +2353,34 @@ class TestInvalidCommandRouting:
         plugin._dispatch_with_verse_routing.assert_called_once()
         assert plugin._dispatch_with_verse_routing.call_args.kwargs["entry_route"] == "addressed"
 
+    def test_addressed_dispatch_worker_bails_when_closing(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """If shutdown began before the worker runs, it bails before any
+        dispatch/DB work — these daemon threads are untracked and not
+        awaited by _llm_executor.drain(), so the closing flag is their only
+        guard against reading a database die() is tearing down.
+        """
+        msg = mocker.MagicMock()
+        captured: dict = {}
+
+        class _FakeThread:
+            def __init__(self, target, name=None, daemon=None):  # type: ignore[no-untyped-def]
+                captured["target"] = target
+
+            def start(self) -> None:
+                pass
+
+        mocker.patch("llm.plugin.world.SupyThread", _FakeThread)
+        plugin._dispatch_with_verse_routing = mocker.MagicMock()
+        plugin._llm_executor = mocker.MagicMock(closing=True)
+
+        preflight = mocker.MagicMock(blocked=False, nick="u", channel="#c", account=None)
+        plugin._dispatch_addressed_async(mock_irc, msg, "hi", preflight, entry_route="addressed")
+
+        captured["target"]()  # run the worker
+        plugin._dispatch_with_verse_routing.assert_not_called()
+
 
 # =========================================================================
 # Integration tests (real DB + context)

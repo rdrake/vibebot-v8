@@ -1928,6 +1928,14 @@ class LLM(callbacks.Plugin):
         """
 
         def _work() -> None:
+            # Shutdown may have begun between spawn and execution. Bail
+            # before any DB/LLM work so we don't read a database that die()
+            # is tearing down: die() flips the executor's closing flag first
+            # thing, so it doubles as the "shutdown in progress" signal for
+            # these daemon threads, which are untracked and not awaited by
+            # _llm_executor.drain().
+            if self._llm_executor.closing:
+                return
             try:
                 self._dispatch_with_verse_routing(
                     irc, msg, text, preflight, entry_route=entry_route
@@ -5078,13 +5086,23 @@ class LLM(callbacks.Plugin):
         cancel_daily_timer(schedule_module=schedule, name=self._compaction_timer_name)
 
     def _compaction_tick(self) -> None:
-        """One firing of the daily timer: do work, then re-arm.
+        """One firing of the daily timer: offload the pass, then re-arm.
 
-        The re-arm runs in ``finally`` so a failed pass never kills the
-        timer — the next day still gets a shot.
+        ``_run_compaction_pass`` makes one blocking LLM call per
+        verse-enabled channel. This callback fires on Limnoria's scheduler
+        thread — the IRC driver's main loop — which cannot flush the
+        outbound queue or answer PINGs while a callback runs. So the work is
+        handed to ``_llm_executor`` instead of running inline; the loom
+        offloads its phases the same way, and ``_dispatch_addressed_async``
+        carries the full rationale for why blocking the driver thread is the
+        bug to avoid. The re-arm runs in ``finally`` so a failed submit never
+        kills the timer — the next day still gets a shot.
         """
         try:
-            self._run_compaction_pass()
+            if not self._llm_executor.closing:
+                self._llm_executor.submit("verse_compaction", self._run_compaction_pass)
+        except Exception:
+            self.log.exception("verse compaction submit failed")
         finally:
             self._register_compaction_timer()
 
