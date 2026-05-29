@@ -294,6 +294,7 @@ class TestPluginHelperMethods:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         plugin._migrated_nicks = set()
+        plugin._migrated_nicks_lock = threading.Lock()
         plugin.db = mocker.MagicMock()
         plugin.db.migrate_nick.return_value = 0
         plugin.db.migrate_conversations.return_value = 0
@@ -962,6 +963,7 @@ class TestDoPrivmsg:
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
         plugin._migrated_nicks = set()
+        plugin._migrated_nicks_lock = threading.Lock()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
         # Loom caches (PR 2). Tests that exercise the loom hook set _loom
         # explicitly; default state here is "loom not wired".
@@ -4147,6 +4149,7 @@ class TestRunPreflight:
         p._rate_buckets = {}
         p._rate_buckets_lock = threading.Lock()
         p._migrated_nicks = set()
+        p._migrated_nicks_lock = threading.Lock()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 15,

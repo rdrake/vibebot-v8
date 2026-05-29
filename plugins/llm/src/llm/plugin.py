@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 
     from .assistant import ToolCallbackResult, ToolResult
     from .service import PendingTaskResult
+    from .verse.crosspoll_store import CrosspollStore
 
 _ = PluginInternationalization("LLM")
 
@@ -657,6 +658,7 @@ class LLM(callbacks.Plugin):
 
         # Track nicks already migrated to account-based identity this session
         self._migrated_nicks: set[str] = set()
+        self._migrated_nicks_lock = threading.Lock()
 
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
@@ -672,9 +674,14 @@ class LLM(callbacks.Plugin):
         self._verse_stores: dict[str, VerseStore] = {}
         self._verse_stores_lock = threading.Lock()
 
+        # Process-wide CrosspollStore singleton (lazily created on first use).
+        self._crosspoll_store: CrosspollStore | None = None
+        self._crosspoll_store_lock = threading.Lock()
+
         # In-memory versepurge confirmation tokens: channel -> (token, expires_at).
         # Resets on plugin reload/bot restart (by design; documented in operator guide).
         self._versepurge_tokens: dict[str, tuple[str, float]] = {}
+        self._versepurge_tokens_lock = threading.Lock()
 
         # Forest-verse loom orchestrator (PR 2). All four caches must be
         # initialised before doPrivmsg can run so the transcript hook never
@@ -2029,9 +2036,15 @@ class LLM(callbacks.Plugin):
         if ircutils.toLower(old_nick) == ircutils.toLower(account):
             return
         key = ircutils.toLower(old_nick)
-        if key in self._migrated_nicks:
-            return
-        self._migrated_nicks.add(key)
+        # Atomically claim the migration so concurrent request threads (the
+        # @-command CommandThread, the addressed-dispatch SupyThread, and
+        # executor workers all reach this) can't both run the body below.
+        # The DB work stays outside the lock — only the claim needs to be
+        # serialized.
+        with self._migrated_nicks_lock:
+            if key in self._migrated_nicks:
+                return
+            self._migrated_nicks.add(key)
         usage_count = self.db.migrate_nick(old_nick, account)
         if usage_count > 0:
             self.log.info("Migrated %d usage row(s) from %s to %s", usage_count, old_nick, account)
@@ -5225,9 +5238,15 @@ class LLM(callbacks.Plugin):
         the per-channel VerseStores."""
         from .verse.crosspoll_store import CrosspollStore
 
-        if getattr(self, "_crosspoll_store", None) is None:
-            base = Path(conf.supybot.directories.data()) / "verse"
-            self._crosspoll_store = CrosspollStore(base)
+        # Double-checked locking: the verse bridge calls this from command
+        # threads, the addressed-dispatch SupyThread, and executor workers.
+        # Without the lock two first-callers could each construct a store
+        # (each opening its own SQLite connection) and one would be orphaned.
+        if self._crosspoll_store is None:
+            with self._crosspoll_store_lock:
+                if self._crosspoll_store is None:
+                    base = Path(conf.supybot.directories.data()) / "verse"
+                    self._crosspoll_store = CrosspollStore(base)
         return self._crosspoll_store
 
     def verseopt(
@@ -5592,18 +5611,21 @@ class LLM(callbacks.Plugin):
         Clears expired tokens on False return.  Uses secrets.compare_digest
         to avoid timing side-channels.
         """
-        entry = self._versepurge_tokens.get(channel)
-        if entry is None:
+        # Lock the check-and-clear so two confirmations can't both consume
+        # the same token (the read, compare, and delete must be atomic).
+        with self._versepurge_tokens_lock:
+            entry = self._versepurge_tokens.get(channel)
+            if entry is None:
+                return False
+            stored_token, expires_at = entry
+            if now_func() >= expires_at:
+                # Expired — clear stale entry.
+                del self._versepurge_tokens[channel]
+                return False
+            if secrets.compare_digest(stored_token, presented):
+                del self._versepurge_tokens[channel]
+                return True
             return False
-        stored_token, expires_at = entry
-        if now_func() >= expires_at:
-            # Expired — clear stale entry.
-            del self._versepurge_tokens[channel]
-            return False
-        if secrets.compare_digest(stored_token, presented):
-            del self._versepurge_tokens[channel]
-            return True
-        return False
 
     def versepurge(
         self,
@@ -5668,26 +5690,30 @@ class LLM(callbacks.Plugin):
                     prefixNick=False,
                 )
         else:
-            # Step 1: issue (or reissue) token.
+            # Step 1: issue (or reissue) token. Lock the read-modify-write so
+            # two concurrent issuances can't clobber each other's token.
             new_token = secrets.token_hex(3)
-            existing = self._versepurge_tokens.get(channel)
-            if existing is not None:
-                _, exp = existing
-                if time.time() < exp:
-                    # Reissue while old token still valid — invalidate old one.
-                    self._versepurge_tokens[channel] = (new_token, time.time() + 60.0)
-                    irc.reply(
-                        f"Previous token invalidated. Confirm with @versepurge {channel}"
-                        f" {new_token} within 60s.",
-                        prefixNick=False,
-                    )
-                    return
-                # Old token expired — fall through to fresh issue.
-            self._versepurge_tokens[channel] = (new_token, time.time() + 60.0)
-            irc.reply(
-                f"Confirm with @versepurge {channel} {new_token} within 60s.",
-                prefixNick=False,
-            )
+            with self._versepurge_tokens_lock:
+                existing = self._versepurge_tokens.get(channel)
+                reissued = False
+                if existing is not None:
+                    _, exp = existing
+                    if time.time() < exp:
+                        # Reissue while old token still valid — invalidate old one.
+                        reissued = True
+                    # Old token expired — fall through to fresh issue.
+                self._versepurge_tokens[channel] = (new_token, time.time() + 60.0)
+            if reissued:
+                irc.reply(
+                    f"Previous token invalidated. Confirm with @versepurge {channel}"
+                    f" {new_token} within 60s.",
+                    prefixNick=False,
+                )
+            else:
+                irc.reply(
+                    f"Confirm with @versepurge {channel} {new_token} within 60s.",
+                    prefixNick=False,
+                )
 
     versepurge = wrap(versepurge, [optional("text")])
 
