@@ -697,14 +697,44 @@ class Loom:
                 "releasing claim so a future cycle can re-claim",
                 seed.id,
             )
+            self._release_claim_with_retry(cx, seed.id, channel)
+
+    def _release_claim_with_retry(
+        self, cx: Any, seed_id: int, channel: str, *, attempts: int = 3
+    ) -> bool:
+        """Release a crosspoll claim, retrying transient failures.
+
+        ``release_claim`` is a single DELETE under a write lock, so a failure
+        is almost always a transient SQLite lock that clears on retry. Without
+        a successful release the consumption row is permanent and the seed is
+        orphaned (lost for this dest forever). Retry a few times; if it still
+        fails, log at ERROR with the seed/channel so an operator can clean up.
+
+        Returns True if the claim was released, False if every attempt failed.
+        """
+        for attempt in range(1, attempts + 1):
             try:
-                cx.release_claim(seed.id, channel)
+                cx.release_claim(seed_id, channel)
+                return True
             except Exception:
-                self._log.exception(
-                    "crosspoll: release_claim failed for seed %s; consumption "
-                    "row remains and seed is lost for this dest",
-                    seed.id,
+                if attempt == attempts:
+                    self._log.error(
+                        "crosspoll: release_claim failed %d times for seed %s "
+                        "dest=%s; consumption row orphaned, seed lost for this "
+                        "dest until manual cleanup",
+                        attempts,
+                        seed_id,
+                        channel,
+                        exc_info=True,
+                    )
+                    return False
+                self._log.warning(
+                    "crosspoll: release_claim attempt %d/%d failed for seed %s; retrying",
+                    attempt,
+                    attempts,
+                    seed_id,
                 )
+        return False
 
     def _seed_phase(self, cycle: LoomCycle) -> None:
         messages = [

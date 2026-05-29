@@ -747,6 +747,28 @@ class TestDispatchContract:
             assert result.payload == {"status": "ok"}
             assert result.error is None
 
+    def test_verse_record_on_retired_avatar_returns_error(self, store: VerseStore) -> None:
+        """A retired avatar's verse_record must fail loudly (ok=False with a
+        model-facing error) instead of silently swallowing the store's
+        not-active ValueError — and must write no event."""
+        from llm.verse.avatar import (
+            VerseDispatchResult,
+            dispatch_verse_tool_call,
+        )
+
+        alice_id = _opt_in(store)
+        store.unlink_avatar(alice_id)  # retire
+        events_before = len(store.recent_events(limit=100))
+
+        result = dispatch_verse_tool_call(
+            store, alice_id, "verse_record", {"summary": "did a thing"}
+        )
+
+        assert isinstance(result, VerseDispatchResult)
+        assert result.ok is False
+        assert "retired" in (result.error or "")
+        assert len(store.recent_events(limit=100)) == events_before
+
     def test_unknown_tool_returns_ok_with_warning(
         self, store: VerseStore, caplog: pytest.LogCaptureFixture
     ) -> None:

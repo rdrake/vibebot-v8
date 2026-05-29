@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -14,7 +15,23 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
 
+_log = logging.getLogger(__name__)
+
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
+
+
+def _parse_entity_ids(raw: str, event_id: object) -> tuple[int, ...]:
+    """Decode an event's stored entity_ids JSON, degrading to () on corruption.
+
+    A single malformed row must not crash a whole recent_events() read (manual
+    DB edits, partial writes, or older bad data could otherwise take the verse
+    down). Bad rows are logged and treated as having no entities.
+    """
+    try:
+        return tuple(int(x) for x in json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        _log.warning("event %s has invalid entity_ids %r; treating as empty", event_id, raw)
+        return ()
 
 
 class Entity(NamedTuple):
@@ -554,7 +571,7 @@ class VerseStore:
                 id=row[0],
                 ts=row[1],
                 summary=row[2],
-                entity_ids=tuple(int(x) for x in json.loads(row[3])),
+                entity_ids=_parse_entity_ids(row[3], row[0]),
                 source=row[4],
             )
             for row in rows
@@ -635,7 +652,7 @@ class VerseStore:
                     id=row[0],
                     ts=row[1],
                     summary=row[2],
-                    entity_ids=tuple(int(x) for x in json.loads(row[3])),
+                    entity_ids=_parse_entity_ids(row[3], row[0]),
                     source=row[4],
                 )
                 for row in cur.fetchall()

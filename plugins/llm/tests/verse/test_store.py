@@ -341,6 +341,24 @@ class TestEventsCrud:
         events = store.recent_events()
         assert events[0].entity_ids == ()
 
+    def test_recent_events_survives_corrupt_entity_ids(self, verse_db_dir: Path) -> None:
+        """A row with malformed entity_ids JSON must not crash recent_events:
+        the bad row's entity_ids degrade to empty and valid rows still load."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.add_event("good event", [1, 2], "avatar")
+        bad_id = store.add_event("bad event", [3], "avatar")
+        # Corrupt the entity_ids JSON for the bad row directly.
+        with store.write_transaction() as conn:
+            conn.execute("UPDATE events SET entity_ids = ? WHERE id = ?", ("}{nope", bad_id))
+
+        events = store.recent_events()  # must not raise
+
+        summaries = {e.summary: e.entity_ids for e in events}
+        assert summaries["good event"] == (1, 2)
+        assert summaries["bad event"] == ()
+
     def test_recent_events_newest_first(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 

@@ -1998,6 +1998,106 @@ class TestLoomTickConsumesSeed:
         # After the failed insert + release, the seed is pending again.
         assert cx.pending_count_for("#afnet") == 1
 
+    def test_release_claim_retries_transient_failure(self, tmp_path: Path) -> None:
+        """A transient release_claim failure (e.g. a momentary SQLite lock)
+        after a proposal-insert failure must be retried so the seed is NOT
+        orphaned: the consumption row is eventually removed and the seed
+        becomes pending again."""
+        import sqlite3
+
+        from llm.verse.crosspoll_store import CrosspollStore
+        from llm.verse.loom import (
+            Loom,
+            LoomCallUsage,
+            LoomConfig,
+            VerseSnapshot,
+        )
+
+        cx = CrosspollStore(tmp_path / "verse")
+        cx.enqueue_seed(source_channel="#other", summary="doomed", payload={})
+
+        # release_claim raises on its first call, then delegates to the real
+        # implementation — simulating a transient lock that clears on retry.
+        real_release = cx.release_claim
+        calls = {"n": 0}
+
+        def flaky_release(seed_id: int, dest_channel: str) -> bool:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real_release(seed_id, dest_channel)
+
+        cx.release_claim = flaky_release  # type: ignore[method-assign]
+
+        class BoomStore:
+            def add_proposal(self, **kw):
+                raise RuntimeError("disk full")
+
+        class FakeClient:
+            def call(self, **kw):
+                return "", LoomCallUsage(0, 0, 0.0)
+
+        class FakeBridge:
+            def list_candidate_channels(self):
+                return ["#afnet"]
+
+            def candidate_weight(self, channel):
+                return 1
+
+            def snapshot(self, channel):
+                return VerseSnapshot(
+                    channel=channel, summary="x", top_entities=[], recent_events=[]
+                )
+
+            def post_to_loom_channel(self, text):
+                return True
+
+            def schedule_after(self, *a, **kw):
+                pass
+
+            def submit(self, label, fn):
+                fn()
+
+            def now(self):
+                return 1000.0
+
+            def store_for(self, channel):
+                return BoomStore()
+
+            def log_usage(self, **kw):
+                pass
+
+            def crosspoll_store(self):
+                return cx
+
+            def verse_allow_send(self, channel):
+                return False
+
+            def verse_allow_receive(self, channel):
+                return True
+
+        cfg = LoomConfig(
+            network="afnet",
+            loom_channel="#forest",
+            bot_nicks=(),
+            model="m",
+            cycle_interval_s=300,
+            verse_cooldown_s=1200,
+            beat_window_s=90,
+            transcript_max_lines=40,
+            transcript_max_chars=8000,
+            auto_apply_threshold=0.85,
+            crosspoll_per_cycle_limit=1,
+        )
+        assert cx.pending_count_for("#afnet") == 1
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.tick()
+
+        # The release was retried past the first transient failure...
+        assert calls["n"] >= 2
+        # ...so the consumption row was removed and the seed is pending again.
+        assert cx.pending_count_for("#afnet") == 1
+
     def test_consume_swallows_bridge_construction_failure(self, verse_db_dir: Path) -> None:
         """Regression: ``crosspoll_store()`` raising during the receive
         hook must NOT abort the loom tick — the seed/beat/digest path

@@ -557,6 +557,13 @@ def _dispatch_verse_record(
     max=2 yields ``["alice", "bob"]`` rather than ``["alice"]``.
     """
     _ = log  # currently unused; kept for symmetry with other branches
+    # Retired-avatar guard (mirrors verse_act): fail with a model-facing error
+    # instead of letting record_user_event raise into the broad dispatch except,
+    # which would silently swallow it. Also closes the TOCTOU window where the
+    # avatar retires between dispatch and the write.
+    avatar = store.get_entity(avatar_id)
+    if avatar is None or avatar.status == "retired":
+        return VerseDispatchResult(ok=False, error="avatar retired")
     summary = (args.get("summary") or "").strip()
     if not summary:
         return VerseDispatchResult(ok=False, error="summary required")
