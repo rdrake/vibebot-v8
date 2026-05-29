@@ -135,6 +135,19 @@ class TestVerseAct:
         # Exact scene_shift text
         assert result.scene_shift_text == "You can't find that place."
 
+    def test_move_to_retired_place_is_not_resolved(self, store: VerseStore) -> None:
+        """A retired place is not a valid move target: verse_act must treat it
+        as not-found rather than relocating the avatar into a dead entity."""
+        alice_id = _opt_in(store)
+        gone_id = store.add_entity("place", "GhostTown", "Abandoned.")
+        store.set_status(gone_id, "retired")
+        original_location = store.get_attribute(alice_id, "location")
+
+        result = verse_act(store, alice_id, "move", target="GhostTown")
+
+        assert result.scene_shift_text == "You can't find that place."
+        assert store.get_attribute(alice_id, "location") == original_location
+
     def test_move_verb_via_avatar_target_resolves_to_their_location(
         self, store: VerseStore
     ) -> None:

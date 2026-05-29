@@ -213,14 +213,23 @@ class VerseStore:
             row = conn.execute("SELECT 1 FROM entities WHERE id = ?", (eid,)).fetchone()
         return row is not None
 
-    def find_entity_by_name(self, name: str, kind: str | None = None) -> Entity | None:
-        """Case-insensitive name lookup. Optional kind filter. Returns first match by id."""
+    def find_entity_by_name(
+        self, name: str, kind: str | None = None, *, active_only: bool = False
+    ) -> Entity | None:
+        """Case-insensitive name lookup. Optional kind filter. Returns first match by id.
+
+        When ``active_only`` is True, retired entities are excluded — use it
+        when resolving an action target (a retired place/avatar/item is not a
+        valid thing to interact with).
+        """
         kind_filter = "AND kind = ?" if kind is not None else ""
+        active_filter = "AND status = 'active'" if active_only else ""
         sql = (
             "SELECT id, kind, name, summary, status, created_at, updated_at"
             " FROM entities"
             f" WHERE LOWER(name) = LOWER(?)"
             f" {kind_filter}"
+            f" {active_filter}"
             " ORDER BY id ASC LIMIT 1"
         )
         params = (name, kind) if kind is not None else (name,)

@@ -210,15 +210,19 @@ def verse_act(
 
     # 3. MOVE
     if effect is VerbEffect.MOVE:
-        place = store.find_entity_by_name(target or "", kind="place") if target else None
+        place = (
+            store.find_entity_by_name(target or "", kind="place", active_only=True)
+            if target
+            else None
+        )
 
         if place is None and target is not None:
             # Try resolving target as another avatar's name, then use their location
-            other = store.find_entity_by_name(target, kind="avatar")
+            other = store.find_entity_by_name(target, kind="avatar", active_only=True)
             if other is not None:
                 loc = store.get_attribute(other.id, "location")
                 if loc is not None:
-                    place = store.find_entity_by_name(loc, kind="place")
+                    place = store.find_entity_by_name(loc, kind="place", active_only=True)
 
         if place is not None:
             store.set_attribute(avatar_id, "location", place.name)
@@ -238,7 +242,11 @@ def verse_act(
 
     # 4. ITEM
     if effect is VerbEffect.ITEM:
-        item = store.find_entity_by_name(target or "", kind="item") if target else None
+        item = (
+            store.find_entity_by_name(target or "", kind="item", active_only=True)
+            if target
+            else None
+        )
 
         if item is not None:
             event_id = store.add_event(
