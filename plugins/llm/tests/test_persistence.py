@@ -1353,6 +1353,27 @@ class TestConversationPersistence:
         assert len(loaded) == 1
         assert loaded[0][0] == "good"
 
+    def test_load_removes_multiple_corrupt_rows_atomically(self, test_db: LLMDatabase) -> None:
+        """GIVEN several corrupt rows interleaved with valid ones WHEN load THEN
+        all corrupt rows are removed and every valid row is returned."""
+        conn = test_db._connect()
+        test_db.save_conversation("good1", "#chan", [{"role": "user", "content": "a"}], 1000.0)
+        for bad in ("bad1", "bad2", "bad3"):
+            conn.execute(
+                "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
+                "VALUES (?, ?, ?, ?)",
+                (bad, "#chan", "}{not json", 1000.0),
+            )
+        conn.commit()
+        test_db.save_conversation("good2", "#chan", [{"role": "user", "content": "b"}], 1000.0)
+
+        loaded = test_db.load_conversations()
+        assert {row[0] for row in loaded} == {"good1", "good2"}
+
+        # Corrupt rows are gone from the DB, not just filtered from the result.
+        remaining = {r[0] for r in conn.execute("SELECT nick FROM conversations").fetchall()}
+        assert remaining == {"good1", "good2"}
+
 
 class TestMemoryPersistence:
     """Test memory persistence methods."""

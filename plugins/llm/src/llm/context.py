@@ -69,6 +69,7 @@ class ConversationContext:
         """
         self.config = config
         self._db = db
+        self._log = logging.getLogger("supybot.plugins.LLM")
         self._lock = Lock()
         # Key: (nick, channel) -> Conversation
         self._conversations: dict[tuple[str, str], Conversation] = {}
@@ -80,6 +81,21 @@ class ConversationContext:
         if self._db is not None:
             self._load_from_db()
 
+    def _best_effort_db(self, what: str, method: str, *args: object) -> None:
+        """Run a persistence op by name, logging and swallowing any failure.
+
+        Conversation context is primarily in-memory; the database is a
+        best-effort persistence/recovery layer. A failed write or cleanup must
+        never crash the caller (an IRC command worker) or plugin startup — the
+        in-memory state stays the live source of truth for the session.
+        """
+        if self._db is None:
+            return
+        try:
+            getattr(self._db, method)(*args)
+        except Exception:
+            self._log.warning("context db %s failed (continuing)", what, exc_info=True)
+
     def _load_from_db(self) -> None:
         """Load persisted conversations from the database at startup."""
         assert self._db is not None
@@ -90,7 +106,7 @@ class ConversationContext:
         loaded = 0
         for nick, channel, messages, last_activity in rows:
             if now - last_activity > timeout_seconds:
-                self._db.delete_conversation(nick, channel)
+                self._best_effort_db("startup delete", "delete_conversation", nick, channel)
                 continue
             key = (nick, channel)  # already lowercased by load_conversations
             self._conversations[key] = Conversation(messages=messages, last_activity=last_activity)
@@ -175,8 +191,7 @@ class ConversationContext:
         ]
         for key in expired_keys:
             del self._conversations[key]
-            if self._db is not None:
-                self._db.delete_conversation(key[0], key[1])
+            self._best_effort_db("prune delete", "delete_conversation", key[0], key[1])
 
         # Also prune expired channel contexts
         expired_channels = [
@@ -225,8 +240,10 @@ class ConversationContext:
                 # Remove oldest messages, keeping most recent
                 conv.messages = conv.messages[-cfg.max_messages :]
 
-            if persist and self._db is not None:
-                self._db.save_conversation(nick, channel, conv.messages, conv.last_activity)
+            if persist:
+                self._best_effort_db(
+                    "save", "save_conversation", nick, channel, conv.messages, conv.last_activity
+                )
 
     def get_messages(
         self,
@@ -366,8 +383,7 @@ class ConversationContext:
             key = self._get_key(nick, channel)
             if key in self._conversations:
                 del self._conversations[key]
-                if self._db is not None:
-                    self._db.delete_conversation(nick, channel)
+                self._best_effort_db("clear delete", "delete_conversation", nick, channel)
                 return True
             return False
 

@@ -581,3 +581,70 @@ class TestChannelContextPrune:
 
         assert stats["active_channels"] == 0
         assert stats["channel_messages"] == 0
+
+
+class TestContextDbResilience:
+    """DB errors are best-effort: persistence/cleanup failures must never crash
+    the caller or plugin startup. In-memory state remains the live source of
+    truth for the session."""
+
+    _CFG = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+
+    def _mock_db(self, mocker: MockerFixture):
+        db = mocker.MagicMock()
+        db.load_conversations.return_value = []
+        return db
+
+    def test_add_message_survives_db_save_failure(self, mocker: MockerFixture) -> None:
+        """A failed save_conversation must not propagate; the message stays in RAM."""
+        import sqlite3
+
+        db = self._mock_db(mocker)
+        db.save_conversation.side_effect = sqlite3.OperationalError("disk I/O error")
+        ctx = ConversationContext(self._CFG, db=db)
+
+        ctx.add_message("user1", "#chan", "user", "Hello")  # must not raise
+
+        assert ctx.get_messages("user1", "#chan") == [{"role": "user", "content": "Hello"}]
+
+    def test_startup_survives_delete_failure_on_expired(self, mocker: MockerFixture) -> None:
+        """A delete failure while pruning an expired row at startup must not
+        crash plugin initialization."""
+        import sqlite3
+
+        db = self._mock_db(mocker)
+        db.load_conversations.return_value = [
+            ("old", "#chan", [{"role": "user", "content": "hi"}], 0.0)  # last_activity=0 → expired
+        ]
+        db.delete_conversation.side_effect = sqlite3.OperationalError("database is locked")
+
+        ConversationContext(self._CFG, db=db)  # must not raise
+
+    def test_clear_survives_db_delete_failure(self, mocker: MockerFixture) -> None:
+        """A failed delete_conversation in clear() must not propagate; RAM is
+        still cleared so the user's forget request is honored for the session."""
+        import sqlite3
+
+        db = self._mock_db(mocker)
+        ctx = ConversationContext(self._CFG, db=db)
+        ctx.add_message("user1", "#chan", "user", "Hello", persist=False)
+        db.delete_conversation.side_effect = sqlite3.OperationalError("locked")
+
+        assert ctx.clear("user1", "#chan") is True
+        assert ctx.get_messages("user1", "#chan") == []
+
+    def test_prune_survives_db_delete_failure(self, mocker: MockerFixture) -> None:
+        """A delete failure while pruning one expired row must not propagate and
+        must not block removing it from RAM."""
+        import sqlite3
+
+        db = self._mock_db(mocker)
+        ctx = ConversationContext(self._CFG, db=db)
+        ctx._conversations[("old", "#chan")] = Conversation(
+            messages=[{"role": "user", "content": "x"}], last_activity=0.0
+        )
+        db.delete_conversation.side_effect = sqlite3.OperationalError("locked")
+
+        ctx.add_message("new", "#chan", "user", "hi")  # triggers prune; must not raise
+
+        assert ("old", "#chan") not in ctx._conversations

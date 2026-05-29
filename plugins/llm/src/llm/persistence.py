@@ -500,8 +500,10 @@ class LLMDatabase:
             conn.commit()
 
         # Stamp the schema version so future opens skip completed migrations.
-        # PRAGMA statements cannot be part of executescript, so use execute.
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        # PRAGMA statements cannot be part of executescript, nor can their value
+        # be a bound parameter, so interpolate — but coerce to int so the value
+        # can never be anything but a number (no SQL injection surface).
+        conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
 
     def close(self) -> None:
@@ -534,13 +536,12 @@ class LLMDatabase:
             messages: List of message dicts (role + content).
             last_activity: Timestamp of last activity.
         """
-        conn = self._connect()
-        conn.execute(
-            "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
-            "VALUES (?, ?, ?, ?)",
-            (nick.lower(), channel.lower(), json.dumps(messages), last_activity),
-        )
-        conn.commit()
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
+                "VALUES (?, ?, ?, ?)",
+                (nick.lower(), channel.lower(), json.dumps(messages), last_activity),
+            )
 
     def delete_conversation(self, nick: str, channel: str) -> None:
         """Delete a conversation from the database.
@@ -549,18 +550,16 @@ class LLMDatabase:
             nick: User's IRC nick.
             channel: IRC channel.
         """
-        conn = self._connect()
-        conn.execute(
-            "DELETE FROM conversations WHERE nick = ? AND channel = ?",
-            (nick.lower(), channel.lower()),
-        )
-        conn.commit()
+        with self._write_txn() as conn:
+            conn.execute(
+                "DELETE FROM conversations WHERE nick = ? AND channel = ?",
+                (nick.lower(), channel.lower()),
+            )
 
     def delete_all_conversations(self) -> None:
         """Delete all conversations from the database."""
-        conn = self._connect()
-        conn.execute("DELETE FROM conversations")
-        conn.commit()
+        with self._write_txn() as conn:
+            conn.execute("DELETE FROM conversations")
 
     def load_conversations(self) -> list[tuple[str, str, list[dict[str, str]], float]]:
         """Load all conversations from the database.
@@ -576,18 +575,24 @@ class LLMDatabase:
         ).fetchall()
 
         result: list[tuple[str, str, list[dict[str, str]], float]] = []
+        corrupt: list[tuple[str, str]] = []
         for nick, channel, messages_json, last_activity in rows:
             try:
                 messages = json.loads(messages_json)
             except (json.JSONDecodeError, TypeError):
                 log.warning("Skipping corrupt conversation for %s/%s", nick, channel)
-                conn.execute(
-                    "DELETE FROM conversations WHERE nick = ? AND channel = ?",
-                    (nick, channel),
-                )
-                conn.commit()
+                corrupt.append((nick, channel))
                 continue
             result.append((nick, channel, messages, last_activity))
+
+        # Delete all corrupt rows in a single transaction after iterating, so a
+        # failure mid-cleanup can't leave a half-deleted set committed.
+        if corrupt:
+            with self._write_txn() as wconn:
+                wconn.executemany(
+                    "DELETE FROM conversations WHERE nick = ? AND channel = ?",
+                    corrupt,
+                )
         return result
 
     # ------------------------------------------------------------------
