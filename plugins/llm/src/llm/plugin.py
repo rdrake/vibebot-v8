@@ -489,6 +489,22 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 pass
 
 
+def _safe_database_path(configured: str, default: str) -> str:
+    """Return the operator-configured DB path, or ``default`` when it is empty
+    or contains a ``..`` traversal component.
+
+    ``databasePath`` is operator-set (capability-gated), so this is
+    defense-in-depth: it refuses an obvious traversal like
+    ``../../../etc/passwd`` rather than handing it straight to SQLite. Plain
+    absolute paths are the normal case and are kept as-is.
+    """
+    if not configured:
+        return default
+    if ".." in Path(configured).parts:
+        return default
+    return configured
+
+
 def _patch_irc_dojoin(plugin: LLM) -> None:
     """Replace supybot.irclib.Irc.doJoin to skip slow auto-queries on JOIN.
 
@@ -622,9 +638,15 @@ class LLM(callbacks.Plugin):
         self.build_info = self._get_build_info()
 
         # Initialize database for persistence (before context, which loads from DB)
-        db_path = self.registryValue("databasePath")
-        if not db_path:
-            db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
+        configured_db_path = self.registryValue("databasePath")
+        default_db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
+        db_path = _safe_database_path(configured_db_path, default_db_path)
+        if configured_db_path and db_path != configured_db_path:
+            self.log.warning(
+                "databasePath %r rejected (path traversal); using default %r",
+                configured_db_path,
+                db_path,
+            )
         self.db = LLMDatabase(db_path)
 
         _patch_irc_dojoin(self)

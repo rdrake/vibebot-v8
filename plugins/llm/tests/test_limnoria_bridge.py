@@ -695,11 +695,13 @@ def test_dispatch_passes_command_as_list_and_tokens_positionally(mocker):
     assert "args" not in kwargs
 
 
-def test_dispatch_uncaught_exception_returns_error(mocker):
+def test_dispatch_plugin_exception_returns_generic_error(mocker):
+    """A plugin-level exception must NOT leak its detail to the model (it may
+    carry hostnames/addresses/stack hints) — return a generic error."""
     from llm import limnoria_bridge as lb
 
     cb = _stub_callback(mocker, "Misc", commands=["ping"])
-    cb._callCommand.side_effect = RuntimeError("boom")
+    cb._callCommand.side_effect = RuntimeError("could not connect to db at pg.internal:5432")
     irc = mocker.MagicMock()
     irc.getCallback.return_value = cb
     irc.network = "testnet"
@@ -708,7 +710,32 @@ def test_dispatch_uncaught_exception_returns_error(mocker):
     mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
 
     out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
-    assert out == {"error": "boom"}
+    assert out == {"error": "command failed"}
+    assert "pg.internal" not in repr(out)
+
+
+def test_dispatch_exception_preserves_buffered_partial_output(mocker):
+    """Output the plugin buffered before raising must not be lost — it is
+    returned as partial_output alongside the generic error."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+
+    def _partial_then_boom(_command, proxy, _msg, _tokens):
+        proxy.reply("first line of output")
+        raise RuntimeError("then it broke")
+
+    cb._callCommand.side_effect = _partial_then_boom
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    assert out["error"] == "command failed"
+    assert out["partial_output"] == "first line of output"
 
 
 def test_dispatch_argument_error_returned_as_reply(mocker):

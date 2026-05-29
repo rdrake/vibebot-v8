@@ -8257,3 +8257,25 @@ class TestVerseapproveCrosspollSource:
         with store.read_connection() as conn:
             row = conn.execute("SELECT source FROM events WHERE summary='regular event'").fetchone()
         assert row is not None and row[0] == "loom"
+
+
+class TestSafeDatabasePath:
+    """_safe_database_path rejects '..' traversal in the operator-set
+    databasePath, falling back to the default data-dir path."""
+
+    def test_empty_returns_default(self) -> None:
+        from llm.plugin import _safe_database_path
+
+        assert _safe_database_path("", "/data/LLM.db") == "/data/LLM.db"
+
+    def test_plain_absolute_path_is_kept(self) -> None:
+        from llm.plugin import _safe_database_path
+
+        assert _safe_database_path("/var/lib/vibebot/LLM.db", "/data/LLM.db") == (
+            "/var/lib/vibebot/LLM.db"
+        )
+
+    def test_traversal_falls_back_to_default(self) -> None:
+        from llm.plugin import _safe_database_path
+
+        assert _safe_database_path("../../../etc/passwd", "/data/LLM.db") == "/data/LLM.db"

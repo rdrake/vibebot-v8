@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any  # noqa: F401  (used in later tasks)
+from typing import Any
 
 from supybot import callbacks
 from supybot import log as supylog
@@ -367,17 +367,30 @@ def dispatch(
         return {"error": f"not permitted: {plugin}.{command}"}
 
     proxy = BufferingIrcProxy(irc, msg)
+    # Arg tokenization errors are user/LLM input errors (malformed bracket/pipe/
+    # quote syntax, callbacks.py:431). Surface the specific message so the model
+    # can correct its call — these carry no internal detail.
     try:
-        # tokenize() raises SyntaxError on malformed bracket/pipe/quote
-        # syntax (callbacks.py:431) — keep it inside the try so the
-        # error-envelope contract holds for malformed args too.
         tokens = callbacks.tokenize(arg_string, channel=msg.channel, network=irc.network)
+    except Exception as exc:  # noqa: BLE001 — translating to JSON envelope
+        _log.info("bridge result: %s.%s -> arg error: %s", plugin, command, exc)
+        return {"error": str(exc) or exc.__class__.__name__}
+
+    # Plugin execution errors may carry internal detail (DB hosts, internal
+    # addresses, stack hints). Log the full exception internally but return a
+    # generic message to the model. Preserve any output the plugin buffered
+    # before raising so partial results aren't silently dropped.
+    try:
         # Positional args; keyword `args=tokens` would land in **kwargs and
         # break wrap()-based commands. See callbacks.py:1213.
         cb._callCommand([command], proxy, msg, tokens)
     except Exception as exc:  # noqa: BLE001 — translating to JSON envelope
         _log.info("bridge result: %s.%s -> exception: %s", plugin, command, exc)
-        return {"error": str(exc) or exc.__class__.__name__}
+        envelope: dict[str, Any] = {"error": "command failed"}
+        partial = "\n".join(proxy.buffer)
+        if partial:
+            envelope["partial_output"] = partial
+        return envelope
     reply = "\n".join(proxy.buffer)
     _log.debug("bridge result: %s.%s -> ok reply=%r", plugin, command, reply)
     _log.info("bridge result: %s.%s -> ok (%d chars)", plugin, command, len(reply))
