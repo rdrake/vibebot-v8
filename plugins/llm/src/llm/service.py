@@ -525,6 +525,10 @@ class LLMService:
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
         self._cleanup_lock = threading.Lock()
+        # Serializes check_pending_tasks so two polls can never claim the same
+        # task concurrently — the claim lease alone would otherwise allow a
+        # re-claim if one poll outran the lease window.
+        self._pending_poll_lock = threading.Lock()
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -1756,6 +1760,12 @@ class LLMService:
         expires_at = submitted_at + expiry
         data_json = json.dumps(request_data)
 
+        # The first background retry honors PENDING_INITIAL_BACKOFF_SECONDS like
+        # every subsequent retry. Backoff is measured from submission, so the
+        # foreground timeout wait counts toward it: if the wait already exceeded
+        # the backoff this is in the past and the retry fires immediately.
+        first_attempt_at = submitted_at + PENDING_INITIAL_BACKOFF_SECONDS
+
         task_id = db.save_pending_task(
             task_type=task_type,
             nick=nick,
@@ -1766,7 +1776,7 @@ class LLMService:
             request_data=data_json,
             submitted_at=submitted_at,
             expires_at=expires_at,
-            next_attempt_at=submitted_at,
+            next_attempt_at=first_attempt_at,
             origin_request_id=request_id.get(),
             account=account,
         )
@@ -1777,10 +1787,11 @@ class LLMService:
             expiry,
         )
 
-        # Trigger an event-driven wakeup so the scheduler picks this up quickly
+        # Trigger an event-driven wakeup at the first-attempt time so the
+        # scheduler picks this up exactly when the backoff window elapses.
         schedule_wakeup = getattr(self.plugin, "_schedule_queue_wakeup", None)
         if schedule_wakeup is not None:
-            schedule_wakeup(at_time=submitted_at)
+            schedule_wakeup(at_time=first_attempt_at)
 
         return True
 
@@ -1993,11 +2004,25 @@ class LLMService:
         Returns:
             List of PendingTaskResult for the plugin to deliver.
         """
-        from .persistence import PendingTaskRow  # noqa: F811
-
         db = getattr(self.plugin, "db", None)
         if db is None:
             return []
+
+        # Non-reentrant: if a poll is already running, skip this one. The claim
+        # lease (PENDING_LEASE_SECONDS) can expire while a long phase-1 batch is
+        # still processing; without this guard a second concurrent poll could
+        # re-claim the same task and issue a duplicate provider call/delivery.
+        if not self._pending_poll_lock.acquire(blocking=False):
+            self.log.debug("check_pending_tasks already running; skipping re-entrant poll")
+            return []
+        try:
+            return self._run_pending_poll(deliverable_channels, db)
+        finally:
+            self._pending_poll_lock.release()
+
+    def _run_pending_poll(self, deliverable_channels: set[str], db: Any) -> list[PendingTaskResult]:
+        """Body of :meth:`check_pending_tasks`, run under ``_pending_poll_lock``."""
+        from .persistence import PendingTaskRow  # noqa: F811
 
         now = time.time()
         results: list[PendingTaskResult] = []
@@ -4271,16 +4296,6 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
             return None
 
-    @staticmethod
-    def _inject_memories(system_prompt: str, memories: list[str] | None) -> str:
-        """Append known user facts to the system prompt, if any."""
-        if not memories:
-            return system_prompt
-        return system_prompt + (
-            "\n\nWhat you know about this user from past conversations:\n"
-            + "\n".join(f"- {fact}" for fact in memories)
-        )
-
     def _filter_images(self, images: list[str] | None) -> list[str] | None:
         """Drop invalid URLs, log how many were dropped, return None if empty."""
         if not images:
@@ -4447,6 +4462,9 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         lines = []
         for msg in channel_history:
             nick = msg.get("nick", "Unknown")
+            # Collapse line-break chars so a stored/relayed nick cannot forge a
+            # new speaker line (defense-in-depth; live IRC nicks lack newlines).
+            nick = _LINE_BREAK_RE.sub(" ", nick)
             content = msg.get("content") or ""
             # Truncate long messages
             if len(content) > CHANNEL_MSG_TRUNCATE_LEN:
@@ -4686,7 +4704,7 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
                 return CleanupResult(error=f"Invalid merge entry: {entry}")
             indices = entry.get("indices", [])
             text = entry.get("text", "")
-            if not isinstance(indices, list) or len(indices) < 1:
+            if not isinstance(indices, list) or len(indices) < 2:
                 return CleanupResult(error=f"Merge needs at least 2 indices: {entry}")
             for idx in indices:
                 if not isinstance(idx, int) or idx < 0 or idx >= num_memories:

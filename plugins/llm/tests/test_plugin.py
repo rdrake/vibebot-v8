@@ -3883,8 +3883,9 @@ class TestWakeupTriggers:
         mock_wakeup.assert_called_once_with(at_time=1000.0 + 15)
 
     def test_stash_triggers_wakeup(self, mocker: MockerFixture) -> None:
-        """GIVEN a request times out WHEN _stash_timeout succeeds THEN wakeup scheduled."""
-        from llm.service import LLMService
+        """GIVEN a request times out WHEN _stash_timeout succeeds THEN a wakeup
+        is scheduled at the first-attempt time (submitted_at + initial backoff)."""
+        from llm.service import PENDING_INITIAL_BACKOFF_SECONDS, LLMService
 
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.return_value = 3600  # expiry
@@ -3907,7 +3908,9 @@ class TestWakeupTriggers:
         )
 
         assert result is True
-        mock_plugin._schedule_queue_wakeup.assert_called_once_with(at_time=now)
+        mock_plugin._schedule_queue_wakeup.assert_called_once_with(
+            at_time=now + PENDING_INITIAL_BACKOFF_SECONDS
+        )
 
 
 class TestRequireAccount:
