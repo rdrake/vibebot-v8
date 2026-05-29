@@ -66,6 +66,11 @@ EXPLICIT_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Line-break characters that could let untrusted text (e.g. a channel topic)
+# start a new "instruction line" in a prompt. Excludes IRC formatting codes
+# (color/bold/etc.) which are not line separators.
+_LINE_BREAK_RE = re.compile("[\r\n\v\f\x1c-\x1e\u2028\u2029]+")
+
 # Pending task retry constants
 PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
@@ -863,6 +868,10 @@ class LLMService:
         topic = self._get_channel_topic(irc, channel)
         if not topic:
             return None
+        # Collapse line-break characters so a topic cannot start a new
+        # "instruction line" in the prompt. IRC formatting codes (color/bold)
+        # are left intact — only line separators are the injection vector.
+        topic = _LINE_BREAK_RE.sub(" ", topic)
         topic_trimmed = topic[:300] + "..." if len(topic) > 300 else topic
         return {"role": Role.USER, "content": f"Channel topic: {topic_trimmed}"}
 
