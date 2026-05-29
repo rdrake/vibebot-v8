@@ -1896,6 +1896,14 @@ class TestPluginLoomBridge:
         assert bridge.post_to_loom_channel("ring") is True
         irc_stub.queueMsg.assert_called_once()
 
+    def test_post_to_loom_channel_drops_when_closing(self, mocker: MockerFixture, tmp_path) -> None:
+        plugin, bridge = self._make_bridge(mocker, tmp_path)
+        plugin._llm_executor.shutdown()
+        irc_stub = mocker.MagicMock()
+        mocker.patch("llm.plugin.world.getIrc", return_value=irc_stub)
+        assert bridge.post_to_loom_channel("ring") is False
+        irc_stub.queueMsg.assert_not_called()
+
     def test_schedule_after_replaces_existing_event(self, mocker: MockerFixture, tmp_path) -> None:
         _plugin, bridge = self._make_bridge(mocker, tmp_path)
         rm = mocker.patch("llm.plugin.schedule.removeEvent")
@@ -2190,6 +2198,26 @@ class TestSafeQueue:
         target_irc = mocker.MagicMock()
         ok = plugin._safe_queue(target_irc, mocker.sentinel.msg)
         target_irc.queueMsg.assert_called_once_with(mocker.sentinel.msg)
+        assert ok is True
+
+
+class TestSafeReply:
+    """``_safe_reply`` serializes worker-thread ``irc.reply`` sends on the same
+    ``_irc_send_lock`` as ``_safe_queue`` and short-circuits while closing."""
+
+    def test_safe_reply_drops_when_closing(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor.shutdown()
+        target_irc = mocker.MagicMock()
+        ok = plugin._safe_reply(target_irc, "hi", prefixNick=False)
+        target_irc.reply.assert_not_called()
+        assert ok is False
+
+    def test_safe_reply_calls_reply_under_lock(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        target_irc = mocker.MagicMock()
+        ok = plugin._safe_reply(target_irc, "hi", prefixNick=True)
+        target_irc.reply.assert_called_once_with("hi", prefixNick=True)
         assert ok is True
 
 

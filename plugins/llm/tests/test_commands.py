@@ -597,6 +597,16 @@ class TestSendLongReply:
         mock_irc.reply.assert_called_once_with("hello world", prefixNick=False)
         plugin.llm_service.save_markdown_to_http.assert_not_called()
 
+    def test_short_text_dropped_when_closing(self, plugin_env):
+        """GIVEN the executor is closing WHEN a single-line reply is sent THEN
+        it is serialized through _safe_reply and dropped (no raw irc.reply)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin._llm_executor.shutdown()
+
+        plugin._send_long_reply(mock_irc, mock_msg, "hello world")
+
+        mock_irc.reply.assert_not_called()
+
     def test_single_logical_line_with_blank_padding_uses_irc_reply(self, plugin_env):
         """Padding blank lines around one real line collapse to a single irc.reply."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -1122,6 +1132,35 @@ class TestDispatchAssistantReply:
             f"Expected '* testbot ...', got {messages[1]['content']!r}"
         )
         assert "ponders the question" in messages[1]["content"]
+
+    def test_action_dropped_and_log_skipped_when_closing(self, plugin_env, mocker: MockerFixture):
+        """GIVEN the executor is closing WHEN _dispatch_assistant_reply emits an
+        action THEN the send is serialized through _safe_queue (dropped) and the
+        helper reports should_log=False so shutdown does not store/log."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin._llm_executor.shutdown()
+        mocker.patch("llm.plugin.ircmsgs.action", return_value=mocker.sentinel.action_msg)
+
+        result = AssistantResult(
+            content="/me waves",
+            grounding_used=False,
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost=0.0,
+            model="gpt-4",
+        )
+
+        response, should_log = plugin._dispatch_assistant_reply(
+            mock_irc,
+            mock_msg,
+            result,
+            nick="testnick",
+            channel="#test",
+            response="/me waves",
+        )
+
+        mock_irc.queueMsg.assert_not_called()
+        assert should_log is False
 
 
 # ---------------------------------------------------------------------------

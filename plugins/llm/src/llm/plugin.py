@@ -2231,6 +2231,30 @@ class LLM(callbacks.Plugin):
             irc.queueMsg(msg)
         return True
 
+    def _safe_reply(
+        self,
+        irc: callbacks.Irc,
+        text: str,
+        *,
+        prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
+    ) -> bool:
+        """Thread-safe wrapper around ``irc.reply`` for worker-thread sends.
+
+        ``irc.reply`` ultimately reaches the same ``IrcMsgQueue.enqueue`` as
+        ``irc.queueMsg``, so it must serialize on the same ``_irc_send_lock``:
+        ``ask``/``code``/``draw`` release Limnoria's command RLock via
+        ``_allow_concurrent`` and reply from concurrent worker threads.
+
+        Returns True if the reply was sent, False if dropped due to the
+        plugin closing.
+        """
+        if self._llm_executor.closing:
+            self.log.debug("safe_reply dropped (closing)")
+            return False
+        with self._irc_send_lock:
+            irc.reply(text, prefixNick=prefixNick)
+        return True
+
     def _send_long_reply(
         self,
         irc: callbacks.Irc,
@@ -2267,7 +2291,7 @@ class LLM(callbacks.Plugin):
                 break
 
         if single_line is not None:
-            irc.reply(single_line, prefixNick=prefixNick)
+            self._safe_reply(irc, single_line, prefixNick=prefixNick)
             return
 
         url = self.llm_service.save_markdown_to_http(text)
@@ -2275,13 +2299,13 @@ class LLM(callbacks.Plugin):
         configured_max_chars = int(self.registryValue("longReplyTeaserMaxChars", target) or 220)
         max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
         if max_chars <= 0 and url:
-            irc.reply(f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
+            self._safe_reply(irc, f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
             return
         teaser = self.llm_service.summarize_for_irc(
             text, channel=target, max_chars=max_chars
         ) or self._fallback_long_reply_teaser(text, max_chars)
         teaser = self._trim_long_reply_teaser(teaser, max_chars)
-        irc.reply(f"{teaser}{suffix}", prefixNick=prefixNick)
+        self._safe_reply(irc, f"{teaser}{suffix}", prefixNick=prefixNick)
 
     def _dispatch_assistant_reply(
         self,
@@ -2328,7 +2352,8 @@ class LLM(callbacks.Plugin):
                 action_text = f"{GROUNDING_ICON} {action_text}"
             self.log.info("sending action to %s/%s", channel, nick)
             target = channel if ircutils.isChannel(channel) else nick
-            irc.queueMsg(ircmsgs.action(target, action_text))
+            if not self._safe_queue(irc, ircmsgs.action(target, action_text)):
+                return response, False
             return f"* {irc.nick} {action_text}", True
 
         display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
@@ -5892,8 +5917,7 @@ class _PluginLoomBridge:
         irc = world.getIrc(self._network)
         if irc is None:
             return False
-        irc.queueMsg(ircmsgs.privmsg(self._channel, text))
-        return True
+        return self._plugin._safe_queue(irc, ircmsgs.privmsg(self._channel, text))
 
     def schedule_after(self, delay_s: float, fn, name: str) -> None:
         with contextlib.suppress(KeyError):
