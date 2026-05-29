@@ -4046,6 +4046,58 @@ class TestMemoryInjection:
         assert "likes Python" in user_blob
         assert "lives in Toronto" in user_blob
 
+    def test_memories_wrapped_in_data_delimiters(self, make_service, mocker: MockerFixture) -> None:
+        """Memories are user-authored and persistent, so a poisoned fact must
+        not pose as an instruction: they are fenced in <user_memory> markers
+        the model is told to treat as data."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = "Hello!"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response._hidden_params = {"response_cost": 0.001}
+        mock_litellm.completion.return_value = mock_response
+        service.completion("hi", command="ask", memories=["likes Python"])
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        mem_msg = next(
+            m
+            for m in messages
+            if m["role"] == "user" and "likes Python" in str(m.get("content", ""))
+        )
+        assert "<user_memory>" in mem_msg["content"]
+        assert "</user_memory>" in mem_msg["content"]
+
+    def test_user_instruction_is_user_role_data_not_system(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """A per-user instruction must not sit in the SYSTEM prompt (where it
+        reads as developer authority). It rides in a user-role message fenced
+        in <user_instruction> markers."""
+        service, mock_plugin = make_service()
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_response = mocker.MagicMock()
+        mock_response.choices = [mocker.MagicMock()]
+        mock_response.choices[0].message.content = "Bonjour!"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response._hidden_params = {"response_cost": 0.001}
+        mock_litellm.completion.return_value = mock_response
+        service.completion("hi", command="ask", user_instruction="always answer in French")
+        call_args = mock_litellm.completion.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        system_msg = next(m for m in messages if m["role"] == "system")
+        assert "always answer in French" not in system_msg["content"]
+        instr_msg = next(
+            m
+            for m in messages
+            if m["role"] == "user" and "always answer in French" in str(m.get("content", ""))
+        )
+        assert "<user_instruction>" in instr_msg["content"]
+        assert "</user_instruction>" in instr_msg["content"]
+
     def test_completion_without_memories_no_section(
         self, make_service, mocker: MockerFixture
     ) -> None:

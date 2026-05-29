@@ -1444,11 +1444,9 @@ class LLM(callbacks.Plugin):
             ask_prompt = self.registryValue(
                 PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel
             )
-            effective_prompt = (
-                f"User instruction: {user_instruction}\n\n{ask_prompt}"
-                if user_instruction
-                else ask_prompt
-            )
+            # The user's @instruct rides as user-role data (see assistant_request
+            # user_instruction), not prepended to the system overlay.
+            effective_prompt = ask_prompt
 
             caller = Identity(raw_nick=nick, account=account)
             exclude_tools = frozenset({"set_reminder"}) if is_structured else frozenset()
@@ -1464,6 +1462,7 @@ class LLM(callbacks.Plugin):
                 irc=active_irc,
                 msg=synthetic_msg,
                 memories=memories,
+                user_instruction=user_instruction,
                 system_prompt=effective_prompt,
                 search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                 fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
@@ -3337,21 +3336,20 @@ class LLM(callbacks.Plugin):
             # personality overlay, not the framework. So we PREPEND the
             # channel overlay (and @instruct) to the verse scene context;
             # the framework's verse-mode rules still apply on top.
+            # The user's @instruct rides as user-role data (passed as
+            # user_instruction below), NOT prepended to the system overlay —
+            # a user request must not pose as system/developer authority. The
+            # channel overlay (ask_prompt) and verse override are unchanged, so
+            # the verse energy/length pump is preserved.
             ask_prompt = self.registryValue(PROFILES[effective_profile].overlay_setting, channel)
             if system_prompt_override is not None:
                 parts: list[str] = []
-                if user_instruction:
-                    parts.append(f"User instruction: {user_instruction}")
                 if ask_prompt:
                     parts.append(ask_prompt)
                 parts.append(system_prompt_override)
                 effective_prompt = "\n\n".join(parts)
             else:
-                effective_prompt = (
-                    f"User instruction: {user_instruction}\n\n{ask_prompt}"
-                    if user_instruction
-                    else ask_prompt
-                )
+                effective_prompt = ask_prompt
 
             with self._allow_concurrent(), self._llm_executor.permit():
                 request_text = text
@@ -3415,6 +3413,7 @@ class LLM(callbacks.Plugin):
                     irc=irc,
                     msg=msg,
                     memories=memories,
+                    user_instruction=user_instruction,
                     system_prompt=effective_prompt,
                     model_override=model_override,
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
@@ -3503,15 +3502,16 @@ class LLM(callbacks.Plugin):
 
                 memories = self._get_user_memories(nick)
                 user_instruction = self.db.get_instruction(nick)
-                # Layer user instruction onto CODE_SYSTEM_PROMPT (the facade
-                # prompt that tells the planner to call generate_code) — not
-                # the registry codeSystemPrompt, which is the inner-call
-                # prompt used by _code_for_assistant.
+                # CODE_SYSTEM_PROMPT is the facade prompt that tells the planner
+                # to call generate_code (not the registry codeSystemPrompt, the
+                # inner-call prompt used by _code_for_assistant). The user's
+                # @instruct now rides as user-role data (user_instruction below)
+                # instead of being prepended here, so it cannot pose as system
+                # authority. The system_prompt selection is unchanged: facade
+                # when an instruction exists, else None (profile supplies it).
                 from .prompts import CODE_SYSTEM_PROMPT
 
-                effective_prompt = (
-                    f"{user_instruction}\n\n{CODE_SYSTEM_PROMPT}" if user_instruction else None
-                )
+                effective_prompt = CODE_SYSTEM_PROMPT if user_instruction else None
 
                 with self._allow_concurrent(), self._llm_executor.permit():
                     result = self.llm_service.assistant_request(
@@ -3525,6 +3525,7 @@ class LLM(callbacks.Plugin):
                         irc=irc,
                         msg=msg,
                         memories=memories,
+                        user_instruction=user_instruction,
                         system_prompt=effective_prompt,
                         search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                         fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),

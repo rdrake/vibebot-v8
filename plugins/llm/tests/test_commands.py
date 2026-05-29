@@ -561,7 +561,9 @@ class TestCodeCommand:
 
         Regression: a user instruction must not replace the assistant facade
         prompt with the (inner-call) registry codeSystemPrompt — otherwise
-        the planner stops calling generate_code and the pastebin breaks.
+        the planner stops calling generate_code and the pastebin breaks. The
+        instruction itself now rides as user_instruction (user-role data), not
+        prepended to the facade.
         """
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_instruction.return_value = "You are Captain Picard."
@@ -570,9 +572,13 @@ class TestCodeCommand:
 
         plugin.code(mock_irc, mock_msg, ["fibonacci"])
 
-        system_prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
-        assert "Picard" in system_prompt
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        system_prompt = kwargs["system_prompt"]
+        # Facade preserved (planner still told to call generate_code)...
         assert "generate_code" in system_prompt
+        # ...but the instruction is relocated out of the system prompt.
+        assert "Picard" not in system_prompt
+        assert kwargs["user_instruction"] == "You are Captain Picard."
 
 
 # ---------------------------------------------------------------------------
@@ -2982,8 +2988,9 @@ class TestInstructCommand:
 class TestAskWithInstruction:
     """Tests for %ask using user instructions from %instruct."""
 
-    def test_ask_prepends_user_instruction(self, plugin_env):
-        """GIVEN user has instruction WHEN ask called THEN instruction prepended to system prompt."""
+    def test_ask_passes_user_instruction_as_data_not_system(self, plugin_env):
+        """GIVEN user has instruction WHEN ask called THEN it is forwarded as
+        user_instruction (user-role data) and NOT baked into the system prompt."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_instruction.return_value = "You are Captain Picard."
         plugin.llm_service.detect_images.return_value = []
@@ -2997,7 +3004,8 @@ class TestAskWithInstruction:
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
         call_kwargs = plugin.llm_service.completion.call_args.kwargs
-        assert "Picard" in call_kwargs["system_prompt"]
+        assert call_kwargs["user_instruction"] == "You are Captain Picard."
+        assert "Picard" not in (call_kwargs.get("system_prompt") or "")
 
     def test_ask_no_instruction_passes_personality_overlay(self, plugin_env):
         """GIVEN no instruction WHEN ask called THEN the channel personality

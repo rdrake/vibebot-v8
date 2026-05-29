@@ -219,6 +219,7 @@ def plugin_env(mocker: MockerFixture):
         msg=None,
         system_prompt=None,
         memories=None,
+        user_instruction=None,
         search_fn=None,
         fetch_fn=None,
         code_fn=None,
@@ -246,6 +247,7 @@ def plugin_env(mocker: MockerFixture):
             msg=msg,
             system_prompt=system_prompt,
             memories=memories,
+            user_instruction=user_instruction,
         )
         return _AssistantResult(
             content=completion_result.content,

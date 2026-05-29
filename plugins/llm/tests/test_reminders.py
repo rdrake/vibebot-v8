@@ -1431,7 +1431,10 @@ class TestReminderActionDelivery:
         assert kwargs["history"] == [{"role": "user", "content": "hi"}]
         assert kwargs["channel_history"] == [{"role": "user", "content": "c"}]
         assert kwargs["memories"] == ["prefers concise"]
-        assert kwargs["system_prompt"] == "User instruction: Be direct.\n\nYou are helpful."
+        # The @instruct now rides as user-role data, not baked into the system
+        # overlay (which stays the channel personality prompt).
+        assert kwargs["system_prompt"] == "You are helpful."
+        assert kwargs["user_instruction"] == "Be direct."
         assert callable(kwargs["search_fn"])
         assert callable(kwargs["fetch_fn"])
         assert callable(kwargs["code_fn"])
