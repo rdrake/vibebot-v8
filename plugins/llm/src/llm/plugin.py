@@ -5189,6 +5189,27 @@ class LLM(callbacks.Plugin):
                 )
             except (TypeError, ValueError):
                 retention_days = retention_days_default
+            # Aging runs BEFORE compaction. compact_verse's digest heartbeat
+            # bumps last_seen_ts=now() on every entity in the new digest, so
+            # running it first would refresh long-silent NPCs and defeat
+            # verseAutoEntityRetireDays. Aging-first reads the true last_seen_ts
+            # before the heartbeat can resurrect a stale NPC. Independent of the
+            # compaction outcome and wrapped in its own try/except so one
+            # channel's failure doesn't abort the rest of the pass.
+            aging_outcome: AgingOutcome | None = None
+            try:
+                retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
+                aging_outcome = age_auto_created_entities(
+                    store,
+                    retire_after_days=retire_days,
+                    now=time.time,
+                )
+            except Exception:
+                self.log.exception(
+                    "verse aging failed for %s; continuing with next channel",
+                    channel,
+                )
+
             outcome: CompactionOutcome | None = None
             try:
                 outcome = _compaction.compact_verse(
@@ -5205,23 +5226,6 @@ class LLM(callbacks.Plugin):
                 )
             except Exception:
                 self.log.exception("verse compaction failed for %s; continuing", channel)
-
-            # Aging is independent of compaction outcome — run it even if
-            # compact_verse raised. Wrapped in its own try/except so a
-            # single channel's failure doesn't abort the rest of the pass.
-            aging_outcome: AgingOutcome | None = None
-            try:
-                retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
-                aging_outcome = age_auto_created_entities(
-                    store,
-                    retire_after_days=retire_days,
-                    now=time.time,
-                )
-            except Exception:
-                self.log.exception(
-                    "verse aging failed for %s; continuing with next channel",
-                    channel,
-                )
 
             # Render the per-channel summary as one line, but only if
             # compaction itself succeeded — a raised compact_verse already

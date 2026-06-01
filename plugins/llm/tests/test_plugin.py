@@ -7673,6 +7673,62 @@ class TestRunCompactionPassCallsAging:
         stores = {id(c[0]) for c in called}
         assert len(stores) == 2
 
+    def test_aging_runs_before_compaction_heartbeat(self, plugin_env, mocker, monkeypatch) -> None:
+        """Aging must run BEFORE compact_verse for each channel.
+
+        compact_verse's digest heartbeat bumps last_seen_ts=now() on every
+        entity in the new digest. If aging runs after it, a long-silent
+        auto_created NPC that happens to appear in the compacted events is
+        freshly stamped and never older than the retire cutoff — silently
+        defeating verseAutoEntityRetireDays. Aging-first reads the true
+        last_seen_ts before the heartbeat can resurrect it.
+        """
+        from llm.verse import aging as aging_mod
+        from llm.verse.compaction import CompactionOutcome
+
+        plugin, _irc, _msg = plugin_env
+
+        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *args: (
+                True
+                if key == "verseEnabled"
+                else (
+                    30
+                    if key == "verseEventRetentionDays"
+                    else "gemini/x"
+                    if key == "loomModel"
+                    else 20
+                    if key == "verseCompactionMinKeepEvents"
+                    else 14
+                    if key == "verseAutoEntityRetireDays"
+                    else ""
+                )
+            )
+        )
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            side_effect=lambda channel: mocker.MagicMock(_channel=channel),
+        )
+
+        order: list[str] = []
+
+        def _spy_compact(*_a, **_kw):
+            order.append("compact")
+            return CompactionOutcome("skipped_disabled", 0, 0)
+
+        def _spy_age(*_a, **_kw):
+            order.append("age")
+            return aging_mod.AgingOutcome(0, 0)
+
+        monkeypatch.setattr("llm.verse.compaction.compact_verse", _spy_compact)
+        monkeypatch.setattr("llm.verse.aging.age_auto_created_entities", _spy_age)
+
+        plugin._run_compaction_pass()
+
+        assert order == ["age", "compact"]
+
     def test_aging_reads_retire_days_per_channel(self, plugin_env, mocker, monkeypatch) -> None:
         """The aging call reads verseAutoEntityRetireDays at the channel
         scope, not global."""
