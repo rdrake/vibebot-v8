@@ -2137,11 +2137,15 @@ class LLMService:
                         ),
                     )
                 else:
-                    # Transient error — release with backoff
+                    # Transient error — release with backoff. Re-read the clock:
+                    # the provider call above can take many seconds, so the poll's
+                    # top-of-pass ``now`` is stale and would shorten (or invert)
+                    # the backoff window. Anchor next_attempt_at to the current
+                    # time so the retry is actually deferred by the full delay.
                     delay = self._compute_backoff(task.attempt_count)
                     db.release_pending_task(
                         task.id,
-                        now + delay,
+                        time.time() + delay,
                         self._sanitize(str(exc))[:200],
                     )
 

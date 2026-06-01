@@ -3723,6 +3723,47 @@ class TestCheckPendingTasks:
         # backoff for attempt_count=1: min(30 * 2^1, 300) = 60
         assert call_args[0][1] == self.now + 60
 
+    def test_transient_backoff_anchored_to_clock_after_slow_provider_work(self) -> None:
+        """A slow provider call must not shorten the retry backoff window.
+
+        The poll captures ``now`` once at the top, then does a multi-second
+        provider call before computing the transient-retry backoff. If the
+        backoff is anchored to the stale top-of-pass ``now`` instead of the
+        clock at release time, ``next_attempt_at`` lands too early (here, in
+        the past), causing premature re-polling. Asserts the backoff is anchored
+        to the post-work clock.
+        """
+        import litellm as litellm_module
+
+        clock = {"t": self.now}
+        slow_work_seconds = 45.0  # provider call outlasts part of the 60s backoff
+
+        # Advancing clock: time.time() reflects elapsed wall time. This overrides
+        # the autouse setup's constant time.time patch for this test only.
+        self.mocker.patch("llm.service.time.time", side_effect=lambda: clock["t"])
+
+        task = self._make_task_row(attempt_count=1, expires_at=self.now + 3000)
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [
+            [task],  # provider phase
+            [],  # delivery phase
+        ]
+
+        def slow_then_fail(*args, **kwargs):
+            clock["t"] += slow_work_seconds  # provider call burns wall time
+            raise litellm_module.Timeout(message="timed out", model="gpt-4", llm_provider="openai")
+
+        self.mocker.patch("llm.service.litellm.completion", side_effect=slow_then_fail)
+
+        self.service.check_pending_tasks({"#test"})
+
+        self.mock_db.release_pending_task.assert_called_once()
+        next_attempt_at = self.mock_db.release_pending_task.call_args[0][1]
+        # backoff for attempt_count=1 is min(30 * 2**1, 300) == 60.
+        # Correct anchor is the clock AFTER the slow provider work.
+        expected = (self.now + slow_work_seconds) + 60
+        assert next_attempt_at == expected
+
     def test_successful_retry_stores_result_for_delivery(self) -> None:
         """GIVEN retry succeeds WHEN checked THEN result stored for delivery phase."""
         task = self._make_task_row()
