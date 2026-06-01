@@ -339,6 +339,41 @@ def test_enumerate_yields_command_when_authorized(mocker):
     assert "Replies with pong." in result[0].description
 
 
+def test_enumerate_skips_nested_command_leaf_without_crashing(mocker):
+    """GIVEN a nested command group (e.g. RSS 'announce add') WHEN enumerating THEN skip it, don't raise.
+
+    cb.listCommands() surfaces nested commands as multi-word leaves whose list
+    form is not the plugin's canonical name, so cb.getCommandMethod([leaf])
+    raises an AssertionError in Limnoria. Unguarded, that raise aborts the
+    entire enumeration — and with it the whole @ask request, since a plugin
+    with nested groups (RSS) is in the default allowlist. The bad leaf must be
+    skipped while sibling top-level commands still enumerate.
+    """
+    from llm import limnoria_bridge as lb
+
+    cb = mocker.MagicMock()
+    cb.name.return_value = "StubPlugin"
+    cb.canonicalName.return_value = "stubplugin"
+    cb.listCommands.return_value = ["info", "group sub"]
+
+    def _get_method(path):
+        leaf = path[-1] if isinstance(path, list) else path
+        if leaf == "group sub":
+            raise AssertionError("'group sub' is not the canonical command name")
+        method = mocker.MagicMock()
+        method.__doc__ = "takes no arguments\n\nShows info."
+        return method
+
+    cb.getCommandMethod.side_effect = _get_method
+    irc = _fake_irc_with_callbacks(mocker, [cb])
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    result = list(lb.enumerate_commands(irc, msg, frozenset({"StubPlugin"})))
+
+    assert [c.command for c in result] == ["info"]
+
+
 def test_enumerate_skips_deny_plugin_even_if_allowed(mocker):
     """Owner is hard-deny; explicitly adding it to the allowlist must not expose it."""
     from llm import limnoria_bridge as lb

@@ -249,7 +249,17 @@ def enumerate_commands(
             denial = callbacks.checkCommandCapability(msg, cb, leaf)
             if denial:
                 continue
-            method = cb.getCommandMethod([leaf])
+            try:
+                method = cb.getCommandMethod([leaf])
+            except Exception:
+                # Nested command groups (e.g. RSS's 'announce add') surface as
+                # multi-word leaves whose list form is not the plugin's
+                # canonical name, so getCommandMethod raises an AssertionError.
+                # Skip the leaf rather than let one plugin's command shape abort
+                # the whole enumeration — and with it the entire @ask request,
+                # since a plugin with nested groups can be in the allowlist.
+                _log.debug("bridge: skipping uninspectable command %s.%s", plugin_name, leaf)
+                continue
             doc_lines = (method.__doc__ or "").strip().splitlines()
             arg_syntax = doc_lines[0].strip() if doc_lines else ""
             description = " ".join(line.strip() for line in doc_lines[1:]).strip()
