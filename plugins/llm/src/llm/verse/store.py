@@ -735,11 +735,15 @@ class VerseStore:
                     entity_id, entity_status = int(row[0]), row[1]
 
             if entity_id is None:
+                # ``COLLATE NOCASE`` (not LOWER(al.nick)) keeps the predicate
+                # sargable so it seeks idx_avatar_link_nick_nocase instead of
+                # scanning avatar_link under the write lock. Both are ASCII-only,
+                # so the match semantics are identical for IRC nicks.
                 row = conn.execute(
                     "SELECT al.entity_id, e.status"
                     " FROM avatar_link al"
                     " JOIN entities e ON e.id = al.entity_id"
-                    " WHERE LOWER(al.nick) = LOWER(?)",
+                    " WHERE al.nick = ? COLLATE NOCASE",
                     (nick,),
                 ).fetchone()
                 if row:

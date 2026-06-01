@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS avatar_link (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_avatar_link_nick    ON avatar_link(nick);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_avatar_link_account ON avatar_link(account) WHERE account IS NOT NULL;
+-- Case-insensitive seek path for the opt-in nick fallback. The binary-unique
+-- idx_avatar_link_nick above cannot serve `nick = ? COLLATE NOCASE`, so without
+-- this index that lookup degrades to a full SCAN while the write lock is held.
+-- Non-unique: case-insensitive uniqueness already belongs to the binary index.
+CREATE INDEX IF NOT EXISTS idx_avatar_link_nick_nocase ON avatar_link(nick COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS proposals (
     id          TEXT PRIMARY KEY,

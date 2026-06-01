@@ -650,6 +650,47 @@ class TestOptInAvatar:
         # The contested nick stays mapped to bob@net's avatar.
         assert store.find_avatar_by_nick("bob") == b.entity_id
 
+    def test_opt_in_nick_lookup_is_indexed_not_full_scan(self, verse_db_dir: Path) -> None:
+        """The nick-fallback avatar lookup must seek an index, not scan avatar_link.
+
+        opt_in_avatar resolves an existing avatar by nick when no account match
+        is found. Wrapping the column in LOWER() (``WHERE LOWER(al.nick)=LOWER(?)``)
+        is non-sargable and forces a full O(n) SCAN of avatar_link while the write
+        lock is held. The lookup must instead use a case-insensitive index seek.
+        """
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        store.opt_in_avatar("alice", None, "curious traveller")
+
+        # Mirror the exact predicate opt_in_avatar uses for the nick fallback.
+        sql = (
+            "SELECT al.entity_id, e.status FROM avatar_link al"
+            " JOIN entities e ON e.id = al.entity_id"
+            " WHERE al.nick = ? COLLATE NOCASE"
+        )
+        with store.read_connection() as conn:
+            plan = conn.execute("EXPLAIN QUERY PLAN " + sql, ("alice",)).fetchall()
+        detail = " | ".join(row[3] for row in plan)
+        # RED before fix: idx_avatar_link_nick is BINARY, so this SCANs avatar_link.
+        # GREEN after fix: a NOCASE index turns it into a SEARCH ... (nick=?).
+        assert "SCAN avatar_link" not in detail and "SCAN al" not in detail, detail
+        assert "SEARCH" in detail and "nick" in detail.lower(), detail
+
+    def test_opt_in_nick_fallback_case_insensitive_resolves_same_avatar(
+        self, verse_db_dir: Path
+    ) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("Alice", None, "curious traveller")
+        # Different-case nick, still no account -> must hit the nick fallback and
+        # resolve to the same (already active) avatar.
+        again = store.opt_in_avatar("aLiCe", None, "second visit")
+        assert again.entity_id == first.entity_id
+        assert again.was_already_opted_in is True
+        assert len(store.list_entities_by_kind("avatar")) == 1
+
     def test_concurrent_opt_in_distinct_nicks_one_place(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
