@@ -679,6 +679,30 @@ class VerseStore:
     # Avatar opt-in
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _relink_avatar(
+        conn: sqlite3.Connection, entity_id: int, nick: str, account: str | None
+    ) -> None:
+        """Point this avatar's link at *nick*/*account*, degrading on a nick clash.
+
+        ``avatar_link.nick`` is UNIQUE NOT NULL. If *nick* is already held by
+        another avatar's link (a cross-account collision — the live IRC user has
+        renamed into a nick recorded on someone else's link), the full update
+        would raise sqlite3.IntegrityError and crash opt-in. Degrade instead: the
+        opting-in user is still served via their account, and the contested nick
+        stays with its current owner rather than taking the whole command down.
+        """
+        try:
+            conn.execute(
+                "UPDATE avatar_link SET nick = ?, account = ? WHERE entity_id = ?",
+                (nick, account, entity_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.execute(
+                "UPDATE avatar_link SET account = ? WHERE entity_id = ?",
+                (account, entity_id),
+            )
+
     def opt_in_avatar(
         self,
         nick: str,
@@ -729,10 +753,7 @@ class VerseStore:
             if entity_id is not None and entity_status == "active":
                 # Active: return existing. Update nick in link in case IRC renamed.
                 was_already_opted_in = True
-                conn.execute(
-                    "UPDATE avatar_link SET nick = ?, account = ? WHERE entity_id = ?",
-                    (nick, account, entity_id),
-                )
+                self._relink_avatar(conn, entity_id, nick, account)
 
             elif entity_id is not None and entity_status == "retired":
                 # Retired (soft pause): reactivate and update the link.
@@ -740,10 +761,7 @@ class VerseStore:
                     "UPDATE entities SET status = 'active', updated_at = ? WHERE id = ?",
                     (now, entity_id),
                 )
-                conn.execute(
-                    "UPDATE avatar_link SET nick = ?, account = ? WHERE entity_id = ?",
-                    (nick, account, entity_id),
-                )
+                self._relink_avatar(conn, entity_id, nick, account)
 
             else:
                 # New avatar.

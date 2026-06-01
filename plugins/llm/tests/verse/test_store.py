@@ -626,6 +626,30 @@ class TestOptInAvatar:
         # Link nick should be updated
         assert store.find_avatar_by_nick("aliceX") == eid
 
+    def test_opt_in_survives_cross_account_nick_collision(self, verse_db_dir: Path) -> None:
+        """A second account claiming a nick another avatar's link holds must not crash.
+
+        avatar_link.nick is UNIQUE NOT NULL. When an identified user renames to a
+        nick already recorded on another avatar's link, opt_in's link UPDATE hit
+        sqlite3.IntegrityError and crashed @verseopt in. The opting-in user must
+        still be served (resolved by account); the contested nick stays with its
+        current owner.
+        """
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        a = store.opt_in_avatar("alice", "alice@net", "the traveller")
+        b = store.opt_in_avatar("bob", "bob@net", "the smith")
+
+        # alice@net renames their IRC nick to "bob" (held by bob@net's link).
+        result = store.opt_in_avatar("bob", "alice@net", "still the traveller")
+
+        # No crash; still alice@net's own avatar (resolved by account).
+        assert result.entity_id == a.entity_id
+        assert result.was_already_opted_in is True
+        # The contested nick stays mapped to bob@net's avatar.
+        assert store.find_avatar_by_nick("bob") == b.entity_id
+
     def test_concurrent_opt_in_distinct_nicks_one_place(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
