@@ -1766,20 +1766,33 @@ class LLMService:
         # the backoff this is in the past and the retry fires immediately.
         first_attempt_at = submitted_at + PENDING_INITIAL_BACKOFF_SECONDS
 
-        task_id = db.save_pending_task(
-            task_type=task_type,
-            nick=nick,
-            reply_target=reply_target,
-            is_channel=is_channel,
-            prompt_preview=prompt_preview,
-            model=model,
-            request_data=data_json,
-            submitted_at=submitted_at,
-            expires_at=expires_at,
-            next_attempt_at=first_attempt_at,
-            origin_request_id=request_id.get(),
-            account=account,
-        )
+        # A DB write failure here must not escape the caller's
+        # ``except litellm.Timeout`` handler — that would leave the user with no
+        # reply AND no stashed retry. Degrade to "not stashed" so the caller
+        # falls through to a normal timeout error message instead.
+        try:
+            task_id = db.save_pending_task(
+                task_type=task_type,
+                nick=nick,
+                reply_target=reply_target,
+                is_channel=is_channel,
+                prompt_preview=prompt_preview,
+                model=model,
+                request_data=data_json,
+                submitted_at=submitted_at,
+                expires_at=expires_at,
+                next_attempt_at=first_attempt_at,
+                origin_request_id=request_id.get(),
+                account=account,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to stash timed-out %s request: %s",
+                task_type,
+                self._sanitize(str(e)),
+            )
+            return False
+
         self.log.info(
             "Stashed timed-out %s request as pending_task id=%d (expires in %ds)",
             task_type,
@@ -1788,10 +1801,13 @@ class LLMService:
         )
 
         # Trigger an event-driven wakeup at the first-attempt time so the
-        # scheduler picks this up exactly when the backoff window elapses.
+        # scheduler picks this up exactly when the backoff window elapses. The
+        # row is already persisted, so a wakeup-scheduling failure must not undo
+        # the stash — it only defers pickup to the safety poll.
         schedule_wakeup = getattr(self.plugin, "_schedule_queue_wakeup", None)
         if schedule_wakeup is not None:
-            schedule_wakeup(at_time=first_attempt_at)
+            with contextlib.suppress(Exception):
+                schedule_wakeup(at_time=first_attempt_at)
 
         return True
 

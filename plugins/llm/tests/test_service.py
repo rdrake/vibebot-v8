@@ -5025,6 +5025,31 @@ class TestStashTimeout:
 
         assert result is False
 
+    def test_stash_timeout_returns_false_when_save_raises(self) -> None:
+        """GIVEN save_pending_task raises WHEN _stash_timeout called THEN returns False, no raise.
+
+        A DB write failure while stashing must degrade gracefully. The bug: the
+        write escaped the caller's ``except litellm.Timeout`` handler, so a
+        timeout under DB contention left the user with no reply AND no stashed
+        retry. Returning False lets the caller fall through to a normal timeout
+        error instead.
+        """
+        self.mock_plugin.registryValue.return_value = 3600
+        self.mock_plugin.db.save_pending_task.side_effect = Exception("database is locked")
+
+        result = self.service._stash_timeout(
+            task_type="ask",
+            nick="u",
+            reply_target="#c",
+            is_channel=True,
+            prompt="test",
+            model="m",
+            request_data={"prompt": "test"},
+            submitted_at=1.0,
+        )
+
+        assert result is False
+
 
 class TestDeleteStashedTask:
     """Tests for _delete_stashed_task guard clauses."""
