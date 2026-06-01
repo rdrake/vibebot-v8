@@ -1044,17 +1044,29 @@ class LLM(callbacks.Plugin):
             )
             delivered = False
 
-        # No durable-state mutations from a shutting-down worker — bail
-        # before touching delete_pending_task / update_delivery_attempt /
-        # log_usage / _schedule_queue_wakeup.
-        if self._llm_executor.closing:
-            return
-
-        # Acknowledge or retry delivery for durable results
+        # Acknowledge or retry delivery for durable results.
+        #
+        # A successful send MUST be acked even if shutdown began after the
+        # message went out — otherwise the row survives and is re-delivered
+        # next process lifetime (duplicate IRC send). Only the not-delivered
+        # branch (retry-state writes + wakeup) and usage logging are skipped
+        # while closing, since nothing was sent and leaving the row for the
+        # next lifetime is the correct, mutation-free behavior.
         if r.task_id is not None:
             if delivered:
-                self.db.delete_pending_task(r.task_id)
-            else:
+                # Best-effort ack: a transient delete failure (e.g. DB lock)
+                # after a successful send must not bubble up as a misleading
+                # "delivery failed". The row simply re-delivers next tick
+                # (at-least-once), which beats losing a delivered result.
+                try:
+                    self.db.delete_pending_task(r.task_id)
+                except Exception as e:
+                    self.log.warning(
+                        "Delivered task_id=%s but ack(delete) failed; may re-deliver: %s",
+                        r.task_id,
+                        self.llm_service.sanitize_output(str(e)),
+                    )
+            elif not self._llm_executor.closing:
                 now = time.time()
                 attempt = max(r.delivery_attempt_count, 0) + 1
                 delay = min(
@@ -1073,8 +1085,8 @@ class LLM(callbacks.Plugin):
                 if state != "delivery_failed":
                     self._schedule_queue_wakeup(at_time=retry_at)
 
-        # Log usage for completed tasks
-        if r.status == "completed" and delivered:
+        # Log usage for completed tasks (a durable-state write — skip while closing).
+        if r.status == "completed" and delivered and not self._llm_executor.closing:
             self._log_pending_delivery_usage(r, nick, target)
 
     def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg:  # noqa: N802

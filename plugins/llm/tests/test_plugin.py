@@ -3549,6 +3549,52 @@ class TestDeliveryRetry:
 
         plugin.db.delete_pending_task.assert_called_once_with(42)
 
+    def test_delivered_then_closing_still_acks(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN a send succeeds but shutdown begins before the ack THEN the row is still deleted.
+
+        Models the race where ``_safe_queue`` already queued the message (closing
+        was False) and ``_llm_executor.closing`` flips True before the post-send
+        check. Bailing without deleting would leave the row to re-deliver next
+        process lifetime — a duplicate IRC send. A successful send must be acked.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        # Send succeeds, then shutdown is observed before the ack.
+        mocker.patch.object(plugin, "_safe_queue", return_value=True)
+        plugin._llm_executor.closing = True
+
+        r = self._make_result(task_id=42)
+        plugin._deliver_pending_result(r)
+
+        plugin.db.delete_pending_task.assert_called_once_with(42)
+        # Retry-state writes stay suppressed during shutdown.
+        plugin.db.update_delivery_attempt.assert_not_called()
+
+    def test_delivered_ack_failure_is_best_effort(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN the send succeeds but delete raises (transient DB lock) THEN no exception escapes.
+
+        The delivery already went out; an ack failure must be swallowed and
+        logged (the row re-delivers next tick — at-least-once) instead of
+        bubbling up as a misleading 'delivery failed' and never being retried.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        mocker.patch.object(plugin, "_safe_queue", return_value=True)
+        plugin.db.delete_pending_task.side_effect = Exception("database is locked")
+
+        r = self._make_result(task_id=42)
+        plugin._deliver_pending_result(r)  # must not raise
+
+        plugin.db.delete_pending_task.assert_called_once_with(42)
+        plugin.log.warning.assert_called()
+
     def test_delivery_failure_retries_with_backoff(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN queueMsg raises WHEN delivering THEN delivery retried with backoff."""
         import supybot.world as world_mod
