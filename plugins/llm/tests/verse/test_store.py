@@ -955,6 +955,45 @@ class TestApplyAndRecordProposal:
             )
         assert store.list_proposals() == []
 
+    def test_set_attribute_on_retired_entity_raises_and_writes_nothing(
+        self, verse_db_dir: Path
+    ) -> None:
+        """A proposal must not mutate a retired entity (loom retired-entity guard)."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Wraith", "A faded memory.")
+        store.set_status(eid, "retired")
+        with pytest.raises(LookupError, match="retired"):
+            store.apply_and_record_proposal(
+                cycle_id="c-1",
+                op="set_attribute",
+                payload={"entity_id": eid, "key": "mood", "value": "vengeful"},
+                confidence=0.95,
+                provenance="x",
+                reviewer="loom",
+            )
+        assert store.get_attribute(eid, "mood") is None
+        assert store.list_proposals() == []
+
+    def test_set_attribute_reserved_key_raises_and_writes_nothing(self, verse_db_dir: Path) -> None:
+        """A proposal must not set lifecycle-controlled keys (no last_seen_ts immortality)."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Ghost", "Lingering.")
+        with pytest.raises(ValueError, match="reserved"):
+            store.apply_and_record_proposal(
+                cycle_id="c-1",
+                op="set_attribute",
+                payload={"entity_id": eid, "key": "last_seen_ts", "value": "99999999999"},
+                confidence=0.95,
+                provenance="x",
+                reviewer="loom",
+            )
+        assert store.get_attribute(eid, "last_seen_ts") is None
+        assert store.list_proposals() == []
+
 
 class TestApplyProposalAndMark:
     def test_pending_to_approved_atomically(self, verse_db_dir: Path) -> None:
@@ -998,6 +1037,29 @@ class TestApplyProposalAndMark:
         )
         with pytest.raises(ValueError):
             store.apply_proposal_and_mark(pid, reviewer="alice")
+
+    def test_apply_pending_set_attribute_on_since_retired_entity_raises(
+        self, verse_db_dir: Path
+    ) -> None:
+        """Approving a proposal whose entity retired after queueing must reject (TOCTOU)."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        eid = store.add_entity("npc", "Echo", "Still here.")
+        pid = store.add_proposal(
+            cycle_id="c-1",
+            op="set_attribute",
+            payload={"entity_id": eid, "key": "mood", "value": "calm"},
+            confidence=0.5,
+            provenance="x",
+        )
+        store.set_status(eid, "retired")  # retired between queue and approval
+        with pytest.raises(LookupError, match="retired"):
+            store.apply_proposal_and_mark(pid, reviewer="op")
+        assert store.get_attribute(eid, "mood") is None
+        # Apply rolled back: the proposal stays pending, not approved.
+        p = store.get_proposal(pid)
+        assert p is not None and p.status == "pending"
 
 
 class TestListActiveVerses:

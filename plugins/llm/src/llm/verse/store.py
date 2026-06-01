@@ -19,6 +19,14 @@ _log = logging.getLogger(__name__)
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
+# Attribute keys that drive entity lifecycle/identity. Proposals (loom / model
+# output) must never set these — they are maintained only by the engine's own
+# inline writers (bump_last_seen_ts, aging, compaction heartbeat, verse_move).
+# Letting a model-proposed set_attribute write them would grant NPC immortality
+# (last_seen_ts), toggle aging enrollment (auto_created), or relocate/retype an
+# entity outside the guarded paths (location/status/kind).
+_RESERVED_ATTRIBUTE_KEYS = frozenset({"last_seen_ts", "auto_created", "status", "kind", "location"})
+
 
 def _parse_entity_ids(raw: str, event_id: object) -> tuple[int, ...]:
     """Decode an event's stored entity_ids JSON, degrading to () on corruption.
@@ -907,13 +915,26 @@ class VerseStore:
             return cur.lastrowid
         if op == "set_attribute":
             eid = payload["entity_id"]
-            row = conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone()
+            key = payload["key"]
+            # Proposals must not touch lifecycle/identity keys (immortality,
+            # aging enrollment, relocation) — those are engine-only.
+            if key in _RESERVED_ATTRIBUTE_KEYS:
+                raise ValueError(
+                    f"attribute key {key!r} is reserved (lifecycle-controlled) "
+                    "and cannot be set by a proposal"
+                )
+            # Validate active status, not mere existence: a proposal must not
+            # mutate a retired/soft-deleted entity (auto-apply, human approval
+            # of a since-retired proposal, and crosspoll all flow through here).
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
             if row is None:
                 raise LookupError(f"entity_id {eid} does not exist")
+            if row[0] == "retired":
+                raise LookupError(f"entity_id {eid} is retired")
             conn.execute(
                 "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?) "
                 "ON CONFLICT(entity_id, key) DO UPDATE SET value=excluded.value",
-                (eid, payload["key"], payload["value"]),
+                (eid, key, payload["value"]),
             )
             return None
         if op == "add_relation":
