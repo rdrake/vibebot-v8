@@ -294,9 +294,14 @@ def verse_move(store: VerseStore, avatar_id: int, place_name: str) -> str:
     """Move the avatar to the given place by name.
 
     Returns the canonical place name on success.
-    Raises ValueError("no such place") if no active place matches.
+    Raises ValueError("avatar retired") if the avatar is retired or missing,
+    or ValueError("no such place") if no active place matches.
     """
-    place = store.find_entity_by_name(place_name, kind="place")
+    # Retired-avatar guard before any write (parity with verse_act, #26).
+    avatar = store.get_entity(avatar_id)
+    if avatar is None or avatar.status == "retired":
+        raise ValueError("avatar retired")
+    place = store.find_entity_by_name(place_name, kind="place", active_only=True)
     if place is None:
         raise ValueError("no such place")
     store.set_attribute(avatar_id, "location", place.name)

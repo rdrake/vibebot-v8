@@ -251,6 +251,26 @@ class TestVerseMove:
         assert result == "Riverside"
         assert store.get_attribute(alice_id, "location") == "Riverside"
 
+    def test_retired_place_is_not_resolved(self, store: VerseStore) -> None:
+        """A retired place is not a valid move target (parity with verse_act #26)."""
+        alice_id = _opt_in(store)
+        original_location = store.get_attribute(alice_id, "location")
+        gone_id = store.add_entity("place", "Old Mill", "Abandoned mill.")
+        store.set_status(gone_id, "retired")
+        with pytest.raises(ValueError, match="no such place"):
+            verse_move(store, alice_id, "Old Mill")
+        assert store.get_attribute(alice_id, "location") == original_location
+
+    def test_retired_avatar_cannot_move(self, store: VerseStore) -> None:
+        """A retired avatar must not be relocated (no write before the guard)."""
+        alice_id = _opt_in(store)
+        store.add_entity("place", "Riverside", "A bend in the river.")
+        location_before = store.get_attribute(alice_id, "location")
+        store.set_status(alice_id, "retired")
+        with pytest.raises(ValueError, match="avatar retired"):
+            verse_move(store, alice_id, "Riverside")
+        assert store.get_attribute(alice_id, "location") == location_before
+
 
 # ---------------------------------------------------------------------------
 # TestVerseLook
