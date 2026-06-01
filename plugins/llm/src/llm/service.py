@@ -2442,7 +2442,13 @@ class LLMService:
                 completion_tokens,
             )
             return ToolResult(
-                content=content,
+                # Grounding models (notably Gemini urlContext) can return
+                # content=None when they run the fetch but emit no summary
+                # text. None propagates into the tool-result message and
+                # xAI's strict deserializer rejects {"content": null} with
+                # "missing field `content`" — coerce to "" so the follow-up
+                # completion survives on every provider.
+                content=content or "",
                 grounding_used=grounding_used,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -2577,7 +2583,9 @@ class LLMService:
             )
 
             return ToolResult(
-                content=content,
+                # Coerce None → "" for the same reason as the chat-completions
+                # path above: a null tool-result content is rejected by xAI.
+                content=content or "",
                 grounding_used=grounding_used,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -3600,7 +3608,9 @@ Examples (echo → action_prompt: ""):
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": message.content,
+                        # xAI rejects {"content": null}; a tool-call-only turn
+                        # has message.content=None. Coerce to "".
+                        "content": message.content or "",
                         "tool_calls": [
                             {
                                 "id": tc.id,
@@ -3665,7 +3675,8 @@ Examples (echo → action_prompt: ""):
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": tool_result.content,
+                            # Defensive: a None content here would 422 on xAI.
+                            "content": tool_result.content or "",
                         }
                     )
 

@@ -591,6 +591,26 @@ class TestSearchCompletionProviderRouting:
         assert call_kwargs["kind"] == "url"
         assert "https://example.com" in responses_mock.call_args.args[0]
 
+    def test_gemini_url_none_content_coerced_to_empty_string(self) -> None:
+        # Regression: Gemini urlContext can run the fetch but return
+        # content=None. A null tool-result content propagates into the
+        # follow-up completion and xAI's strict deserializer rejects it
+        # with "missing field `content`" (prod 422s 2026-06-01). The
+        # ToolResult must carry "" rather than None.
+        self._completion_mock.return_value.choices[0].message.content = None
+        self.plugin.registryValue.side_effect = lambda k, ch=None: (
+            "gemini/gemini-2.5-flash"
+            if k == "searchModel"
+            else "key"
+            if k == "searchApiKey"
+            else 30
+            if k == "timeout"
+            else ""
+        )
+        result = self.service.url_completion("https://example.com", channel="#t")
+        assert result.content == ""
+        assert result.content is not None
+
 
 class TestXAIResponsesCall:
     """xAI Responses API path: web_search tool, citations, usage shape."""
