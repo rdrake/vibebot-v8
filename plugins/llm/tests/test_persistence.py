@@ -984,11 +984,17 @@ class TestDeliveryStatePersistence:
         assert len(claimed) == 1
         assert claimed[0].nick == "retriable"
 
-    def test_expired_only_deletes_pending_delivery_state(self, test_db: LLMDatabase) -> None:
-        """GIVEN expired tasks with delivery_state='ready' WHEN expiry sweep THEN NOT deleted."""
+    def test_expired_deletes_all_delivery_states_past_ttl(self, test_db: LLMDatabase) -> None:
+        """GIVEN expired tasks in any delivery_state WHEN expiry sweep THEN all past-TTL rows reaped.
+
+        ``expires_at`` is the whole-task hard deadline ("stop retrying after
+        this"). A result that reached ready/retrying/delivery_failed but can no
+        longer be delivered (e.g. the bot left the channel) must still be reaped
+        at its TTL — otherwise it re-polls every 30s forever (queue leak +
+        perpetual wakeup). Only rows still within their TTL survive.
+        """
         now = time.time()
 
-        # Expired pending task — should be deleted
         self._save_task(
             test_db,
             now,
@@ -998,7 +1004,6 @@ class TestDeliveryStatePersistence:
             next_attempt_at=now - 60,
         )
 
-        # Expired but delivery_state='ready' — should NOT be deleted
         ready_id = self._save_task(
             test_db,
             now,
@@ -1009,13 +1014,59 @@ class TestDeliveryStatePersistence:
         )
         test_db.update_task_for_delivery(ready_id, "ready", '{"content": "result"}')
 
+        retrying_id = self._save_task(
+            test_db,
+            now,
+            nick="expired_retrying",
+            submitted_at=now - 120,
+            expires_at=now - 10,
+            next_attempt_at=now - 60,
+        )
+        test_db.update_delivery_attempt(
+            task_id=retrying_id,
+            delivery_state="retrying",
+            last_delivery_error="IRC delivery failed",
+            delivery_attempt_count=1,
+            next_attempt_at=now - 5,
+        )
+
+        failed_id = self._save_task(
+            test_db,
+            now,
+            nick="expired_delivery_failed",
+            submitted_at=now - 120,
+            expires_at=now - 10,
+            next_attempt_at=now - 60,
+        )
+        test_db.update_delivery_attempt(
+            task_id=failed_id,
+            delivery_state="delivery_failed",
+            last_delivery_error="gave up",
+            delivery_attempt_count=5,
+            next_attempt_at=now - 5,
+        )
+
+        # Within TTL with a result — must survive the sweep.
+        fresh_id = self._save_task(
+            test_db,
+            now,
+            nick="fresh_ready",
+            submitted_at=now,
+            expires_at=now + 120,
+            next_attempt_at=now,
+        )
+        test_db.update_task_for_delivery(fresh_id, "ready", '{"content": "fresh"}')
+
         expired = test_db.delete_expired_pending_tasks(now)
-        assert len(expired) == 1
-        assert expired[0].nick == "expired_pending"
+        assert {r.nick for r in expired} == {
+            "expired_pending",
+            "expired_ready",
+            "expired_retrying",
+            "expired_delivery_failed",
+        }
 
         remaining = test_db.load_pending_tasks()
-        assert len(remaining) == 1
-        assert remaining[0].nick == "expired_ready"
+        assert {r.nick for r in remaining} == {"fresh_ready"}
 
 
 class TestSchemaV3Migration:

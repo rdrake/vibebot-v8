@@ -1208,11 +1208,15 @@ class LLMDatabase:
             return cursor.rowcount > 0
 
     def delete_expired_pending_tasks(self, now: float) -> list[PendingTaskRow]:
-        """Delete pending tasks whose expires_at has passed.
+        """Delete pending tasks whose expires_at has passed, in any state.
 
-        Only deletes tasks still in the provider phase (delivery_state='pending').
-        Tasks that already have results (ready/retrying) are preserved for
-        delivery retry.
+        ``expires_at`` is the whole-task hard deadline ("stop retrying after
+        this"). It bounds the *entire* lifecycle — provider retries AND delivery
+        retries. A row that reached ready/retrying/delivery_failed but can no
+        longer be delivered (e.g. the bot left the channel) must still be reaped
+        once its TTL passes; otherwise it re-polls every 30s forever, leaking
+        rows and firing perpetual scheduler wakeups. Delivery retry is still
+        honored for any row whose TTL has not yet elapsed.
 
         Args:
             now: Current Unix timestamp.
@@ -1222,8 +1226,7 @@ class LLMDatabase:
         """
         with self._write_txn() as conn:
             rows = conn.execute(
-                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks "
-                "WHERE expires_at <= ? AND delivery_state = 'pending'",
+                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks WHERE expires_at <= ?",
                 (now,),
             ).fetchall()
             if rows:

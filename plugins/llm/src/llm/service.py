@@ -2027,7 +2027,7 @@ class LLMService:
         now = time.time()
         results: list[PendingTaskResult] = []
 
-        # ── Expiry sweep (delivery_state='pending' only) ──────────────
+        # ── Expiry sweep (any delivery_state past its expires_at TTL) ──
         expired_rows: list[PendingTaskRow] = db.delete_expired_pending_tasks(now)
         for row in expired_rows:
             results.append(

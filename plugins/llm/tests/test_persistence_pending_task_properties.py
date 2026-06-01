@@ -168,10 +168,12 @@ class PendingTaskLifecycleMachine(RuleBasedStateMachine):
         after_ids = {r.id for r in after_all}
         # Returned IDs equal the IDs that disappeared.
         assert deleted_ids == before_ids - after_ids
-        # Only rows with delivery_state='pending' AND expires_at <= now are removed.
+        # Any row past its expires_at TTL is removed, regardless of delivery_state
+        # (expires_at is the whole-task hard deadline). Nothing within TTL is touched.
         for row in deleted:
-            assert row.delivery_state == "pending"
             assert row.expires_at <= now
+        for row in after_all:
+            assert row.expires_at > now
 
     @rule(task_type=sampled_from(TASK_TYPES))
     def load_filtered_is_subset(self, task_type: str) -> None:
