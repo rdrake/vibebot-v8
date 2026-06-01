@@ -1042,3 +1042,91 @@ def test_search_commands_multiple_tokens_all_must_match_at_least_once():
     assert out[0].command == "channel"
     assert out[1].command == "help"
     assert all(c.command != "ping" for c in out)
+
+
+def _enumerable_stock_command_leaves() -> dict[str, set[str]]:
+    """Map canonical_plugin_name -> set of real leaf command names, derived
+    from the *installed* stock Limnoria plugins (no hand-maintained list).
+
+    Mirrors supybot.callbacks.Commands.isCommandMethod at the class level so
+    no live IRC instance is needed: a leaf is a command iff it is a function
+    whose positional args equal ``commandArgs`` (['self','irc','msg','args'])
+    and whose name is already canonical (lowercase). Class-level inspection is
+    required because some plugins (RSS) override listCommands()/isCommandMethod()
+    to read instance state set in __init__, which a live-less probe lacks.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import supybot.plugins as supyplugins
+    from supybot.callbacks import canonicalName
+
+    leaves_by_canon: dict[str, set[str]] = {}
+    for mod_info in pkgutil.iter_modules(supyplugins.__path__):
+        if not mod_info.ispkg:
+            continue
+        try:
+            mod = importlib.import_module(f"supybot.plugins.{mod_info.name}")
+        except Exception:
+            # A stock plugin that cannot import at module-load is irrelevant to
+            # the bridge (it can never be a loaded callback); skip it.
+            continue
+        cls = getattr(mod, "Class", None)
+        if cls is None:
+            continue
+        command_args = getattr(cls, "commandArgs", ["self", "irc", "msg", "args"])
+        leaves: set[str] = set()
+        for nm in dir(cls):
+            if nm != canonicalName(nm):
+                continue
+            attr = inspect.getattr_static(cls, nm)
+            if not inspect.isfunction(attr):
+                continue
+            try:
+                argnames = inspect.getargs(attr.__code__)[0]
+            except TypeError:
+                continue
+            if argnames == command_args:
+                leaves.add(nm)
+        leaves_by_canon[canonicalName(cls.__name__)] = leaves
+    return leaves_by_canon
+
+
+def test_mutating_commands_have_no_orphaned_entries():
+    """Drift guard: every (plugin, leaf) in MUTATING_COMMANDS must correspond
+    to a real, enumerable command on an installed stock Limnoria plugin.
+
+    If a stock-plugin upgrade renames/removes a command, or an entry is typo'd,
+    the orphaned tuple silently stops gating anything (the command it meant to
+    classify as mutating would be exposed as read-only). This fails CI before
+    that can ship. See enumerate_commands()/dispatch() membership tests on
+    MUTATING_COMMANDS in limnoria_bridge.py.
+    """
+    from llm import limnoria_bridge as lb
+
+    real = _enumerable_stock_command_leaves()
+    orphans = sorted(
+        (plugin, leaf)
+        for (plugin, leaf) in lb.MUTATING_COMMANDS
+        if leaf not in real.get(plugin, set())
+    )
+    assert not orphans, (
+        "MUTATING_COMMANDS entries no longer match any enumerable stock command "
+        f"(renamed/removed/typo): {orphans}"
+    )
+
+
+def test_drift_check_detects_orphan():
+    """Meta-guard: prove the drift check above is not vacuous — a deliberately
+    orphaned entry must be flagged. Protects against the helper silently
+    returning empty sets (which would make the real test always pass)."""
+    from llm import limnoria_bridge as lb
+
+    real = _enumerable_stock_command_leaves()
+    poisoned = (lb.MUTATING_COMMANDS - {("misc", "tell")}) | {("misc", "tel")}
+    orphans = {(plugin, leaf) for (plugin, leaf) in poisoned if leaf not in real.get(plugin, set())}
+    assert ("misc", "tel") in orphans
+    # And the real (non-typo) entry must NOT be flagged, proving the helper
+    # actually populated misc's real leaves.
+    assert ("misc", "tell") not in orphans
