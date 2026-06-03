@@ -87,6 +87,17 @@ def build_seed_tail() -> str:
     )
 
 
+def build_chimein_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"{nick}: {text}" for nick, text in loom_transcript_so_far)
+    return (
+        "You are idling in this channel, watching. The others just spoke, "
+        "unprompted:\n"
+        f"{lines}\n\n"
+        "Chime in with a single line that picks up on what they're doing. "
+        "Stay in fiction. One line, ≤ 350 chars. Do NOT emit JSON for this call."
+    )
+
+
 def build_beat_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
     lines = "\n".join(f"{nick}: {text}" for nick, text in loom_transcript_so_far)
     return (

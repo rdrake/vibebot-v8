@@ -2239,3 +2239,19 @@ class TestCrosspollEndToEnd:
 
         # Second claim returns None — already consumed for this dest.
         assert cx.claim_seed_for("#beta", proposal_id="p-x") is None
+
+
+class TestBuildChimeinTail:
+    def test_frames_lines_as_spontaneous_and_forbids_json(self) -> None:
+        from llm.verse.loom import build_chimein_tail
+
+        tail = build_chimein_tail(
+            loom_transcript_so_far=[("botB", "the bell rings"), ("botC", "i hear it")]
+        )
+        assert "botB: the bell rings" in tail
+        assert "botC: i hear it" in tail
+        # Framed as the others speaking unprompted, not replying to us.
+        assert "unprompted" in tail
+        assert "replied" not in tail
+        # Same guardrails as seed/beat: one line, no JSON.
+        assert "Do NOT emit JSON" in tail
