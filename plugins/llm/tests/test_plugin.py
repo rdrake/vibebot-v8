@@ -1784,7 +1784,7 @@ class TestVerseapproveRejectCommands:
 
 
 class TestPluginLoomBridge:
-    """Cover _PluginLoomBridge methods + _loom_tick path."""
+    """Cover _PluginLoomBridge methods."""
 
     def _make_bridge(self, mocker: MockerFixture, tmp_path):
         from llm.plugin import LLM, _PluginLoomBridge
@@ -1946,42 +1946,6 @@ class TestPluginLoomBridge:
         assert kwargs["nick"] == "loom"
         assert kwargs["command"] == "loom:seed"
         assert kwargs["prompt_tokens"] == 7
-
-    def test_loom_tick_no_loom_is_noop(self, mocker: MockerFixture) -> None:
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {}
-        registry = make_registry_side_effect()
-        mocker.patch.object(LLM, "registryValue", side_effect=registry)
-        mocker.patch("llm.plugin.LLMService")
-        mocker.patch("llm.plugin.LLMDatabase")
-        mocker.patch("llm.plugin.log")
-        mocker.patch("llm.plugin.httpserver")
-        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
-        mocker.patch("llm.plugin.schedule.removeEvent")
-        mocker.patch("llm.plugin.schedule.addEvent")
-        plugin = LLM(mock_irc)
-        plugin._loom_tick()
-
-    def test_loom_tick_swallows_loom_exceptions(self, mocker: MockerFixture) -> None:
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {}
-        registry = make_registry_side_effect()
-        mocker.patch.object(LLM, "registryValue", side_effect=registry)
-        mocker.patch("llm.plugin.LLMService")
-        mocker.patch("llm.plugin.LLMDatabase")
-        mocker.patch("llm.plugin.log")
-        mocker.patch("llm.plugin.httpserver")
-        mocker.patch("llm.plugin.schedule.addPeriodicEvent")
-        mocker.patch("llm.plugin.schedule.removeEvent")
-        mocker.patch("llm.plugin.schedule.addEvent")
-        plugin = LLM(mock_irc)
-        plugin._loom = mocker.MagicMock()
-        plugin._loom.tick.side_effect = RuntimeError("boom")
-        plugin._loom_tick()
 
 
 class TestLoomWiring:

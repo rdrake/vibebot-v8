@@ -831,13 +831,9 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_queue_wakeup")
-        # Loom orchestrator teardown (PR 2).
+        # Loom orchestrator teardown (reactive trigger; single beat window).
         with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_loom_cycle")
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_loom_after_beat1")
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_loom_after_beat2")
+            schedule.removeEvent("llm_loom_after_chime")
         # Daily compaction timer teardown (PR 3 / E3).
         if hasattr(self, "_compaction_timer_name"):
             self._cancel_compaction_timer()
@@ -5005,11 +5001,7 @@ class LLM(callbacks.Plugin):
         if not network or not channel:
             if self._loom is not None:
                 with contextlib.suppress(KeyError):
-                    schedule.removeEvent("llm_loom_cycle")
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent("llm_loom_after_beat1")
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent("llm_loom_after_beat2")
+                    schedule.removeEvent("llm_loom_after_chime")
             self._loom = None
             self._loom_bridge = None
             self._loom_channel_cache = None
@@ -5058,21 +5050,8 @@ class LLM(callbacks.Plugin):
         self._loom_network_cache = network
         self._loom_bot_nicks_cache = cfg.bot_nicks
         self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
-        self._schedule_loom_tick()
-
-    def _schedule_loom_tick(self) -> None:
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_loom_cycle")
-        interval = self.registryValue("loomCycleInterval") * 60
-        schedule.addPeriodicEvent(self._loom_tick, interval, name="llm_loom_cycle")
-
-    def _loom_tick(self) -> None:
-        if self._loom is None:
-            return
-        try:
-            self._loom.tick()
-        except Exception:
-            self.log.exception("loom tick failed")
+        # No periodic timer: the loom is reactive and arms itself via
+        # observe_transcript (the doPrivmsg hook).
 
     # -------------------------------------------------------------------------
     # Daily verse compaction timer (PR 3 / E3)
