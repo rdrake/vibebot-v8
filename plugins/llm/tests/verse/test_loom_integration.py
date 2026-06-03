@@ -1,14 +1,14 @@
 """End-to-end integration test for the forest-verse loom orchestrator.
 
-Drives a real ``VerseStore`` through ``Loom.tick → after_beat1 → after_beat2``
-with a ``FakeBridge`` and ``StubClient`` so the test stays deterministic
-without touching IRC or the LLM. Verifies:
+Drives a real ``VerseStore`` through ``observe_transcript → after_chime →
+digest`` with a ``FakeBridge`` and ``StubClient`` so the test stays
+deterministic without touching IRC or the LLM. Verifies:
 
 - High-confidence non-entity proposals auto-apply with an audit row
   (``status='approved' reviewer='loom'``).
 - Low-confidence proposals queue ``status='pending'``.
 - ``add_entity`` proposals always queue regardless of confidence.
-- All three loom phases log usage via the bridge.
+- Both reactive phases (chime-in, digest) log usage via the bridge.
 - An operator approves a queued proposal and the mutation lands.
 - ``_load_proposal`` short-id prefix lookup works against the integration
   store.
@@ -77,21 +77,19 @@ def test_full_cycle_then_operator_approval(verse_db_dir, tmp_path) -> None:
     )
     client = StubClient(
         {
-            "seed": "the bell rings in the grove",
-            "beat": "shadows lengthen across the path",
+            "chimein": "a chime echoes in answer",
             "digest": _digest_payload(),
         }
     )
     loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
 
-    # --- Drive the full cycle ---
-    loom.tick()
-    assert bridge.posts == ["the bell rings in the grove"]
+    # --- Drive the reactive cycle: a bot speaks, the loom chimes in once
+    #     (inline via FakeBridge.submit), then the digest runs after the
+    #     beat window. ---
     loom.observe_transcript("botB", "I hear it too")
-    bridge.scheduled[0][1]()  # after_beat1
-    assert bridge.posts[-1] == "shadows lengthen across the path"
-    loom.observe_transcript("botC", "the wind takes it")
-    bridge.scheduled[-1][1]()  # after_beat2
+    assert bridge.posts == ["a chime echoes in answer"]
+    loom.observe_transcript("botC", "the wind takes it")  # appended to the cycle
+    bridge.scheduled[-1][1]()  # after_chime -> digest
 
     # --- Auto-applied event landed with audit row ---
     events = store.recent_events()
@@ -105,8 +103,8 @@ def test_full_cycle_then_operator_approval(verse_db_dir, tmp_path) -> None:
     pending = store.list_proposals(status="pending")
     assert {p.op for p in pending} == {"set_attribute", "add_entity"}
 
-    # --- All three calls logged via the bridge ---
-    assert [u[1] for u in bridge.usage_log] == ["seed", "beat", "digest"]
+    # --- Both reactive phases logged via the bridge ---
+    assert [u[1] for u in bridge.usage_log] == ["chimein", "digest"]
 
     # --- Cycle finalized; pointer rotated exactly once ---
     assert loom._active is None
