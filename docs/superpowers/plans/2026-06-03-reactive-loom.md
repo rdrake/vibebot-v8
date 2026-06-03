@@ -96,30 +96,44 @@ This is one atomic rewrite of the orchestration: the trigger, the worker open+ch
 
 - [ ] **Step 1: Write the failing tests**
 
-Add a new test class to `test_loom.py`. These use the existing `FakeBridge` / `StubClient` from `_fakes.py` and the existing `verse_db_dir` fixture + `_make_store` helper used by the current tests (mirror how the current seed/beat tests build `store` and `snapshots`; reuse the same `VerseSnapshot` construction). The `StubClient` is now keyed by `"chimein"` and `"digest"`.
+Add a new test class to `test_loom.py`. **Use the helpers that already exist in this file** — do NOT invent `_make_cfg`/`_make_store`. The file already defines module-level `_minimal_cfg()` (`cycle_interval_s=300`, `verse_cooldown_s=20`, `auto_apply_threshold=0.85`) at lines 12–26, and every test builds its store inline as `VerseStore(verse_db_dir, "#afnet")`. The shared `FakeBridge` / `StubClient` come from `._fakes`. `StubClient` is keyed by op, now `"chimein"` and `"digest"`.
+
+> **Why `_minimal_cfg()` and not a 1200s cooldown:** `verse_cooldown_s` must be **smaller than** the time gap a re-trigger test advances. A successful cycle stamps `_last_cycle_by_channel["#forest"] = now` and it is **not** cleared on success, so on a single-channel bridge `pick_focus_verse` will refuse to re-pick `#forest` until `verse_cooldown_s` elapses. `_minimal_cfg()`'s `verse_cooldown_s=20` is below the 301s gap `test_line_after_interval_opens_new_cycle` advances, so the re-pick succeeds. A 1200s cooldown would make that test's second chime-in silently roll back (no eligible verse) and fail.
+
+First add a module-level helper near `_minimal_cfg()`:
 
 ```python
-class TestReactiveTrigger:
-    def _bridge(self, store, *, post_returns=True):
-        snap = VerseSnapshot(
-            channel="#forest",
-            summary="a quiet grove",
-            top_entities=[("place", "grove", 1)],
-            recent_events=["the bell rang"],
-        )
-        return FakeBridge(
-            channels=["#forest"],
-            weights={"#forest": 5},
-            store=store,
-            snapshots={"#forest": snap},
-            post_returns=post_returns,
-        )
+def _make_reactive(verse_db_dir, *, chimein="the bell still hums", digest="[]",
+                   post_returns=True, channels=("#forest",)):
+    """Build (loom, bridge, client, store) for reactive-trigger tests.
 
+    submit() runs inline in FakeBridge, so observe_transcript drives the
+    whole open+chime synchronously; fire the scheduled callback for digest.
+    """
+    from llm.verse.loom import Loom, VerseSnapshot
+    from llm.verse.store import VerseStore
+
+    from ._fakes import FakeBridge, StubClient
+
+    store = VerseStore(verse_db_dir, "#forest")
+    # Always seed a "#forest" snapshot so a no-candidate test can restore the
+    # channel and re-trigger without rebuilding the snapshot map.
+    snaps = {c: VerseSnapshot(c, "g", [], []) for c in (*channels, "#forest")}
+    bridge = FakeBridge(
+        channels=list(channels),
+        weights={c: 5 for c in channels},
+        store=store,
+        snapshots=snaps,
+        post_returns=post_returns,
+    )
+    client = StubClient({"chimein": chimein, "digest": digest})
+    loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+    return loom, bridge, client, store
+
+
+class TestReactiveTrigger:
     def test_first_line_opens_cycle_and_posts_single_chimein(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "the bell still hums", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="the bell still hums")
 
         loom.observe_transcript("botB", "the bell rings")
 
@@ -129,10 +143,7 @@ class TestReactiveTrigger:
         assert client.calls == ["chimein"]
 
     def test_chimein_transcript_includes_triggering_line(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, _, client, _ = _make_reactive(verse_db_dir, chimein="ok")
 
         loom.observe_transcript("botB", "the bell rings")
         # The chime-in user message must contain the spontaneous first line.
@@ -140,38 +151,31 @@ class TestReactiveTrigger:
         assert "the bell rings" in client.last_user_content
 
     def test_second_line_within_interval_is_ignored(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
 
         loom.observe_transcript("botB", "first")   # opens + chimes (inline)
         bridge.scheduled[-1][1]()                   # after_chime -> digest -> _active=None
-        bridge.t += 10                              # still < cycle_interval_s
+        bridge.t += 10                              # still < cycle_interval_s (300)
         loom.observe_transcript("botC", "second")   # within interval -> ignored
 
         assert client.calls == ["chimein", "digest"]   # no second chime-in
         assert bridge.posts == ["ok"]
 
     def test_line_after_interval_opens_new_cycle(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
 
         loom.observe_transcript("botB", "first")
         bridge.scheduled[-1][1]()                   # finalize cycle 1
-        bridge.t += _make_cfg().cycle_interval_s + 1
+        # Advance past cycle_interval_s (300). verse_cooldown_s is 20, well
+        # below this gap, so #forest is eligible to be re-picked.
+        bridge.t += _minimal_cfg().cycle_interval_s + 1
         loom.observe_transcript("botC", "second")   # now due again
 
         assert bridge.posts == ["ok", "ok"]
         assert client.calls == ["chimein", "digest", "chimein"]
 
     def test_lines_during_active_cycle_append_not_retrigger(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
 
         loom.observe_transcript("botB", "first")    # opens cycle, posts chimein
         loom.observe_transcript("botC", "second")   # active cycle -> append only
@@ -181,27 +185,24 @@ class TestReactiveTrigger:
         assert "second" in client.last_user_content  # digest user content
 
     def test_no_eligible_verse_rolls_back_and_stays_due(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        bridge.channels = []          # nothing to pick
-        bridge.weights = {}
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        # No candidate channels -> worker finds no verse -> rollback.
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok", channels=())
 
         loom.observe_transcript("botB", "first")     # forms, worker finds no verse
         assert bridge.posts == []
         assert client.calls == []
-        # Still due: restoring channels and firing a new line opens a cycle.
+        assert loom._active is None
+        assert loom._pointer == 0          # idle rollback must NOT advance round-robin
+        # Still due: restoring a channel and firing a new line opens a cycle.
+        # (_make_reactive always seeds a "#forest" snapshot, so it's present.)
         bridge.channels = ["#forest"]
         bridge.weights = {"#forest": 5}
         loom.observe_transcript("botC", "second")
         assert bridge.posts == ["ok"]
+        assert loom._pointer == 1          # advances only on a successful pick
 
     def test_post_failure_rolls_back_and_stays_due(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store, post_returns=False)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok", post_returns=False)
 
         loom.observe_transcript("botB", "first")     # chime-in post fails
         assert bridge.scheduled == []                # no digest scheduled
@@ -213,9 +214,25 @@ class TestReactiveTrigger:
         assert bridge.posts == ["ok", "ok"]
         assert bridge.scheduled[-1][2] == "llm_loom_after_chime"  # second armed digest
 
+    def test_empty_chimein_rolls_back_and_stays_due(self, verse_db_dir) -> None:
+        # An empty/whitespace model response must NOT burn the interval gate
+        # or cool down the verse — it is a no-op attempt, identical in spirit
+        # to a post failure. (Red-team finding: this branch previously leaked
+        # the full cycle_interval_s.)
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="   ")
+
+        loom.observe_transcript("botB", "first")     # empty chime-in -> rollback
+        assert bridge.posts == []
+        assert bridge.scheduled == []
+        assert loom._active is None
+        assert loom._last_chime_at is None           # interval gate NOT consumed
+        # Still due: a non-empty reply on the next line opens a cycle.
+        client.replies["chimein"] = "now i speak"
+        loom.observe_transcript("botC", "second")
+        assert bridge.posts == ["now i speak"]
+
     def test_chimein_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
+        from ._fakes import StubClient
 
         class BoomClient(StubClient):
             def call(self, *, op, model, messages):
@@ -224,8 +241,10 @@ class TestReactiveTrigger:
                     raise RuntimeError("boom")
                 return super().call(op=op, model=model, messages=messages)
 
+        loom, bridge, _, _ = _make_reactive(verse_db_dir, chimein="x")
+        # Swap in the exploding client (same replies dict shape).
         client = BoomClient({"chimein": "x", "digest": "[]"})
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
+        loom._client = client
 
         loom.observe_transcript("botB", "first")
         assert bridge.posts == []
@@ -237,9 +256,7 @@ class TestReactiveTrigger:
     def test_trigger_path_does_not_snapshot_on_driver_thread(self, verse_db_dir) -> None:
         # The cheap trigger path forms the cycle and offloads; snapshot must
         # happen inside the submitted worker, not before submit() is called.
-        store = _make_store(verse_db_dir)
-        bridge = self._bridge(store)
-        client = StubClient({"chimein": "ok", "digest": "[]"})
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
 
         order = []
         orig_snapshot = bridge.snapshot
@@ -256,7 +273,6 @@ class TestReactiveTrigger:
         bridge.snapshot = tracking_snapshot
         bridge.submit = tracking_submit
 
-        loom = Loom(cfg=_make_cfg(), bridge=bridge, client=client)
         loom.observe_transcript("botB", "first")
 
         # submit:loom:open is recorded before the first snapshot call.
@@ -273,8 +289,6 @@ Note: this task also requires a small `StubClient` capability — capturing the 
         self.last_user_content = messages[-1]["content"]
         return self.replies[op], LoomCallUsage(prompt_tokens=10, completion_tokens=5, cost=0.0001)
 ```
-
-Also confirm `_make_cfg()` and `_make_store(verse_db_dir)` helpers exist at the top of `test_loom.py`; if the current file builds `LoomConfig` / store inline per-test instead, add module-level helpers `_make_cfg()` (returning a `LoomConfig` with `cycle_interval_s=300`, `verse_cooldown_s=1200`, `beat_window_s=90`, `transcript_max_lines=40`, `transcript_max_chars=8000`, `auto_apply_threshold=0.8`, `bot_nicks=()`, `model="cheap"`, `network="afternet"`, `loom_channel="#forest"`) and `_make_store(verse_db_dir)` mirroring the existing per-test store construction.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -391,8 +405,14 @@ Add the worker open+chime method (replaces `_seed_phase`):
         )
         line = (content.strip().splitlines() or [""])[0]
         if not line:
+            # Empty/whitespace response is a no-op attempt: nothing posted, no
+            # digest. Roll back exactly like the post-failure path so it does
+            # not consume the cycle_interval_s gate or cool down the verse.
+            self._log.warning("loom chime-in: empty model response; rolling back cycle")
             with self._lock:
                 self._active = None
+                self._last_cycle_by_channel.pop(choice.channel, None)
+                self._last_chime_at = prev_last_chime
             return
         if not self._bridge.post_to_loom_channel(line):
             self._log.warning(
@@ -427,14 +447,35 @@ Add the digest hand-off (replaces `after_beat2`):
 
 Delete these now-obsolete members entirely: `build_seed_tail`, `build_beat_tail`, `Loom.tick`, `Loom._seed_phase`, `Loom.after_beat1`, `Loom._beat_phase`, `Loom.after_beat2`. Keep `_digest_phase`, `_maybe_consume_one_seed_for`, `_release_claim_with_retry` unchanged.
 
-- [ ] **Step 5: Delete obsolete tests**
+- [ ] **Step 5: Migrate the existing test classes — DELETE vs REWRITE**
 
-Remove from `test_loom.py` the tests that exercise the removed methods: every test calling `loom.tick()`, `loom.after_beat1()`, `loom.after_beat2()`, and any asserting `llm_loom_after_beat1`/`llm_loom_after_beat2` or `usage_log == [..., "seed", "beat", ...]`. The pure-function tests (`parse_digest`, `truncate_transcript`, `pick_focus_verse`, `apply_or_queue`) stay.
+> **Do NOT "delete every test that calls `loom.tick()`."** Several `tick()`-driven classes only use `tick()` as a vehicle to reach code the refactor **keeps** — `_digest_phase` and the crosspoll-receive path (`_maybe_consume_one_seed_for` / `_release_claim_with_retry`). Deleting them silently drops coverage of retained, still-shipping logic (including the only regression guard for the crosspoll claim-orphan retry). Classify each class explicitly:
+
+| Class (line) | Action | Why |
+|---|---|---|
+| `TestLoomTick` (261) | **Delete** | Tests the removed `tick()` cadence directly. Its invariants (no-candidate idle, pointer-not-advanced-on-idle, post-failure abort) are re-covered by `TestReactiveTrigger`. |
+| `TestLoomAfterBeat1` (335) | **Delete** | Tests the removed `after_beat1`/`_beat_phase`. |
+| `TestLoomFailureBranches` (88) | **Split** | Delete `test_seed_call_exception_aborts_cycle`, `test_empty_seed_content_aborts_cycle`, `test_after_beat1_with_no_active_cycle_is_noop`, `test_beat_call_exception_finalizes_cycle`, `test_empty_beat_content_still_schedules_digest` (seed/beat/after_beat methods are gone; chime-in equivalents live in `TestReactiveTrigger`). **Rewrite** `test_digest_call_exception_finalizes_cycle` and `test_digest_with_empty_transcript_finalizes` to drive the reactive flow (see rewrite rule below) — `_digest_phase` is kept. |
+| `TestLoomDigestPhase` (381) | **Rewrite** | Exercises the kept `_digest_phase`. Replace its `tick()`-based driver with the reactive driver. |
+| `TestLoomTickConsumesSeed` (1467) | **Rewrite** | Exercises the kept crosspoll-**receive** path. Each test calls `loom.tick()` once with an empty-content `FakeClient`; apply the rewrite rule. |
+| `TestPromptBuilders` (804) | **Edit** | Remove the `build_seed_tail` / `build_beat_tail` assertions (functions deleted). Keep any `build_digest_tail` assertions. `build_chimein_tail` is covered by Task 1's `TestBuildChimeinTail`. |
+| `TestDigestPhaseRoutesCrosspoll` (1287), `TestDigestPhaseIsolatesCrosspollFailure` (1339), `TestCrosspollEndToEnd` (2183) | **Verify, likely no change** | These do **not** call `tick()` (they drive `_digest_phase` directly). If any keys a `StubClient` reply under `"seed"`/`"beat"`, rekey to `"chimein"`; if any asserts `usage_log`/`posts` from seed/beat, update accordingly. |
+| All pure-function / protocol classes (`TestParseDigest*`, `TestApplyOrQueue*`, `TestTruncateTranscript`, `TestPickFocusVerse`, `TestLoomCycle`, `TestLiteLLMLoomClient`, `TestBuildVerseStableBlock`, `TestStaticPrefix*`, `TestProposalEntityRefsResolveCrosspoll`, `TestLoomConfigCrosspollDefault`, `TestLoomBridgeProtocolHasCrosspoll`) | **Keep unchanged** | No orchestration entry point. |
+
+**Rewrite rule (tick → reactive driver):** in each class being rewritten, replace the single `loom.tick()` call with `loom.observe_transcript("botB", "ping")`. Because the loom starts with `_last_chime_at = None`, the line is immediately "due"; `_open_and_chime` runs inline (FakeBridge.submit is synchronous), performing the same `pick_focus_verse` → `snapshot` → `_maybe_consume_one_seed_for` sequence the old `tick()` did before the seed phase, so the crosspoll-receive claim/insert happens identically. The inline `FakeClient` in those tests returns empty content for every op — that now triggers the empty-chime-in rollback **after** the receive hook has already run, so the `cx.claims` / proposal-row assertions still hold. For digest-phase rewrites, drive the full cycle: `loom.observe_transcript("botB", "x")` then fire `bridge.scheduled[-1][1]()` (the `after_chime` callback) to reach `_digest_phase`, and update any op-label assertion from `["seed","beat","digest"]` to `["chimein","digest"]`.
+
+Worked example — `TestLoomTickConsumesSeed::test_receiver_pulls_one_seed_inserts_proposal` (currently line 1562):
+
+```python
+        loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
+        loom.observe_transcript("botB", "ping")   # was: loom.tick()
+        # ... assertions on cx.claims / proposals row are unchanged ...
+```
 
 - [ ] **Step 6: Run the full loom unit suite**
 
 Run: `cd plugins/llm && python -m pytest tests/verse/test_loom.py -v`
-Expected: PASS (new `TestReactiveTrigger` + `TestBuildChimeinTail` + retained pure-function tests).
+Expected: PASS — `TestReactiveTrigger` + `TestBuildChimeinTail` + rewritten `TestLoomDigestPhase` + rewritten `TestLoomTickConsumesSeed` + retained pure-function/crosspoll classes. Confirm the crosspoll-receive tests still assert `cx.claims` and the inserted proposal row (coverage preserved, not dropped).
 
 - [ ] **Step 7: Commit**
 
@@ -603,42 +644,47 @@ git commit -m "docs(config): loom help text reflects reactive trigger"
 **Files:**
 - Modify: `plugins/llm/tests/verse/test_loom_integration.py`
 
-- [ ] **Step 1: Rewrite the end-to-end driver**
+- [ ] **Step 1: Rewrite ONLY the cycle-driver lines, preserve the assertions**
 
-The current test drives `tick → after_beat1 → after_beat2` with `StubClient` replies keyed `seed`/`beat`/`digest` and asserts `usage_log == ["seed","beat","digest"]`. Rewrite to the reactive flow.
+> **Do NOT slim the digest payload.** The test's value is its downstream coverage: it asserts auto-apply-vs-queue (high-conf `add_event` applies; low-conf `set_attribute` and `add_entity` queue `pending`) and operator approval of the queued `add_entity` by short-id prefix (lines 96–138). Those assertions depend on the existing **3-proposal** `_digest_payload()` helper (lines 37–53) and on `pending = store.list_proposals(status="pending")` at line 105. Keep `_digest_payload()` and everything from line 96 onward. Change only the `StubClient` keys and the cycle-driver lines (87–94).
 
-Replace the cycle-driving section (current lines ≈ 78–109) with:
+Replace the `StubClient` construction (current lines 78–84) — rekey `seed`/`beat` to a single `chimein`:
 
 ```python
     client = StubClient(
         {
             "chimein": "a chime echoes in answer",
-            "digest": (
-                '[{"op":"add_event",'
-                '"payload":{"summary":"a chime echoes","entity_ids":[]},'
-                '"confidence":0.95,"provenance":"botB","rationale":"the bell"}]'
-            ),
+            "digest": _digest_payload(),
         }
     )
-    loom = Loom(cfg=cfg, bridge=bridge, client=client)
+```
 
-    # A bot speaks spontaneously -> loom forms a cycle, chimes in (inline via
-    # FakeBridge.submit), and schedules the digest.
+Replace the cycle-driver block (current lines 87–94):
+
+```python
+    # --- Drive the reactive cycle: a bot speaks, the loom chimes in once
+    #     (inline via FakeBridge.submit), then the digest runs after the
+    #     beat window. ---
     loom.observe_transcript("botB", "I hear it too")
-    loom.observe_transcript("botC", "the wind takes it")  # appended to cycle
+    assert bridge.posts == ["a chime echoes in answer"]
+    loom.observe_transcript("botC", "the wind takes it")  # appended to the cycle
     bridge.scheduled[-1][1]()  # after_chime -> digest
+```
 
-    events = store.recent_events(limit=10)
-    assert any(e.summary == "a chime echoes" and e.source == "loom" for e in events)
+Update the usage-log assertion (current line 109) from `["seed", "beat", "digest"]` to:
+
+```python
     assert [u[1] for u in bridge.usage_log] == ["chimein", "digest"]
 ```
 
-Update the module docstring (line 3) from `Loom.tick → after_beat1 → after_beat2` to `observe_transcript → after_chime → digest`.
+Leave lines 96–138 (auto-applied event + audit row, pending-set `{"set_attribute", "add_entity"}`, `loom._pointer == 1`, operator approval by short-id prefix, Hollow Oak creation, Forest-avatar preservation) **unchanged**.
+
+Update the module docstring (lines 3–14): change `Loom.tick → after_beat1 → after_beat2` (line 3) to `observe_transcript → after_chime → digest`, and replace the "All three loom phases log usage" bullet (line 11) with "Both reactive phases (chime-in, digest) log usage via the bridge."
 
 - [ ] **Step 2: Run the integration test**
 
 Run: `cd plugins/llm && python -m pytest tests/verse/test_loom_integration.py -v`
-Expected: PASS — the digest applies the high-confidence `add_event` and writes a `source='loom'` event row.
+Expected: PASS — high-conf `add_event` auto-applies with an audit row, low-conf `set_attribute` and `add_entity` queue pending, and the operator approves the queued `add_entity` by short-id prefix. (`verse_cooldown_s=20` in the local `_minimal_cfg` is fine — only one cycle runs.)
 
 - [ ] **Step 3: Commit**
 
@@ -663,8 +709,10 @@ Expected: clean (the Edit hook also runs these, but confirm the whole tree).
 
 - [ ] **Step 3: Final grep for stale loom vocabulary**
 
-Run: `grep -rn "seed_phase\|beat_phase\|after_beat\|loom_cycle\|build_seed_tail\|build_beat_tail" plugins/llm/src plugins/llm/tests | grep -v "\.pyc"`
-Expected: no output.
+Run: `grep -rnE "seed_phase|beat_phase|after_beat|loom_cycle|build_seed_tail|build_beat_tail|loom\.tick\(|_loom_tick|_schedule_loom_tick|TestLoomTick\b" plugins/llm/src plugins/llm/tests | grep -v "\.pyc"`
+Expected: no output. (The `tick` patterns are scoped to loom usage so they don't flag unrelated `_compaction_tick`/scheduler ticks. `TestLoomTickConsumesSeed` is renamed in Task 2 Step 5 — see below — so it won't match `TestLoomTick\b`.)
+
+Note: since Step 5 rewrites `TestLoomTickConsumesSeed` to drive via `observe_transcript`, rename that class to `TestReactiveConsumesSeed` (or similar) so the grep guard stays meaningful and the class name no longer lies about using `tick`.
 
 - [ ] **Step 4: Commit any cleanup**
 
@@ -678,6 +726,6 @@ git add -A && git commit -m "chore(verse/loom): finalize reactive loom" || echo 
 
 - **Cooldown clock:** `_last_chime_at` is stamped when the cycle *forms* (the inbound line arrives), not when the chime-in posts. A cycle is short (one chime + one beat window), so forming-time ≈ chime-time. This is intentional and simpler.
 - **Reload behavior:** `_last_chime_at` initializes to `None`, so right after `@reload`/config change the loom is due and chimes in on the next line. This is an accepted liveness signal (per the spec's user review).
-- **Rollback paths** (no eligible verse, chime-in call exception, post failure) all restore `_last_chime_at = prev_last_chime` so a failed attempt does not consume the interval. Lines appended to an aborted forming cycle are dropped — rare and acceptable, matching today's aborted-seed behavior.
+- **Rollback paths** — there are **four**: (1) no eligible verse, (2) empty/whitespace chime-in response, (3) chime-in call exception, (4) post failure. **All four** restore `_last_chime_at = prev_last_chime` so a failed/no-op attempt does not consume the interval gate. Paths (2)–(4) (which occur *after* a verse was picked) also `pop` the verse's `_last_cycle_by_channel` entry so the verse isn't needlessly cooled down. Path (1) never stamped that entry. Lines appended to an aborted forming cycle are dropped — rare and acceptable, matching today's aborted-seed behavior.
 - **Driver-thread discipline:** keep `snapshot`/`list_candidate_channels`/`candidate_weight` out of `observe_transcript`. They belong in `_open_and_chime`, which runs on the LLM worker. `test_trigger_path_does_not_snapshot_on_driver_thread` guards this.
-- **Pointer:** `self._pointer` increments only on a successful verse pick (inside the lock in `_open_and_chime`), so a no-eligible-verse rollback does not advance round-robin — matching the old `tick`'s idle short-circuit.
+- **Pointer:** `self._pointer` increments inside the lock in `_open_and_chime` immediately after a successful `pick_focus_verse` (i.e. when a verse was actually chosen). The no-eligible-verse path (rollback 1) returns *before* the increment, so it does not advance round-robin — `test_no_eligible_verse_rolls_back_and_stays_due` asserts `_pointer == 0` then `== 1`. Rollbacks 2–4 occur after a genuine pick, so they leave the pointer advanced (the verse slot was legitimately consumed); this is intentional and matches the old seed phase's post-failure behavior.
