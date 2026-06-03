@@ -81,9 +81,11 @@ class StubClient:
     def __init__(self, replies: dict[str, str]) -> None:
         self.replies = dict(replies)
         self.calls: list[str] = []
+        self.last_user_content: str = ""
 
     def call(
         self, *, op: str, model: str, messages: list[dict[str, str]]
     ) -> tuple[str, LoomCallUsage]:
         self.calls.append(op)
+        self.last_user_content = messages[-1]["content"]
         return self.replies[op], LoomCallUsage(prompt_tokens=10, completion_tokens=5, cost=0.0001)

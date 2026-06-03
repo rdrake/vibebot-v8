@@ -79,14 +79,6 @@ def build_verse_stable_block(snap: VerseSnapshot) -> str:
     return "\n".join(parts)
 
 
-def build_seed_tail() -> str:
-    return (
-        "Emit a single line of dialogue or scene-setting that invites the "
-        "other bots in this channel to riff on it. Stay in fiction. "
-        "One line, ≤ 350 chars. Do NOT emit JSON for this call."
-    )
-
-
 def build_chimein_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
     lines = "\n".join(f"{nick}: {text}" for nick, text in loom_transcript_so_far)
     return (
@@ -95,16 +87,6 @@ def build_chimein_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
         f"{lines}\n\n"
         "Chime in with a single line that picks up on what they're doing. "
         "Stay in fiction. One line, ≤ 350 chars. Do NOT emit JSON for this call."
-    )
-
-
-def build_beat_tail(*, loom_transcript_so_far: list[tuple[str, str]]) -> str:
-    lines = "\n".join(f"{nick}: {text}" for nick, text in loom_transcript_so_far)
-    return (
-        "The other bots have replied:\n"
-        f"{lines}\n\n"
-        "Post a single follow-up that picks up a thread or pushes the scene. "
-        "One line, ≤ 350 chars. Do NOT emit JSON for this call."
     )
 
 
@@ -603,57 +585,44 @@ class Loom:
         self._bridge = bridge
         self._client = client
         self._active: LoomCycle | None = None
+        self._last_chime_at: float | None = None
         self._last_cycle_by_channel: dict[str, float] = {}
         self._pointer = 0
         self._lock = threading.Lock()
         self._log = logging.getLogger("llm.verse.loom")
 
     def observe_transcript(self, nick: str, text: str) -> None:
-        """Plugin's doPrivmsg hook calls this for every loom-channel line
-        that survived the source filter."""
-        with self._lock:
-            if self._active is None:
-                return
-            self._active.append_transcript(nick, text)
+        """Reactive trigger. The plugin's doPrivmsg hook calls this for every
+        loom-channel line that survived the source filter.
 
-    def tick(self) -> None:
+        Runs on the IRC driver thread, so the path stays cheap: lock,
+        timestamp compare, list append. If a cycle is active, append. Otherwise,
+        if at least ``cycle_interval_s`` has elapsed since the last chime-in,
+        form a cycle recording this line as ``transcript[0]`` and offload the
+        heavy verse-pick + snapshot + chime-in to the LLM worker.
+        """
         with self._lock:
             if self._active is not None:
-                self._log.debug("loom: tick during active cycle; skipping")
+                self._active.append_transcript(nick, text)
                 return
-            channels = self._bridge.list_candidate_channels()
             now = self._bridge.now()
-            candidates = [
-                VerseCandidate(
-                    channel=c,
-                    weight=self._bridge.candidate_weight(c),
-                    last_cycle_at=self._last_cycle_by_channel.get(c),
-                )
-                for c in channels
-            ]
-            choice = pick_focus_verse(
-                candidates,
-                now=now,
-                cooldown_s=self._cfg.verse_cooldown_s,
-                pointer=self._pointer,
-            )
-            if choice is None:
-                self._log.debug("loom_idle: no eligible verse")
+            if (
+                self._last_chime_at is not None
+                and (now - self._last_chime_at) < self._cfg.cycle_interval_s
+            ):
                 return
-            self._pointer += 1
-            snap = self._bridge.snapshot(choice.channel)
+            prev_last_chime = self._last_chime_at
             cycle = LoomCycle(
                 cycle_id=uuid.uuid4().hex[:12],
-                channel=choice.channel,
+                channel="",
                 started_at=now,
-                verse_stable_block=build_verse_stable_block(snap),
+                verse_stable_block="",
+                transcript=[(nick, text)],
             )
             self._active = cycle
-            self._last_cycle_by_channel[choice.channel] = now
-        # Outside the cycle lock: a long DB write here must not block
-        # ``observe_transcript`` or other tick paths.
-        self._maybe_consume_one_seed_for(cycle.channel)
-        self._bridge.submit("loom:seed", lambda: self._seed_phase(cycle))
+            self._last_chime_at = now
+        # Outside the lock: heavy DB work must not block the driver thread.
+        self._bridge.submit("loom:open", lambda: self._open_and_chime(cycle, prev_last_chime))
 
     def _maybe_consume_one_seed_for(self, channel: str) -> None:
         """If this verse opts into receiving, atomically claim one pending
@@ -747,110 +716,107 @@ class Loom:
                 )
         return False
 
-    def _seed_phase(self, cycle: LoomCycle) -> None:
-        messages = [
-            {"role": "system", "content": LOOM_STATIC_PREFIX},
-            {"role": "system", "content": cycle.verse_stable_block},
-            {"role": "user", "content": build_seed_tail()},
-        ]
-        try:
-            content, usage = self._client.call(op="seed", model=self._cfg.model, messages=messages)
-        except Exception:
-            self._log.exception("loom seed call failed; aborting cycle")
-            with self._lock:
-                self._active = None
-            return
-        self._bridge.log_usage(
-            channel=cycle.channel,
-            op="seed",
-            model=self._cfg.model,
-            usage=usage,
-        )
-        line = (content.strip().splitlines() or [""])[0]
-        if not line:
-            with self._lock:
-                self._active = None
-            return
-        if not self._bridge.post_to_loom_channel(line):
-            self._log.warning(
-                "loom seed: post_to_loom_channel failed (network down?); rolling back cycle for %s",
-                cycle.channel,
+    def _open_and_chime(self, cycle: LoomCycle, prev_last_chime: float | None) -> None:
+        """Worker phase: pick the focus verse, snapshot it, run the crosspoll
+        receive hook, then post a single chime-in reacting to the transcript.
+
+        Runs on the LLM executor thread; all the heavy DB reads live here, off
+        the IRC driver thread. Four abort paths (no eligible verse, empty
+        response, call exception, post failure) roll the cycle back so a
+        no-op attempt does not consume the ``cycle_interval_s`` gate.
+        """
+        now = self._bridge.now()
+        channels = self._bridge.list_candidate_channels()
+        candidates = [
+            VerseCandidate(
+                channel=c,
+                weight=self._bridge.candidate_weight(c),
+                last_cycle_at=self._last_cycle_by_channel.get(c),
             )
+            for c in channels
+        ]
+        choice = pick_focus_verse(
+            candidates,
+            now=now,
+            cooldown_s=self._cfg.verse_cooldown_s,
+            pointer=self._pointer,
+        )
+        if choice is None:
+            self._log.debug("loom: no eligible verse at chime-in; rolling back")
             with self._lock:
                 self._active = None
-                self._last_cycle_by_channel.pop(cycle.channel, None)
+                self._last_chime_at = prev_last_chime
             return
+        snap = self._bridge.snapshot(choice.channel)
         with self._lock:
-            cycle.beats_posted = 1
-        self._bridge.schedule_after(
-            self._cfg.beat_window_s,
-            self.after_beat1,
-            "llm_loom_after_beat1",
-        )
-
-    def after_beat1(self) -> None:
-        with self._lock:
-            cycle = self._active
-            if cycle is None:
-                return
-        self._bridge.submit("loom:beat", lambda: self._beat_phase(cycle))
-
-    def _beat_phase(self, cycle: LoomCycle) -> None:
-        with self._lock:
+            self._pointer += 1
+            cycle.channel = choice.channel
+            cycle.verse_stable_block = build_verse_stable_block(snap)
+            self._last_cycle_by_channel[choice.channel] = now
             transcript = truncate_transcript(
                 cycle.snapshot_transcript(),
                 max_lines=self._cfg.transcript_max_lines,
                 max_chars=self._cfg.transcript_max_chars,
             )
-        if not transcript:
-            self._log.warning(
-                "loom_idle: empty transcript after beat 1; finalizing cycle %s",
-                cycle.cycle_id,
-            )
-            with self._lock:
-                self._active = None
-            return
+        # Crosspoll receive (unchanged), outside the cycle lock.
+        self._maybe_consume_one_seed_for(choice.channel)
         messages = [
             {"role": "system", "content": LOOM_STATIC_PREFIX},
             {"role": "system", "content": cycle.verse_stable_block},
-            {
-                "role": "user",
-                "content": build_beat_tail(loom_transcript_so_far=transcript),
-            },
+            {"role": "user", "content": build_chimein_tail(loom_transcript_so_far=transcript)},
         ]
         try:
-            content, usage = self._client.call(op="beat", model=self._cfg.model, messages=messages)
+            content, usage = self._client.call(
+                op="chimein", model=self._cfg.model, messages=messages
+            )
         except Exception:
-            self._log.exception("loom beat call failed; finalizing cycle")
+            self._log.exception("loom chime-in call failed; aborting cycle")
             with self._lock:
                 self._active = None
+                self._last_cycle_by_channel.pop(choice.channel, None)
+                self._last_chime_at = prev_last_chime
             return
         self._bridge.log_usage(
-            channel=cycle.channel,
-            op="beat",
+            channel=choice.channel,
+            op="chimein",
             model=self._cfg.model,
             usage=usage,
         )
         line = (content.strip().splitlines() or [""])[0]
-        if line:
-            self._bridge.post_to_loom_channel(line)
+        if not line:
+            # Empty/whitespace response is a no-op attempt: nothing posted, no
+            # digest. Roll back exactly like the post-failure path so it does
+            # not consume the cycle_interval_s gate or cool down the verse.
+            self._log.warning("loom chime-in: empty model response; rolling back cycle")
             with self._lock:
-                cycle.beats_posted = 2
+                self._active = None
+                self._last_cycle_by_channel.pop(choice.channel, None)
+                self._last_chime_at = prev_last_chime
+            return
+        if not self._bridge.post_to_loom_channel(line):
+            self._log.warning(
+                "loom chime-in: post_to_loom_channel failed (network down?); "
+                "rolling back cycle for %s",
+                choice.channel,
+            )
+            with self._lock:
+                self._active = None
+                self._last_cycle_by_channel.pop(choice.channel, None)
+                self._last_chime_at = prev_last_chime
+            return
+        with self._lock:
+            cycle.beats_posted = 1
         self._bridge.schedule_after(
             self._cfg.beat_window_s,
-            self.after_beat2,
-            "llm_loom_after_beat2",
+            self.after_chime,
+            "llm_loom_after_chime",
         )
 
-    def after_beat2(self) -> None:
+    def after_chime(self) -> None:
         with self._lock:
             cycle = self._active
             if cycle is None:
                 return
-        # Concurrency invariant: Limnoria's scheduler serializes timer
-        # callbacks (see plugins/llm/src/llm/plugin.py — addPeriodicEvent
-        # is single-threaded). Combined with the lock guarding _active and
-        # the worker-thread submit boundary, no two cycles can overlap.
         self._bridge.submit("loom:digest", lambda: self._digest_phase(cycle))
 
     def _digest_phase(self, cycle: LoomCycle) -> None:

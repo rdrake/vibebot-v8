@@ -26,6 +26,40 @@ def _minimal_cfg():
     )
 
 
+def _make_reactive(
+    verse_db_dir,
+    *,
+    chimein="the bell still hums",
+    digest="[]",
+    post_returns=True,
+    channels=("#forest",),
+):
+    """Build (loom, bridge, client, store) for reactive-trigger tests.
+
+    submit() runs inline in FakeBridge, so observe_transcript drives the
+    whole open+chime synchronously; fire the scheduled callback for digest.
+    """
+    from llm.verse.loom import Loom, VerseSnapshot
+    from llm.verse.store import VerseStore
+
+    from ._fakes import FakeBridge, StubClient
+
+    store = VerseStore(verse_db_dir, "#forest")
+    # Always seed a "#forest" snapshot so a no-candidate test can restore the
+    # channel and re-trigger without rebuilding the snapshot map.
+    snaps = {c: VerseSnapshot(c, "g", [], []) for c in (*channels, "#forest")}
+    bridge = FakeBridge(
+        channels=list(channels),
+        weights=dict.fromkeys(channels, 5),
+        store=store,
+        snapshots=snaps,
+        post_returns=post_returns,
+    )
+    client = StubClient({"chimein": chimein, "digest": digest})
+    loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
+    return loom, bridge, client, store
+
+
 class _StubMsg:
     content = "ok"
 
@@ -86,119 +120,6 @@ class TestParseDigestExtra:
 
 
 class TestLoomFailureBranches:
-    def test_seed_call_exception_aborts_cycle(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
-        )
-
-        class _BoomClient:
-            def call(
-                self, *, op: str, model: str, messages: list[dict[str, str]]
-            ) -> tuple[str, LoomCallUsage]:
-                raise RuntimeError("boom")
-
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_BoomClient())
-        loom.tick()
-        assert loom._active is None
-        assert bridge.scheduled == []
-
-    def test_empty_seed_content_aborts_cycle(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
-        )
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({"seed": "   "}))
-        loom.tick()
-        assert loom._active is None
-        assert bridge.posts == []
-
-    def test_after_beat1_with_no_active_cycle_is_noop(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({}))
-        loom.after_beat1()
-        loom.after_beat2()
-        assert bridge.submitted_labels == []
-
-    def test_beat_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
-        )
-
-        class _PartialBoom:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def call(
-                self, *, op: str, model: str, messages: list[dict[str, str]]
-            ) -> tuple[str, LoomCallUsage]:
-                self.calls.append(op)
-                if op == "seed":
-                    return "ring", LoomCallUsage(1, 1, 0.0)
-                raise RuntimeError("beat boom")
-
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_PartialBoom())
-        loom.tick()
-        loom.observe_transcript("botB", "I hear it")
-        bridge.scheduled[0][1]()
-        assert loom._active is None
-
-    def test_empty_beat_content_still_schedules_digest(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "g", [], [])},
-        )
-        loom = Loom(
-            cfg=_minimal_cfg(),
-            bridge=bridge,
-            client=StubClient({"seed": "ring", "beat": "   "}),
-        )
-        loom.tick()
-        loom.observe_transcript("botB", "I hear it")
-        bridge.scheduled[0][1]()
-        # No second post (empty beat content), but digest still scheduled.
-        assert bridge.posts == ["ring"]
-        assert bridge.scheduled[-1][2] == "llm_loom_after_beat2"
-
     def test_digest_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
         from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
         from llm.verse.store import VerseStore
@@ -222,11 +143,9 @@ class TestLoomFailureBranches:
                 return f"reply-{op}", LoomCallUsage(1, 1, 0.0)
 
         loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=_DigestBoom())
-        loom.tick()
-        loom.observe_transcript("botB", "yes")
-        bridge.scheduled[0][1]()
-        loom.observe_transcript("botC", "no")
-        bridge.scheduled[-1][1]()
+        loom.observe_transcript("botB", "yes")  # chime-in posts, schedules after_chime
+        loom.observe_transcript("botC", "no")  # appended to the cycle
+        bridge.scheduled[-1][1]()  # after_chime -> digest (boom)
         assert loom._active is None
 
     def test_digest_with_empty_transcript_finalizes(self, verse_db_dir) -> None:
@@ -245,137 +164,14 @@ class TestLoomFailureBranches:
         loom = Loom(
             cfg=_minimal_cfg(),
             bridge=bridge,
-            client=StubClient({"seed": "ring", "beat": "echo"}),
+            client=StubClient({"chimein": "ring", "digest": "[]"}),
         )
-        loom.tick()
-        loom.observe_transcript("botB", "yes")
-        # Beat scheduled. Fire the beat — it has transcript so it posts.
-        bridge.scheduled[0][1]()
-        # Now manually clear the cycle's transcript to simulate the digest
-        # having no transcript (e.g. truncated to empty by tight caps).
+        loom.observe_transcript("botB", "yes")  # chime-in posts, schedules after_chime
+        # Clear the cycle's transcript to simulate the digest having no
+        # transcript (e.g. truncated to empty by tight caps).
         loom._active.transcript.clear()
-        bridge.scheduled[-1][1]()
+        bridge.scheduled[-1][1]()  # after_chime -> digest -> finalize
         assert loom._active is None
-
-
-class TestLoomTick:
-    def test_tick_with_no_candidates_does_nothing(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
-        client = StubClient({})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
-        assert client.calls == []
-        assert bridge.posts == []
-        assert bridge.scheduled == []
-        assert loom._active is None
-
-    def test_idle_tick_does_not_advance_pointer(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(channels=[], weights={}, store=store, snapshots={})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=StubClient({}))
-        loom.tick()
-        loom.tick()
-        loom.tick()
-        assert loom._pointer == 0
-
-    def test_tick_records_last_cycle_at_for_picked_channel(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [("avatar", "Forest", 1)], [])},
-        )
-        client = StubClient({"seed": "the bell rings"})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
-        assert loom._last_cycle_by_channel["#afnet"] == bridge.now()
-        assert bridge.posts == ["the bell rings"]
-        assert bridge.scheduled
-        assert bridge.scheduled[0][2] == "llm_loom_after_beat1"
-
-    def test_tick_aborts_if_post_to_channel_fails(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
-            post_returns=False,
-        )
-        client = StubClient({"seed": "the bell rings"})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
-        assert bridge.scheduled == []
-        assert "#afnet" not in loom._last_cycle_by_channel
-        assert loom._active is None
-
-
-class TestLoomAfterBeat1:
-    def test_idle_short_circuit_finalizes_cycle(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
-        )
-        client = StubClient({"seed": "a faint hum"})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
-        bridge.scheduled[0][1]()
-        assert client.calls == ["seed"]
-        assert len(bridge.posts) == 1
-        assert loom._active is None
-        assert [s[2] for s in bridge.scheduled] == ["llm_loom_after_beat1"]
-
-    def test_with_transcript_posts_beat_and_schedules_digest(self, verse_db_dir) -> None:
-        from llm.verse.loom import Loom, VerseSnapshot
-        from llm.verse.store import VerseStore
-
-        from ._fakes import FakeBridge, StubClient
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        bridge = FakeBridge(
-            channels=["#afnet"],
-            weights={"#afnet": 5},
-            store=store,
-            snapshots={"#afnet": VerseSnapshot("#afnet", "grove", [], [])},
-        )
-        client = StubClient({"seed": "ring", "beat": "shadows lengthen"})
-        loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
-        loom.observe_transcript("botB", "I hear it")
-        bridge.scheduled[0][1]()
-        assert bridge.posts[-1] == "shadows lengthen"
-        assert bridge.scheduled[-1][2] == "llm_loom_after_beat2"
-        assert client.calls == ["seed", "beat"]
 
 
 class TestLoomDigestPhase:
@@ -395,8 +191,7 @@ class TestLoomDigestPhase:
         )
         client = StubClient(
             {
-                "seed": "the bell rings",
-                "beat": "shadows lengthen",
+                "chimein": "shadows lengthen",
                 "digest": (
                     '[{"op":"add_event",'
                     '"payload":{"summary":"a chime","entity_ids":[]},'
@@ -406,20 +201,18 @@ class TestLoomDigestPhase:
         )
         loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
 
-        loom.tick()
-        loom.observe_transcript("botB", "I hear it too")
-        bridge.scheduled[0][1]()
-        loom.observe_transcript("botC", "the wind takes it")
-        bridge.scheduled[-1][1]()
+        loom.observe_transcript("botB", "I hear it too")  # chime-in (inline)
+        loom.observe_transcript("botC", "the wind takes it")  # appended to cycle
+        bridge.scheduled[-1][1]()  # after_chime -> digest
 
         events = store.recent_events()
         assert any(e.summary == "a chime" for e in events)
         rows = store.list_proposals(status="approved")
         assert len(rows) == 1
         assert rows[0].reviewer == "loom"
-        assert client.calls == ["seed", "beat", "digest"]
+        assert client.calls == ["chimein", "digest"]
         assert loom._active is None
-        assert [u[1] for u in bridge.usage_log] == ["seed", "beat", "digest"]
+        assert [u[1] for u in bridge.usage_log] == ["chimein", "digest"]
 
     def test_uses_snapshotted_stable_block_across_phases(self, verse_db_dir) -> None:
         from llm.verse.loom import Loom, LoomCallUsage, VerseSnapshot
@@ -453,21 +246,20 @@ class TestLoomDigestPhase:
                 return self.replies[op], LoomCallUsage(10, 5, 0.0)
 
         client = CapturingClient(
-            {"seed": "ring", "beat": "echo", "digest": "[]"},
+            {"chimein": "ring", "digest": "[]"},
         )
         loom = Loom(cfg=_minimal_cfg(), bridge=bridge, client=client)
-        loom.tick()
+        loom.observe_transcript("botB", "I hear it")  # opens cycle; chime-in captures block
+        # Change the snapshot AFTER the cycle opened — the digest must still
+        # use the block snapshotted at open, not this newer one.
         bridge.snapshots["#afnet"] = VerseSnapshot(
             "#afnet",
             "different summary",
             [("avatar", "Different", 2)],
             ["a new event"],
         )
-        loom.observe_transcript("botB", "I hear it")
-        bridge.scheduled[0][1]()
-        loom.observe_transcript("botB", "I hear it")
-        bridge.scheduled[-1][1]()
-        assert captured[0] == captured[1] == captured[2]
+        bridge.scheduled[-1][1]()  # after_chime -> digest captures block
+        assert captured[0] == captured[1]
         assert "different summary" not in captured[0]
 
 
@@ -825,19 +617,6 @@ class TestPromptBuilders:
         assert "Forest" in a
         assert "Hollow Oak" in a
         assert "Owl hooted" in a
-
-    def test_seed_tail_includes_emit_instruction(self) -> None:
-        from llm.verse.loom import build_seed_tail
-
-        out = build_seed_tail()
-        assert "one line" in out.lower() or "1 line" in out.lower()
-
-    def test_beat_tail_includes_transcript(self) -> None:
-        from llm.verse.loom import build_beat_tail
-
-        out = build_beat_tail(loom_transcript_so_far=[("botB", "the bell echoes")])
-        assert "botB" in out
-        assert "bell" in out
 
     def test_digest_tail_demands_json_array(self) -> None:
         from llm.verse.loom import build_digest_tail
@@ -1464,7 +1243,7 @@ class TestDigestPhaseIsolatesCrosspollFailure:
         assert rows == [("add_event", "pending")]
 
 
-class TestLoomTickConsumesSeed:
+class TestReactiveConsumesSeed:
     def test_receiver_pulls_one_seed_inserts_proposal(self, verse_db_dir: Path) -> None:
         from llm.verse.loom import (
             Loom,
@@ -1559,7 +1338,7 @@ class TestLoomTickConsumesSeed:
             crosspoll_per_cycle_limit=1,
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
 
         assert cx.claims and cx.claims[0][1] == "#afnet"
         assert cx.claims[0][0] == 7
@@ -1651,7 +1430,7 @@ class TestLoomTickConsumesSeed:
             crosspoll_per_cycle_limit=1,
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
 
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
@@ -1730,7 +1509,7 @@ class TestLoomTickConsumesSeed:
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
         # Must not raise — the loom-cycle continues despite the claim error.
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
         assert count == 0
@@ -1807,7 +1586,7 @@ class TestLoomTickConsumesSeed:
             crosspoll_per_cycle_limit=1,
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
         assert count == 0
@@ -1908,7 +1687,7 @@ class TestLoomTickConsumesSeed:
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
         # Must not raise — proposal insert failure is logged + swallowed.
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
         # Real store is untouched (we used BoomStore for the consume hook).
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
@@ -1994,7 +1773,7 @@ class TestLoomTickConsumesSeed:
         # Pending count starts at 1.
         assert cx.pending_count_for("#afnet") == 1
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
         # After the failed insert + release, the seed is pending again.
         assert cx.pending_count_for("#afnet") == 1
 
@@ -2091,7 +1870,7 @@ class TestLoomTickConsumesSeed:
         )
         assert cx.pending_count_for("#afnet") == 1
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
 
         # The release was retried past the first transient failure...
         assert calls["n"] >= 2
@@ -2174,7 +1953,7 @@ class TestLoomTickConsumesSeed:
         )
         loom = Loom(cfg=cfg, bridge=FakeBridge(), client=FakeClient())
         # Must not raise — bridge failure is logged + swallowed.
-        loom.tick()
+        loom.observe_transcript("botB", "ping")
         # Seed phase still ran (called once, even though content is empty).
         # No assertion on seed run — both behaviours are acceptable
         # because the seed phase runs regardless.
@@ -2255,3 +2034,152 @@ class TestBuildChimeinTail:
         assert "replied" not in tail
         # Same guardrails as seed/beat: one line, no JSON.
         assert "Do NOT emit JSON" in tail
+
+
+class TestReactiveTrigger:
+    def test_first_line_opens_cycle_and_posts_single_chimein(self, verse_db_dir) -> None:
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="the bell still hums")
+
+        loom.observe_transcript("botB", "the bell rings")
+
+        # Exactly one post (the chime-in); a digest is scheduled, not posted.
+        assert bridge.posts == ["the bell still hums"]
+        assert bridge.scheduled[-1][2] == "llm_loom_after_chime"
+        assert client.calls == ["chimein"]
+
+    def test_chimein_transcript_includes_triggering_line(self, verse_db_dir) -> None:
+        loom, _, client, _ = _make_reactive(verse_db_dir, chimein="ok")
+
+        loom.observe_transcript("botB", "the bell rings")
+        # The chime-in user message must contain the spontaneous first line.
+        # FakeBridge does not capture messages, so assert via a capturing client.
+        assert "the bell rings" in client.last_user_content
+
+    def test_second_line_within_interval_is_ignored(self, verse_db_dir) -> None:
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
+
+        loom.observe_transcript("botB", "first")  # opens + chimes (inline)
+        bridge.scheduled[-1][1]()  # after_chime -> digest -> _active=None
+        bridge.t += 10  # still < cycle_interval_s (300)
+        loom.observe_transcript("botC", "second")  # within interval -> ignored
+
+        assert client.calls == ["chimein", "digest"]  # no second chime-in
+        assert bridge.posts == ["ok"]
+
+    def test_line_after_interval_opens_new_cycle(self, verse_db_dir) -> None:
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
+
+        loom.observe_transcript("botB", "first")
+        bridge.scheduled[-1][1]()  # finalize cycle 1
+        # Advance past cycle_interval_s (300). verse_cooldown_s is 20, well
+        # below this gap, so #forest is eligible to be re-picked.
+        bridge.t += _minimal_cfg().cycle_interval_s + 1
+        loom.observe_transcript("botC", "second")  # now due again
+
+        assert bridge.posts == ["ok", "ok"]
+        assert client.calls == ["chimein", "digest", "chimein"]
+
+    def test_lines_during_active_cycle_append_not_retrigger(self, verse_db_dir) -> None:
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
+
+        loom.observe_transcript("botB", "first")  # opens cycle, posts chimein
+        loom.observe_transcript("botC", "second")  # active cycle -> append only
+        # No new chime-in posted; second line waits for digest.
+        assert bridge.posts == ["ok"]
+        bridge.scheduled[-1][1]()  # digest sees both lines
+        assert "second" in client.last_user_content  # digest user content
+
+    def test_no_eligible_verse_rolls_back_and_stays_due(self, verse_db_dir) -> None:
+        # No candidate channels -> worker finds no verse -> rollback.
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok", channels=())
+
+        loom.observe_transcript("botB", "first")  # forms, worker finds no verse
+        assert bridge.posts == []
+        assert client.calls == []
+        assert loom._active is None
+        assert loom._pointer == 0  # idle rollback must NOT advance round-robin
+        # Still due: restoring a channel and firing a new line opens a cycle.
+        # (_make_reactive always seeds a "#forest" snapshot, so it's present.)
+        bridge.channels = ["#forest"]
+        bridge.weights = {"#forest": 5}
+        loom.observe_transcript("botC", "second")
+        assert bridge.posts == ["ok"]
+        assert loom._pointer == 1  # advances only on a successful pick
+
+    def test_post_failure_rolls_back_and_stays_due(self, verse_db_dir) -> None:
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok", post_returns=False)
+
+        loom.observe_transcript("botB", "first")  # chime-in post fails
+        assert bridge.scheduled == []  # no digest scheduled
+        # Cooldown rolled back: a new line (post now works) opens a cycle.
+        bridge.post_returns = True
+        loom.observe_transcript("botC", "second")
+        # FakeBridge.post_to_loom_channel appends *then* returns its status,
+        # so the failed first attempt is recorded too: two appends total.
+        assert bridge.posts == ["ok", "ok"]
+        assert bridge.scheduled[-1][2] == "llm_loom_after_chime"  # second armed digest
+
+    def test_empty_chimein_rolls_back_and_stays_due(self, verse_db_dir) -> None:
+        # An empty/whitespace model response must NOT burn the interval gate
+        # or cool down the verse — it is a no-op attempt, identical in spirit
+        # to a post failure.
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="   ")
+
+        loom.observe_transcript("botB", "first")  # empty chime-in -> rollback
+        assert bridge.posts == []
+        assert bridge.scheduled == []
+        assert loom._active is None
+        assert loom._last_chime_at is None  # interval gate NOT consumed
+        # Still due: a non-empty reply on the next line opens a cycle.
+        client.replies["chimein"] = "now i speak"
+        loom.observe_transcript("botC", "second")
+        assert bridge.posts == ["now i speak"]
+
+    def test_chimein_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
+        from ._fakes import StubClient
+
+        class BoomClient(StubClient):
+            def call(self, *, op, model, messages):
+                if op == "chimein":
+                    self.calls.append(op)  # record before raising
+                    raise RuntimeError("boom")
+                return super().call(op=op, model=model, messages=messages)
+
+        loom, bridge, _, _ = _make_reactive(verse_db_dir, chimein="x")
+        # Swap in the exploding client (same replies dict shape).
+        client = BoomClient({"chimein": "x", "digest": "[]"})
+        loom._client = client
+
+        loom.observe_transcript("botB", "first")
+        assert bridge.posts == []
+        assert bridge.scheduled == []
+        # Rolled back -> still due.
+        loom.observe_transcript("botC", "second")
+        assert client.calls.count("chimein") == 2
+
+    def test_trigger_path_does_not_snapshot_on_driver_thread(self, verse_db_dir) -> None:
+        # The cheap trigger path forms the cycle and offloads; snapshot must
+        # happen inside the submitted worker, not before submit() is called.
+        loom, bridge, client, _ = _make_reactive(verse_db_dir, chimein="ok")
+
+        order = []
+        orig_snapshot = bridge.snapshot
+        orig_submit = bridge.submit
+
+        def tracking_snapshot(channel):
+            order.append("snapshot")
+            return orig_snapshot(channel)
+
+        def tracking_submit(label, fn):
+            order.append(f"submit:{label}")
+            return orig_submit(label, fn)
+
+        bridge.snapshot = tracking_snapshot
+        bridge.submit = tracking_submit
+
+        loom.observe_transcript("botB", "first")
+
+        # submit:loom:open is recorded before the first snapshot call.
+        assert order[0] == "submit:loom:open"
+        assert "snapshot" in order
+        assert order.index("submit:loom:open") < order.index("snapshot")
