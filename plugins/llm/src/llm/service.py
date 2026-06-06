@@ -158,6 +158,16 @@ _VERSE_DENIAL_PATTERNS = re.compile(
 )
 _VERSE_DENIAL_OPENING_CHARS = 240
 
+# Model control/special tokens that occasionally leak into the visible text
+# stream as literal characters instead of terminating the response. Fast and
+# non-reasoning variants are the usual offenders: e.g. grok-fast emitting its
+# end-of-sequence sentinel mid-sentence ("...farmyard and a<|eos|>"). They use
+# the universal ``<|name|>`` convention (``<|eos|>``, ``<|endoftext|>``,
+# ``<|im_end|>``, ``<|eot_id|>``, ...), so one pattern catches them all. Inner
+# content excludes ``|`` and ``>`` so we only strip well-formed sentinels and
+# never legitimate prose that happens to use pipes or angle brackets.
+_CONTROL_TOKEN_PATTERN = re.compile(r"<\|[^|>]*\|>")
+
 
 def _is_verse_denial(content: str) -> bool:
     """Return True iff a verse reply breaks frame to refuse the premise.
@@ -648,6 +658,13 @@ class LLMService:
         # Replace literal \n sequences with spaces, but keep real line
         # boundaries so multiline-capable reply paths can preserve structure.
         text = text.replace("\\n", " ")
+
+        # Strip leaked model control tokens (e.g. <|eos|>, <|endoftext|>).
+        # A model that emits its end-of-sequence sentinel as literal text must
+        # never reach the channel — nor the stored context, where the
+        # non-reasoning grok would parrot it on later turns. Runs before the
+        # no-prefix early return so it applies unconditionally.
+        text = _CONTROL_TOKEN_PATTERN.sub("", text)
 
         # Get configurable prefixes (default: . and /)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))

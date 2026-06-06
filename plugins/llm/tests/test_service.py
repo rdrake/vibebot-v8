@@ -2147,7 +2147,10 @@ class TestSanitizeOutput:
                 max_size=80,
             )
             .filter(lambda s: "\\n" not in s)
-            .filter(lambda s: not s.startswith(".")),
+            .filter(lambda s: not s.startswith("."))
+            # Sentinel-bearing lines are stripped, so they break passthrough;
+            # covered separately by the control-token tests below.
+            .filter(lambda s: "<|" not in s),
             min_size=1,
             max_size=8,
         ),
@@ -2195,6 +2198,46 @@ class TestSanitizeOutput:
         # No prefixes configured, so nothing gets sanitized
         assert service.sanitize_output(".dot") == ".dot"
         assert service.sanitize_output("/slash") == "/slash"
+
+    def test_sanitize_output_strips_leaked_eos_token(self) -> None:
+        """GIVEN a reply ending in a leaked <|eos|> sentinel THEN it is removed.
+
+        Regression for the grok-fast-non-reasoning verse leak that pastebinned
+        "...farmyard and a<|eos|>" verbatim to the channel.
+        """
+        text = "smelled like a cross between a farmyard and a<|eos|>"
+        assert self.service.sanitize_output(text) == "smelled like a cross between a farmyard and a"
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "<|eos|>",
+            "<|EOS|>",
+            "<|endoftext|>",
+            "<|im_end|>",
+            "<|im_start|>",
+            "<|eot_id|>",
+            "<|end_of_text|>",
+        ],
+    )
+    def test_sanitize_output_strips_common_control_tokens(self, token: str) -> None:
+        """GIVEN any well-formed <|name|> sentinel THEN it is stripped."""
+        assert self.service.sanitize_output(f"hello {token}world") == "hello world"
+
+    def test_sanitize_output_strips_multiple_control_tokens(self) -> None:
+        """GIVEN several leaked sentinels THEN all are removed."""
+        text = "<|im_start|>a real reply<|im_end|> done<|eos|>"
+        assert self.service.sanitize_output(text) == "a real reply done"
+
+    def test_sanitize_output_keeps_legitimate_pipes_and_brackets(self) -> None:
+        """GIVEN prose with pipes/brackets but no full sentinel THEN unchanged."""
+        for prose in (
+            "use a | b for alternation",
+            "the tag <b> is bold",
+            "math: x |> y in F#",
+            "an unclosed <|eos fragment stays",
+        ):
+            assert self.service.sanitize_output(prose) == prose
 
 
 class TestBuildContextMessage:
