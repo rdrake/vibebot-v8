@@ -12,6 +12,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, cast
 
+# Model control/special tokens that leak into the visible stream as literal
+# text (e.g. a non-reasoning model emitting "<|eos|>" mid-line instead of
+# terminating). Mirrors the assistant chokepoint's strip in service.py; loom
+# is a standalone module with no service import, so it keeps its own copy.
+_CONTROL_TOKEN_PATTERN = re.compile(r"<\|[^|>]*\|>")
+
 
 class VerseCandidate(NamedTuple):
     channel: str
@@ -783,6 +789,10 @@ class Loom:
             usage=usage,
         )
         line = (content.strip().splitlines() or [""])[0]
+        # Strip leaked control tokens BEFORE the empty-check, so a line that is
+        # nothing but a sentinel (e.g. "<|eos|>") collapses to empty and rolls
+        # back instead of posting a blank line to the channel.
+        line = _CONTROL_TOKEN_PATTERN.sub("", line).strip()
         if not line:
             # Empty/whitespace response is a no-op attempt: nothing posted, no
             # digest. Roll back exactly like the post-failure path so it does

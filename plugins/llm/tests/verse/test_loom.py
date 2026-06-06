@@ -2135,6 +2135,27 @@ class TestReactiveTrigger:
         loom.observe_transcript("botC", "second")
         assert bridge.posts == ["now i speak"]
 
+    def test_chimein_strips_leaked_control_tokens(self, verse_db_dir) -> None:
+        # A model that leaks its end-of-sequence sentinel as literal text must
+        # not post it to the loom channel (sibling of sanitize_output's strip).
+        loom, bridge, _, _ = _make_reactive(verse_db_dir, chimein="the bell still hums<|eos|>")
+
+        loom.observe_transcript("botB", "the bell rings")
+
+        assert bridge.posts == ["the bell still hums"]
+
+    def test_chimein_only_control_token_rolls_back(self, verse_db_dir) -> None:
+        # A line that is nothing but a leaked sentinel collapses to empty once
+        # stripped; it must roll back like any empty response, never post blank.
+        loom, bridge, _, _ = _make_reactive(verse_db_dir, chimein="<|eos|>")
+
+        loom.observe_transcript("botB", "first")
+
+        assert bridge.posts == []
+        assert bridge.scheduled == []
+        assert loom._active is None
+        assert loom._last_chime_at is None  # interval gate NOT consumed
+
     def test_chimein_call_exception_finalizes_cycle(self, verse_db_dir) -> None:
         from ._fakes import StubClient
 
