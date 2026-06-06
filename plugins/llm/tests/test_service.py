@@ -1225,6 +1225,32 @@ class TestTypingIndicators:
         # Should not raise
         self.service.send_typing_indicator(irc, "#test", "active")
 
+    def test_send_typing_indicator_routes_through_safe_queue(self) -> None:
+        """Typing TAGMSGs must hold _irc_send_lock via _safe_queue, not raw queueMsg.
+
+        The typing keepalive daemon thread sends concurrently with worker
+        replies; bypassing the lock races Limnoria's unguarded IrcMsgQueue.
+        """
+        irc = self._make_mock_irc(capabilities={"message-tags"})
+
+        self.service.send_typing_indicator(irc, "#test", "active")
+
+        self.mock_plugin._safe_queue.assert_called_once()
+        sent = self.mock_plugin._safe_queue.call_args[0][1]
+        assert sent.command == "TAGMSG"
+
+    def test_send_reaction_routes_through_safe_queue(self) -> None:
+        """Reaction TAGMSGs must go through the serialized _safe_queue path."""
+        irc = self._make_mock_irc(capabilities={"message-tags"})
+
+        ok = self.service.send_reaction(irc, "#test", "msgid-1", "👍")
+
+        assert ok is True
+        self.mock_plugin._safe_queue.assert_called_once()
+        sent = self.mock_plugin._safe_queue.call_args[0][1]
+        assert sent.command == "TAGMSG"
+        assert sent.server_tags["+draft/reply"] == "msgid-1"
+
 
 class TestImageSaving:
     """Tests for save_image_to_http and _save_image_bytes functionality."""
@@ -3715,6 +3741,30 @@ class TestCheckPendingTasks:
         self.mock_db.release_pending_task.assert_called_once()
         call_kwargs = self.mock_db.release_pending_task.call_args
         assert call_kwargs[1]["increment_attempt"] is False
+
+    def test_undeliverable_channel_deferral_uses_live_clock(self) -> None:
+        """The not-deliverable deferral must anchor to the live clock, not the
+        stale top-of-pass ``now`` (sibling of the transient-backoff fix).
+
+        A stale anchor — after Phase 1 burns seconds on slow provider calls —
+        lands ``defer_at`` in the past, which the wakeup scheduler clamps to
+        ``now+1``, producing a ~1s busy-poll storm against a parted channel.
+        """
+        task = self._make_task_row(reply_target="#offline")
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [[task], []]
+
+        # First time.time() is the top-of-pass ``now`` (1000.0); any later
+        # call (the deferral on the fixed path) sees the advanced clock.
+        clock = self.mocker.patch("llm.service.time.time")
+        clock.side_effect = lambda *_a, **_k: 1000.0 if clock.call_count <= 1 else 1100.0
+
+        self.service.check_pending_tasks({"#test"})
+
+        defer_at = self.mock_db.release_pending_task.call_args[0][1]
+        assert defer_at == 1130.0, (
+            "deferral anchored to stale now (1000) instead of live clock (1100)"
+        )
 
     def test_malformed_request_data_stored_for_delivery(self) -> None:
         """GIVEN task with invalid JSON WHEN checked THEN stored as terminal failure for delivery."""

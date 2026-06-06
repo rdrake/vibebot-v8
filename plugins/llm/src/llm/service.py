@@ -1038,8 +1038,10 @@ class LLMService:
                 "+draft/reply": msgid,
             },
         )
-        irc.queueMsg(msg)
-        return True
+        # Serialize on _irc_send_lock like every other worker-thread send:
+        # reactions fire from executor workers and race the typing keepalive
+        # and reply sends on Limnoria's unguarded IrcMsgQueue.
+        return self.plugin._safe_queue(irc, msg)
 
     def send_typing_indicator(self, irc: Irc, target: str, state: str = "active") -> None:
         """Send IRCv3 typing indicator.
@@ -1061,7 +1063,10 @@ class LLMService:
             args=(target,),
             server_tags={"+typing": state},
         )
-        irc.queueMsg(msg)
+        # Serialize on _irc_send_lock via _safe_queue: the typing keepalive
+        # daemon thread sends this every ~4s, concurrent with the worker's
+        # reply on the same unguarded IrcMsgQueue.
+        self.plugin._safe_queue(irc, msg)
 
     def _begin_typing(
         self,
@@ -2095,7 +2100,11 @@ class LLMService:
         for task in claimed:
             # Skip if channel is not deliverable (bot not in channel)
             if task.is_channel and task.reply_target not in deliverable_channels:
-                defer_at = now + 30  # try again next tick
+                # Anchor to the live clock: Phase 1 above can burn many seconds
+                # on slow provider calls, so the top-of-pass ``now`` is stale and
+                # would land defer_at in the past → ~1s busy-poll storm (same
+                # stale-clock class as the transient-backoff anchor below).
+                defer_at = time.time() + 30  # try again next tick
                 db.release_pending_task(
                     task.id, defer_at, "Channel not available", increment_attempt=False
                 )
@@ -2185,7 +2194,9 @@ class LLMService:
         for task in delivery_tasks:
             # Skip if channel is not deliverable
             if task.is_channel and task.reply_target not in deliverable_channels:
-                defer_at = now + 30
+                # Live clock, not the stale top-of-pass ``now`` — see the
+                # matching deferral in Phase 1 above.
+                defer_at = time.time() + 30
                 db.release_pending_task(
                     task.id, defer_at, "Channel not available", increment_attempt=False
                 )
