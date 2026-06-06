@@ -3154,6 +3154,27 @@ class TestUsageExtraction:
         assert completion == 0
         assert cost == 0.0
 
+    def test_extract_usage_skips_completion_cost_for_known_image_models(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a known image model THEN completion_cost is never called.
+
+        ``grok-imagine-image`` is absent from LiteLLM's cost map, so calling
+        ``completion_cost`` raises and spammed a full traceback on every image.
+        Cost is supplied by the caller's IMAGE_COST_PER_IMAGE fallback, so the
+        always-failing call must be skipped entirely (no exception, no log).
+        """
+        response = mocker.Mock(spec=[])  # No usage attrs
+        cost_spy = mocker.patch("llm.service.litellm.completion_cost")
+        warn_spy = mocker.patch.object(service.log, "warning")
+
+        prompt, completion, cost = service._extract_usage(response, "xai/grok-imagine-image")
+
+        cost_spy.assert_not_called()
+        warn_spy.assert_not_called()
+        # _extract_usage leaves cost at 0.0; the caller applies the fallback.
+        assert (prompt, completion, cost) == (0, 0, 0.0)
+
 
 class TestDrawAutoRewrite:
     """Tests for automatic prompt rewriting on content safety failures."""

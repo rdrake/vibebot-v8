@@ -1529,6 +1529,13 @@ class LLMService:
         except (AttributeError, TypeError):
             pass
 
+        # Known image models aren't in LiteLLM's cost map: completion_cost
+        # would raise on every call and spam a full traceback. The image
+        # caller supplies the price from IMAGE_COST_PER_IMAGE, so skip the
+        # always-failing call and leave cost at 0.0 for it to fill in.
+        if model in IMAGE_COST_PER_IMAGE:
+            return prompt_tokens, completion_tokens, cost
+
         # completion_cost can fail for unsupported models — graceful degradation.
         # model= must be passed explicitly: ImageResponse has no .model attr,
         # and text completion responses may omit the provider prefix.
