@@ -960,14 +960,22 @@ class VerseStore:
             )
             return None
         if op == "add_relation":
+            from_id = payload["from_id"]
+            to_id = payload["to_id"]
+            # Validate both endpoints are active, not merely extant: the FK
+            # enforces existence but not status, so a retired/soft-deleted
+            # entity would slip through. Mirror the set_attribute guard so
+            # auto-apply, human approval of a since-retired proposal, and
+            # crosspoll all reject retired endpoints.
+            for endpoint in (from_id, to_id):
+                row = conn.execute("SELECT status FROM entities WHERE id=?", (endpoint,)).fetchone()
+                if row is None:
+                    raise LookupError(f"entity_id {endpoint} does not exist")
+                if row[0] == "retired":
+                    raise LookupError(f"entity_id {endpoint} is retired")
             cur = conn.execute(
                 "INSERT INTO relations (from_id, to_id, kind, note) VALUES (?, ?, ?, ?)",
-                (
-                    payload["from_id"],
-                    payload["to_id"],
-                    payload["kind"],
-                    payload.get("note", ""),
-                ),
+                (from_id, to_id, payload["kind"], payload.get("note", "")),
             )
             return cur.lastrowid
         if op == "add_entity":

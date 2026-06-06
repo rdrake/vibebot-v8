@@ -1059,6 +1059,39 @@ class TestApplyAndRecordProposal:
         assert store.get_attribute(eid, "last_seen_ts") is None
         assert store.list_proposals() == []
 
+    def test_add_relation_with_retired_endpoint_raises_and_writes_nothing(
+        self, verse_db_dir: Path
+    ) -> None:
+        """A proposal must not relate a retired entity (sibling of the set_attribute guard).
+
+        The relations FK enforces existence but not status, so a retired
+        endpoint on either side must be rejected explicitly — covering
+        auto-apply, verseapprove of a since-retired proposal, and crosspoll.
+        """
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        active = store.add_entity("avatar", "Forest")
+        retired = store.add_entity("npc", "Wraith", "A faded memory.")
+        store.set_status(retired, "retired")
+
+        for payload in (
+            {"from_id": retired, "to_id": active, "kind": "allied_with", "note": ""},
+            {"from_id": active, "to_id": retired, "kind": "allied_with", "note": ""},
+        ):
+            with pytest.raises(LookupError, match="retired"):
+                store.apply_and_record_proposal(
+                    cycle_id="c-1",
+                    op="add_relation",
+                    payload=payload,
+                    confidence=0.95,
+                    provenance="x",
+                    reviewer="loom",
+                )
+        assert store.list_relations(from_id=active) == []
+        assert store.list_relations(from_id=retired) == []
+        assert store.list_proposals() == []
+
 
 class TestApplyProposalAndMark:
     def test_pending_to_approved_atomically(self, verse_db_dir: Path) -> None:
