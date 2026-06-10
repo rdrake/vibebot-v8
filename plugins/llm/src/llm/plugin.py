@@ -2368,6 +2368,31 @@ class LLM(callbacks.Plugin):
             irc.reply(text, prefixNick=prefixNick)
         return True
 
+    def _safe_error(
+        self,
+        irc: callbacks.Irc,
+        text: str,
+        *,
+        prefixNick: bool = False,  # noqa: N803  (mirrors irc.error kwarg)
+        Raise: bool = False,  # noqa: N803  (mirrors irc.error kwarg)
+    ) -> None:
+        """Thread-safe wrapper around ``irc.error`` for worker-thread sends.
+
+        ``irc.error`` ultimately reaches the same ``IrcMsgQueue.enqueue`` as
+        ``irc.queueMsg``, so it must serialize on the same ``_irc_send_lock``:
+        ``ask``/``code``/``draw`` release Limnoria's command RLock via
+        ``_allow_concurrent`` and error from concurrent worker threads.
+
+        The ``Raise`` kwarg preserves Limnoria flow-control semantics: if the
+        caller passes ``Raise=True`` the exception is re-raised after the lock
+        is released so Limnoria's command dispatcher still sees it.
+        """
+        if self._llm_executor.closing:
+            self.log.debug("safe_error dropped (closing)")
+            return
+        with self._irc_send_lock:
+            irc.error(text, prefixNick=prefixNick, Raise=Raise)
+
     def _send_long_reply(
         self,
         irc: callbacks.Irc,
@@ -2456,7 +2481,7 @@ class LLM(callbacks.Plugin):
             return response, True
 
         if not response or not response.strip():
-            irc.error(_("The model returned an empty response. Please try again."))
+            self._safe_error(irc, _("The model returned an empty response. Please try again."))
             return response, False
 
         action_text = self._extract_action(irc, response)
@@ -2635,7 +2660,7 @@ class LLM(callbacks.Plugin):
         """
         account = self._account_from_msg(irc, msg)
         if not account:
-            irc.error(_("You must be identified to use this command."))
+            self._safe_error(irc, _("You must be identified to use this command."))
             return None
         return account
 
@@ -2833,7 +2858,9 @@ class LLM(callbacks.Plugin):
                 window,
             )
             if not silent and irc is not None:
-                irc.error(_("Rate limit exceeded for %s. Try again in %ds.") % (command, window))
+                self._safe_error(
+                    irc, _("Rate limit exceeded for %s. Try again in %ds.") % (command, window)
+                )
                 self.db.log_usage(
                     nick,
                     channel,
@@ -4719,7 +4746,7 @@ class LLM(callbacks.Plugin):
             result.message,
         )
         self._react(irc, msg, "❌")
-        irc.error(_(result.message))
+        self._safe_error(irc, _(result.message))
 
     def _remind_set_for_assistant(
         self,

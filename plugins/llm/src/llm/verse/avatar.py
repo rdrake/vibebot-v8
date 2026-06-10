@@ -418,7 +418,11 @@ def build_verse_system_prompt(
 
     # --- Scene ---
     location = store.get_attribute(avatar_id, "location")
-    place = store.find_entity_by_name(location, kind="place") if location is not None else None
+    place = (
+        store.find_entity_by_name(location, kind="place", active_only=True)
+        if location is not None
+        else None
+    )
 
     if place is not None:
         scene_line = f"Scene: You are at {place.name}. {place.summary}"

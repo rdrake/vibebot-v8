@@ -2211,6 +2211,38 @@ class TestSafeReply:
         assert ok is True
 
 
+class TestSafeError:
+    """``_safe_error`` serializes worker-thread ``irc.error`` sends on the same
+    ``_irc_send_lock`` as ``_safe_queue``/``_safe_reply`` and short-circuits
+    while closing."""
+
+    def test_safe_error_drops_when_closing(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        plugin._llm_executor.shutdown()
+        target_irc = mocker.MagicMock()
+        plugin._safe_error(target_irc, "oops")
+        target_irc.error.assert_not_called()
+
+    def test_safe_error_calls_error_under_lock(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        target_irc = mocker.MagicMock()
+        plugin._safe_error(target_irc, "bad things", prefixNick=True)
+        target_irc.error.assert_called_once_with("bad things", prefixNick=True, Raise=False)
+
+    def test_safe_error_forwards_raise_false_by_default(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        target_irc = mocker.MagicMock()
+        plugin._safe_error(target_irc, "msg")
+        _args, kwargs = target_irc.error.call_args
+        assert kwargs.get("Raise") is False
+
+    def test_safe_error_returns_none(self, plugin_env, mocker) -> None:
+        plugin, _irc, _msg = plugin_env
+        target_irc = mocker.MagicMock()
+        result = plugin._safe_error(target_irc, "msg")
+        assert result is None
+
+
 class TestRateBucketsConcurrency:
     def test_concurrent_rate_limit_count_is_exact(self, plugin_env) -> None:
         """The lock guarantees the deque length matches the number of
@@ -3955,6 +3987,9 @@ class TestRequireAccount:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
+        plugin._llm_executor = mocker.MagicMock(closing=False)
+        plugin._irc_send_lock = threading.Lock()
+        plugin.log = mocker.MagicMock()
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
@@ -3976,6 +4011,9 @@ class TestRequireAccount:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
+        plugin._llm_executor = mocker.MagicMock(closing=False)
+        plugin._irc_send_lock = threading.Lock()
+        plugin.log = mocker.MagicMock()
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("no such nick"))
@@ -3994,6 +4032,9 @@ class TestRequireAccount:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
+        plugin._llm_executor = mocker.MagicMock(closing=False)
+        plugin._irc_send_lock = threading.Lock()
+        plugin.log = mocker.MagicMock()
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.nickToAccount = mocker.MagicMock(
@@ -4046,6 +4087,8 @@ class TestRateLimiter:
         p.log = mocker.MagicMock()
         p._rate_buckets = {}
         p._rate_buckets_lock = threading.Lock()
+        p._llm_executor = mocker.MagicMock(closing=False)
+        p._irc_send_lock = threading.Lock()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 15,
@@ -4160,6 +4203,8 @@ class TestRunPreflight:
         p._rate_buckets_lock = threading.Lock()
         p._migrated_nicks = set()
         p._migrated_nicks_lock = threading.Lock()
+        p._llm_executor = mocker.MagicMock(closing=False)
+        p._irc_send_lock = threading.Lock()
         p.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 15,
