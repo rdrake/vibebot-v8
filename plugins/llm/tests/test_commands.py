@@ -2653,46 +2653,28 @@ class TestCodeEdgeCases:
 class TestResolveTier:
     """Tests for _resolve_tier user classification."""
 
-    def test_owner_tier(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user with owner capability WHEN _resolve_tier THEN returns 'owner'."""
+    @pytest.mark.parametrize(
+        ("granted_caps", "account", "expected"),
+        [
+            # Capabilities are checked most-to-least privileged and short-circuit
+            # before the account lookup, so account is irrelevant for cap-based tiers.
+            ({"owner"}, None, "owner"),
+            ({"admin", "trusted"}, None, "admin"),  # admin implies trusted
+            ({"trusted"}, None, "trusted"),
+            (set(), "some_account", "registered"),  # identified, no caps
+            (set(), None, "unregistered"),  # unidentified, no caps
+        ],
+    )
+    def test_resolve_tier(self, plugin_env, mocker: MockerFixture, granted_caps, account, expected):
+        """GIVEN a user's capabilities/account WHEN _resolve_tier THEN the
+        most-privileged matching tier is returned."""
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = account
         mocker.patch(
             "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap == "owner",
+            side_effect=lambda prefix, cap: cap in granted_caps,
         )
-        assert plugin._resolve_tier(mock_irc, mock_msg) == "owner"
-
-    def test_admin_tier(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user with admin (not owner) WHEN _resolve_tier THEN returns 'admin'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap in ("admin", "trusted"),
-        )
-        assert plugin._resolve_tier(mock_irc, mock_msg) == "admin"
-
-    def test_trusted_tier(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user with trusted (not admin) WHEN _resolve_tier THEN returns 'trusted'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap == "trusted",
-        )
-        assert plugin._resolve_tier(mock_irc, mock_msg) == "trusted"
-
-    def test_registered_tier(self, plugin_env, mocker: MockerFixture):
-        """GIVEN identified user without trusted WHEN _resolve_tier THEN returns 'registered'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "some_account"
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
-        assert plugin._resolve_tier(mock_irc, mock_msg) == "registered"
-
-    def test_unregistered_tier(self, plugin_env, mocker: MockerFixture):
-        """GIVEN unidentified user WHEN _resolve_tier THEN returns 'unregistered'."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = None
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
-        assert plugin._resolve_tier(mock_irc, mock_msg) == "unregistered"
+        assert plugin._resolve_tier(mock_irc, mock_msg) == expected
 
 
 class TestRateLimitIntegration:

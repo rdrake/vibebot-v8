@@ -199,51 +199,10 @@ print("code")
         assert 'href="https://example.com"' in content
 
 
-class TestChannelHistoryFormatting:
-    """Test channel history formatting edge cases."""
-
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:
-        """Create service with default config."""
-        service, _ = make_service()
-        return service
-
-    def test_empty_channel_history(self, service: LLMService) -> None:
-        """GIVEN empty channel history WHEN formatting THEN returns empty."""
-        assert service._format_channel_history([]) == ""
-
-    def test_long_messages_truncated(self, service: LLMService) -> None:
-        """GIVEN long channel messages WHEN formatting THEN truncated."""
-        history = [{"nick": "user1", "content": "x" * 200, "role": "user"}]
-        result = service._format_channel_history(history)
-
-        assert len(result) < 200
-        assert "..." in result
-
-    def test_preserves_nick_attribution(self, service: LLMService) -> None:
-        """GIVEN channel messages WHEN formatting THEN preserves nick."""
-        history = [
-            {"nick": "alice", "content": "Hello", "role": "user"},
-            {"nick": "bob", "content": "Hi there", "role": "user"},
-        ]
-        result = service._format_channel_history(history)
-
-        assert "alice:" in result
-        assert "bob:" in result
-
-    def test_handles_missing_nick(self, service: LLMService) -> None:
-        """GIVEN message without nick WHEN formatting THEN uses Unknown."""
-        history = [{"content": "No nick", "role": "user"}]
-        result = service._format_channel_history(history)
-
-        assert "Unknown:" in result
-
-    def test_handles_empty_content(self, service: LLMService) -> None:
-        """GIVEN message with empty content WHEN formatting THEN handles."""
-        history = [{"nick": "user1", "content": "", "role": "user"}]
-        result = service._format_channel_history(history)
-
-        assert "user1:" in result
+# NOTE: channel-history formatting edge cases are covered (more strictly, with
+# exact-equality assertions plus a nick-line-break injection test) by
+# TestFormatChannelHistory in test_service.py. The weaker substring-based
+# TestChannelHistoryFormatting that used to live here was removed as redundant.
 
 
 class TestImageUrlDetection:
