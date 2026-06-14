@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,43 @@ class TestAgeAutoCreatedEntities:
 
         outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: now)
         assert outcome == (1, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
+
+    def test_missing_last_seen_ts_is_left_untouched(self, store: VerseStore) -> None:
+        """An auto_created entity with NO last_seen_ts attribute at all is
+        scanned but never retired (no heartbeat -> no decision). Recovered
+        state may lack the key entirely; aging must not crash or retire on
+        absence."""
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        # Deliberately do NOT set last_seen_ts.
+        outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert outcome.scanned == 1
+        assert outcome.retired == 0
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
+
+    def test_malformed_last_seen_ts_warns_and_skips(
+        self, store: VerseStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-numeric last_seen_ts (corrupt/recovered state) is logged at
+        WARNING and the entity is skipped: scanned but not retired, and never
+        crashes on float() of garbage."""
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "ghost", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "not-a-number")
+        with caplog.at_level(logging.WARNING, logger="llm.verse.aging"):
+            outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert outcome.scanned == 1
+        assert outcome.retired == 0
+        assert any("malformed last_seen_ts" in r.message for r in caplog.records)
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "active"

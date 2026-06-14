@@ -105,12 +105,17 @@ def test_reload_drops_post_completion_writes(plugin_env, mocker) -> None:
         plugin._safe_queue(irc, mocker.sentinel.msg)
         plugin.db.log_usage("alice", "#chan", "ask", "model", 1, 1, 0.0)
 
-    plugin._llm_executor.submit("slow", slow_task)
+    fut = plugin._llm_executor.submit("slow", slow_task)
     assert started.wait(timeout=2)
 
     plugin.die()
     release.set()
-    time.sleep(0.5)
+    # Deterministically wait for the worker's tail-end to run instead of
+    # a fixed sleep. die() already drained (timed out while the worker
+    # was blocked on `release`); now that release is set the worker
+    # returns normally under the closing gate, so result() returns once
+    # the tail-end has executed.
+    fut.result(timeout=2)
 
     irc.queueMsg.assert_not_called()
     assert not db_writes, "post-die() writes must be suppressed by closing gate"

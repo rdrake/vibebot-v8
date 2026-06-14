@@ -3003,7 +3003,7 @@ class TestAskWithInstruction:
             model="gpt-4",
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
-        call_kwargs = plugin.llm_service.completion.call_args.kwargs
+        call_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert call_kwargs["user_instruction"] == "You are Captain Picard."
         assert "Picard" not in (call_kwargs.get("system_prompt") or "")
 
@@ -3024,7 +3024,7 @@ class TestAskWithInstruction:
             model="gpt-4",
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
-        call_kwargs = plugin.llm_service.completion.call_args.kwargs
+        call_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         # assistantSystemPrompt is "You are helpful." in the test registry —
         # the overlay must reach the lower layer regardless of user instruction.
         assert call_kwargs.get("system_prompt") == "You are helpful."

@@ -877,9 +877,16 @@ class TestDeliveryStatePersistence:
             result_payload='{"status": "failed_terminal", "reason": "auth error"}',
         )
 
+        import json
+
         tasks = test_db.load_pending_tasks()
         assert tasks[0].delivery_state == "ready"
-        assert "failed_terminal" in tasks[0].result_payload
+        # result_payload is a JSON delivery payload, not a flat string: assert the
+        # structured fields so "failed_terminal" landing in the wrong key (or a
+        # corrupted shape) is caught.
+        payload = json.loads(tasks[0].result_payload)
+        assert payload["status"] == "failed_terminal"
+        assert payload["reason"] == "auth error"
 
     def test_claim_filters_by_delivery_state(self, test_db: LLMDatabase) -> None:
         """GIVEN tasks with different delivery_states WHEN claiming with filter THEN only matching tasks returned."""

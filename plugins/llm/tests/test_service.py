@@ -4629,7 +4629,12 @@ class TestMemoryCleanup:
             MemoryRow(11, "user1", "fact b", "#test", 200.0),
         ]
         result = service.cleanup_memories("user1", "#test", rows)
+        # Garbage output must fail in the json.loads except-branch, not in a
+        # later structural validation branch.
         assert result.error is not None
+        assert result.error.startswith("LLM call failed")
+        assert result.drop == []
+        assert result.merge == []
 
     def test_cleanup_rejects_duplicate_indices(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN index in both drop and merge WHEN cleanup THEN returns error."""
@@ -4708,7 +4713,13 @@ class TestMemoryCleanup:
             MemoryRow(11, "user1", "fact b", "#test", 200.0),
         ]
         result = service.cleanup_memories("user1", "#test", rows)
-        assert result.error is not None
+        # Must reject via the surviving-count guard specifically (not some other
+        # validation branch): all indices dropped -> zero survivors.
+        assert result.error == "Cleanup would leave user with zero memories"
+        # And it must reject WITHOUT proposing edits — no drop/merge are applied
+        # when the guard fires.
+        assert result.drop == []
+        assert result.merge == []
 
     def test_cleanup_prompt_includes_indexed_memories(
         self, make_service, mocker: MockerFixture

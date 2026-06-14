@@ -795,7 +795,15 @@ class TestMetaCompletion:
             bot_nick="VibeBot",
         )
 
-        assert result.error is not None
+        # Must stop via the step-cap branch specifically (not e.g. an API-error
+        # branch, which also sets error): the error string and the canned
+        # step-cap fallback content are both unique to that path.
+        assert result.error == "Assistant exceeded maximum tool-call steps."
+        assert result.content == (
+            "I couldn't pull enough context to answer that — give me more detail."
+        )
+        # The loop tool kept succeeding right up to the cap.
+        assert result.last_successful_tool == "list_memories"
 
     def test_api_error_returns_error_result(
         self, service: LLMService, mocker: MockerFixture

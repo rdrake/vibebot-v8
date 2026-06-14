@@ -2116,8 +2116,6 @@ class TestSafetyPollGuard:
 
     def test_flag_clears_after_worker_completes(self, plugin_env, mocker) -> None:
         """Use a real LLMExecutor so add_done_callback fires."""
-        import time as _t
-
         plugin, _irc, _msg = plugin_env
         # Stub the worker body so the future completes promptly with a
         # known result. Without this stub, the worker enters the real
@@ -2127,8 +2125,14 @@ class TestSafetyPollGuard:
         plugin.llm_service.check_pending_tasks = mocker.MagicMock(return_value=[])
 
         plugin._enqueue_safety_poll()
-        # Wait briefly for the future to complete.
-        _t.sleep(0.5)
+        # The future's add_done_callback clears the inflight flag.
+        # _enqueue_safety_poll returns None (no future handle), and an
+        # Event cannot wait() for a *clear*, so deadline-poll until the
+        # callback has cleared it. Exits in ~ms once done; never the
+        # full 5s unless the callback is broken.
+        deadline = time.monotonic() + 5.0
+        while plugin._safety_poll_inflight.is_set() and time.monotonic() < deadline:
+            time.sleep(0.005)
         assert not plugin._safety_poll_inflight.is_set()
 
     def test_flag_clears_on_synchronous_submit_failure(self, plugin_env, mocker) -> None:
@@ -3341,6 +3345,34 @@ class TestDeliverPendingResult:
         mock_irc.queueMsg.assert_called_once()
         msg = mock_irc.queueMsg.call_args[0][0]
         assert "alice" in str(msg)
+
+    def test_collapses_multiline_completed_content(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN a multi-line completed result WHEN delivered THEN content is
+        collapsed to one IRC-safe line (flood guard).
+
+        Deferred delivery bypasses ``_send_long_reply``, so ``_deliver_pending_result``
+        must collapse embedded newlines before handing the text to
+        ``ircmsgs.privmsg``. A raw ``\n`` in the PRIVMSG body is rejected by
+        Limnoria's ``isValidArgument`` (it would put literal newlines on the
+        wire and trigger an Excess Flood disconnect), so without the collapse
+        ``ircmsgs.privmsg`` raises and nothing is ever queued.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(content="line one\nline two\nline three")
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg_text = str(mock_irc.queueMsg.call_args[0][0])
+        # All three lines survive, joined by the IRC-safe separator...
+        assert "alice: line one | line two | line three" in msg_text
+        # ...and no raw newline reaches the wire payload.
+        assert "\n" not in msg_text.removesuffix("\r\n")
 
     def test_delivers_expired_notification(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN expired result WHEN delivered THEN sends apology."""
