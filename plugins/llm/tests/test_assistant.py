@@ -23,7 +23,13 @@ from llm.service import (
     _strip_verse_denials,
 )
 
-from .conftest import make_registry_side_effect, make_reminder_row, plugin_init_patches
+from .conftest import (
+    make_completion_response,
+    make_registry_side_effect,
+    make_reminder_row,
+    make_tool_call,
+    plugin_init_patches,
+)
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -703,11 +709,7 @@ class TestMetaCompletion:
 
     def test_text_response_no_tools(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM returns text WHEN no tool calls THEN returns text."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done \u2014 instruction set."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done \u2014 instruction set.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -734,8 +736,6 @@ class TestMetaCompletion:
         """GIVEN LLM calls a tool then responds WHEN executed THEN tool runs."""
         # Canary for the shared conftest builders (consolidation #1): identical
         # shape to the hand-rolled MagicMock scaffolding, one source of truth.
-        from tests.conftest import make_completion_response, make_tool_call
-
         tool_call = make_tool_call(
             "set_instruction", {"text": "respond in haiku"}, call_id="call_1"
         )
@@ -766,17 +766,8 @@ class TestMetaCompletion:
 
     def test_max_steps_exceeded(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM keeps calling tools WHEN max steps hit THEN error."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_loop"
-        tool_call.function.name = "list_memories"
-        tool_call.function.arguments = "{}"
-
-        loop_response = mocker.MagicMock()
-        loop_choice = mocker.MagicMock()
-        loop_choice.message.content = None
-        loop_choice.message.tool_calls = [tool_call]
-        loop_choice.message.role = "assistant"
-        loop_response.choices = [loop_choice]
+        tool_call = make_tool_call("list_memories", call_id="call_loop")
+        loop_response = make_completion_response(None, tool_calls=[tool_call])
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -827,28 +818,10 @@ class TestMetaCompletion:
 
     def test_parallel_tool_calls(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM returns multiple tool calls WHEN executed THEN all run."""
-        call_1 = mocker.MagicMock()
-        call_1.id = "call_del_1"
-        call_1.function.name = "delete_memory"
-        call_1.function.arguments = '{"id": 14}'
-
-        call_2 = mocker.MagicMock()
-        call_2.id = "call_del_2"
-        call_2.function.name = "delete_memory"
-        call_2.function.arguments = '{"id": 27}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [call_1, call_2]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Deleted 2 memories."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        call_1 = make_tool_call("delete_memory", {"id": 14}, call_id="call_del_1")
+        call_2 = make_tool_call("delete_memory", {"id": 27}, call_id="call_del_2")
+        first_response = make_completion_response(None, tool_calls=[call_1, call_2])
+        second_response = make_completion_response("Deleted 2 memories.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -873,11 +846,7 @@ class TestMetaCompletion:
 
     def test_cost_is_populated(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN meta completion WHEN successful THEN cost is calculated."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -903,11 +872,7 @@ class TestMetaCompletion:
         instead of replacing the structural framework — the IRC output rules
         and tool-behavior rules from CHAT_SYSTEM_PROMPT must still be present.
         """
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         captured_messages: list = []
 
@@ -948,11 +913,7 @@ class TestMetaCompletion:
         """
         from llm.service import PROFILE_VERSE
 
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         captured_messages: list = []
 
@@ -994,11 +955,7 @@ class TestMetaCompletion:
         """A personality overlay containing literal '{...}' (e.g. JSON examples)
         must not raise KeyError — only ``{bot_nick}`` is substituted.
         """
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         captured_messages: list = []
 
@@ -1026,11 +983,7 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """assistant_completion uses CHAT_SYSTEM_PROMPT when no system_prompt given."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         captured_messages: list = []
 
@@ -1057,11 +1010,7 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """assistant_completion passes search_fn/fetch_fn/code_fn to AssistantToolExecutor."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -1093,22 +1042,11 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """assistant_completion forces search_web first for explicit current-info prompts."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_search"
-        tool_call.function.name = "search_web"
-        tool_call.function.arguments = '{"query": "latest nefarious 2 release"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Nefarious 2 details..."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "search_web", {"query": "latest nefarious 2 release"}, call_id="call_search"
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Nefarious 2 details...")
 
         mock_completion = mocker.patch(
             "llm.service.litellm.completion",
@@ -1139,22 +1077,9 @@ class TestMetaCompletion:
     ) -> None:
         """AssistantResult.grounding_used reflects executor state after tool calls."""
         # First response: tool call; second response: text
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_1"
-        tool_call.function.name = "web_search"
-        tool_call.function.arguments = '{"query": "test"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Here are results."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Here are results.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -1189,22 +1114,9 @@ class TestMetaCompletion:
     ) -> None:
         """AssistantResult totals include costs from leaf tool calls."""
         # First response: tool call; second response: text
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_1"
-        tool_call.function.name = "web_search"
-        tool_call.function.arguments = '{"query": "test"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Here are results."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Here are results.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -1316,16 +1228,8 @@ class TestMetaCompletion:
         # First call returns a tool_calls response (mutates `messages`),
         # second call raises Timeout. The stash should still see the
         # pre-loop messages list.
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_1"
-        tool_call.function.name = "list_memories"
-        tool_call.function.arguments = "{}"
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_response.choices = [first_choice]
+        tool_call = make_tool_call("list_memories", call_id="call_1")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -1359,11 +1263,7 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """extra_tools are included in the tools kwarg passed to litellm.completion."""
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "Done."
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("Done.")
 
         mock_completion = mocker.patch(
             "llm.service.litellm.completion",
@@ -1398,23 +1298,13 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """When a tool name is in extra_handlers, the handler runs instead of the executor."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_bridge"
-        tool_call.function.name = "run_limnoria_command"
-        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Pong."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "run_limnoria_command",
+            {"plugin": "Misc", "command": "ping"},
+            call_id="call_bridge",
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Pong.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -1452,23 +1342,13 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """Handler returning an error envelope leaves last_successful_tool as None."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_bridge"
-        tool_call.function.name = "run_limnoria_command"
-        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Sorry, that failed."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "run_limnoria_command",
+            {"plugin": "Misc", "command": "ping"},
+            call_id="call_bridge",
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Sorry, that failed.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -1503,23 +1383,13 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """Handler returning a success envelope sets last_successful_tool on the result."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_bridge"
-        tool_call.function.name = "run_limnoria_command"
-        tool_call.function.arguments = '{"plugin": "Misc", "command": "ping"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Pong."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "run_limnoria_command",
+            {"plugin": "Misc", "command": "ping"},
+            call_id="call_bridge",
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Pong.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -2407,23 +2277,11 @@ class TestMetaIntegration:
         svc, _plugin = self._make_service(mocker)
 
         # Simulate: tool call -> set_instruction -> text response
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_1"
-        tool_call.function.name = "set_instruction"
-        tool_call.function.arguments = '{"text": "always respond in haiku"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Done \u2014 I'll respond in haiku."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "set_instruction", {"text": "always respond in haiku"}, call_id="call_1"
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Done \u2014 I'll respond in haiku.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -2464,40 +2322,14 @@ class TestMetaIntegration:
         svc, _plugin = self._make_service(mocker)
 
         # Simulate: list -> delete two cat memories -> confirmation
-        list_call = mocker.MagicMock()
-        list_call.id = "call_list"
-        list_call.function.name = "list_memories"
-        list_call.function.arguments = "{}"
+        list_call = make_tool_call("list_memories", call_id="call_list")
+        r1 = make_completion_response(None, tool_calls=[list_call])
 
-        r1 = mocker.MagicMock()
-        c1 = mocker.MagicMock()
-        c1.message.content = None
-        c1.message.tool_calls = [list_call]
-        c1.message.role = "assistant"
-        r1.choices = [c1]
+        del_call_1 = make_tool_call("delete_memory", {"id": id1}, call_id="call_del_1")
+        del_call_2 = make_tool_call("delete_memory", {"id": id2}, call_id="call_del_2")
+        r2 = make_completion_response(None, tool_calls=[del_call_1, del_call_2])
 
-        del_call_1 = mocker.MagicMock()
-        del_call_1.id = "call_del_1"
-        del_call_1.function.name = "delete_memory"
-        del_call_1.function.arguments = f'{{"id": {id1}}}'
-
-        del_call_2 = mocker.MagicMock()
-        del_call_2.id = "call_del_2"
-        del_call_2.function.name = "delete_memory"
-        del_call_2.function.arguments = f'{{"id": {id2}}}'
-
-        r2 = mocker.MagicMock()
-        c2 = mocker.MagicMock()
-        c2.message.content = None
-        c2.message.tool_calls = [del_call_1, del_call_2]
-        c2.message.role = "assistant"
-        r2.choices = [c2]
-
-        r3 = mocker.MagicMock()
-        c3 = mocker.MagicMock()
-        c3.message.content = "Deleted 2 memories about cats."
-        c3.message.tool_calls = None
-        r3.choices = [c3]
+        r3 = make_completion_response("Deleted 2 memories about cats.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -2551,23 +2383,9 @@ class TestMetaIntegration:
 
         svc, _plugin = self._make_service(mocker)
 
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_usage"
-        tool_call.function.name = "get_usage"
-        tool_call.function.arguments = "{}"
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "You've made 2 requests costing $0.03."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call("get_usage", call_id="call_usage")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("You've made 2 requests costing $0.03.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -2598,23 +2416,9 @@ class TestMetaIntegration:
         """GIVEN cleanup_fn callable WHEN meta calls it THEN cleanup runs."""
         svc, _plugin = self._make_service(mocker)
 
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_cleanup"
-        tool_call.function.name = "cleanup_memories"
-        tool_call.function.arguments = "{}"
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Cleaned up your memories."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call("cleanup_memories", call_id="call_cleanup")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Cleaned up your memories.")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -2647,23 +2451,11 @@ class TestMetaIntegration:
         """GIVEN set_reminder callable WHEN meta calls it THEN reminder set."""
         svc, _plugin = self._make_service(mocker)
 
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_remind"
-        tool_call.function.name = "set_reminder"
-        tool_call.function.arguments = '{"text": "deploy in 2 hours"}'
-
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Reminder set: deploy (in 2 hours)."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "set_reminder", {"text": "deploy in 2 hours"}, call_id="call_remind"
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Reminder set: deploy (in 2 hours).")
 
         mocker.patch(
             "llm.service.litellm.completion",
@@ -3408,11 +3200,7 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
         )
         monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
 
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "ok"
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("ok")
 
         mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -3466,11 +3254,7 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
 
         captured_model: list[str] = []
 
-        mock_response = mocker.MagicMock()
-        mock_choice = mocker.MagicMock()
-        mock_choice.message.content = "ok"
-        mock_choice.message.tool_calls = None
-        mock_response.choices = [mock_choice]
+        mock_response = make_completion_response("ok")
 
         def capture(**kwargs):
             captured_model.append(kwargs.get("model"))

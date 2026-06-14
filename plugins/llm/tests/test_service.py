@@ -17,6 +17,8 @@ from llm.service import (
     validate_external_url,
 )
 
+from .conftest import make_completion_response
+
 if TYPE_CHECKING:
     from unittest.mock import Mock
 
@@ -311,11 +313,7 @@ class TestLLMService:
 
         def mock_completion(**kwargs: dict) -> Mock:
             messages_sent.extend(kwargs.get("messages", []))
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Response"
-            return mock_response
+            return make_completion_response("Response")
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
@@ -344,11 +342,7 @@ class TestLLMService:
 
         def mock_completion(**kwargs: dict) -> Mock:
             messages_sent.extend(kwargs.get("messages", []))
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Response"
-            return mock_response
+            return make_completion_response("Response")
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
@@ -376,11 +370,7 @@ class TestLLMService:
 
         def mock_completion(**kwargs: dict) -> Mock:
             messages_sent.extend(kwargs.get("messages", []))
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Response"
-            return mock_response
+            return make_completion_response("Response")
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
@@ -909,11 +899,7 @@ class TestGroundingDetection:
 
         def mock_completion(**kwargs: dict) -> Mock:
             captured_kwargs.update(kwargs)
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Response"
-            return mock_response
+            return make_completion_response("Response")
 
         token = request_id.set("test1234")
         try:
@@ -1007,11 +993,7 @@ class TestGroundingDetection:
 
         def mock_completion(**kwargs: dict) -> Mock:
             messages_sent.extend(kwargs.get("messages", []))
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Make it so."
-            return mock_response
+            return make_completion_response("Make it so.")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
         result = self.service.completion(
@@ -2767,10 +2749,7 @@ class TestSummarize:
 
     def test_summarize_returns_summary(self) -> None:
         """GIVEN content WHEN summarize called THEN returns summary."""
-        mock_response = self.mocker.Mock()
-        mock_response.choices = [self.mocker.Mock()]
-        mock_response.choices[0].message = self.mocker.Mock()
-        mock_response.choices[0].message.content = "This is a summary of the code."
+        mock_response = make_completion_response("This is a summary of the code.")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         result = self.service.summarize("def foo(): pass")
@@ -2779,12 +2758,9 @@ class TestSummarize:
 
     def test_summarize_cleans_whitespace(self) -> None:
         """GIVEN summary with extra whitespace WHEN summarize THEN collapses whitespace."""
-        mock_response = self.mocker.Mock()
-        mock_response.choices = [self.mocker.Mock()]
-        mock_response.choices[0].message = self.mocker.Mock()
-        mock_response.choices[
-            0
-        ].message.content = "  Summary  with   extra   spaces  \n  and newlines  "
+        mock_response = make_completion_response(
+            "  Summary  with   extra   spaces  \n  and newlines  "
+        )
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         result = self.service.summarize("content")
@@ -2828,10 +2804,7 @@ class TestSummarize:
 
     def test_summarize_returns_none_on_empty_response(self) -> None:
         """GIVEN empty response WHEN summarize called THEN returns None."""
-        mock_response = self.mocker.Mock()
-        mock_response.choices = [self.mocker.Mock()]
-        mock_response.choices[0].message = self.mocker.Mock()
-        mock_response.choices[0].message.content = ""
+        mock_response = make_completion_response("")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         result = self.service.summarize("content")
@@ -2844,11 +2817,7 @@ class TestSummarize:
 
         def capture_kwargs(**kwargs):
             completion_kwargs.update(kwargs)
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Summary"
-            return mock_response
+            return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
         self.service.summarize("content")
@@ -2866,10 +2835,7 @@ class TestSummarize:
 
         self.mock_plugin.registryValue = self.mocker.Mock(side_effect=track_registry)
 
-        mock_response = self.mocker.Mock()
-        mock_response.choices = [self.mocker.Mock()]
-        mock_response.choices[0].message = self.mocker.Mock()
-        mock_response.choices[0].message.content = "Summary"
+        mock_response = make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         self.service.summarize("content", channel="#test")
@@ -2884,11 +2850,7 @@ class TestSummarize:
 
         def capture_messages(**kwargs):
             messages_sent.extend(kwargs.get("messages", []))
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Summary"
-            return mock_response
+            return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_messages)
         self.service.summarize("test content")
@@ -2914,11 +2876,7 @@ class TestSummarize:
 
         def capture_kwargs(**kwargs):
             completion_kwargs.update(kwargs)
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Summary"
-            return mock_response
+            return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
         self.service.summarize("content")
@@ -2931,11 +2889,7 @@ class TestSummarize:
 
         def capture_kwargs(**kwargs):
             completion_kwargs.update(kwargs)
-            mock_response = self.mocker.Mock()
-            mock_response.choices = [self.mocker.Mock()]
-            mock_response.choices[0].message = self.mocker.Mock()
-            mock_response.choices[0].message.content = "Summary"
-            return mock_response
+            return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
         self.service.summarize("content")
@@ -2944,10 +2898,7 @@ class TestSummarize:
 
     def test_summarize_for_irc_returns_one_line_teaser(self) -> None:
         """GIVEN content WHEN IRC teaser requested THEN returns one compact line."""
-        mock_response = self.mocker.Mock()
-        mock_response.choices = [self.mocker.Mock()]
-        mock_response.choices[0].message = self.mocker.Mock()
-        mock_response.choices[0].message.content = (
+        mock_response = make_completion_response(
             "  Liberia's history spans colonization, independence,\n"
             "  coups, civil war, and recovery. Extra text that should be trimmed."
         )
@@ -3248,10 +3199,7 @@ class TestDrawAutoRewrite:
 
     def _make_rewrite_response(self, rewritten: str = "a safe cat") -> Mock:
         """Create a mock completion response for prompt rewriting."""
-        response = self.mocker.Mock()
-        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=rewritten))]
-        response.usage = self.mocker.Mock(prompt_tokens=20, completion_tokens=10)
-        return response
+        return make_completion_response(rewritten, prompt_tokens=20, completion_tokens=10)
 
     def test_auto_rewrite_on_empty_data_succeeds(self) -> None:
         """GIVEN empty response data WHEN auto-rewrite enabled THEN retries with rewritten prompt."""
@@ -3887,13 +3835,9 @@ class TestCheckPendingTasks:
             [],  # delivery phase
         ]
 
-        mock_response = self.mocker.MagicMock()
-        mock_response.choices = [self.mocker.MagicMock()]
-        mock_response.choices[0].message.content = "The answer is 42"
-        mock_response.usage = self.mocker.MagicMock()
-        mock_response.usage.prompt_tokens = 100
-        mock_response.usage.completion_tokens = 50
-        mock_response.model = "gpt-4"
+        mock_response = make_completion_response(
+            "The answer is 42", prompt_tokens=100, completion_tokens=50, model="gpt-4"
+        )
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
@@ -3957,13 +3901,9 @@ class TestProviderDeliverySplit:
             [],  # delivery phase
         ]
 
-        mock_response = self.mocker.MagicMock()
-        mock_response.choices = [self.mocker.MagicMock()]
-        mock_response.choices[0].message.content = "The answer is 42"
-        mock_response.usage = self.mocker.MagicMock()
-        mock_response.usage.prompt_tokens = 100
-        mock_response.usage.completion_tokens = 50
-        mock_response.model = "gpt-4"
+        mock_response = make_completion_response(
+            "The answer is 42", prompt_tokens=100, completion_tokens=50, model="gpt-4"
+        )
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
@@ -4353,9 +4293,7 @@ class TestMemoryExtraction:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": ["likes Python", "lives in Toronto"]}'
+        mock_response = make_completion_response('{"add": ["likes Python", "lives in Toronto"]}')
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "I love Python and live in Toronto", "Cool!", []
@@ -4366,9 +4304,7 @@ class TestMemoryExtraction:
         """GIVEN boring conversation WHEN extracted THEN returns empty result."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": []}'
+        mock_response = make_completion_response('{"add": []}')
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hello", "hi", [])
         assert result.add == []
@@ -4419,9 +4355,7 @@ class TestMemoryExtraction:
         """GIVEN non-JSON response WHEN extracting THEN returns empty result."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "not json at all"
+        mock_response = make_completion_response("not json at all")
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
@@ -4432,9 +4366,7 @@ class TestMemoryExtraction:
         """GIVEN existing memories WHEN extracting THEN included in prompt."""
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": []}'
+        mock_response = make_completion_response('{"add": []}')
         mock_litellm.completion.return_value = mock_response
         service.extract_memories("user1", "#test", "hi", "hello", ["already knows Python"])
         call_args = mock_litellm.completion.call_args
@@ -4448,9 +4380,7 @@ class TestMemoryExtraction:
         """GIVEN candidates WHEN LLM reinforces THEN indices flow through."""
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": ["new fact"], "reinforce": [0, 2]}'
+        mock_response = make_completion_response('{"add": ["new fact"], "reinforce": [0, 2]}')
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1",
@@ -4469,9 +4399,7 @@ class TestMemoryExtraction:
         """GIVEN reinforce index >= candidate count WHEN parsed THEN dropped."""
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "reinforce": [0, 5, -1, 1]}'
+        mock_response = make_completion_response('{"add": [], "reinforce": [0, 5, -1, 1]}')
         mock_litellm.completion.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "hi", "hello", [], existing_candidates=["a", "b"]
@@ -4484,9 +4412,7 @@ class TestMemoryExtraction:
         """GIVEN candidate facts WHEN extracting THEN they appear indexed in prompt."""
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_response = make_completion_response('{"add": [], "reinforce": []}')
         mock_litellm.completion.return_value = mock_response
         service.extract_memories(
             "user1",
@@ -4514,9 +4440,7 @@ class TestMemoryExtraction:
 
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_response = make_completion_response('{"add": [], "reinforce": []}')
         mock_litellm.completion.return_value = mock_response
 
         service.extract_memories("alice", "#test", "hi", "hello", ["knows Python", "uses Arch"])
@@ -4545,9 +4469,7 @@ class TestMemoryExtraction:
         it needs to choose between add and reinforce."""
         service, _ = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"add": [], "reinforce": []}'
+        mock_response = make_completion_response('{"add": [], "reinforce": []}')
         mock_litellm.completion.return_value = mock_response
 
         service.extract_memories(
@@ -4576,11 +4498,9 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = '{"drop": [4], "merge": [{"indices": [1, 2], "text": "likes Python"}]}'
+        mock_response = make_completion_response(
+            '{"drop": [4], "merge": [{"indices": [1, 2], "text": "likes Python"}]}'
+        )
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4619,9 +4539,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "not json at all"
+        mock_response = make_completion_response("not json at all")
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4642,11 +4560,9 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = '{"drop": [1], "merge": [{"indices": [0, 1], "text": "combined"}]}'
+        mock_response = make_completion_response(
+            '{"drop": [1], "merge": [{"indices": [0, 1], "text": "combined"}]}'
+        )
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4663,9 +4579,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [5], "merge": []}'
+        mock_response = make_completion_response('{"drop": [5], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4681,11 +4595,9 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = '{"drop": [], "merge": [{"indices": [0, 1], "text": ""}]}'
+        mock_response = make_completion_response(
+            '{"drop": [], "merge": [{"indices": [0, 1], "text": ""}]}'
+        )
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4703,9 +4615,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [0, 1], "merge": []}'
+        mock_response = make_completion_response('{"drop": [0, 1], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4729,9 +4639,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
+        mock_response = make_completion_response('{"drop": [], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -4752,9 +4660,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
+        mock_response = make_completion_response('{"drop": [], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
@@ -4773,9 +4679,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service(timeout=123)
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
+        mock_response = make_completion_response('{"drop": [], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
@@ -4792,9 +4696,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service(assistantApiKey="memory-specific-key")
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [], "merge": []}'
+        mock_response = make_completion_response('{"drop": [], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
@@ -4815,9 +4717,7 @@ class TestMemoryCleanup:
 
         service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = '{"drop": [2], "merge": []}'
+        mock_response = make_completion_response('{"drop": [2], "merge": []}')
         mock_litellm.completion.return_value = mock_response
 
         rows = [
@@ -5480,9 +5380,7 @@ class TestExtractMemories:
         """GIVEN assistantApiKey set WHEN extract_memories called THEN it is used."""
         service, mock_plugin = make_service()
         mock_completion = mocker.patch("llm.service.litellm.completion")
-        mock_response = mocker.Mock()
-        mock_response.choices = [mocker.Mock()]
-        mock_response.choices[0].message.content = '{"add": ["likes cats"]}'
+        mock_response = make_completion_response('{"add": ["likes cats"]}')
         mock_completion.return_value = mock_response
 
         result = service.extract_memories("nick", "#chan", "I like cats", "Cool!", [])
@@ -5506,9 +5404,7 @@ class TestCleanupMemoriesValidation:
         """Mock litellm.completion to return a JSON-encoded response."""
         import json
 
-        response = self.mocker.Mock()
-        response.choices = [self.mocker.Mock()]
-        response.choices[0].message.content = json.dumps(parsed)
+        response = make_completion_response(json.dumps(parsed))
         self.mocker.patch("llm.service.litellm.completion", return_value=response)
 
     def _make_rows(self, count: int) -> list:
@@ -5671,29 +5567,9 @@ class TestValidateExternalUrl:
 # ---------------------------------------------------------------------------
 
 
-def _make_litellm_response(mocker, content="result text", grounding=False):
+def _make_litellm_response(mocker, content="result text", grounding=False):  # noqa: ARG001
     """Build a minimal mock that looks like a litellm completion response."""
-    msg = mocker.Mock()
-    msg.content = content
-    msg.tool_calls = None
-
-    choice = mocker.Mock()
-    choice.message = msg
-    choice.grounding_metadata = None
-
-    response = mocker.Mock()
-    response.choices = [choice]
-    response._hidden_params = (
-        {"vertex_ai_grounding_metadata": {"search_queries": ["q"]}} if grounding else {}
-    )
-    response.model_extra = {}
-
-    usage = mocker.Mock()
-    usage.prompt_tokens = 10
-    usage.completion_tokens = 20
-    response.usage = usage
-
-    return response
+    return make_completion_response(content, grounding=grounding)
 
 
 class TestSearchCompletion:
@@ -5891,15 +5767,7 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
         *, model, messages, api_key, timeout, optional_kwargs, op="completion", channel=None
     ):
         captured.append(optional_kwargs)
-        response = mocker.MagicMock()
-        response.choices[0].message.content = "result"
-        response._hidden_params = {}
-        response.model_extra = {}
-        usage = mocker.Mock()
-        usage.prompt_tokens = 5
-        usage.completion_tokens = 10
-        response.usage = usage
-        return response
+        return make_completion_response("result", prompt_tokens=5, completion_tokens=10)
 
     mocker.patch.object(service, "_completion_with_tool_fallback", side_effect=fake_call)
     mocker.patch.object(service, "_is_xai_model", return_value=False)
