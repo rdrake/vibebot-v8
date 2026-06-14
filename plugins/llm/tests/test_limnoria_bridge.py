@@ -1130,3 +1130,27 @@ def test_drift_check_detects_orphan():
     # And the real (non-typo) entry must NOT be flagged, proving the helper
     # actually populated misc's real leaves.
     assert ("misc", "tell") not in orphans
+
+
+def test_deny_commands_have_no_orphaned_entries():
+    """Drift guard: every (plugin, leaf) in DENY_COMMANDS must correspond to a
+    real, enumerable command on an installed stock Limnoria plugin.
+
+    DENY_COMMANDS carries the security-critical unconditional blocks (web.fetch
+    SSRF, utilities.apply/let arbitrary command re-dispatch, misc.more/
+    clearmores). If a stock-plugin upgrade renames one of these — or an entry is
+    typo'd — the orphaned tuple silently stops denying anything and the command
+    becomes callable through the bridge. This fails CI before that can ship.
+    Shares the _enumerable_stock_command_leaves() helper that
+    test_drift_check_detects_orphan proves is non-vacuous.
+    """
+    from llm import limnoria_bridge as lb
+
+    real = _enumerable_stock_command_leaves()
+    orphans = sorted(
+        (plugin, leaf) for (plugin, leaf) in lb.DENY_COMMANDS if leaf not in real.get(plugin, set())
+    )
+    assert not orphans, (
+        "DENY_COMMANDS entries no longer match any enumerable stock command "
+        f"(renamed/removed/typo): {orphans}"
+    )

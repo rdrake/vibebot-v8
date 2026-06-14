@@ -2985,44 +2985,11 @@ class TestInvalidCommand:
         plugin._run_meta.assert_not_called()
 
 
-class TestReminderDelivery:
-    """Test reminder delivery callback."""
-
-    def test_deliver_queues_message_and_removes_reminder(self, mocker: MockerFixture) -> None:
-        """GIVEN scheduled reminder WHEN deliver fires THEN queues privmsg and cleans up."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin._reminders = {}
-
-        event_name = "llm_remind_12345_1"
-        channel = "#test"
-        nick = "testuser"
-        reminder_message = "check the build"
-
-        # Simulate the deliver closure as defined in remind()
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick=nick,
-            channel=channel,
-            message=reminder_message,
-        )
-
-        def deliver() -> None:
-            mock_irc.queueMsg(
-                __import__("supybot.ircmsgs", fromlist=["ircmsgs"]).privmsg(
-                    channel, f"{nick}: Reminder: {reminder_message}"
-                )
-            )
-            plugin._reminders.pop(event_name, None)
-
-        deliver()
-
-        mock_irc.queueMsg.assert_called_once()
-        assert event_name not in plugin._reminders
+# NOTE: reminder *delivery* is covered end-to-end by
+# test_reminders.py::TestReminderDeliveryClosure, which drives the real
+# plugin._make_reminder_delivery_closure(). A former test here reimplemented
+# that closure inline (asserting on the test's own copy), so it could not catch
+# a regression in production and was removed.
 
 
 class TestAllowConcurrent:
@@ -5942,10 +5909,13 @@ class TestVerseCommand:
         msg.args = ("#afnet", "@verse")
         plugin.verse(irc, msg, [])
 
-        # Limnoria's wrap gate blocks execution — no scene reply.
-        if irc.reply.called:
-            reply_text = irc.reply.call_args[0][0]
-            assert "You are at" not in reply_text
+        # Limnoria's ("checkCapability", "llm.verse") wrap gate denies the
+        # command before the body runs: it emits errorNoCapability and never
+        # replies with a scene. Asserting BOTH sides makes this fail if the
+        # gate is removed — the body would then reach NO_AVATAR_REPLY via
+        # irc.reply for the unopted user.
+        irc.errorNoCapability.assert_called_once()
+        irc.reply.assert_not_called()
 
 
 # =============================================================================

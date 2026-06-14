@@ -732,23 +732,15 @@ class TestMetaCompletion:
 
     def test_tool_call_then_text(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM calls a tool then responds WHEN executed THEN tool runs."""
-        tool_call = mocker.MagicMock()
-        tool_call.id = "call_1"
-        tool_call.function.name = "set_instruction"
-        tool_call.function.arguments = '{"text": "respond in haiku"}'
+        # Canary for the shared conftest builders (consolidation #1): identical
+        # shape to the hand-rolled MagicMock scaffolding, one source of truth.
+        from tests.conftest import make_completion_response, make_tool_call
 
-        first_response = mocker.MagicMock()
-        first_choice = mocker.MagicMock()
-        first_choice.message.content = None
-        first_choice.message.tool_calls = [tool_call]
-        first_choice.message.role = "assistant"
-        first_response.choices = [first_choice]
-
-        second_response = mocker.MagicMock()
-        second_choice = mocker.MagicMock()
-        second_choice.message.content = "Done \u2014 I'll respond in haiku."
-        second_choice.message.tool_calls = None
-        second_response.choices = [second_choice]
+        tool_call = make_tool_call(
+            "set_instruction", {"text": "respond in haiku"}, call_id="call_1"
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Done \u2014 I'll respond in haiku.")
 
         mock_completion = mocker.patch(
             "llm.service.litellm.completion",

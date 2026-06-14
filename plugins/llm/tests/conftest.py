@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 from llm.persistence import LLMDatabase, ReminderRow
@@ -15,7 +17,7 @@ from llm.plugin import LLM
 from llm.service import LLMService
 
 if TYPE_CHECKING:
-    from unittest.mock import MagicMock, Mock
+    from unittest.mock import Mock
 
     from pytest_mock import MockerFixture
 
@@ -156,6 +158,83 @@ def make_reminder_row(
         recurrence_rrule=recurrence_rrule,
         watch_mode=watch_mode,
     )
+
+
+# =============================================================================
+# litellm completion-response builders
+# =============================================================================
+
+
+def make_tool_call(
+    name: str,
+    arguments: dict[str, Any] | str | None = None,
+    *,
+    call_id: str = "call_0",
+) -> MagicMock:
+    """Build a mock litellm tool_call.
+
+    Produces the ``.id`` / ``.type`` / ``.function.name`` / ``.function.arguments``
+    shape that the assistant tool loop reads (service.py:assistant_completion).
+    ``arguments`` may be a dict (JSON-encoded for you) or a raw string (passed
+    through verbatim — useful for exercising malformed-JSON handling). Centralizes
+    the litellm object layout that the tool-loop tests otherwise hand-roll, so a
+    litellm shape change is absorbed in one place.
+    """
+    if arguments is None:
+        arguments = {}
+    arguments_str = arguments if isinstance(arguments, str) else json.dumps(arguments)
+
+    tool_call = MagicMock()
+    tool_call.id = call_id
+    tool_call.type = "function"
+    tool_call.function.name = name
+    tool_call.function.arguments = arguments_str
+    return tool_call
+
+
+def make_completion_response(
+    content: str | None = "response text",
+    *,
+    tool_calls: list[Any] | None = None,
+    prompt_tokens: int = 10,
+    completion_tokens: int = 20,
+    model: str = TEST_MODEL,
+    grounding: bool = False,
+) -> MagicMock:
+    """Build a mock that mimics a litellm chat-completion response.
+
+    Mirrors the shape hand-rolled across test_service / test_assistant /
+    test_reminders: ``r.choices[0].message.content`` / ``.tool_calls`` and
+    ``r.usage.prompt_tokens`` / ``.completion_tokens``. Pass ``tool_calls`` built
+    with :func:`make_tool_call` for tool-loop tests; ``grounding=True`` attaches
+    the vertex grounding marker in ``_hidden_params``. Keeping this in one place
+    confines litellm-response coupling so a shape change touches one builder
+    rather than hundreds of call sites.
+    """
+    message = MagicMock()
+    message.content = content
+    message.tool_calls = tool_calls
+    message.role = "assistant"
+
+    choice = MagicMock()
+    choice.message = message
+    choice.grounding_metadata = None
+
+    response = MagicMock()
+    response.choices = [choice]
+    response.model = model
+    response.model_extra = {}
+    response._hidden_params = (
+        {"vertex_ai_grounding_metadata": {"search_queries": ["q"]}} if grounding else {}
+    )
+
+    usage = MagicMock()
+    usage.prompt_tokens = prompt_tokens
+    usage.completion_tokens = completion_tokens
+    usage.total_tokens = prompt_tokens + completion_tokens
+    response.usage = usage
+
+    return response
 
 
 # =============================================================================

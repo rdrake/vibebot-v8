@@ -10,7 +10,6 @@ These tests verify that the bot follows IRC etiquette principles:
 
 from __future__ import annotations
 
-import re
 import time
 from typing import TYPE_CHECKING
 
@@ -21,195 +20,62 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-# =============================================================================
-# Etiquette Helper Utilities
-# =============================================================================
-
-
-def contains_markdown(text: str) -> bool:
-    """Detect if text contains markdown formatting.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        True if markdown detected, False otherwise
-    """
-    if not text:
-        return False
-
-    # Header patterns: # Header, ## Header, etc.
-    if re.search(r"^#{1,6}\s+\S", text, re.MULTILINE):
-        return True
-
-    # Bold: **text** or __text__
-    if re.search(r"\*\*[^*]+\*\*|__[^_]+__", text):
-        return True
-
-    # Italic: *text* or _text_ (but not file_names_like_this)
-    if re.search(r"(?<!\w)\*[^*\s][^*]*[^*\s]\*(?!\w)", text):
-        return True
-
-    # Code blocks: ```code``` or `inline`
-    if "```" in text or re.search(r"`[^`]+`", text):
-        return True
-
-    # Links: [text](url)
-    if re.search(r"\[[^\]]+\]\([^)]+\)", text):
-        return True
-
-    # Lists: - item or * item at start of line
-    return bool(re.search(r"^[\s]*[-*]\s+\S", text, re.MULTILINE))
-
-
-def count_emojis(text: str) -> int:
-    """Count emoji characters in text.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        Number of emoji characters
-    """
-    if not text:
-        return 0
-
-    # Unicode emoji pattern (basic emoji ranges) - match single emoji at a time
-    emoji_pattern = re.compile(
-        "["
-        "\U0001f600-\U0001f64f"  # emoticons
-        "\U0001f300-\U0001f5ff"  # symbols & pictographs
-        "\U0001f680-\U0001f6ff"  # transport & map symbols
-        "\U0001f700-\U0001f77f"  # alchemical symbols
-        "\U0001f780-\U0001f7ff"  # Geometric Shapes Extended
-        "\U0001f800-\U0001f8ff"  # Supplemental Arrows-C
-        "\U0001f900-\U0001f9ff"  # Supplemental Symbols and Pictographs
-        "\U0001fa00-\U0001fa6f"  # Chess Symbols
-        "\U0001fa70-\U0001faff"  # Symbols and Pictographs Extended-A
-        "\U00002702-\U000027b0"  # Dingbats
-        "\U0001f1e0-\U0001f1ff"  # flags (iOS)
-        "]",  # No + quantifier - match one at a time
-        flags=re.UNICODE,
-    )
-    return len(emoji_pattern.findall(text))
-
-
-def estimate_irc_lines(text: str, max_line_length: int = 400) -> int:
-    """Estimate number of IRC lines a message will produce.
-
-    Args:
-        text: Text to estimate
-        max_line_length: Maximum IRC line length (conservative default)
-
-    Returns:
-        Estimated number of IRC lines
-    """
-    if not text:
-        return 0
-
-    lines = text.split("\n")
-    total = 0
-    for line in lines:
-        # Each line may wrap if too long
-        if len(line) <= max_line_length:
-            total += 1
-        else:
-            total += (len(line) // max_line_length) + 1
-    return total
-
-
-def has_irc_formatting(text: str) -> bool:
-    """Detect IRC color codes and formatting.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        True if IRC formatting detected
-    """
-    if not text:
-        return False
-
-    # IRC color code: ^C (0x03)
-    if "\x03" in text:
-        return True
-
-    # IRC bold: ^B (0x02)
-    if "\x02" in text:
-        return True
-
-    # IRC underline: ^_ (0x1F)
-    if "\x1f" in text:
-        return True
-
-    # IRC italic: ^] (0x1D)
-    return "\x1d" in text
-
-
-# =============================================================================
-# Test Classes
-# =============================================================================
-
 
 class TestSystemPromptEtiquette:
-    """Tests for IRC etiquette instructions in system prompts.
+    """Tests that the SHIPPED default system prompts encode IRC etiquette.
 
-    GIVEN the system prompts are the primary mechanism for instructing
-    the LLM to behave appropriately for IRC.
+    GIVEN the system prompts are the primary mechanism for instructing the
+    LLM to behave appropriately for IRC.
+
+    These read the registered defaults from config.py (the values operators
+    actually ship with), NOT a prompt the test injected. A regression that
+    rewrites the default prompt and drops the IRC / plain-text / brevity
+    guidance is therefore caught here.
     """
 
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service) -> None:
-        """Set up test fixtures."""
-        self.service, self.mock_plugin = make_service(
-            assistantSystemPrompt=(
-                "You are a helpful IRC assistant. Keep responses concise and suitable for IRC chat. "
-                "Avoid markdown formatting. Be direct and informative."
-            ),
-            codeSystemPrompt=(
-                "You are a helpful code assistant. Explain your code and provide context. "
-                "Use markdown formatting for code blocks."
-            ),
-        )
+    def test_assistant_default_prompt_frames_replies_as_irc(self) -> None:
+        """GIVEN shipped assistantSystemPrompt default WHEN read THEN frames replies as IRC chat."""
+        import llm.config  # noqa: F401 — import side effect registers the value
+        import supybot.conf as conf
 
-    def _config_lookup(self, key: str) -> str | int:
-        """Look up config values from the mock plugin."""
-        return self.mock_plugin.registryValue(key)
+        prompt = conf.supybot.plugins.LLM.assistantSystemPrompt().lower()
 
-    def test_ask_system_prompt_instructs_conciseness(self) -> None:
-        """GIVEN assistantSystemPrompt WHEN examined THEN contains conciseness instruction."""
-        prompt = self._config_lookup("assistantSystemPrompt")
+        assert "irc" in prompt
 
-        assert "concise" in prompt.lower()
+    def test_assistant_default_prompt_forbids_markdown(self) -> None:
+        """GIVEN shipped assistantSystemPrompt default WHEN read THEN instructs plain text / no markdown."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
 
-    def test_ask_system_prompt_discourages_markdown(self) -> None:
-        """GIVEN assistantSystemPrompt WHEN examined THEN mentions avoiding markdown."""
-        prompt = self._config_lookup("assistantSystemPrompt")
+        prompt = conf.supybot.plugins.LLM.assistantSystemPrompt().lower()
 
-        assert "markdown" in prompt.lower()
-        assert "avoid" in prompt.lower()
+        assert "markdown" in prompt
+        assert "plain text" in prompt
 
-    def test_ask_system_prompt_mentions_irc_context(self) -> None:
-        """GIVEN assistantSystemPrompt WHEN examined THEN references IRC chat."""
-        prompt = self._config_lookup("assistantSystemPrompt")
+    def test_assistant_default_prompt_instructs_brevity(self) -> None:
+        """GIVEN shipped assistantSystemPrompt default WHEN read THEN instructs tight / short replies."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
 
-        assert "irc" in prompt.lower()
+        prompt = conf.supybot.plugins.LLM.assistantSystemPrompt().lower()
 
-    def test_ask_system_prompt_instructs_direct_responses(self) -> None:
-        """GIVEN assistantSystemPrompt WHEN examined THEN instructs direct/informative tone."""
-        prompt = self._config_lookup("assistantSystemPrompt")
+        assert "tight" in prompt or "one line" in prompt
 
-        assert "direct" in prompt.lower() or "informative" in prompt.lower()
+    def test_code_default_prompt_delivers_code_via_url_not_chat(self) -> None:
+        """GIVEN shipped codeSystemPrompt default WHEN read THEN code is delivered via URL, not pasted.
 
-    def test_code_system_prompt_allows_markdown(self) -> None:
-        """GIVEN codeSystemPrompt WHEN examined THEN mentions markdown is OK.
-
-        The code command outputs to HTTP, so markdown is acceptable and
-        will be rendered properly.
+        The code *reply* itself is still plain-text IRC ("no markdown"); only
+        the linked code page is rendered. This pins that contract — earlier
+        tests wrongly asserted the reply "allows markdown".
         """
-        prompt = self._config_lookup("codeSystemPrompt")
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
 
-        assert "markdown" in prompt.lower()
+        prompt = conf.supybot.plugins.LLM.codeSystemPrompt().lower()
+
+        assert "url" in prompt
+        assert "do not paste" in prompt
+        assert "no markdown" in prompt
 
 
 class TestResponseLengthHandling:
@@ -274,92 +140,6 @@ class TestResponseLengthHandling:
 
         assert result.content.startswith("http")
         assert "base64" not in result.content.lower()
-
-
-class TestResponseFormatValidation:
-    """Tests for response format compliance with IRC conventions."""
-
-    def test_detect_markdown_headers(self) -> None:
-        """GIVEN text with ## headers WHEN checked THEN detected as markdown."""
-        assert contains_markdown("# Header 1") is True
-        assert contains_markdown("## Header 2") is True
-        assert contains_markdown("### Header 3") is True
-
-    def test_detect_markdown_bold_asterisks(self) -> None:
-        """GIVEN text with **bold** WHEN checked THEN detected as markdown."""
-        assert contains_markdown("This is **bold** text") is True
-        assert contains_markdown("This is __bold__ text") is True
-
-    def test_detect_markdown_italic(self) -> None:
-        """GIVEN text with *italic* WHEN checked THEN detected as markdown."""
-        assert contains_markdown("This is *italic* text") is True
-
-    def test_detect_markdown_code_blocks(self) -> None:
-        """GIVEN text with code blocks WHEN checked THEN detected as markdown."""
-        assert contains_markdown("Use `code` here") is True
-        assert contains_markdown("```python\nprint('hi')\n```") is True
-
-    def test_detect_markdown_lists(self) -> None:
-        """GIVEN text with markdown lists WHEN checked THEN detected as markdown."""
-        assert contains_markdown("- Item 1\n- Item 2") is True
-        assert contains_markdown("* Item 1\n* Item 2") is True
-
-    def test_detect_markdown_links(self) -> None:
-        """GIVEN text with markdown links WHEN checked THEN detected as markdown."""
-        assert contains_markdown("Click [here](https://example.com)") is True
-
-    def test_plain_text_passes_validation(self) -> None:
-        """GIVEN plain text WHEN checked THEN not detected as markdown."""
-        assert contains_markdown("This is plain text.") is False
-        assert contains_markdown("Hello, how are you?") is False
-        assert contains_markdown("The answer is 42.") is False
-
-    def test_urls_in_text_not_false_positive(self) -> None:
-        """GIVEN URL in text WHEN checked THEN not incorrectly flagged."""
-        # Plain URLs should not trigger markdown detection
-        assert contains_markdown("Check https://example.com for more info") is False
-
-    def test_file_names_not_false_positive(self) -> None:
-        """GIVEN file names with underscores WHEN checked THEN not flagged as italic."""
-        assert contains_markdown("The file is named my_file_name.py") is False
-
-
-class TestEmojiAndFormattingGuidelines:
-    """Tests for emoji and formatting guidelines."""
-
-    def test_detect_excessive_emojis(self) -> None:
-        """GIVEN text with 5+ emojis WHEN checked THEN count is accurate."""
-        text = "Hello! \U0001f389\U0001f38a\U0001f388\U0001f381\U0001f380 So excited!"
-        count = count_emojis(text)
-        assert count >= 5
-
-    def test_moderate_emojis_acceptable(self) -> None:
-        """GIVEN text with 1-2 emojis WHEN checked THEN count is low."""
-        text = "Thanks! \U0001f44d"
-        count = count_emojis(text)
-        assert count <= 2
-
-    def test_no_emojis_acceptable(self) -> None:
-        """GIVEN text with no emojis WHEN checked THEN count is zero."""
-        text = "This is a normal response."
-        count = count_emojis(text)
-        assert count == 0
-
-    def test_detect_irc_color_codes(self) -> None:
-        """GIVEN text with IRC color codes WHEN checked THEN detected."""
-        # \x03 is the IRC color code prefix
-        text = "This is \x034red\x03 text"
-        assert has_irc_formatting(text) is True
-
-    def test_detect_irc_bold(self) -> None:
-        """GIVEN text with IRC bold WHEN checked THEN detected."""
-        text = "This is \x02bold\x02 text"
-        assert has_irc_formatting(text) is True
-
-    def test_plain_text_no_irc_formatting(self) -> None:
-        """GIVEN plain text WHEN checked THEN no IRC formatting detected."""
-        text = "This is normal text"
-        assert has_irc_formatting(text) is False
 
 
 class TestResponseAppropriateness:
@@ -493,45 +273,3 @@ class TestResponseAppropriateness:
         result = self.service._build_context_message(irc, msg)
 
         assert "Date:" in result["content"]
-
-
-class TestEtiquetteHelperUtilities:
-    """Tests for etiquette helper utilities."""
-
-    def test_estimate_irc_lines_single_line(self) -> None:
-        """GIVEN single short line WHEN estimated THEN returns 1."""
-        text = "Hello, this is a short message."
-        lines = estimate_irc_lines(text)
-        assert lines == 1
-
-    def test_estimate_irc_lines_multiple_lines(self) -> None:
-        """GIVEN multiple lines WHEN estimated THEN counts correctly."""
-        text = "Line 1\nLine 2\nLine 3"
-        lines = estimate_irc_lines(text)
-        assert lines == 3
-
-    def test_estimate_irc_lines_long_line_wraps(self) -> None:
-        """GIVEN very long line WHEN estimated THEN accounts for wrapping."""
-        # Create a line longer than 400 chars
-        text = "x" * 1000
-        lines = estimate_irc_lines(text, max_line_length=400)
-        assert lines >= 3
-
-    def test_estimate_irc_lines_empty(self) -> None:
-        """GIVEN empty text WHEN estimated THEN returns 0."""
-        assert estimate_irc_lines("") == 0
-
-    def test_contains_markdown_empty(self) -> None:
-        """GIVEN empty text WHEN checked THEN returns False."""
-        assert contains_markdown("") is False
-        assert contains_markdown(None) is False  # type: ignore
-
-    def test_count_emojis_empty(self) -> None:
-        """GIVEN empty text WHEN counted THEN returns 0."""
-        assert count_emojis("") == 0
-        assert count_emojis(None) == 0  # type: ignore
-
-    def test_has_irc_formatting_empty(self) -> None:
-        """GIVEN empty text WHEN checked THEN returns False."""
-        assert has_irc_formatting("") is False
-        assert has_irc_formatting(None) is False  # type: ignore

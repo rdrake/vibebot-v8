@@ -2079,6 +2079,75 @@ def test_save_scheduled_llm_task_rejects_both_recurrence_kinds(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize(
+    "recurrence_seconds,recurrence_rrule",
+    [
+        (3600, None),
+        (None, "FREQ=WEEKLY;BYDAY=MO"),
+    ],
+)
+def test_scheduled_llm_task_full_column_round_trip(
+    tmp_path: Path,
+    recurrence_seconds: int | None,
+    recurrence_rrule: str | None,
+) -> None:
+    """Every scheduled-task column survives save -> load carrying its own value.
+
+    The INSERT positional list (``save_scheduled_llm_task``) and the ``row[N]``
+    map (``_row_to_scheduled_llm_task``) are two independent 15-position
+    mappings. Other tests assert only a handful of fields, so a
+    ``network``<->``wire_msg`` or ``reply_target``<->``watch_mode``
+    transposition would pass the suite while silently corrupting the live
+    scheduled-task restore path (``rehydrate_msg`` consumes ``wire_msg`` and
+    ``network``). Distinct, type-distinguishable values for every column make
+    any transposition fail here. Parametrized over both recurrence kinds
+    because they are mutually exclusive.
+    """
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+
+    fire_at = time.time() + 100_000.0  # far future -> distinguishable from created_at
+    before = time.time()
+    row_id = db.save_scheduled_llm_task(
+        event_name="rt_event_distinct",
+        creator_nick="creatorNick",
+        account="accountValue",
+        channel="#channelchan",
+        network="netDistinct",
+        wire_msg=":creatorNick!u@h PRIVMSG #channelchan :@ask payload",
+        prompt="promptPayload",
+        fire_at=fire_at,
+        recurrence_seconds=recurrence_seconds,
+        recurrence_rrule=recurrence_rrule,
+        chain_position=7,
+        watch_mode=True,
+        reply_target="#replytarget",
+    )
+    after = time.time()
+
+    row = db.get_scheduled_llm_task("rt_event_distinct")
+    assert row is not None
+    assert row.id == row_id
+    assert row.event_name == "rt_event_distinct"
+    assert row.creator_nick == "creatorNick"
+    assert row.account == "accountValue"
+    assert row.channel == "#channelchan"
+    assert row.network == "netDistinct"
+    assert row.wire_msg == ":creatorNick!u@h PRIVMSG #channelchan :@ask payload"
+    assert row.prompt == "promptPayload"
+    assert row.fire_at == fire_at
+    assert before <= row.created_at <= after  # created_at not swapped with fire_at
+    assert row.recurrence_seconds == recurrence_seconds
+    assert row.recurrence_rrule == recurrence_rrule
+    assert row.chain_position == 7
+    assert row.watch_mode is True
+    assert row.reply_target == "#replytarget"
+
+    # The live restore path reads via the same column map; it must agree
+    # field-for-field with the point lookup.
+    loaded = db.load_active_scheduled_llm_tasks()
+    assert loaded == [row]
+
+
 def test_load_active_scheduled_llm_tasks_excludes_old(tmp_path: Path) -> None:
     """Mirror reminders: anything past EXPIRY_THRESHOLD is excluded."""
     from llm.persistence import EXPIRY_THRESHOLD_SECONDS
