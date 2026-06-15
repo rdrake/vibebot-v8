@@ -257,7 +257,12 @@ Driven by `supybot.schedule.addEvent` (not asyncio), at `loomCycleInterval`
      channel to riff.
 4. **Emit beat 1.** Vibebot posts that line in the loom channel.
 5. **Listen window 1.** For `loomBeatWindow` seconds (default 90), record
-   every other-bot reply. Vibebot ignores its own lines and human lines.
+   replies from other participants. Vibebot always ignores its own lines.
+   Human lines are filtered out **only** when `loomBotNicks` is set to a bot
+   allowlist; when `loomBotNicks` is empty the loom records EVERY other
+   participant (humans included), so the loom channel must be bot-only. The
+   bot logs a WARN at wiring time when `loomChannel` is set with an empty
+   `loomBotNicks` to flag this.
    Truncate to `loomTranscriptMaxLines` (40) and `loomTranscriptMaxChars`
    (8000); per-source-nick dedupe (drop consecutive identical lines).
    **If transcript is empty after the window**, skip beats 2 and digest;

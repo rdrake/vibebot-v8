@@ -3426,10 +3426,20 @@ Examples (echo → action_prompt: ""):
                 # cap; saying "length cap still applies" here re-imports the
                 # chat-mode default and pushes the model back to one-liners.
                 if route_profile == PROFILE_VERSE:
+                    # The overlay is the channel ``assistantSystemPrompt``,
+                    # whose shipped default is a terseness pump ("never exceed
+                    # three [lines]"). Verse is long-form, so the footer must
+                    # explicitly NEUTRALISE any reply-length cap the overlay
+                    # carries — otherwise an un-customised channel inherits a
+                    # cap that silently forces one-liner scenes.
                     overlay_footer = (
                         "\n\nThe rules above (long-form storytelling, "
                         "paragraphs per beat, mandatory verse_record) still "
-                        "apply — personality changes voice, not structure."
+                        "apply — personality changes voice, not structure. "
+                        "If the personality above caps reply length (for "
+                        "example 'one line' or 'never exceed three lines'), "
+                        "that cap does NOT apply in verse — write the scene "
+                        "at the length it deserves."
                     )
                 else:
                     overlay_footer = (
@@ -3452,8 +3462,13 @@ Examples (echo → action_prompt: ""):
             # bot's own past premise-refusals so they can't seed another
             # refusal (the retry guard catches new ones; this clears legacy
             # ones and any best-effort denial that slipped the budget).
+            # Both the personal thread AND the shared channel summary carry the
+            # bot's lines; a refusal left in either is re-injected every turn,
+            # so both are de-poisoned. ``_strip_verse_denials`` keys on the
+            # assistant role, so other participants' channel lines are kept.
             if route_profile == PROFILE_VERSE:
                 history = _strip_verse_denials(history)
+                channel_history = _strip_verse_denials(channel_history)
 
             messages = self._build_messages(
                 prompt,
@@ -3799,8 +3814,14 @@ Examples (echo → action_prompt: ""):
             self._log_server_headers(e)
             self.log.warning("assistant_completion timed out: %s", self._sanitize(str(e)))
             # Map route_profile -> stash task_type. Draw uses image_generation's
-            # own stash path; if it ever lands here, skip stashing.
-            task_type_map = {"chat": "ask", "code": "code"}
+            # own stash path; if it ever lands here, skip stashing. Verse is the
+            # unbounded long-form profile and the most timeout-prone, so it
+            # recovers under "ask": the stashed messages already carry the fully
+            # assembled verse system prompt and the verseModel rides in
+            # ``model``, so the retry regenerates the scene text. The verse_record
+            # tool side-effect is lost on retry — an acceptable degraded
+            # fallback versus a hard "something went wrong".
+            task_type_map = {"chat": "ask", "code": "code", PROFILE_VERSE: "ask"}
             task_type = task_type_map.get(route_profile)
             stashed = False
             if task_type is not None:

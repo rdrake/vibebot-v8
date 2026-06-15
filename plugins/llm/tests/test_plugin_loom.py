@@ -377,6 +377,54 @@ class TestLoomWiring:
         assert plugin._loom_network_cache == "afternet"
         assert plugin._loom_bot_nicks_cache == ("botA", "botB")
 
+    @staticmethod
+    def _wiring_overrides(bot_nicks: str) -> dict[str, object]:
+        return {
+            "loomNetwork": "afternet",
+            "loomChannel": "#forest",
+            "loomModel": "gemini/x",
+            "loomCycleInterval": 5,
+            "loomVerseCooldown": 20,
+            "loomBeatWindow": 90,
+            "loomTranscriptMaxLines": 40,
+            "loomTranscriptMaxChars": 8000,
+            "loomBotNicks": bot_nicks,
+            "verseAutoApplyThreshold": 0.85,
+        }
+
+    def test_wire_loom_warns_when_bot_nicks_empty(self, mocker: MockerFixture) -> None:
+        """An empty loomBotNicks means the loom captures EVERY participant —
+        humans included — into transcripts that drive verse canon. That is a
+        consent hazard on a mixed channel, so wiring must emit a WARN. (The
+        behaviour itself is unchanged: empty still captures all, which is
+        correct for a bot-only venue.)
+        """
+        # Boot with loom disabled so construction itself warns nothing.
+        plugin = self._build(mocker, {})
+        plugin.log = mocker.MagicMock()
+        side = make_registry_side_effect(self._wiring_overrides(""))
+        plugin.registryValue = mocker.MagicMock(side_effect=side)
+
+        plugin._wire_loom_if_enabled()
+
+        assert plugin._loom is not None  # still wired — no behaviour change
+        warned = " ".join(str(c) for c in plugin.log.warning.call_args_list).lower()
+        assert "loombotnicks" in warned
+        assert "human" in warned
+
+    def test_wire_loom_does_not_warn_when_bot_nicks_set(self, mocker: MockerFixture) -> None:
+        """With an explicit bot allowlist the capture set is bounded, so no
+        human-capture WARN should fire."""
+        plugin = self._build(mocker, {})
+        plugin.log = mocker.MagicMock()
+        side = make_registry_side_effect(self._wiring_overrides("botA, botB"))
+        plugin.registryValue = mocker.MagicMock(side_effect=side)
+
+        plugin._wire_loom_if_enabled()
+
+        warned = " ".join(str(c) for c in plugin.log.warning.call_args_list).lower()
+        assert "human" not in warned
+
     def test_rewire_after_disabling_clears_caches(self, mocker: MockerFixture) -> None:
         plugin = self._build(
             mocker,

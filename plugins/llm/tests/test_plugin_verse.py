@@ -2012,6 +2012,22 @@ class TestVerseRouteForC7c:
         assert len(route.tools) == 5
         assert route.store is store
 
+    def test_slash_ooc_bypasses_route_even_with_avatar(self, verse_env) -> None:
+        """GIVEN an opted-in avatar (so a plain message WOULD route to verse)
+        WHEN the message uses the leading // OOC marker THEN None — the
+        ergonomic opt-out short-circuits routing.
+
+        Non-vacuous counterpart to test_avatar_present_returns_route: because
+        alice has an avatar, the only path to None is the OOC gate, so removing
+        // recognition from is_ooc makes this fail (the plain message routes).
+        """
+        plugin, _irc, _msg, _store = verse_env
+
+        # Sanity: the same message without the // marker DOES route to verse.
+        assert plugin._verse_route_for("#afnet", "alice", None, "what model are you?") is not None
+
+        assert plugin._verse_route_for("#afnet", "alice", None, "// what model are you?") is None
+
     def test_route_system_prompt_includes_identity(self, verse_env) -> None:
         """System prompt must start with 'You are alice.'"""
         plugin, _irc, _msg, _store = verse_env
@@ -2178,20 +2194,57 @@ class TestAskWithVerseRoute:
         assert request_context is not None
         assert request_context.profile == PROFILE_VERSE
 
-    def test_ask_in_verse_does_not_pass_model_override(self, verse_ask_env) -> None:
-        """GIVEN verse route WHEN @ask THEN assistant_request receives no model_override.
+    def test_ask_in_verse_empty_verse_model_falls_back_to_none(
+        self, verse_ask_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an UNSET verseModel WHEN @ask in verse THEN model_override is None.
 
-        The verse path must not hard-code an alternate model — it defers to the
-        standard assistantModel registry key, which the service reads itself.
-        Passing model_override=None (or not at all) is the correct behaviour.
+        Verse reads the per-channel ``verseModel`` and threads it as
+        model_override; an empty value becomes ``None`` so the service resolves
+        the profile's assistantModel. This is the boundary case — see
+        ``test_ask_in_verse_passes_verse_model_override`` for the set case that
+        pins the read itself (this empty case alone cannot catch a deleted read).
         """
         plugin, irc, msg, _store = verse_ask_env
+        original = plugin.registryValue.side_effect
+
+        def _registry(key, *args):
+            if key == "verseModel":
+                return ""  # explicit: unset verseModel
+            return original(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
 
         plugin.ask(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        # model_override should be absent or None — never a hard-coded value.
         assert kwargs.get("model_override") is None
+
+    def test_ask_in_verse_passes_verse_model_override(
+        self, verse_ask_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a configured verseModel WHEN @ask in verse THEN that exact model
+        reaches assistant_request as model_override.
+
+        This is the load-bearing coupling: bumping the chat assistantModel must
+        not silently leave verse on it — verse rides its own (non-reasoning,
+        prose) ``verseModel``. Deleting the verseModel read in dispatch, or
+        substituting "assistantModel", makes this fail.
+        """
+        plugin, irc, msg, _store = verse_ask_env
+        original = plugin.registryValue.side_effect
+
+        def _registry(key, *args):
+            if key == "verseModel":
+                return "openrouter/grok-3-non-reasoning"
+            return original(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs.get("model_override") == "openrouter/grok-3-non-reasoning"
 
 
 class TestAskOnVerseChannelWithoutOptIn:

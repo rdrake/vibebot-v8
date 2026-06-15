@@ -350,28 +350,41 @@ def verse_recall(store: VerseStore, query: str) -> list[Event]:
 
 OOC_PREFIX = "(("
 OOC_SUFFIX = "))"
+# Ergonomic single-message OOC marker: a leading ``//`` means "plain
+# question, no in-character routing" — easier to type than wrapping a
+# whole message in ((double parens)).
+OOC_LINE_PREFIX = "//"
 
 
 def is_ooc(message: str) -> bool:
-    """True if ``message`` is wrapped in OOC parentheses ((like this)).
+    """True if ``message`` is an OOC (out-of-character) aside.
 
-    Whitespace around the wrapper is tolerated, but BOTH the prefix and
-    suffix must be present. An empty wrapper "(())" returns True (it's
-    syntactically OOC, even if useless).
+    Two equivalent forms are recognised, both tolerating surrounding
+    whitespace:
+
+    - ``((wrapped like this))`` — BOTH prefix and suffix present. An empty
+      wrapper "(())" returns True (syntactically OOC, even if useless).
+    - ``// leading-slash form`` — a leading ``//``. A bare ``//`` returns
+      True, mirroring the empty-wrapper case.
     """
     s = message.strip()
+    if s.startswith(OOC_LINE_PREFIX):
+        return True
     return s.startswith(OOC_PREFIX) and s.endswith(OOC_SUFFIX)
 
 
 def strip_ooc(message: str) -> str:
-    """Return the inner text of an OOC-wrapped message, parentheses removed.
+    """Return the inner text of an OOC aside, marker removed.
 
-    Strips the outer ``((``/``))`` wrapper and surrounding whitespace. A
-    degenerate empty wrapper ``(())`` yields an empty string. A message
-    that is not OOC-wrapped is returned stripped but otherwise unchanged,
-    so the call is safe even when ``is_ooc`` was not checked first.
+    Strips the ``((``/``))`` wrapper or the leading ``//`` (whichever
+    applies) plus surrounding whitespace. A degenerate ``(())`` or bare
+    ``//`` yields an empty string. A message that is not OOC-marked is
+    returned stripped but otherwise unchanged, so the call is safe even
+    when ``is_ooc`` was not checked first.
     """
     s = message.strip()
+    if s.startswith(OOC_LINE_PREFIX):
+        return s[len(OOC_LINE_PREFIX) :].strip()
     if not (s.startswith(OOC_PREFIX) and s.endswith(OOC_SUFFIX)):
         return s
     return s[len(OOC_PREFIX) : -len(OOC_SUFFIX)].strip()

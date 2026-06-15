@@ -1007,8 +1007,13 @@ class LLM(callbacks.Plugin):
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
             else:
-                # ask or fallback
-                text = f"{nick}: {content}"
+                # ask or fallback (incl. recovered verse, which is unbounded —
+                # verse timeouts recover under the "ask" task_type). Long content
+                # is saved to the HTTP server and replaced with a teaser + URL,
+                # mirroring the live _send_long_reply path; without this a
+                # multi-paragraph scene becomes one oversized PRIVMSG the server
+                # silently truncates. Short content stays inline (collapsed below).
+                text = self._format_pending_completed_reply(nick, content)
         else:
             return
 
@@ -2321,6 +2326,32 @@ class LLM(callbacks.Plugin):
         teaser = teaser.lstrip("-* ").strip()
         return LLM._trim_long_reply_teaser(teaser, max_chars)
 
+    def _format_pending_completed_reply(self, nick: str, content: str) -> str:
+        """One-line delivery text for a completed ask/fallback pending result.
+
+        Mirrors ``_send_long_reply``: content that collapses to a single IRC
+        wire-line is sent inline; content that would overflow one wire-line is
+        saved to the HTTP server and replaced with a teaser + URL. Pending
+        delivery runs on the poll thread with no ``irc``/``msg`` and is already
+        a deferred-recovery fallback, so a deterministic (non-LLM) teaser is
+        used. Falls back to the inline/collapsed line when the save fails, so we
+        never emit a raw multi-line body (the outer ``_collapse_for_irc`` still
+        guards flood); the only residual risk is server-side truncation when the
+        HTTP save itself is unavailable.
+        """
+        inline = f"{nick}: {content}"
+        collapsed = self._collapse_for_irc(inline) or inline
+        allowed = conf.supybot.reply.mores.length() or 400
+        if len(ircutils.wrap(collapsed, allowed) or [collapsed]) <= 1:
+            return collapsed
+        url = self.llm_service.save_markdown_to_http(content)
+        if not url:
+            return collapsed
+        suffix = f" - {_FULL_ANSWER_LABEL}: {url}"
+        max_chars = max(0, allowed - len(suffix) - len(nick) - 2)
+        teaser = self._fallback_long_reply_teaser(content, max_chars)
+        return f"{nick}: {teaser}{suffix}"
+
     def _safe_queue(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
         """Thread-safe wrapper around irc.queueMsg for worker-thread sends.
 
@@ -2556,7 +2587,8 @@ class LLM(callbacks.Plugin):
         Gates (applied in order):
         1. verseEnabled must be True for the channel.
         2. User must hold the llm.verse capability.
-        3. OOC messages (wrapped in ((...))) bypass the verse engine.
+        3. OOC messages (wrapped in ((...)) or with a leading //) bypass the
+           verse engine.
 
         Body (avatar lookup + route construction) lands in C7c.
         """
@@ -3372,12 +3404,12 @@ class LLM(callbacks.Plugin):
             )
             if route is None:
                 verse_enabled = self.registryValue("verseEnabled", preflight.channel)
-                # OOC opt-out (((like this))): _verse_route_for returns None
-                # for an avatar-holder who wrapped a message to skip the verse
-                # engine. Strip the wrapper here so the chat model receives a
-                # clean prompt instead of literal parentheses. Gated on
-                # verseEnabled because ((...)) only carries OOC meaning on a
-                # verse channel — elsewhere it is ordinary text.
+                # OOC opt-out (((like this)) or a leading //): _verse_route_for
+                # returns None for an avatar-holder who marked a message to skip
+                # the verse engine. Strip the marker here so the chat model
+                # receives a clean prompt instead of the literal ((...)) / //.
+                # Gated on verseEnabled because these markers only carry OOC
+                # meaning on a verse channel — elsewhere they are ordinary text.
                 if verse_enabled and is_ooc(text):
                     text = strip_ooc(text)
                 # Verse-enabled channel + non-opted-in speaker: advertise the
@@ -5092,6 +5124,20 @@ class LLM(callbacks.Plugin):
         self._loom_channel_cache = channel
         self._loom_network_cache = network
         self._loom_bot_nicks_cache = cfg.bot_nicks
+        # Consent guard: an empty loomBotNicks captures EVERY participant in the
+        # loom channel — humans included — into transcripts that drive verse
+        # canon (and can crosspoll into other channels). That is fine for a
+        # bot-only venue (the intended deployment) but a hazard on a mixed
+        # channel, so flag it loudly at wiring time. We do NOT silently change
+        # the capture default, which a bot-only venue relies on.
+        if not cfg.bot_nicks:
+            self.log.warning(
+                "loomChannel %s is set but loomBotNicks is empty: the loom will "
+                "capture ALL participants in that channel, including humans, into "
+                "transcripts that drive verse canon. Point the loom at a bot-only "
+                "channel, or set loomBotNicks to the bot allowlist.",
+                channel,
+            )
         self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
         # No periodic timer: the loom is reactive and arms itself via
         # observe_transcript (the doPrivmsg hook).

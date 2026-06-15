@@ -8,6 +8,7 @@ import time
 
 import pytest
 from llm.verse.avatar import (
+    OOC_LINE_PREFIX,
     OOC_PREFIX,
     OOC_SUFFIX,
     VERB_TABLE,
@@ -495,6 +496,7 @@ class TestOOC:
     def test_constants_exported(self) -> None:
         assert OOC_PREFIX == "(("
         assert OOC_SUFFIX == "))"
+        assert OOC_LINE_PREFIX == "//"
 
     def test_strip_ooc_removes_wrapper(self) -> None:
         assert strip_ooc("((hi))") == "hi"
@@ -515,6 +517,39 @@ class TestOOC:
 
     def test_strip_ooc_keeps_inner_parentheses(self) -> None:
         assert strip_ooc("(((nested)))") == "(nested)"
+
+    # Leading // is an ergonomic OOC marker for one-off plain questions,
+    # easier to type than wrapping a whole message in ((double parens)).
+    def test_slash_prefix_is_ooc(self) -> None:
+        assert is_ooc("// what's the weather?") is True
+
+    def test_slash_prefix_no_space_is_ooc(self) -> None:
+        assert is_ooc("//no space") is True
+
+    def test_slash_prefix_tolerates_outer_whitespace(self) -> None:
+        assert is_ooc("  // hi  ") is True
+
+    def test_bare_slash_prefix_is_ooc(self) -> None:
+        # Degenerate empty marker, mirrors the "(())" empty-wrapper case.
+        assert is_ooc("//") is True
+
+    def test_slash_is_ooc_only_when_leading(self) -> None:
+        # // must be the prefix; mid-message it is ordinary text.
+        assert is_ooc("go // there") is False
+        assert is_ooc("http://example.com") is False
+
+    def test_strip_slash_prefix(self) -> None:
+        assert strip_ooc("// what's the weather?") == "what's the weather?"
+
+    def test_strip_slash_prefix_no_space(self) -> None:
+        assert strip_ooc("//no space") == "no space"
+
+    def test_strip_bare_slash_prefix_yields_empty(self) -> None:
+        assert strip_ooc("//") == ""
+
+    def test_strip_slash_not_leading_passthrough(self) -> None:
+        # Not a leading // marker — returned stripped but otherwise unchanged.
+        assert strip_ooc("go // there") == "go // there"
 
 
 class TestMakeVerseToolSpecs:

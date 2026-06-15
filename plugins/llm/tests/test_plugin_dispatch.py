@@ -604,6 +604,34 @@ class TestInvalidCommand:
         plugin._ask_impl.assert_called_once()
         assert plugin._ask_impl.call_args.args[2] == "((array[0]))"
 
+    def test_dispatch_strips_slash_marker_before_chat_path(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a leading-// OOC message on a verse channel that falls to the
+        chat path WHEN dispatched THEN _ask_impl receives the text with the //
+        marker removed, not the literal '// ...' prefix."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        # verseEnabled=True, but _verse_route_for returns None (OOC bypass).
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else 8
+        )
+        plugin._verse_route_for = mocker.MagicMock(return_value=None)
+        plugin._ask_impl = mocker.MagicMock()
+        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account=None)
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc,
+            mock_msg,
+            "// what model are you running?",
+            preflight,
+            entry_route="addressed",
+        )
+
+        plugin._ask_impl.assert_called_once()
+        # Positional args: (irc, msg, text, preflight).
+        assert plugin._ask_impl.call_args.args[2] == "what model are you running?"
+
     def test_invalid_command_does_not_call_meta(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:

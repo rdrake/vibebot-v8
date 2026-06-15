@@ -989,6 +989,227 @@ class TestMetaCompletion:
         assert "personality changes voice, not structure" in content
         assert "paragraphs per beat, mandatory verse_record" in content
 
+    def test_assistant_completion_verse_footer_overrides_inherited_line_cap(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """The verse overlay inherits the channel ``assistantSystemPrompt``,
+        whose shipped DEFAULT is a terseness pump ("never exceed three [lines]").
+        Inherited verbatim into the high-attention personality block, that cap
+        directly contradicts verse's long-form goal. The verse footer must
+        explicitly NEUTRALISE any length cap stated in the overlay, so an
+        un-customised channel does not silently produce one-liners.
+        """
+        from llm.service import PROFILE_VERSE
+
+        mock_response = make_completion_response("Done.")
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        # Mirror the shipped default assistantSystemPrompt terseness pump.
+        service.assistant_completion(
+            prompt="describe the scene",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt=(
+                "You are a helpful IRC assistant. Keep answers tight: lead with "
+                "the answer, aim for one line, never exceed three."
+            ),
+            route_profile=PROFILE_VERSE,
+        )
+
+        content = captured_messages[0]["content"]
+        # The cap is inherited verbatim from the overlay...
+        assert "never exceed three" in content
+        # ...but the footer explicitly overrides it for verse.
+        assert "does NOT apply in verse" in content
+        assert "the length it deserves" in content
+
+    def test_assistant_completion_depoisons_channel_history_for_verse(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """The bot's own past frame-refusals leak into the channel summary
+        ("Bot: That never happened...") and re-seed refusals every verse turn.
+        Verse must de-poison channel_history (not just personal history),
+        dropping the bot's assistant-role denials while keeping other
+        participants' lines.
+        """
+        from llm.service import PROFILE_VERSE
+
+        mock_response = make_completion_response("Done.")
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        channel_history = [
+            {"nick": "alice", "role": "user", "content": "tell us about the stinky lads"},
+            {
+                "nick": "VibeBot",
+                "role": "assistant",
+                "content": "That never happened — pure fiction, not in the canon.",
+            },
+        ]
+
+        service.assistant_completion(
+            prompt="continue the scene",
+            nick="alice",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a brooding cat avatar named {bot_nick}.",
+            route_profile=PROFILE_VERSE,
+            channel_history=channel_history,
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in captured_messages)
+        # The bot's frame-refusal is stripped from the channel summary.
+        # ("never happened" is avoided as a probe — the verse framework's own
+        # anti-denial instruction uses that phrase; "pure fiction" / "not in
+        # the canon" appear only in the bot's refusal here.)
+        assert "pure fiction" not in blob
+        assert "not in the canon" not in blob
+        # ...but the human participant's premise line is kept.
+        assert "stinky lads" in blob
+
+    def test_assistant_completion_keeps_channel_history_denials_for_chat(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """De-poisoning is verse-only. On the chat path the same channel_history
+        denial must survive — this kills a mutant that flips the gate from
+        PROFILE_VERSE to PROFILE_CHAT (or de-poisons unconditionally).
+        """
+        mock_response = make_completion_response("Done.")
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        channel_history = [
+            {"nick": "alice", "role": "user", "content": "tell us about the stinky lads"},
+            {
+                "nick": "VibeBot",
+                "role": "assistant",
+                "content": "That never happened — pure fiction, not in the canon.",
+            },
+        ]
+
+        service.assistant_completion(
+            prompt="what's the weather?",
+            nick="alice",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            channel_history=channel_history,
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in captured_messages)
+        assert "pure fiction" in blob
+
+    def test_assistant_completion_depoisons_personal_history_for_verse(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Integration coverage for the pre-loop personal-history strip
+        (service.py call site, gated on PROFILE_VERSE). A bot frame-refusal in
+        the personal thread must NOT reach the outgoing messages — kills a
+        mutant that deletes the ``history = _strip_verse_denials(history)`` call.
+        """
+        from llm.service import PROFILE_VERSE
+
+        mock_response = make_completion_response("Done.")
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        history = [
+            {"role": "user", "content": "tell us about the stinky lads"},
+            {
+                "role": "assistant",
+                "content": "That never happened — pure fiction, not in the canon.",
+            },
+            {"role": "user", "content": "go on then"},
+        ]
+
+        service.assistant_completion(
+            prompt="continue the scene",
+            nick="alice",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a brooding cat avatar named {bot_nick}.",
+            route_profile=PROFILE_VERSE,
+            history=history,
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in captured_messages)
+        assert "pure fiction" not in blob
+        assert "not in the canon" not in blob
+        # The user premise turns survive.
+        assert "stinky lads" in blob
+        assert "go on then" in blob
+
+    def test_assistant_completion_keeps_personal_history_denials_for_chat(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Gate guard: the personal-history strip is verse-only. On the chat
+        path the denial must survive — kills a mutant that flips the gate from
+        PROFILE_VERSE to PROFILE_CHAT.
+        """
+        mock_response = make_completion_response("Done.")
+        captured_messages: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        history = [
+            {"role": "user", "content": "tell us about the stinky lads"},
+            {
+                "role": "assistant",
+                "content": "That never happened — pure fiction, not in the canon.",
+            },
+        ]
+
+        service.assistant_completion(
+            prompt="what's the weather?",
+            nick="alice",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            history=history,
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in captured_messages)
+        assert "pure fiction" in blob
+
     def test_assistant_completion_user_supplied_braces_dont_crash(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -1194,16 +1415,22 @@ class TestMetaCompletion:
 
     @pytest.mark.parametrize(
         ("route_profile", "expected_task_type"),
-        [("chat", "ask"), ("code", "code")],
+        [("chat", "ask"), ("code", "code"), ("verse", "ask")],
     )
-    def test_timeout_stashes_for_chat_and_code(
+    def test_timeout_stashes_for_chat_code_and_verse(
         self,
         service: LLMService,
         mocker: MockerFixture,
         route_profile: str,
         expected_task_type: str,
     ) -> None:
-        """Timeout in assistant_completion stashes via _stash_timeout for ask/code routes."""
+        """Timeout in assistant_completion stashes via _stash_timeout.
+
+        Verse is the unbounded long-form profile and the most timeout-prone, so
+        it MUST recover too — it stashes under the "ask" task_type (its baked-in
+        verse system prompt and verseModel ride along in the stashed messages,
+        so the retry regenerates the scene text).
+        """
         import litellm as litellm_module
 
         mocker.patch(

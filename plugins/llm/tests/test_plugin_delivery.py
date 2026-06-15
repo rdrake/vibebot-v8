@@ -253,6 +253,40 @@ class TestDeliverPendingResult:
         # ...and no raw newline reaches the wire payload.
         assert "\n" not in msg_text.removesuffix("\r\n")
 
+    def test_long_completed_content_is_pastebinned_not_truncated(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """A long recovered ask/verse result must be saved to the HTTP server
+        and delivered as a teaser + URL, not collapsed into one oversized
+        PRIVMSG the server silently truncates.
+
+        Verse timeouts recover under the 'ask' task_type and verse is unbounded
+        (PROFILE_VERSE.max_output_tokens is None), so a recovered multi-paragraph
+        scene would otherwise overflow the 512-byte IRC line limit and lose most
+        of the scene (and the would-be pastebin URL). Mirrors the live
+        _send_long_reply teaser+URL behaviour.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        plugin.llm_service.save_markdown_to_http.return_value = "http://h/scene.html"
+        long_scene = "\n\n".join(f"Paragraph {i}: " + "word " * 60 for i in range(6))
+
+        r = self._make_result(content=long_scene)
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        msg_text = str(mock_irc.queueMsg.call_args[0][0])
+        # Delivered as a teaser + pastebin URL...
+        assert "http://h/scene.html" in msg_text
+        # ...not the full inlined body.
+        assert "Paragraph 5" not in msg_text
+        plugin.llm_service.save_markdown_to_http.assert_called_once()
+
     def test_delivers_expired_notification(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN expired result WHEN delivered THEN sends apology."""
         import supybot.world as world_mod
