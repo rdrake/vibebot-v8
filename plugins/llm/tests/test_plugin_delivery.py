@@ -15,6 +15,34 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
+class TestSafePrivmsg:
+    """``_safe_privmsg`` neutralizes IRC command injection on the raw-queue path.
+
+    Worker-thread sends (``_safe_queue`` + raw ``ircmsgs.privmsg``) bypass the
+    ``ircutils.safeArgument`` that ``irc.reply`` applies on the chat-loop path.
+    Model- or user-derived bodies routed through ``_safe_privmsg`` must have
+    CR/LF/NUL neutralized so they cannot smuggle a second IRC command onto the
+    wire (the underlying ``IrcMsg`` ``assert`` vanishes under ``python -O``).
+    """
+
+    def test_strips_crlf_and_nul_from_body(self, plugin_env) -> None:
+        """A body carrying CR/LF/NUL cannot smuggle a second IRC command."""
+        plugin, _irc, _msg = plugin_env
+        msg = plugin._safe_privmsg("#chan", "ok\r\nQUIT :pwned\x00")
+        body = msg.args[1]
+        assert "\r" not in body
+        assert "\n" not in body
+        assert "\x00" not in body
+        # Only the trailing CRLF terminator is a real line break on the wire.
+        assert "\r\n" not in str(msg)[:-2]
+
+    def test_clean_body_passes_through_unchanged(self, plugin_env) -> None:
+        """Clean single-line text is sent verbatim (safeArgument is a no-op)."""
+        plugin, _irc, _msg = plugin_env
+        msg = plugin._safe_privmsg("#chan", "hello world")
+        assert msg.args[1] == "hello world"
+
+
 class TestSafetyPollGuard:
     def test_overlapping_poll_is_skipped(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env

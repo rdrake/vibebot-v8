@@ -2344,6 +2344,22 @@ class LLM(callbacks.Plugin):
             irc.queueMsg(msg)
         return True
 
+    @staticmethod
+    def _safe_privmsg(target: str, text: str) -> IrcMsg:
+        """Build a PRIVMSG whose body is neutralized against IRC injection.
+
+        Routes the body through Limnoria's ``ircutils.safeArgument`` (which
+        repr()s any string containing CR, LF, or NUL) so model- or
+        user-derived text cannot smuggle a second IRC command onto the wire.
+        This is the raw-queue counterpart to the ``safeArgument`` that
+        ``irc.reply`` applies on the chat-loop path: ``_safe_queue`` callers
+        construct ``ircmsgs.privmsg`` directly and would otherwise rely solely
+        on an ``IrcMsg.__init__`` assertion that disappears under ``python -O``.
+        Callers should still ``_collapse_for_irc`` multi-line bodies first so a
+        legitimate answer is split into a readable line rather than repr()'d.
+        """
+        return ircmsgs.privmsg(target, ircutils.safeArgument(text))
+
     def _safe_reply(
         self,
         irc: callbacks.Irc,
@@ -6069,7 +6085,10 @@ class _PluginLoomBridge:
         irc = world.getIrc(self._network)
         if irc is None:
             return False
-        return self._plugin._safe_queue(irc, ircmsgs.privmsg(self._channel, text))
+        # Model-authored scene text: collapse to one line and neutralize
+        # CR/LF/NUL before the raw-queue send (mirrors the scheduled-answer path).
+        safe_text = self._plugin._collapse_for_irc(text) or text
+        return self._plugin._safe_queue(irc, self._plugin._safe_privmsg(self._channel, safe_text))
 
     def schedule_after(self, delay_s: float, fn, name: str) -> None:
         with contextlib.suppress(KeyError):

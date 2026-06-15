@@ -5156,7 +5156,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
         if not response or (row.watch_mode and response == "[silent]"):
             return
         safe_response = self.sanitize_output(response)
-        self.plugin._safe_queue(irc, ircmsgs.privmsg(target, safe_response))
+        # Collapse to a single IRC-safe line (matches the reminder/async paths)
+        # and route through _safe_privmsg so CR/LF/NUL in model output cannot
+        # smuggle a second IRC command past the raw-queue path.
+        safe_response = self.plugin._collapse_for_irc(safe_response) or safe_response
+        self.plugin._safe_queue(irc, self.plugin._safe_privmsg(target, safe_response))
 
     def _maybe_reschedule_or_clean(
         self,
