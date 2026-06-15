@@ -714,6 +714,38 @@ class TestErrorClassification:
         )
         assert LLMService._is_terminal_error(err) is False
 
+    def test_content_policy_violation_is_terminal(self) -> None:
+        """GIVEN ContentPolicyViolationError WHEN classified THEN terminal.
+
+        Reclassifying this as transient would retry a guardrail block ~10x
+        with backoff and re-bill each attempt.
+        """
+        import litellm as litellm_module
+
+        err = litellm_module.ContentPolicyViolationError(
+            message="blocked", model="gpt-4", llm_provider="openai"
+        )
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_bad_request_is_terminal(self) -> None:
+        """GIVEN BadRequestError WHEN classified THEN terminal (a malformed
+        request will never succeed on retry)."""
+        import litellm as litellm_module
+
+        err = litellm_module.BadRequestError(
+            message="bad request", model="gpt-4", llm_provider="openai"
+        )
+        assert LLMService._is_terminal_error(err) is True
+
+    def test_not_found_is_terminal(self) -> None:
+        """GIVEN NotFoundError (e.g. unknown model) WHEN classified THEN terminal."""
+        import litellm as litellm_module
+
+        err = litellm_module.NotFoundError(
+            message="not found", model="gpt-4", llm_provider="openai"
+        )
+        assert LLMService._is_terminal_error(err) is True
+
 
 class TestComputeBackoff:
     """Canonical executable spec for ``_compute_backoff``.

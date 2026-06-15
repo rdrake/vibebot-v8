@@ -844,6 +844,46 @@ class TestMetaCompletion:
         assert result.content == "Deleted 2 memories."
         assert db.delete_memory.call_count == 2
 
+    def test_malformed_tool_args_skip_destructive_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a tool call with non-JSON arguments for a no-required-args
+        destructive tool WHEN the loop parses it THEN the tool is skipped and
+        the destructive db write never fires.
+
+        ``clear_instruction``/``clear_memories`` take no required args, so
+        falling through with ``args = {}`` would wipe the caller's data on
+        garbage model output. The malformed-arguments guard must skip and emit
+        an error tool-message instead.
+        """
+        # A raw string is passed through verbatim, so .function.arguments is
+        # non-JSON and json.loads() raises inside the loop.
+        bad_call = make_tool_call("clear_instruction", "{not valid json", call_id="call_bad")
+        first_response = make_completion_response(None, tool_calls=[bad_call])
+        second_response = make_completion_response("Couldn't do that.")
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        db = mocker.MagicMock()
+
+        result = service.assistant_completion(
+            prompt="clear my instruction",
+            nick="testuser",
+            channel="#test",
+            db=db,
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        # The destructive write must NOT have run on garbage arguments.
+        db.delete_instruction.assert_not_called()
+        # The skipped call must not be recorded as a successful tool use.
+        assert result.last_successful_tool != "clear_instruction"
+
     def test_cost_is_populated(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN meta completion WHEN successful THEN cost is calculated."""
         mock_response = make_completion_response("Done.")

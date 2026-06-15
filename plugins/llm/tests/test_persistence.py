@@ -829,6 +829,87 @@ class TestPendingTasks:
         assert tasks[0].is_channel == 0
         db2.close()
 
+    def test_concurrent_claim_never_double_claims(self, tmp_path: Path) -> None:
+        """GIVEN due pending tasks WHEN several threads claim concurrently THEN
+        no row is ever claimed by more than one thread.
+
+        Guards the ``BEGIN IMMEDIATE`` write-lock in ``claim_due_pending_tasks``.
+        Under ``BEGIN DEFERRED`` two threads can both run the SELECT before
+        either commits its UPDATE and claim the same rows -- a double provider
+        call / double delivery on the live @ask/@code/@draw recovery queue. The
+        sequential mutual-exclusion property test cannot see this: the
+        ``claimed_until <= now`` filter alone makes a *second sequential* claim
+        disjoint, so only real concurrency exercises the lock. Repeated across
+        rounds so the race window is hit reliably; correct code stays disjoint
+        every round regardless of scheduling.
+        """
+
+        def claimer(
+            db: LLMDatabase,
+            barrier: threading.Barrier,
+            now: float,
+            limit: int,
+            claimed: list[list[int]],
+            errors: list[Exception],
+            guard: threading.Lock,
+        ) -> None:
+            try:
+                barrier.wait()
+                rows = db.claim_due_pending_tasks(now, limit=limit, lease_seconds=300)
+                with guard:
+                    claimed.append([row.id for row in rows])
+            except Exception as exc:
+                with guard:
+                    errors.append(exc)
+
+        now = time.time()
+        thread_count = 4
+        tasks_per_round = 40
+        rounds = 15
+
+        for round_index in range(rounds):
+            db = LLMDatabase(str(tmp_path / f"race-{round_index}.db"))
+            for i in range(tasks_per_round):
+                db.save_pending_task(
+                    task_type="ask",
+                    nick=f"u{i}",
+                    reply_target="#test",
+                    is_channel=True,
+                    prompt_preview="x",
+                    model="gpt-4",
+                    request_data="{}",
+                    submitted_at=now,
+                    expires_at=now + 3600,
+                    next_attempt_at=now,
+                )
+
+            barrier = threading.Barrier(thread_count)
+            claimed: list[list[int]] = []
+            errors: list[Exception] = []
+            guard = threading.Lock()
+            threads = [
+                threading.Thread(
+                    target=claimer,
+                    args=(db, barrier, now, tasks_per_round, claimed, errors, guard),
+                )
+                for _ in range(thread_count)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert errors == [], f"round {round_index}: claim raised {errors!r}"
+            id_sets = [set(ids) for ids in claimed]
+            for a in range(len(id_sets)):
+                for b in range(a + 1, len(id_sets)):
+                    overlap = id_sets[a] & id_sets[b]
+                    assert not overlap, f"round {round_index}: id claimed twice: {overlap}"
+            total_claimed = sum(len(ids) for ids in claimed)
+            union: set[int] = set().union(*id_sets) if id_sets else set()
+            assert len(union) == total_claimed
+            db.close()
+
 
 class TestDeliveryStatePersistence:
     """Test delivery state transitions and filtered queries for Phase 1b."""

@@ -853,3 +853,49 @@ class TestPluginDoJoinPendingChannels:
             "When WHO is skipped, do315 won't fire — the bot must not add to "
             "_pending_channels or startup notification will never send."
         )
+
+
+class TestWrapCapabilityGate:
+    """Deny-path coverage for the wrap(checkCapability) gate on ask/code/draw.
+
+    The conftest ``plugin_env`` fixture grants every ``llm.*`` capability, so
+    the happy-path command tests only ever exercise the *allow* side of the
+    wrap dispatcher. These tests revoke one capability and assert the command
+    body never runs — guarding the ``("checkCapability", "llm.<cmd>")`` entry
+    on each wrapped command, which a mutation dropping it would otherwise leave
+    unprotected (an auth bypass).
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "capability", "args"),
+        [
+            ("ask", "llm.ask", ["hello"]),
+            ("code", "llm.code", ["Python", "hello"]),
+            ("draw", "llm.draw", ["a", "sunset"]),
+        ],
+    )
+    def test_wrapped_command_denied_without_capability(
+        self, plugin_env, mocker: MockerFixture, command: str, capability: str, args: list[str]
+    ):
+        """GIVEN a user lacking the command capability WHEN the command is
+        invoked through the wrap dispatcher THEN the body never runs (no LLM
+        dispatch) and the capability error is surfaced."""
+        plugin, mock_irc, mock_msg = plugin_env
+        # A valid account is irrelevant: the wrap capability gate fires first.
+        mock_irc.state.nickToAccount.return_value = "test_account"
+
+        # Revoke only this command's capability; keep the rest granted so the
+        # gate under test is the sole reason for rejection.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap, denied=capability: (
+                cap != denied and cap.startswith("llm.")
+            ),
+        )
+
+        getattr(plugin, command)(mock_irc, mock_msg, args)
+
+        # Rejected: the LLM dispatch path never ran.
+        plugin.llm_service.assistant_request.assert_not_called()
+        # The wrap checkCapability converter surfaced the denial.
+        assert mock_irc.errorNoCapability.called
