@@ -4442,6 +4442,35 @@ pre, .highlight {{ background: var(--parchment-deep) !important; }}
             return "gif"
         return None
 
+    @staticmethod
+    def _strip_untrusted_markup(story_markdown: str) -> str:
+        """Remove model-echoed raw image syntax so only server-placed markers
+        (re-inserted from validated structured fields) are honored."""
+        return re.sub(r"!\[[^\]]*\]\([^)]*\)", "", story_markdown)
+
+    @staticmethod
+    def _embed_illustrations(
+        story_markdown: str, illos: dict[int, tuple[str, str]]
+    ) -> tuple[str, set[int]]:
+        """Replace [[illustration:N]] with ![caption](url) + emphasised caption.
+
+        Single regex pass (no 1-vs-11 substring collision). First marker per id
+        wins; later duplicates and orphan markers are removed. Returns
+        (markdown, used_ids).
+        """
+        used: set[int] = set()
+
+        def repl(m: re.Match[str]) -> str:
+            n = int(m.group(1))
+            if n in illos and n not in used:
+                used.add(n)
+                caption, url = illos[n]
+                return f"![{caption}]({url})\n\n*{caption}*"
+            return ""
+
+        out = re.sub(r"\[\[illustration:(\d+)\]\]", repl, story_markdown)
+        return out, used
+
     def _convert_png_to_jpeg(self, image_bytes: bytes, quality: int = 85) -> tuple[bytes, str]:
         """Convert PNG bytes to JPEG for smaller file size.
 

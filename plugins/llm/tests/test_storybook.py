@@ -32,3 +32,40 @@ def test_extract_json_object():
     assert ex('prose {"a": {"b": 3}} more prose') == {"a": {"b": 3}}
     assert ex("not json at all") is None
     assert ex("") is None
+
+
+def test_embed_illustrations_basic():
+    from llm.service import LLMService as S
+
+    md = "Intro [[illustration:1]] middle [[illustration:11]] end"
+    illos = {1: ("cat", "u1.jpg"), 11: ("dog", "u11.jpg")}
+    out, used = S._embed_illustrations(md, illos)
+    assert "![cat](u1.jpg)" in out and "*cat*" in out
+    assert "![dog](u11.jpg)" in out
+    assert used == {1, 11}
+
+
+def test_embed_duplicate_marker_first_wins():
+    from llm.service import LLMService as S
+
+    md = "[[illustration:2]] x [[illustration:2]]"
+    out, used = S._embed_illustrations(md, {2: ("c", "u.jpg")})
+    assert out.count("![c](u.jpg)") == 1
+    assert "[[illustration:2]]" not in out
+    assert used == {2}
+
+
+def test_embed_orphan_marker_removed():
+    from llm.service import LLMService as S
+
+    out, used = S._embed_illustrations("a [[illustration:9]] b", {1: ("c", "u")})
+    assert "[[illustration:9]]" not in out and used == set()
+
+
+def test_embed_strips_user_injected_image():
+    from llm.service import LLMService as S
+
+    md = "![evil](http://evil/p.png) tale [[illustration:1]]"
+    out, used = S._embed_illustrations(S._strip_untrusted_markup(md), {1: ("c", "u.jpg")})
+    assert "evil" not in out
+    assert "![c](u.jpg)" in out
