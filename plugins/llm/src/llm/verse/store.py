@@ -784,64 +784,93 @@ class VerseStore:
                 )
 
             # ----------------------------------------------------------
-            # 3. Pick or create the starter place.
-            #    Pull all active places in Python — small count in early-PR1
-            #    use, avoids json_each complexity, and keeps SQL surface small.
+            # 3. Resolve the avatar's place.
+            #    Re-opt-in of an ALREADY-ACTIVE avatar must be idempotent and
+            #    must NOT relocate it. Steps 3 (pick the activity-best starter
+            #    place) and 4 (UPSERT the 'location' attribute) only run for new
+            #    or reactivated avatars; a re-opt-in reads the avatar's existing
+            #    committed location instead. Without this guard, a user who
+            #    opted in, moved (verse_move writes the same 'location'
+            #    attribute), then re-ran @verseopt in was silently teleported to
+            #    the "best" place — destroying committed game state behind a
+            #    "you are already opted in" no-op.
             # ----------------------------------------------------------
-            place_rows = conn.execute(
-                "SELECT id, name, summary, updated_at FROM entities"
-                " WHERE kind = 'place' AND status = 'active'",
-            ).fetchall()
+            existing_location: str | None = None
+            if was_already_opted_in:
+                loc_row = conn.execute(
+                    "SELECT value FROM attributes WHERE entity_id = ? AND key = 'location'",
+                    (entity_id,),
+                ).fetchone()
+                existing_location = loc_row[0] if loc_row else None
 
-            if not place_rows:
-                # Create default clearing.
-                cur2 = conn.execute(
-                    "INSERT INTO entities (kind, name, summary, status, created_at, updated_at)"
-                    " VALUES ('place', 'The Clearing',"
-                    " 'A quiet woodland clearing where new stories begin.',"
-                    " 'active', ?, ?)",
-                    (now, now),
-                )
-                assert cur2.lastrowid is not None
-                place_name = "The Clearing"
-                place_summary = "A quiet woodland clearing where new stories begin."
+            if existing_location is not None:
+                # Idempotent re-opt-in: keep the avatar exactly where it is.
+                place_name = existing_location
+                summary_row = conn.execute(
+                    "SELECT summary FROM entities WHERE kind = 'place' AND name = ?"
+                    " ORDER BY (status = 'active') DESC LIMIT 1",
+                    (existing_location,),
+                ).fetchone()
+                place_summary = summary_row[0] if summary_row and summary_row[0] else ""
             else:
-                # For each active place, find the max event ts that references it.
-                # Fetch event rows once; iterate in Python to find best place.
-                event_rows = conn.execute(
-                    "SELECT entity_ids, ts FROM events ORDER BY ts DESC",
+                # New / reactivated avatar (or a legacy active avatar that never
+                # had a 'location' attribute): pick or create the starter place.
+                # Pull all active places in Python — small count in early-PR1
+                # use, avoids json_each complexity, and keeps SQL surface small.
+                place_rows = conn.execute(
+                    "SELECT id, name, summary, updated_at FROM entities"
+                    " WHERE kind = 'place' AND status = 'active'",
                 ).fetchall()
 
-                # Build map: place_id -> latest_event_ts
-                place_ids = {row[0] for row in place_rows}
-                latest_ts: dict[int, float] = dict.fromkeys(place_ids, 0.0)
-                for ev_entity_ids_json, ev_ts in event_rows:
-                    try:
-                        ev_entity_ids = json.loads(ev_entity_ids_json)
-                    except (ValueError, TypeError):
-                        continue
-                    for eid_val in ev_entity_ids:
-                        pid = int(eid_val)
-                        if pid in latest_ts and ev_ts > latest_ts[pid]:
-                            latest_ts[pid] = ev_ts
+                if not place_rows:
+                    # Create default clearing.
+                    cur2 = conn.execute(
+                        "INSERT INTO entities (kind, name, summary, status, created_at, updated_at)"
+                        " VALUES ('place', 'The Clearing',"
+                        " 'A quiet woodland clearing where new stories begin.',"
+                        " 'active', ?, ?)",
+                        (now, now),
+                    )
+                    assert cur2.lastrowid is not None
+                    place_name = "The Clearing"
+                    place_summary = "A quiet woodland clearing where new stories begin."
+                else:
+                    # For each active place, find the max event ts that references it.
+                    # Fetch event rows once; iterate in Python to find best place.
+                    event_rows = conn.execute(
+                        "SELECT entity_ids, ts FROM events ORDER BY ts DESC",
+                    ).fetchall()
 
-                # Sort: latest_event_ts DESC, updated_at DESC, id DESC
-                best = sorted(
-                    place_rows,
-                    key=lambda r: (latest_ts[r[0]], r[3], r[0]),
-                    reverse=True,
-                )[0]
-                place_name = best[1]
-                place_summary = best[2]
+                    # Build map: place_id -> latest_event_ts
+                    place_ids = {row[0] for row in place_rows}
+                    latest_ts: dict[int, float] = dict.fromkeys(place_ids, 0.0)
+                    for ev_entity_ids_json, ev_ts in event_rows:
+                        try:
+                            ev_entity_ids = json.loads(ev_entity_ids_json)
+                        except (ValueError, TypeError):
+                            continue
+                        for eid_val in ev_entity_ids:
+                            pid = int(eid_val)
+                            if pid in latest_ts and ev_ts > latest_ts[pid]:
+                                latest_ts[pid] = ev_ts
 
-            # ----------------------------------------------------------
-            # 4. Upsert avatar's location attribute.
-            # ----------------------------------------------------------
-            conn.execute(
-                "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'location', ?)"
-                " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
-                (entity_id, place_name),
-            )
+                    # Sort: latest_event_ts DESC, updated_at DESC, id DESC
+                    best = sorted(
+                        place_rows,
+                        key=lambda r: (latest_ts[r[0]], r[3], r[0]),
+                        reverse=True,
+                    )[0]
+                    place_name = best[1]
+                    place_summary = best[2]
+
+                # ----------------------------------------------------------
+                # 4. Upsert avatar's location attribute.
+                # ----------------------------------------------------------
+                conn.execute(
+                    "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'location', ?)"
+                    " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
+                    (entity_id, place_name),
+                )
 
             # ----------------------------------------------------------
             # 5. Build scene text.

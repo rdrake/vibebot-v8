@@ -576,6 +576,34 @@ class TestOptInAvatar:
         avatars = store.list_entities_by_kind("avatar")
         assert len(avatars) == 1
 
+    def test_re_opt_in_preserves_moved_location(self, verse_db_dir: Path) -> None:
+        """GIVEN an active avatar that has moved away from its starter place
+        WHEN the user re-runs opt-in THEN the avatar is NOT teleported back: the
+        committed 'location' is preserved.
+
+        Re-opt-in is meant to be an idempotent no-op ("you are already opted
+        in"); it must not silently overwrite the avatar's location with the
+        activity-best place. ``set_attribute(eid, 'location', ...)`` is the exact
+        engine write ``verse_move`` performs.
+        """
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        first = store.opt_in_avatar("alice", None, "curious traveller")
+        assert store.get_attribute(first.entity_id, "location") == "The Clearing"
+
+        # Alice moves elsewhere (same write path as verse_move).
+        store.set_attribute(first.entity_id, "location", "The Tower")
+
+        # Re-opt-in must not relocate her, even though "The Clearing" is still
+        # the only/activity-best place the placement logic would pick.
+        second = store.opt_in_avatar("alice", None, "back again")
+
+        assert second.was_already_opted_in is True
+        assert second.entity_id == first.entity_id
+        assert store.get_attribute(first.entity_id, "location") == "The Tower"
+        assert second.place_name == "The Tower"
+
     def test_retired_avatar_reactivates(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
