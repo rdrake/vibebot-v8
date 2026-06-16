@@ -409,8 +409,8 @@ def test_enumerate_skips_deny_command(mocker):
         mocker,
         "Web",
         canonical="web",
-        commands=["fetch", "title"],
-        docstrings={"fetch": "<url>", "title": "<url>"},
+        commands=["fetch", "urlquote"],
+        docstrings={"fetch": "<url>", "urlquote": "<text>"},
     )
     irc = _fake_irc_with_callbacks(mocker, [cb])
     msg = _fake_msg(mocker)
@@ -419,7 +419,7 @@ def test_enumerate_skips_deny_command(mocker):
     result = list(lb.enumerate_commands(irc, msg, frozenset({"Web"})))
 
     leaves = {c.command for c in result}
-    assert leaves == {"title"}  # fetch is denied
+    assert leaves == {"urlquote"}  # fetch is denied; urlquote (no network) passes
 
 
 def test_enumerate_skips_lacking_capability(mocker):
@@ -587,8 +587,8 @@ def test_enumerate_gate_preserves_deny_commands_filtering(mocker):
         mocker,
         "Web",
         canonical="web",
-        commands=["fetch", "title"],
-        docstrings={"fetch": "<url>", "title": "<url>"},
+        commands=["fetch", "urlquote"],
+        docstrings={"fetch": "<url>", "urlquote": "<text>"},
     )
     irc = _fake_irc_with_callbacks(mocker, [cb])
     msg = _fake_msg(mocker)
@@ -596,7 +596,7 @@ def test_enumerate_gate_preserves_deny_commands_filtering(mocker):
 
     result = list(lb.enumerate_commands(irc, msg, frozenset({"Web"}), allow_mutating=True))
     leaves = {c.command for c in result}
-    assert leaves == {"title"}  # fetch is in DENY_COMMANDS
+    assert leaves == {"urlquote"}  # fetch is in DENY_COMMANDS even with the gate open
 
 
 def test_dispatch_unknown_plugin(mocker):
@@ -632,6 +632,43 @@ def test_dispatch_deny_command_blocks_call(mocker):
 
     out = lb.dispatch(irc, msg, plugin="Web", command="fetch", arg_string="http://x")
     assert out == {"error": "denied: Web.fetch"}
+
+
+def test_deny_commands_block_web_ssrf_siblings():
+    """Every SSRF-shaped stock Web read is hard-denied, not just web.fetch.
+
+    location/headers/doctype/size/title each fetch an arbitrary caller-supplied
+    URL with the bot's network identity (web.location even follows redirects and
+    skips the whitelist). They are reads, so the mutation gate never touches
+    them; only DENY_COMMANDS can stop them.
+    """
+    from llm import limnoria_bridge as lb
+
+    for leaf in ("fetch", "location", "headers", "doctype", "size", "title"):
+        assert ("web", leaf) in lb.DENY_COMMANDS
+
+
+def test_dispatch_blocks_web_ssrf_siblings_without_calling_command(mocker):
+    """Defense in depth: dispatch rejects the SSRF siblings and never reaches
+    Limnoria's command path, even with the mutation gate open."""
+    from llm import limnoria_bridge as lb
+
+    for leaf in ("location", "headers", "doctype", "size", "title"):
+        cb = _stub_callback(mocker, "Web", canonical="web", commands=[leaf])
+        irc = mocker.MagicMock()
+        irc.getCallback.return_value = cb
+        msg = _fake_msg(mocker)
+
+        out = lb.dispatch(
+            irc,
+            msg,
+            plugin="Web",
+            command=leaf,
+            arg_string="http://169.254.169.254/latest/meta-data/",
+            allow_mutating=True,
+        )
+        assert out == {"error": f"denied: Web.{leaf}"}
+        cb._callCommand.assert_not_called()
 
 
 def test_dispatch_unknown_command(mocker):

@@ -77,6 +77,20 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
         # Capability gating answers "may this user run it," not "is this URL
         # safe for the bot's network context." Deny unconditionally.
         ("web", "fetch"),
+        # Same SSRF shape as web.fetch — every one of these stock Web reads
+        # calls utils.web.getUrlFd/getUrl on the caller-supplied URL with the
+        # bot's network identity. They are READS, so bridgeAllowMutating does
+        # NOT gate them, and "Web" is in DEFAULT_ALLOWED_PLUGINS, so they are
+        # reachable in the locked-down default. web.location is the worst: it
+        # skips _checkURLWhitelist entirely and follows redirects (a redirect-
+        # to-internal SSRF primitive); the others honour urlWhitelist but it
+        # defaults to [] which _checkURLWhitelist treats as "allow all". Deny
+        # all of them at the bridge layer, exactly like web.fetch.
+        ("web", "location"),
+        ("web", "headers"),
+        ("web", "doctype"),
+        ("web", "size"),
+        ("web", "title"),
         # ``apply <command> <args>`` re-dispatches through Limnoria's command
         # engine, which would bypass our per-command deny entries.
         ("utilities", "apply"),
