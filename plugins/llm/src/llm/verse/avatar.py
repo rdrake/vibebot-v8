@@ -162,9 +162,13 @@ def make_verse_tool_specs(*, max_actors: int = 8, storybook: bool = False) -> li
                 "function": {
                     "name": "verse_storybook",
                     "description": (
-                        "Turn the current scene into a short illustrated story page. "
-                        "Call ONLY when a scenario truly deserves a full tale. Returns a "
-                        "link to share in character."
+                        "Create a short ILLUSTRATED story page (prose plus AI-drawn "
+                        "pictures) and return a link to share in character. Call this "
+                        "whenever someone asks for a story, tale, saga, or an "
+                        "'illustrated'/'with pictures'/'storybook' telling, or when a "
+                        "scene clearly deserves a full illustrated tale. Prefer this "
+                        "tool over narrating a long story inline — only this tool can "
+                        "produce the pictures."
                     ),
                     "parameters": {
                         "type": "object",

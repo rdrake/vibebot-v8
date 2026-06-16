@@ -566,10 +566,13 @@ STORYBOOK_SYSTEM_PROMPT = (
     "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
     '{{"title": str, "story_markdown": str, '
     '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
-    "Rules: story_markdown is Markdown and may contain [[illustration:N]] markers "
-    "where an illustration belongs (0 to {max_images} of them, matching the ids in "
-    "illustrations). image_prompt is a concrete visual scene description. Keep the "
-    "story under {max_chars} characters.\n\nPERSONA:\n{persona}"
+    "Rules: ALWAYS include at least one illustration (between 1 and {max_images}); "
+    "an illustrated story with zero pictures is a failure. For EACH illustration, put "
+    "a matching [[illustration:N]] marker INLINE in story_markdown at the moment it "
+    "depicts, AND a corresponding entry in illustrations with the same integer id. "
+    "image_prompt is a concrete, vivid visual scene description (setting, characters, "
+    "action, mood) — not a caption. Keep the story under {max_chars} characters."
+    "\n\nPERSONA:\n{persona}"
 )
 
 
@@ -3244,7 +3247,13 @@ Examples (echo → action_prompt: ""):
             brief, channel=channel, persona=persona, conversation=conversation
         )
         if story is None:
+            self.log.info("storybook: story generation returned nothing (brief=%r)", brief)
             return None
+        self.log.info(
+            "storybook: title=%r illustrations_requested=%d",
+            story["title"],
+            len(story["illustrations"]),
+        )
         max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
         timeout = int(self.plugin.registryValue("verseStorybookImageTimeout", channel) or 45)
@@ -3261,6 +3270,13 @@ Examples (echo → action_prompt: ""):
             res = self._attempt_image_generation(styled, model, timeout, channel=channel)
             if res and res.url and not res.error:
                 drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
+            else:
+                self.log.warning(
+                    "storybook: image id=%s failed (error=%s)",
+                    it["id"],
+                    (res.error if res else "no result"),
+                )
+        self.log.info("storybook: drew %d/%d illustrations", len(drawn), len(wanted))
 
         body = self._strip_untrusted_markup(story["story_markdown"])[:max_chars]
         embedded, used = self._embed_illustrations(body, drawn)
