@@ -256,6 +256,31 @@ class TestXssPrevention:
         # Should not have any form of javascript in href
         assert "javascript" not in content.lower() or 'href="javascript' not in content.lower()
 
+    def test_relative_img_src_survives(self, service, tmp_path):
+        md = "Hello\n\n![a cat](img_abc.jpg)\n"
+        url = service.save_markdown_to_http(md, title="t")
+        content = (tmp_path / url.split("/")[-1]).read_text()
+        assert "<img" in content and 'src="img_abc.jpg"' in content
+        assert 'alt="a cat"' in content
+
+    def test_external_img_src_dropped(self, service, tmp_path):
+        md = "![x](https://evil.example/track.png)"
+        url = service.save_code_to_http(md)
+        content = (tmp_path / url.split("/")[-1]).read_text()
+        assert "evil.example" not in content
+
+    def test_javascript_img_src_dropped(self, service, tmp_path):
+        md = '<img src="javascript:alert(1)" alt="x">'
+        url = service.save_code_to_http(md)
+        content = (tmp_path / url.split("/")[-1]).read_text()
+        assert "javascript:" not in content
+
+    def test_onerror_img_attr_dropped(self, service, tmp_path):
+        md = '<img src="img_a.jpg" onerror="alert(1)">'
+        url = service.save_code_to_http(md)
+        content = (tmp_path / url.split("/")[-1]).read_text()
+        assert "onerror" not in content
+
 
 class TestMarkdownRendering:
     """Test markdown to HTML rendering."""

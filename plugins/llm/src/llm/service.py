@@ -731,6 +731,7 @@ class LLMService:
                 "th",
                 "td",
                 "blockquote",
+                "img",
             },
             attributes={
                 "a": {"href", "title"},
@@ -740,9 +741,35 @@ class LLMService:
                 "div": {"class"},
                 "td": {"align"},
                 "th": {"align"},
+                "img": {"src", "alt", "title"},
             },
             url_schemes={"http", "https", "mailto"},
         )
+
+    def _restrict_img_srcs(self, html: str, url_base: str) -> str:
+        """Drop <img> whose src is neither a bare relative filename nor under url_base.
+
+        Storybook embeds its illustrations by relative filename (same http_root as
+        the page), so legitimate images survive; externally-hosted images (tracking
+        pixels / SSRF-on-view) are removed from every pastebin page.
+        """
+
+        def _ok(src: str) -> bool:
+            s = src.strip()
+            if "://" in s or s.startswith("//"):
+                return s.startswith(url_base)
+            # relative: allow a bare filename in the same dir; reject absolute paths
+            # unless they're under url_base
+            if s.startswith("/"):
+                return s.startswith(url_base)
+            return "/" not in s.split("?", 1)[0]
+
+        def _sub(m):
+            tag = m.group(0)
+            src_m = re.search(r'src\s*=\s*"([^"]*)"', tag)
+            return tag if (src_m and _ok(src_m.group(1))) else ""
+
+        return re.sub(r"<img\b[^>]*>", _sub, html)
 
     def _build_system_prompt(self, base_prompt: str) -> str:
         """Build system prompt with anti-injection instruction.
@@ -4236,6 +4263,7 @@ Examples (echo → action_prompt: ""):
 
         # Sanitize HTML to prevent XSS attacks
         rendered = self._sanitize_html(rendered)
+        rendered = self._restrict_img_srcs(rendered, url_base)
 
         pygments_css = _PYGMENTS_CSS
 

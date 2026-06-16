@@ -694,12 +694,17 @@ class TestXssSanitization:
         assert "javascript:" not in result
 
     def test_sanitize_html_strips_onerror(self) -> None:
-        """GIVEN HTML with onerror attribute WHEN sanitized THEN onerror removed."""
+        """GIVEN HTML with onerror attribute WHEN sanitized THEN onerror removed.
+
+        img is now an allowed tag (for storybook illustrations), but only the
+        safe attributes (src, alt, title) are kept; event handlers are stripped.
+        """
         malicious = '<img src="x" onerror="alert(\'xss\')">'
         result = self.service._sanitize_html(malicious)
         assert "onerror" not in result
-        # img tag itself should be stripped (not in allowed tags)
-        assert "<img" not in result
+        # img tag is now allowed; only its safe attributes survive
+        assert "<img" in result
+        assert 'src="x"' in result
 
     def test_sanitize_html_preserves_code_classes(self) -> None:
         """GIVEN code with class WHEN sanitized THEN class preserved."""
