@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import html
 import json
 import re
 import sqlite3
@@ -4123,24 +4124,60 @@ Examples (echo → action_prompt: ""):
 
         return http_root, url_base
 
-    def save_markdown_to_http(self, content: str | None) -> str | None:
-        """Save Markdown answer content to HTTP server as HTML and return URL."""
+    @staticmethod
+    def _title_from_markdown(content: str | None, *, fallback: str = "Answer") -> str:
+        """Derive a useful page title from Markdown content, deterministically.
+
+        Prefers the first ATX heading (e.g. ``# versedump #chan``); otherwise the
+        first non-empty line, stripped of Markdown emphasis. No LLM call, so it is
+        safe on background/deferred paths. Callers that already have an LLM summary
+        should pass it as ``title`` instead.
+        """
+        for raw in (content or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            heading = re.match(r"^#{1,6}\s+(.*)$", line)
+            if heading:
+                line = heading.group(1)
+            # A <title> is plain text: drop any inline HTML/Markdown markup so the
+            # tag can't be polluted with raw tags or stray syntax.
+            line = re.sub(r"<[^>]*>", " ", line)
+            line = " ".join(line.strip("`*_# ").split())
+            if line:
+                return line[:120]
+        return fallback
+
+    def save_markdown_to_http(self, content: str | None, *, title: str | None = None) -> str | None:
+        """Save Markdown answer content to HTTP server as HTML and return URL.
+
+        ``title`` becomes the page ``<title>`` (echoed by URL-title bots). When
+        omitted it is derived from the content; pass an LLM summary to reuse it.
+        """
         return self._save_markdown_to_http(
-            content, title="Grok is the president of the pen15 club", filename_prefix="answer"
+            content,
+            title=title or self._title_from_markdown(content),
+            filename_prefix="answer",
         )
 
-    def save_code_to_http(self, content: str | None) -> str | None:
+    def save_code_to_http(self, content: str | None, *, title: str | None = None) -> str | None:
         """Save content to HTTP server as HTML and return URL.
 
         Converts markdown to HTML for a pastebin-style page.
 
         Args:
             content: Markdown content from LLM
+            title: Optional page title; defaults to "Code". Code bodies make poor
+                titles, so unlike the answer path this does not derive from content.
 
         Returns:
             Public URL to saved file or None on error
         """
-        return self._save_markdown_to_http(content, title="Code", filename_prefix="code")
+        return self._save_markdown_to_http(
+            content,
+            title=title or "Code",
+            filename_prefix="code",
+        )
 
     def _save_markdown_to_http(
         self, content: str | None, *, title: str, filename_prefix: str
@@ -4148,6 +4185,12 @@ Examples (echo → action_prompt: ""):
         """Render Markdown content to an HTML file and return its public URL."""
         if not content:
             return None
+
+        # Collapse to one line, cap length, and HTML-escape: the title is
+        # interpolated into <title>…</title> and may come from an LLM summary
+        # or arbitrary content, so it must never break the tag or inject markup.
+        title = " ".join((title or "").split())[:120] or "Answer"
+        safe_title = html.escape(title, quote=True)
 
         http_root, url_base = self.get_http_paths()
 
@@ -4192,12 +4235,12 @@ Examples (echo → action_prompt: ""):
         pygments_css = _PYGMENTS_CSS
 
         # Pastebin-style HTML with syntax highlighting
-        html = f"""<!DOCTYPE html>
+        html_doc = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
+<title>{safe_title}</title>
 <!-- Storybook typography -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -4299,7 +4342,7 @@ pre, .highlight {{ background: var(--parchment-deep) !important; }}
         try:
             Path(http_root).mkdir(parents=True, exist_ok=True)
             with AtomicFile(str(filepath), "w") as f:
-                f.write(html)
+                f.write(html_doc)
             return f"{url_base}/{filename}"
         except OSError as e:
             self.log.error("Failed to save output file: %s", e)

@@ -2479,16 +2479,20 @@ class LLM(callbacks.Plugin):
             self._safe_reply(irc, single_line, prefixNick=prefixNick)
             return
 
-        url = self.llm_service.save_markdown_to_http(text)
-        suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
+        # One summary serves double duty: the page <title> (echoed by URL-title
+        # bots in-channel) and the inline IRC teaser. Generated once, before the
+        # save, so the title costs nothing extra over the teaser we already make.
         configured_max_chars = int(self.registryValue("longReplyTeaserMaxChars", target) or 220)
+        summary = self.llm_service.summarize_for_irc(
+            text, channel=target, max_chars=configured_max_chars
+        )
+        url = self.llm_service.save_markdown_to_http(text, title=summary)
+        suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
         max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
         if max_chars <= 0 and url:
             self._safe_reply(irc, f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
             return
-        teaser = self.llm_service.summarize_for_irc(
-            text, channel=target, max_chars=max_chars
-        ) or self._fallback_long_reply_teaser(text, max_chars)
+        teaser = summary or self._fallback_long_reply_teaser(text, max_chars)
         teaser = self._trim_long_reply_teaser(teaser, max_chars)
         self._safe_reply(irc, f"{teaser}{suffix}", prefixNick=prefixNick)
 

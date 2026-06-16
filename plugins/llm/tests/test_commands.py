@@ -630,8 +630,10 @@ class TestSendLongReply:
 
         plugin._send_long_reply(mock_irc, mock_msg, "line one\nline two\nline three")
 
+        # The summary doubles as the page <title>, reused at no extra cost.
         plugin.llm_service.save_markdown_to_http.assert_called_once_with(
-            "line one\nline two\nline three"
+            "line one\nline two\nline three",
+            title="Three short lines about A, B, and C.",
         )
         mock_irc.reply.assert_called_once_with(
             "Three short lines about A, B, and C. - Full answer: https://example.com/llm/full.html",
@@ -659,7 +661,9 @@ class TestSendLongReply:
         long_line = "alpha " * 50  # ~300 chars
         plugin._send_long_reply(mock_irc, mock_msg, long_line)
 
-        plugin.llm_service.save_markdown_to_http.assert_called_once_with(long_line)
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(
+            long_line, title="Long line."
+        )
         mock_irc.reply.assert_called_once_with(
             "Long line. - Full answer: https://e.co/x.html",
             prefixNick=False,
@@ -710,8 +714,11 @@ class TestSendLongReply:
 
         plugin._send_long_reply(mock_irc, mock_msg, long_text)
 
+        # The summary is generated once at the configured width (default 220) so
+        # it can also serve as the page <title>; the IRC teaser is then trimmed to
+        # the link budget. The cap is verified by the final_reply assertions below.
         plugin.llm_service.summarize_for_irc.assert_called_once_with(
-            long_text, channel="#test", max_chars=80 - len(suffix)
+            long_text, channel="#test", max_chars=220
         )
         final_reply = mock_irc.reply.call_args.args[0]
         assert len(final_reply) <= 80

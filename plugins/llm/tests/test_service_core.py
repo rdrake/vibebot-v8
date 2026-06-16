@@ -759,8 +759,8 @@ class TestXssSanitization:
         assert self.service.save_code_to_http("") is None
         assert self.service.save_code_to_http(None) is None
 
-    def test_save_markdown_to_http_uses_answer_title_and_filename(self, tmp_path: object) -> None:
-        """GIVEN Markdown answer WHEN saved THEN HTML uses answer semantics."""
+    def test_save_markdown_to_http_derives_title_and_filename(self, tmp_path: object) -> None:
+        """GIVEN Markdown answer WHEN saved THEN title is derived from its heading."""
         from pathlib import Path
 
         self.mock_plugin.registryValue = self.mocker.Mock(
@@ -776,7 +776,50 @@ class TestXssSanitization:
         filename = url.split("/")[-1]
         assert filename.startswith("answer_")
         filepath = Path(str(tmp_path)) / filename
-        assert "<title>Grok is the president of the pen15 club</title>" in filepath.read_text()
+        assert "<title>Full answer</title>" in filepath.read_text()
+
+    def _http_registry(self, tmp_path: object) -> None:
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key)
+        )
+
+    def test_save_markdown_to_http_uses_explicit_title(self, tmp_path: object) -> None:
+        """GIVEN an explicit title (e.g. reused summary) WHEN saved THEN it is used."""
+        from pathlib import Path
+
+        self._http_registry(tmp_path)
+        url = self.service.save_markdown_to_http(
+            "Lots of prose here.", title="A concise summary of the answer"
+        )
+        assert url is not None
+        body = (Path(str(tmp_path)) / url.split("/")[-1]).read_text()
+        assert "<title>A concise summary of the answer</title>" in body
+
+    def test_save_markdown_to_http_escapes_title(self, tmp_path: object) -> None:
+        """GIVEN a title with HTML WHEN saved THEN it is escaped, not injected."""
+        from pathlib import Path
+
+        self._http_registry(tmp_path)
+        url = self.service.save_markdown_to_http("body", title="</title><script>alert(1)</script>")
+        assert url is not None
+        body = (Path(str(tmp_path)) / url.split("/")[-1]).read_text()
+        assert "<script>alert(1)</script>" not in body
+        assert "&lt;script&gt;" in body
+
+    def test_save_markdown_to_http_derives_title_from_first_line(self, tmp_path: object) -> None:
+        """GIVEN prose without a heading WHEN saved THEN title is the first line."""
+        from pathlib import Path
+
+        self._http_registry(tmp_path)
+        url = self.service.save_markdown_to_http(
+            "The quick brown fox jumps.\n\nMore detail follows."
+        )
+        assert url is not None
+        body = (Path(str(tmp_path)) / url.split("/")[-1]).read_text()
+        assert "<title>The quick brown fox jumps.</title>" in body
 
 
 class TestSanitizeOutput:
