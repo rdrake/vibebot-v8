@@ -347,6 +347,7 @@ class ImageResult(NamedTuple):
     model: str = ""
     error: str | None = None
     rewritten_prompt: str | None = None
+    url: str | None = None
 
 
 class ExtractionResult(NamedTuple):
@@ -3283,12 +3284,14 @@ Examples (echo → action_prompt: ""):
 
             if hasattr(image_data, "url") and image_data.url:
                 local_url = self._download_and_save_image(image_data.url)
+                saved_url = local_url or image_data.url
                 return ImageResult(
-                    content=local_url or image_data.url,
+                    content=saved_url,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     cost=cost,
                     model=model,
+                    url=saved_url,
                 )
 
             if hasattr(image_data, "b64_json") and image_data.b64_json:
@@ -3300,6 +3303,7 @@ Examples (echo → action_prompt: ""):
                         completion_tokens=completion_tokens,
                         cost=cost,
                         model=model,
+                        url=url,
                     )
                 error_content = _("Error: Failed to save generated image")
                 return ImageResult(content=error_content, error=error_content)
@@ -4027,6 +4031,7 @@ Examples (echo → action_prompt: ""):
                             cost=total_cost + result.cost,
                             model=result.model,
                             rewritten_prompt=current_prompt,
+                            url=result.url,
                         )
                     # Still blocked
                     block_reason = "Content blocked by safety filters (empty response)"
