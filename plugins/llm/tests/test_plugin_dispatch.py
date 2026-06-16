@@ -666,6 +666,7 @@ class TestCommandRegistry:
             "ask",
             "code",
             "draw",
+            "story",
             "forget",
             "memories",
             "instruct",

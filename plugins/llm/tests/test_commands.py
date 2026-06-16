@@ -3353,3 +3353,54 @@ class TestVerseStorybook:
         plugin.llm_service.generate_storybook.assert_called_once()
         # Delivered the URL to the channel.
         assert safe_queue.called
+
+
+class TestStoryCommand:
+    """The @story command: standalone illustrated-storybook generation outside
+    verse mode. Gated like @draw (authenticated + llm.draw) plus the shared
+    storybook cooldown; fires the same background render+deliver job."""
+
+    def test_story_fires_storybook_job(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        plugin.db.get_avatar_persona.return_value = ""
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        plugin.story(mock_irc, mock_msg, ["illustrated", "tale", "of", "lads"])
+
+        job.assert_called_once()
+        assert job.call_args.kwargs["brief"] == "illustrated tale of lads"
+        assert job.call_args.kwargs["channel"] == "#test"
+
+    def test_story_requires_account(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        # nickToAccount returns None (default) -> not authenticated.
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        plugin.story(mock_irc, mock_msg, ["a", "tale"])
+
+        mock_irc.error.assert_called_once()
+        job.assert_not_called()
+
+    def test_story_cooldown_blocks(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        mocker.patch.object(plugin, "_storybook_cooldown_active", return_value=True)
+        err = mocker.patch.object(plugin, "_safe_error")
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        plugin.story(mock_irc, mock_msg, ["a", "tale"])
+
+        err.assert_called_once()
+        job.assert_not_called()
+
+    def test_storybook_cooldown_reserve_then_block(self, plugin_env, mocker):
+        plugin, _mock_irc, _mock_msg = plugin_env
+        # First call reserves the slot (not limited); the second within the
+        # window is blocked. A different account is independent. cooldown<=0 or
+        # a missing account disables limiting entirely.
+        assert plugin._storybook_cooldown_active("acct", 300) is False
+        assert plugin._storybook_cooldown_active("acct", 300) is True
+        assert plugin._storybook_cooldown_active("other", 300) is False
+        assert plugin._storybook_cooldown_active("acct", 0) is False
+        assert plugin._storybook_cooldown_active(None, 300) is False

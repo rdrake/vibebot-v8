@@ -895,6 +895,13 @@ _register_rate_limit_block(
     windows=(300, 60, 60),
 )
 
+# --- story (expensive, illustrated storybook) ---
+_register_rate_limit_block(
+    "story",
+    counts=(2, 5, 0),
+    windows=(300, 60, 60),
+)
+
 # ============================================================================
 # Assistant Tool-Calling Backend (shared by @ask, @code, @draw, invalidCommand)
 # ============================================================================

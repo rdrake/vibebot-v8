@@ -75,7 +75,8 @@ EXPLICIT_SEARCH_RE = re.compile(
 # Deliberately tight: a bare "tell me a story" must NOT match (plain stories
 # narrate inline); only an explicit illustration cue does.
 EXPLICIT_STORYBOOK_RE = re.compile(
-    r"\b(illustrat\w*|storybook|story\s*book|picture\s*book|comic|with\s+pictures)\b",
+    r"\b(illustrat\w*|storybook|story\s*book|picture\s*book|comic|diagram\w*|"
+    r"with\s+pictures)\b",
     re.IGNORECASE,
 )
 
@@ -572,20 +573,27 @@ def _extract_json_object(text: str | None) -> dict | None:
 
 
 STORYBOOK_SYSTEM_PROMPT = (
-    "You are telling an illustrated short story IN CHARACTER, in the persona "
-    "described below. Write vivid prose. Then choose the moment(s) most worth "
-    "illustrating.\n\n"
+    "You produce an ILLUSTRATED page for the user's brief. Pick the mode that fits:\n"
+    "- STORY: a tale, saga, myth, or recap — tell a vivid illustrated short story "
+    "IN CHARACTER (persona below).\n"
+    "- EXPLAINER: a request to explain, teach, or break down a concept ('explain "
+    "X', 'how does Y work', 'a guide to Z') — write a clear, ACCURATE illustrated "
+    "explainer: short labelled sections, the key ideas or steps depicted as "
+    "diagrams or scenes that make them click. Teach honestly; do NOT fictionalize "
+    "the facts. Use the persona's voice if one is given, but accuracy comes first.\n"
+    "Write the prose, then choose the moments or ideas most worth illustrating.\n\n"
     "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
     '{{"title": str, "story_markdown": str, '
     '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
-    "Rules: illustrate GENEROUSLY — most stories want several pictures, not one. "
-    "Aim for 2 to {max_images} illustrations spread across the story's key beats "
-    "(opening, turns, climax, ending); a single picture usually undersells the tale, "
-    "and zero is a failure. For EACH illustration, put a matching [[illustration:N]] "
-    "marker INLINE in story_markdown at the moment it depicts, AND a corresponding "
-    "entry in illustrations with the same integer id. image_prompt is a concrete, "
-    "vivid visual scene description (setting, characters, action, mood) — not a "
-    "caption. Keep the story under {max_chars} characters."
+    "Rules: illustrate GENEROUSLY — most pages want several pictures, not one. "
+    "Aim for 2 to {max_images} illustrations across the key beats or sections; a "
+    "single picture usually undersells it, and zero is a failure. For EACH "
+    "illustration, put a matching [[illustration:N]] marker INLINE in "
+    "story_markdown at the moment or idea it depicts, AND a corresponding entry in "
+    "illustrations with the same integer id. image_prompt is a concrete, vivid "
+    "visual description — for an explainer, the diagram or scene that makes the "
+    "idea clear; for a story, the setting/characters/action/mood — not a caption. "
+    "Keep it under {max_chars} characters."
     "\n\nPERSONA:\n{persona}"
 )
 

@@ -460,6 +460,13 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,
         "drawUnregRateLimitWindow": 60,
+        # story (mirrors draw — expensive image command)
+        "storyRateLimitCount": 2,
+        "storyRateLimitWindow": 300,
+        "storyTrustedRateLimitCount": 5,
+        "storyTrustedRateLimitWindow": 60,
+        "storyUnregRateLimitCount": 0,
+        "storyUnregRateLimitWindow": 60,
         # Search/fetch tools
         "searchApiKey": "",
         "searchModel": "",

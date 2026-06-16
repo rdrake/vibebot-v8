@@ -224,6 +224,20 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         category="generation",
     ),
     CommandInfo(
+        name="story",
+        args="<brief>",
+        description=(
+            "Generate an illustrated page (prose plus a few AI illustrations) and "
+            "post a link when it's ready. Tells an illustrated tale OR explains a "
+            "concept with diagrams as a learning aid. No verse mode needed."
+        ),
+        examples=(
+            "%story an illustrated tale of stinky lads winning the pub quiz",
+            "%story explain how photosynthesis works, with diagrams",
+        ),
+        category="generation",
+    ),
+    CommandInfo(
         name="forget",
         args="[channel]",
         description=(
@@ -2667,6 +2681,63 @@ class LLM(callbacks.Plugin):
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         return make_verse_extra_handlers(route.store, route.avatar_id, max_actors=max_actors)
 
+    def _storybook_cooldown_active(self, account: str | None, cooldown: int) -> bool:
+        """Single-slot per-account storybook cooldown (reserve-at-start).
+
+        Shared by the verse_storybook tool and the @story command via the
+        ``verse_storybook:<account>`` rate-bucket key, so both paths draw from
+        ONE cooldown window and can't be stacked to double image spend. Reuses
+        ``_rate_buckets``/``_rate_buckets_lock`` (the machinery behind
+        ``_is_rate_limited``). Records the hit immediately when not limited; no
+        account or non-positive cooldown disables limiting.
+        """
+        if cooldown <= 0 or not account:
+            return False
+        key = f"verse_storybook:{account}"
+        now = time.time()
+        with self._rate_buckets_lock:
+            bucket = self._rate_buckets.get(key)
+            if bucket and (now - bucket[-1]) < cooldown:
+                return True
+            if bucket is None:
+                bucket = collections.deque(maxlen=1)
+                self._rate_buckets[key] = bucket
+            bucket.append(now)
+            return False
+
+    def _submit_storybook_job(self, *, channel: str, nick: str, persona: str, brief: str) -> None:
+        """Fire a background job that renders a storybook for ``brief`` and
+        posts the resulting link to ``channel``. Fire-and-return — never raises
+        to the caller. Shared by the verse_storybook tool and the @story command.
+
+        Delivery looks up the live IRC connection via ``world.ircs`` (not a
+        captured, possibly-stale ``irc``), mirroring ``_deliver_pending_result``.
+        """
+
+        def _deliver(text: str) -> None:
+            collapsed = self._collapse_for_irc(text) or text
+            for irc_conn in world.ircs:
+                if channel in irc_conn.state.channels:
+                    self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
+                    return
+
+        def _job(b: str) -> None:
+            try:
+                res = self.llm_service.generate_storybook(
+                    b, channel=channel, persona=persona, conversation=[]
+                )
+                if res is not None:
+                    _deliver(f"the tale is told — {res.title}: {res.url}")
+                else:
+                    _deliver("the tale slipped away before it could be illustrated.")
+            except Exception:
+                self.log.exception("storybook job failed channel=%s nick=%s", channel, nick)
+
+        try:
+            self._llm_executor.submit("verse_storybook", _job, brief)
+        except RecursiveSubmitError:
+            _job(brief)
+
     def _storybook_handler(
         self,
         *,
@@ -2700,57 +2771,9 @@ class LLM(callbacks.Plugin):
         turn_count = [0]
         max_per_turn = int(self.registryValue("verseStorybookMaxPerTurn", channel) or 1)
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
-        cooldown_key = "verse_storybook"
 
         def _err(message: str) -> _VerseToolResult:
             return _VerseToolResult(content=json.dumps({"status": "error", "error": message}))
-
-        def _cooldown_active(now: float) -> bool:
-            """Single-slot per-account cooldown using the shared rate-bucket map.
-
-            Reuses ``_rate_buckets``/``_rate_buckets_lock`` (the same machinery
-            backing ``_is_rate_limited``) but with a dedicated ``verse_storybook``
-            command key and a simple "last hit within cooldown window" check, so
-            an in-flight job can't be re-triggered. Records the hit immediately
-            (reserve-at-start) when not limited.
-            """
-            if cooldown <= 0 or not account:
-                return False
-            key = f"{cooldown_key}:{account}"
-            with self._rate_buckets_lock:
-                bucket = self._rate_buckets.get(key)
-                if bucket and (now - bucket[-1]) < cooldown:
-                    return True
-                if bucket is None:
-                    bucket = collections.deque(maxlen=1)
-                    self._rate_buckets[key] = bucket
-                bucket.append(now)
-                return False
-
-        def _deliver(text: str) -> None:
-            """Post a line to the channel from a worker thread.
-
-            Looks up the live IRC connection via ``world.ircs`` (rather than
-            holding the possibly-stale captured ``irc``) and queues a sanitized
-            PRIVMSG, mirroring ``_deliver_pending_result``.
-            """
-            collapsed = self._collapse_for_irc(text) or text
-            for irc_conn in world.ircs:
-                if channel in irc_conn.state.channels:
-                    self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
-                    return
-
-        def _job(brief: str) -> None:
-            try:
-                res = self.llm_service.generate_storybook(
-                    brief, channel=channel, persona=persona, conversation=[]
-                )
-                if res is not None:
-                    _deliver(f"the tale is told — {res.title}: {res.url}")
-                else:
-                    _deliver("the tale slipped away before it could be illustrated.")
-            except Exception:
-                self.log.exception("verse_storybook job failed channel=%s nick=%s", channel, nick)
 
         def _call(args: dict) -> _VerseToolResult:
             # 1. Per-turn cap.
@@ -2763,7 +2786,7 @@ class LLM(callbacks.Plugin):
             if not ircdb.checkCapability(msg.prefix, "llm.draw"):
                 return _err("you lack the standing to summon illustrations")
             # 4. Per-account cooldown (reserve-at-start).
-            if _cooldown_active(time.time()):
+            if self._storybook_cooldown_active(account, cooldown):
                 return _err("the muse needs a moment")
 
             # TODO(storybook): daily image cap (verseStorybookDailyImageCap) —
@@ -2777,10 +2800,7 @@ class LLM(callbacks.Plugin):
                 raw = args.get("brief")
                 if isinstance(raw, str):
                     brief = raw
-            try:
-                self._llm_executor.submit("verse_storybook", _job, brief)
-            except RecursiveSubmitError:
-                _job(brief)
+            self._submit_storybook_job(channel=channel, nick=nick, persona=persona, brief=brief)
             return _VerseToolResult(
                 content=json.dumps(
                     {
@@ -3995,6 +4015,53 @@ class LLM(callbacks.Plugin):
             stop_typing()
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
+
+    def story(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<brief>
+
+        Generate an illustrated page from your description and post a link when
+        it's ready. Either tells an illustrated tale OR explains a concept with
+        diagrams as a learning aid — picks the mode from your brief. Draws a few
+        AI illustrations, no verse mode required. Same image-spend gate as @draw
+        (authenticated + llm.draw).
+
+        Examples:
+          @story an illustrated tale of stinky lads winning the pub quiz
+          @story explain how photosynthesis works, with diagrams
+        """
+        # Skip ZNC playback messages
+        if self._is_old_message(msg):
+            return
+
+        pf = self._run_preflight(irc, msg, text, "story", require_account=True)
+        if pf.blocked:
+            return
+        nick, channel = pf.nick, pf.channel
+
+        brief = (text or "").strip()
+        if not brief:
+            self._safe_error(irc, _("Tell me what the story should be about."))
+            return
+
+        # Per-account cooldown (shared with verse_storybook), reserve-at-start.
+        cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
+        if self._storybook_cooldown_active(pf.account, cooldown):
+            self._safe_error(irc, _("Easy — give the muse a moment before the next tale."))
+            return
+
+        # Fire-and-return: the page is rendered + posted asynchronously, so the
+        # user gets the link when it's ready with no interim chatter (mirrors
+        # the verse_storybook UX). Persona is the caller's avatar voice if set.
+        persona = self.db.get_avatar_persona(nick) or ""
+        self._submit_storybook_job(channel=channel, nick=nick, persona=persona, brief=brief)
+
+    story = wrap(story, [("checkCapability", "llm.draw"), "text"])
 
     def forget(
         self,
