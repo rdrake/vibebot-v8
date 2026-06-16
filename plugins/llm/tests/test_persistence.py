@@ -286,6 +286,92 @@ class TestSchemaMigration:
             conn.close()
         db.close()
 
+    def test_migrate_recovers_from_partial_alter_block(self, tmp_path: Path) -> None:
+        """GIVEN a DB whose v3 block crashed after its first ADD COLUMN committed
+        but before ``user_version`` advanced (delivery_state present, the rest
+        missing, user_version still 2) WHEN opened THEN migration completes
+        instead of raising 'duplicate column name' and wedging startup.
+
+        ``user_version`` is stamped only at the end of ``_migrate``, so a mid-
+        block crash re-runs the whole block on restart; the ADD COLUMNs must be
+        idempotent. ``pending_tasks`` is the LIVE timeout-recovery queue, so this
+        is the highest-impact instance of the class.
+        """
+        from llm.persistence import SCHEMA_VERSION
+
+        db_path = str(tmp_path / "partial.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript("""
+            CREATE TABLE pending_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL,
+                nick TEXT NOT NULL,
+                reply_target TEXT NOT NULL,
+                is_channel INTEGER NOT NULL,
+                prompt_preview TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_data TEXT NOT NULL DEFAULT '{}',
+                submitted_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                claimed_until REAL NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
+            );
+            -- the first ADD COLUMN of the v3 block committed before the crash:
+            ALTER TABLE pending_tasks
+                ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending';
+        """)
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+        # Must NOT raise sqlite3.OperationalError('duplicate column name').
+        db = LLMDatabase(db_path)
+        conn = db._connect()
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)")}
+            assert {
+                "delivery_state",
+                "result_payload",
+                "last_delivery_error",
+                "delivery_attempt_count",
+                "origin_request_id",
+            } <= cols
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        finally:
+            conn.close()
+        db.close()
+
+    def test_migrate_is_fully_idempotent_on_rerun_from_zero(self, tmp_path: Path) -> None:
+        """GIVEN a fully-migrated DB whose ``user_version`` was reset to 0
+        (simulating a crash before the version stamp) WHEN ``_migrate`` re-runs
+        every version-gated block against the already-current schema THEN it
+        neither raises (duplicate ADD / missing DROP) nor changes the schema.
+
+        Exercises BOTH idempotency helpers across every block, including the
+        DROP-COLUMN branches that the partial-v3 case does not reach.
+        """
+        from llm.persistence import SCHEMA_VERSION
+
+        db_path = str(tmp_path / "rerun.db")
+        db = LLMDatabase(db_path)
+        conn = db._connect()
+        try:
+            before = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)")}
+            conn.execute("PRAGMA user_version = 0")
+            conn.commit()
+
+            db._migrate()  # must be a clean no-op, not a crash
+
+            after = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)")}
+            assert after == before
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        finally:
+            conn.close()
+        db.close()
+
 
 # NOTE: round-trip, fire_at-ordering, and recurrence-mutual-exclusion
 # invariants for reminders (and the parallel scheduled_llm_task family

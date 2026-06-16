@@ -221,13 +221,46 @@ class LLMDatabase:
             conn.rollback()
             raise
 
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    @staticmethod
+    def _add_column_if_missing(
+        conn: sqlite3.Connection, table: str, column: str, coldef: str
+    ) -> None:
+        """Idempotent ``ALTER TABLE ... ADD COLUMN``.
+
+        ``user_version`` is stamped only once, at the very end of ``_migrate``,
+        and ``ALTER`` runs in DDL autocommit — so a crash between two ADD COLUMNs
+        in one block leaves columns added while the version stays unadvanced. On
+        restart the block re-runs from the top and a plain ``ADD COLUMN`` would
+        raise 'duplicate column name', aborting plugin construction on every
+        future boot. Skipping already-present columns makes each block safe to
+        re-run regardless of where a prior run died. ``table``/``column`` are
+        module-internal literals (no injection surface).
+        """
+        if column not in LLMDatabase._table_columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
+
+    @staticmethod
+    def _drop_column_if_present(conn: sqlite3.Connection, table: str, column: str) -> None:
+        """Idempotent ``ALTER TABLE ... DROP COLUMN`` — same re-run-safety
+        rationale as :meth:`_add_column_if_missing` (a re-run after the drop
+        committed would otherwise raise 'no such column')."""
+        if column in LLMDatabase._table_columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
     def _migrate(self) -> None:
         """Run schema migration to create tables and indexes.
 
         Uses SQLite's ``PRAGMA user_version`` to track which migrations have
         been applied.  New tables are created with ``CREATE TABLE IF NOT EXISTS``
         so the initial DDL is always safe to re-run, and incremental column /
-        table additions are guarded by version checks.
+        table additions go through ``_add_column_if_missing`` /
+        ``_drop_column_if_present`` so a block half-applied by a mid-migration
+        crash (before ``user_version`` is stamped) re-runs cleanly instead of
+        wedging startup with a 'duplicate column name' error.
         """
         conn = self._connect()
         # --- v1 baseline: create core tables ---------------------------
@@ -292,33 +325,51 @@ class LLMDatabase:
         current_version = row[0] if row else 0
 
         if current_version < 2:
-            conn.executescript("""
-                ALTER TABLE usage ADD COLUMN prompt TEXT NOT NULL DEFAULT '';
-                ALTER TABLE usage ADD COLUMN status TEXT NOT NULL DEFAULT 'success';
-                ALTER TABLE usage ADD COLUMN error_detail TEXT NOT NULL DEFAULT '';
-
-                CREATE INDEX IF NOT EXISTS idx_usage_nick_status
-                    ON usage(nick, status);
-
-            """)
+            self._add_column_if_missing(conn, "usage", "prompt", "prompt TEXT NOT NULL DEFAULT ''")
+            self._add_column_if_missing(
+                conn, "usage", "status", "status TEXT NOT NULL DEFAULT 'success'"
+            )
+            self._add_column_if_missing(
+                conn, "usage", "error_detail", "error_detail TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_nick_status ON usage(nick, status)")
             conn.commit()
 
         if current_version < 3:
-            conn.executescript("""
-                ALTER TABLE pending_tasks
-                    ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending';
-                ALTER TABLE pending_tasks
-                    ADD COLUMN result_payload TEXT NOT NULL DEFAULT '';
-                ALTER TABLE pending_tasks
-                    ADD COLUMN last_delivery_error TEXT NOT NULL DEFAULT '';
-                ALTER TABLE pending_tasks
-                    ADD COLUMN delivery_attempt_count INTEGER NOT NULL DEFAULT 0;
-                ALTER TABLE pending_tasks
-                    ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT '';
-
-                CREATE INDEX IF NOT EXISTS idx_pending_tasks_delivery_state
-                    ON pending_tasks(delivery_state);
-            """)
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "delivery_state",
+                "delivery_state TEXT NOT NULL DEFAULT 'pending'",
+            )
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "result_payload",
+                "result_payload TEXT NOT NULL DEFAULT ''",
+            )
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "last_delivery_error",
+                "last_delivery_error TEXT NOT NULL DEFAULT ''",
+            )
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "delivery_attempt_count",
+                "delivery_attempt_count INTEGER NOT NULL DEFAULT 0",
+            )
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "origin_request_id",
+                "origin_request_id TEXT NOT NULL DEFAULT ''",
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pending_tasks_delivery_state "
+                "ON pending_tasks(delivery_state)"
+            )
             conn.commit()
 
         if current_version < 4:
@@ -367,19 +418,14 @@ class LLMDatabase:
             conn.commit()
 
         if current_version < 8:
-            conn.executescript("""
-                ALTER TABLE pending_tasks
-                    ADD COLUMN account TEXT;
-            """)
+            self._add_column_if_missing(conn, "pending_tasks", "account", "account TEXT")
             conn.commit()
 
         if current_version < 9:
-            conn.executescript("""
-                ALTER TABLE reminders
-                    ADD COLUMN action_prompt TEXT NOT NULL DEFAULT '';
-                ALTER TABLE reminders
-                    ADD COLUMN account TEXT;
-            """)
+            self._add_column_if_missing(
+                conn, "reminders", "action_prompt", "action_prompt TEXT NOT NULL DEFAULT ''"
+            )
+            self._add_column_if_missing(conn, "reminders", "account", "account TEXT")
             conn.commit()
 
         if current_version < 10:
@@ -387,14 +433,15 @@ class LLMDatabase:
             # a chat-level set, extended by action-fire reschedules). Old
             # rows backfill chain_id = event_name (single-fire chain),
             # chain_position = 1, chain_started_at = created_at.
-            conn.executescript("""
-                ALTER TABLE reminders
-                    ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';
-                ALTER TABLE reminders
-                    ADD COLUMN chain_position INTEGER NOT NULL DEFAULT 1;
-                ALTER TABLE reminders
-                    ADD COLUMN chain_started_at REAL NOT NULL DEFAULT 0;
-            """)
+            self._add_column_if_missing(
+                conn, "reminders", "chain_id", "chain_id TEXT NOT NULL DEFAULT ''"
+            )
+            self._add_column_if_missing(
+                conn, "reminders", "chain_position", "chain_position INTEGER NOT NULL DEFAULT 1"
+            )
+            self._add_column_if_missing(
+                conn, "reminders", "chain_started_at", "chain_started_at REAL NOT NULL DEFAULT 0"
+            )
             conn.execute("UPDATE reminders SET chain_id = event_name WHERE chain_id = ''")
             conn.execute(
                 "UPDATE reminders SET chain_started_at = created_at WHERE chain_started_at = 0"
@@ -405,9 +452,7 @@ class LLMDatabase:
             # chain_id was stored on every row but never used as a lookup
             # key — chain_position and chain_started_at carry the cap and
             # TTL semantics. Drop the unused column.
-            conn.executescript("""
-                ALTER TABLE reminders DROP COLUMN chain_id;
-            """)
+            self._drop_column_if_present(conn, "reminders", "chain_id")
             conn.commit()
 
         if current_version < 12:
@@ -419,12 +464,16 @@ class LLMDatabase:
             # (B2 parser, B4 mechanical reschedule). The 30-day chain TTL
             # is also retired here — the 50-fire chain_position cap remains
             # the sole runaway guard.
-            conn.executescript("""
-                ALTER TABLE reminders DROP COLUMN chain_started_at;
-                ALTER TABLE reminders ADD COLUMN recurrence_seconds INTEGER;
-                ALTER TABLE reminders ADD COLUMN recurrence_rrule TEXT;
-                ALTER TABLE reminders ADD COLUMN watch_mode INTEGER NOT NULL DEFAULT 0;
-            """)
+            self._drop_column_if_present(conn, "reminders", "chain_started_at")
+            self._add_column_if_missing(
+                conn, "reminders", "recurrence_seconds", "recurrence_seconds INTEGER"
+            )
+            self._add_column_if_missing(
+                conn, "reminders", "recurrence_rrule", "recurrence_rrule TEXT"
+            )
+            self._add_column_if_missing(
+                conn, "reminders", "watch_mode", "watch_mode INTEGER NOT NULL DEFAULT 0"
+            )
             conn.commit()
 
         if current_version < 13:
@@ -466,10 +515,9 @@ class LLMDatabase:
             # scheduled tasks. NULL = deliver to the originating channel
             # (legacy behavior); non-empty string = override target nick or
             # channel.
-            conn.executescript("""
-                ALTER TABLE scheduled_llm_tasks
-                    ADD COLUMN reply_target TEXT;
-            """)
+            self._add_column_if_missing(
+                conn, "scheduled_llm_tasks", "reply_target", "reply_target TEXT"
+            )
             conn.commit()
 
         if current_version < 15:
