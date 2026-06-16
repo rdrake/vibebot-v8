@@ -566,12 +566,14 @@ STORYBOOK_SYSTEM_PROMPT = (
     "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
     '{{"title": str, "story_markdown": str, '
     '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
-    "Rules: ALWAYS include at least one illustration (between 1 and {max_images}); "
-    "an illustrated story with zero pictures is a failure. For EACH illustration, put "
-    "a matching [[illustration:N]] marker INLINE in story_markdown at the moment it "
-    "depicts, AND a corresponding entry in illustrations with the same integer id. "
-    "image_prompt is a concrete, vivid visual scene description (setting, characters, "
-    "action, mood) — not a caption. Keep the story under {max_chars} characters."
+    "Rules: illustrate GENEROUSLY — most stories want several pictures, not one. "
+    "Aim for 2 to {max_images} illustrations spread across the story's key beats "
+    "(opening, turns, climax, ending); a single picture usually undersells the tale, "
+    "and zero is a failure. For EACH illustration, put a matching [[illustration:N]] "
+    "marker INLINE in story_markdown at the moment it depicts, AND a corresponding "
+    "entry in illustrations with the same integer id. image_prompt is a concrete, "
+    "vivid visual scene description (setting, characters, action, mood) — not a "
+    "caption. Keep the story under {max_chars} characters."
     "\n\nPERSONA:\n{persona}"
 )
 

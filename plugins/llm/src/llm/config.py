@@ -554,7 +554,7 @@ conf.registerChannelValue(
     LLM,
     "verseStorybookMaxImages",
     registry.NonNegativeInteger(
-        3,
+        5,
         _("""Max illustrations drawn per story."""),
     ),
 )

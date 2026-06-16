@@ -8,7 +8,7 @@ def test_storybook_config_defaults():
 
     group = cfg.LLM
     assert group.verseStorybookEnabled is not None
-    assert int(group.verseStorybookMaxImages()) == 3
+    assert int(group.verseStorybookMaxImages()) == 5
     assert int(group.verseStorybookMaxPerTurn()) == 1
     assert int(group.verseStorybookCooldownSeconds()) == 300
     assert int(group.verseStorybookDailyImageCap()) == 30
