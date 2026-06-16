@@ -550,6 +550,20 @@ def _extract_json_object(text: str | None) -> dict | None:
     return None
 
 
+STORYBOOK_SYSTEM_PROMPT = (
+    "You are telling an illustrated short story IN CHARACTER, in the persona "
+    "described below. Write vivid prose. Then choose the moment(s) most worth "
+    "illustrating.\n\n"
+    "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
+    '{{"title": str, "story_markdown": str, '
+    '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
+    "Rules: story_markdown is Markdown and may contain [[illustration:N]] markers "
+    "where an illustration belongs (0 to {max_images} of them, matching the ids in "
+    "illustrations). image_prompt is a concrete visual scene description. Keep the "
+    "story under {max_chars} characters.\n\nPERSONA:\n{persona}"
+)
+
+
 class LLMService:
     """Service layer for LiteLLM interactions.
 
@@ -3186,6 +3200,62 @@ Examples (echo → action_prompt: ""):
         teaser = truncate_to_word_boundary(teaser, max_chars)
         teaser = self.sanitize_output(teaser)
         return teaser or None
+
+    def _generate_story_struct(self, brief, *, channel, persona, conversation):
+        """Generate a validated storybook struct via the plain ask path.
+
+        Uses ``_ask_completion`` (not the verse roleplay completion) on purpose:
+        the verse overlay forbids Markdown / bracket output and the verse denial
+        guard would false-positive on dramatic story titles. Retries up to twice
+        with a stronger JSON-only nudge before giving up.
+        """
+        max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
+        max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
+        system = STORYBOOK_SYSTEM_PROMPT.format(
+            max_images=max_images, max_chars=max_chars, persona=persona or ""
+        )
+        user = brief or "Tell an illustrated story drawn from the recent scene."
+        nudge = ""
+        for _attempt in range(3):  # initial + 2 retries
+            raw = self._ask_completion(system + nudge, user, channel)
+            valid = self._validate_story_obj(_extract_json_object(raw))
+            if valid is not None:
+                return valid
+            nudge = "\n\nIMPORTANT: emit ONLY the JSON object — no prose, no fence."
+        return None
+
+    @staticmethod
+    def _validate_story_obj(obj):
+        """Partial-tolerant validation. Requires title + story_markdown; drops
+        malformed illustration entries rather than failing the whole story."""
+        if not isinstance(obj, dict):
+            return None
+        title = obj.get("title")
+        story = obj.get("story_markdown")
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or not isinstance(story, str)
+            or not story.strip()
+        ):
+            return None
+        illos = []
+        for it in obj.get("illustrations") or []:
+            if (
+                isinstance(it, dict)
+                and isinstance(it.get("id"), int)
+                and isinstance(it.get("caption"), str)
+                and isinstance(it.get("image_prompt"), str)
+                and it["image_prompt"].strip()
+            ):
+                illos.append(
+                    {
+                        "id": it["id"],
+                        "caption": it["caption"],
+                        "image_prompt": it["image_prompt"],
+                    }
+                )
+        return {"title": title.strip(), "story_markdown": story, "illustrations": illos}
 
     @staticmethod
     def _is_content_safety_error(error: Exception) -> bool:

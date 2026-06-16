@@ -69,3 +69,51 @@ def test_embed_strips_user_injected_image():
     out, used = S._embed_illustrations(S._strip_untrusted_markup(md), {1: ("c", "u.jpg")})
     assert "evil" not in out
     assert "![c](u.jpg)" in out
+
+
+def test_generate_story_struct_parses_and_validates(make_service, mocker):
+    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    payload = (
+        "Here is your tale! ```json\n"
+        '{"title":"The Tin Fox","story_markdown":"Once [[illustration:1]] fin.",'
+        '"illustrations":[{"id":1,"caption":"a fox","image_prompt":"a tin fox"}]}\n```'
+    )
+    mocker.patch.object(service, "_ask_completion", return_value=payload)
+    out = service._generate_story_struct(
+        "spin a tale", channel="#c", persona="voice", conversation=[]
+    )
+    assert out["title"] == "The Tin Fox"
+    assert out["illustrations"][0]["id"] == 1
+    assert "[[illustration:1]]" in out["story_markdown"]
+
+
+def test_generate_story_struct_retries_then_fails(make_service, mocker):
+    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    m = mocker.patch.object(service, "_ask_completion", return_value="no json here")
+    out = service._generate_story_struct("x", channel="#c", persona="v", conversation=[])
+    assert out is None
+    assert m.call_count >= 3  # initial + >=2 retries
+
+
+def test_validate_story_obj_drops_bad_illustrations():
+    from llm.service import LLMService as S
+
+    obj = {
+        "title": "T",
+        "story_markdown": "body",
+        "illustrations": [
+            {"id": 1, "caption": "ok", "image_prompt": "p"},
+            {"id": "bad", "caption": "x", "image_prompt": "y"},
+            {"id": 2, "caption": "no prompt", "image_prompt": "  "},
+        ],
+    }
+    out = S._validate_story_obj(obj)
+    assert [i["id"] for i in out["illustrations"]] == [1]
+
+
+def test_validate_story_obj_requires_title_and_story():
+    from llm.service import LLMService as S
+
+    assert S._validate_story_obj({"title": "", "story_markdown": "x"}) is None
+    assert S._validate_story_obj({"title": "T", "story_markdown": "  "}) is None
+    assert S._validate_story_obj("not a dict") is None
