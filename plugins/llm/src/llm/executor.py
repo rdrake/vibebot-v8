@@ -147,7 +147,18 @@ class LLMExecutor:
                 # next task on the same thread.
                 self._worker_ctx.in_worker = False
 
-        fut = self._executor.submit(_run)
+        try:
+            fut = self._executor.submit(_run)
+        except BaseException:
+            # Pool dispatch failed (e.g. RuntimeError from a submit that raced
+            # shutdown via the non-atomic `closing` gate). The matching
+            # ``_queued -= 1`` lives inside ``_run``, which never executes on
+            # this path — roll the gauge back so it doesn't leak for the
+            # executor's lifetime. BaseException so KeyboardInterrupt/SystemExit
+            # also restore the counter before propagating.
+            with self._counter_lock:
+                self._queued -= 1
+            raise
         with self._inflight_lock:
             self._inflight.add(fut)
         fut.add_done_callback(self._discard_inflight)

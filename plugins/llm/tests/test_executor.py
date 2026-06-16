@@ -64,6 +64,20 @@ class TestLLMExecutorBasics:
         finally:
             ex.shutdown()
 
+    def test_submit_after_shutdown_does_not_leak_queued_counter(self) -> None:
+        """A submit that races shutdown must not leave ``_queued`` over-counted.
+
+        ``_queued`` is incremented at submit() call time but decremented inside
+        the worker body, which never runs if the pool dispatch itself raises
+        (RuntimeError after shutdown). The increment must be rolled back.
+        """
+        ex = LLMExecutor(max_concurrency=1, log=logging.getLogger("test"))
+        ex.shutdown()
+        assert ex.queued() == 0
+        with pytest.raises(RuntimeError):
+            ex.submit("after-shutdown", lambda: 1)
+        assert ex.queued() == 0
+
     def test_running_and_queued_counters(self) -> None:
         ex = LLMExecutor(max_concurrency=1, log=logging.getLogger("test"))
         try:
