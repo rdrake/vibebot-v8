@@ -68,6 +68,17 @@ EXPLICIT_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit "I want pictures" cues. grok is flaky about calling verse_storybook
+# from prompt guidance alone, and every inline-narrated story already in the
+# channel history reinforces narrating the next one — so when the user clearly
+# asks for an ILLUSTRATED telling we force the tool (see force_initial_storybook).
+# Deliberately tight: a bare "tell me a story" must NOT match (plain stories
+# narrate inline); only an explicit illustration cue does.
+EXPLICIT_STORYBOOK_RE = re.compile(
+    r"\b(illustrat\w*|storybook|story\s*book|picture\s*book|comic|with\s+pictures)\b",
+    re.IGNORECASE,
+)
+
 # Line-break characters that could let untrusted text (e.g. a channel topic)
 # start a new "instruction line" in a prompt. Excludes IRC formatting codes
 # (color/bold/etc.) which are not line separators.
@@ -3760,6 +3771,12 @@ Examples (echo → action_prompt: ""):
                 and _has_tool(profile_tools, "search_web")
                 and EXPLICIT_SEARCH_RE.search(prompt) is not None
             )
+            # verse_storybook only appears in profile_tools on a verse route
+            # with the channel flag on, so tool presence IS the gate.
+            force_initial_storybook = (
+                _has_tool(profile_tools, "verse_storybook")
+                and EXPLICIT_STORYBOOK_RE.search(prompt) is not None
+            )
 
             last_assistant_text = ""
             # Tracks the most recent tool call that completed without an
@@ -3783,7 +3800,12 @@ Examples (echo → action_prompt: ""):
                 )
 
                 completion_kwargs: dict[str, Any] = dict(optional_kwargs)
-                if force_initial_search and _step == 0:
+                if _step == 0 and force_initial_storybook:
+                    completion_kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": "verse_storybook"},
+                    }
+                elif force_initial_search and _step == 0:
                     completion_kwargs["tool_choice"] = {
                         "type": "function",
                         "function": {"name": "search_web"},

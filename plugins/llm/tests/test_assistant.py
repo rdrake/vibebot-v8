@@ -1375,6 +1375,99 @@ class TestMetaCompletion:
         }
         assert "tool_choice" not in mock_completion.call_args_list[1].kwargs
 
+    def test_explicit_illustrated_prompt_forces_verse_storybook_tool_choice(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """When verse_storybook is available and the prompt explicitly asks for
+        an illustrated telling, step 1 forces the tool (grok won't reliably call
+        it from prompt guidance, and inline-narrated history reinforces not to)."""
+        from llm.verse.avatar import make_verse_tool_specs
+
+        storybook_spec = [
+            s
+            for s in make_verse_tool_specs(storybook=True)
+            if s["function"]["name"] == "verse_storybook"
+        ]
+        tool_call = make_tool_call("verse_storybook", {"brief": "the lads"}, call_id="call_sb")
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        forbidden = make_completion_response("throwaway beat")
+
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, forbidden],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"status": "ok", "note": "rendering"}')
+        )
+
+        result = service.assistant_completion(
+            prompt="an illustrated tale of stinky lads winning the pub quiz",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_tools=storybook_spec,
+            extra_handlers={"verse_storybook": handler},
+        )
+
+        first_kwargs = mock_completion.call_args_list[0].kwargs
+        assert first_kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "verse_storybook"},
+        }
+        # Short-circuit: step_2 skipped, content empty (async link is the reply).
+        assert result.content == ""
+        assert mock_completion.call_count == 1
+
+    def test_plain_story_prompt_does_not_force_verse_storybook(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A plain story ask with no illustration cue must NOT force the tool —
+        plain stories narrate inline; only explicit 'illustrated/with pictures'
+        asks force verse_storybook."""
+        from llm.verse.avatar import make_verse_tool_specs
+
+        storybook_spec = [
+            s
+            for s in make_verse_tool_specs(storybook=True)
+            if s["function"]["name"] == "verse_storybook"
+        ]
+        text_response = make_completion_response("Once upon a time the lads met...")
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion", side_effect=[text_response]
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        service.assistant_completion(
+            prompt="tell me the story of how the lads met",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_tools=storybook_spec,
+            extra_handlers={"verse_storybook": mocker.MagicMock()},
+        )
+
+        assert "tool_choice" not in mock_completion.call_args_list[0].kwargs
+
     def test_meta_result_includes_grounding_used(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
