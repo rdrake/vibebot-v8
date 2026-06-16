@@ -5758,15 +5758,24 @@ class LLM(callbacks.Plugin):
         if token_presented is not None:
             # Step 2: confirm purge.
             if self._versepurge_check_token(channel, token_presented):
-                # Pop store from cache. Caller (IRC scheduler thread) is the
-                # only thread holding verse store conns; pop + unlink is safe.
+                # Pop the store AND unlink its files under the SAME lock. The
+                # plugin is threaded=True, so verse @ask (a SupyThread) and loom
+                # workers (executor) hold their own thread-local conns — the
+                # scheduler thread is NOT the sole holder. Both this block and
+                # _get_or_create_verse_store take _verse_stores_lock, so holding
+                # it across the unlink prevents a concurrent cache-miss from
+                # reconstructing a store on the files mid-purge and leaving a
+                # half-written DB behind. (A worker that captured the store
+                # before the purge still holds its own conn; its in-flight write
+                # is best-effort and may be lost — acceptable for this admin-only,
+                # token-gated destructive command.)
                 with self._verse_stores_lock:
                     store = self._verse_stores.pop(channel, None)
-                if store is not None:
-                    db_path = Path(store.path)
-                    db_path.unlink(missing_ok=True)
-                    db_path.with_suffix(".db-wal").unlink(missing_ok=True)
-                    db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+                    if store is not None:
+                        db_path = Path(store.path)
+                        db_path.unlink(missing_ok=True)
+                        db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+                        db_path.with_suffix(".db-shm").unlink(missing_ok=True)
                 irc.reply(f"Verse for {channel} purged.", prefixNick=False)
             else:
                 irc.reply(

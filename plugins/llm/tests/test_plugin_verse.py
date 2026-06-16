@@ -1247,6 +1247,37 @@ class TestVersepurgeCommand:
         # Token cleared.
         assert "#afnet" not in plugin._versepurge_tokens
 
+    def test_purge_holds_store_lock_across_unlink(self, purge_env, mocker) -> None:
+        """The DB unlink must run WHILE _verse_stores_lock is held.
+
+        The plugin is threaded=True, so a concurrent _get_or_create_verse_store
+        (verse @ask on a SupyThread / a loom worker) could otherwise reconstruct
+        a store on the files mid-purge and leave a half-written DB behind. Both
+        the purge and the constructor take _verse_stores_lock, so the unlink must
+        happen inside it.
+        """
+        from pathlib import Path
+
+        plugin, irc, msg, store = purge_env
+
+        plugin.versepurge(irc, msg, ["#afnet"])
+        stored_token, _ = plugin._versepurge_tokens["#afnet"]
+
+        lock_held_during_unlink: list[bool] = []
+        real_unlink = Path.unlink
+
+        def _record(self_path, *a, **kw):
+            lock_held_during_unlink.append(plugin._verse_stores_lock.locked())
+            return real_unlink(self_path, *a, **kw)
+
+        mocker.patch.object(Path, "unlink", autospec=True, side_effect=_record)
+
+        plugin.versepurge(irc, msg, [f"#afnet {stored_token}"])
+
+        # unlink actually fired and every call saw the lock held.
+        assert lock_held_during_unlink
+        assert all(lock_held_during_unlink)
+
     # ------------------------------------------------------------------
     # Test 3: wrong token rejected
     # ------------------------------------------------------------------
