@@ -33,7 +33,7 @@ from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
 from .context import ContextConfig, ConversationContext, Role
-from .executor import LLMExecutor
+from .executor import LLMExecutor, RecursiveSubmitError
 from .persistence import LLMDatabase, ReminderRow
 from .profile import (
     PROFILE_CHAT,
@@ -56,6 +56,7 @@ from .service import (
 from .tracing import TraceFilter, generate_request_id, request_id
 from .verse.aging import AgingOutcome
 from .verse.avatar import (
+    _VerseToolResult,
     build_verse_system_prompt,
     is_ooc,
     make_verse_denial_handlers,
@@ -2615,7 +2616,10 @@ class LLM(callbacks.Plugin):
         persona = self.db.get_avatar_persona(nick) or ""
         system_prompt = build_verse_system_prompt(store, avatar_id, persona)
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
-        tools = make_verse_tool_specs(max_actors=max_actors)
+        tools = make_verse_tool_specs(
+            max_actors=max_actors,
+            storybook=bool(self.registryValue("verseStorybookEnabled", channel)),
+        )
         return VerseRoute(avatar_id, system_prompt, tools, store)
 
     def _build_verse_handlers_for(self, channel: str) -> dict | None:
@@ -2651,6 +2655,132 @@ class LLM(callbacks.Plugin):
         """
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         return make_verse_extra_handlers(route.store, route.avatar_id, max_actors=max_actors)
+
+    def _storybook_handler(
+        self,
+        *,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        channel: str,
+        account: str | None,
+        nick: str,
+        persona: str,
+    ) -> Callable[[dict], _VerseToolResult]:
+        """Build the ``verse_storybook`` tool handler for one completion.
+
+        Returns a synchronous ``Callable[[dict], _VerseToolResult]`` matching
+        the verse handler contract. The returned closure captures the caller
+        context plus a mutable per-turn counter (scoped to this one handler
+        instance → one completion).
+
+        Gating: this factory is only invoked when ``verseStorybookEnabled``
+        is True for the channel (see ``_ask_impl`` merge site), so when the
+        flag is off the handler is never built and the tool is never even
+        advertised. The flag-off verse path is byte-identical to before.
+
+        On invocation the handler enforces, in order: per-turn cap → account
+        gate → ``llm.draw`` capability → per-account cooldown. On success it
+        fires a background job (which generates the storybook and posts the
+        URL to the channel) and immediately returns a "generating" ack so the
+        verse model can acknowledge in character without blocking the loop.
+        """
+        # Per-turn counter, captured by reference via a single-element list so
+        # the inner closure can mutate it. Scoped to this handler instance.
+        turn_count = [0]
+        max_per_turn = int(self.registryValue("verseStorybookMaxPerTurn", channel) or 1)
+        cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
+        cooldown_key = "verse_storybook"
+
+        def _err(message: str) -> _VerseToolResult:
+            return _VerseToolResult(content=json.dumps({"status": "error", "error": message}))
+
+        def _cooldown_active(now: float) -> bool:
+            """Single-slot per-account cooldown using the shared rate-bucket map.
+
+            Reuses ``_rate_buckets``/``_rate_buckets_lock`` (the same machinery
+            backing ``_is_rate_limited``) but with a dedicated ``verse_storybook``
+            command key and a simple "last hit within cooldown window" check, so
+            an in-flight job can't be re-triggered. Records the hit immediately
+            (reserve-at-start) when not limited.
+            """
+            if cooldown <= 0 or not account:
+                return False
+            key = f"{cooldown_key}:{account}"
+            with self._rate_buckets_lock:
+                bucket = self._rate_buckets.get(key)
+                if bucket and (now - bucket[-1]) < cooldown:
+                    return True
+                if bucket is None:
+                    bucket = collections.deque(maxlen=1)
+                    self._rate_buckets[key] = bucket
+                bucket.append(now)
+                return False
+
+        def _deliver(text: str) -> None:
+            """Post a line to the channel from a worker thread.
+
+            Looks up the live IRC connection via ``world.ircs`` (rather than
+            holding the possibly-stale captured ``irc``) and queues a sanitized
+            PRIVMSG, mirroring ``_deliver_pending_result``.
+            """
+            collapsed = self._collapse_for_irc(text) or text
+            for irc_conn in world.ircs:
+                if channel in irc_conn.state.channels:
+                    self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
+                    return
+
+        def _job(brief: str) -> None:
+            try:
+                res = self.llm_service.generate_storybook(
+                    brief, channel=channel, persona=persona, conversation=[]
+                )
+                if res is not None:
+                    _deliver(f"the tale is told — {res.title}: {res.url}")
+                else:
+                    _deliver("the tale slipped away before it could be illustrated.")
+            except Exception:
+                self.log.exception("verse_storybook job failed channel=%s nick=%s", channel, nick)
+
+        def _call(args: dict) -> _VerseToolResult:
+            # 1. Per-turn cap.
+            if turn_count[0] >= max_per_turn:
+                return _err("already told a tale this turn")
+            # 2. Account gate.
+            if not account:
+                return _err("you must be authenticated to weave a storybook")
+            # 3. Capability gate (image spend).
+            if not ircdb.checkCapability(msg.prefix, "llm.draw"):
+                return _err("you lack the standing to summon illustrations")
+            # 4. Per-account cooldown (reserve-at-start).
+            if _cooldown_active(time.time()):
+                return _err("the muse needs a moment")
+
+            # TODO(storybook): daily image cap (verseStorybookDailyImageCap) —
+            # no straightforward per-account daily image-count query exists on
+            # the usage table; cooldown + per-turn cap already bound spend.
+
+            # Reserve the per-turn slot only once we're actually firing.
+            turn_count[0] += 1
+            brief = ""
+            if isinstance(args, dict):
+                raw = args.get("brief")
+                if isinstance(raw, str):
+                    brief = raw
+            try:
+                self._llm_executor.submit("verse_storybook", _job, brief)
+            except RecursiveSubmitError:
+                _job(brief)
+            return _VerseToolResult(
+                content=json.dumps(
+                    {
+                        "status": "generating",
+                        "note": "the tale is being illustrated; I'll share it shortly",
+                    }
+                )
+            )
+
+        _call.__name__ = "_verse_handler_verse_storybook"
+        return _call
 
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
@@ -3427,7 +3557,12 @@ class LLM(callbacks.Plugin):
                     max_actors = self.registryValue(
                         "verseAutoEntityMaxNamesPerCall", preflight.channel
                     )
-                    verse_specs = make_verse_tool_specs(max_actors=max_actors)
+                    verse_specs = make_verse_tool_specs(
+                        max_actors=max_actors,
+                        storybook=bool(
+                            self.registryValue("verseStorybookEnabled", preflight.channel)
+                        ),
+                    )
                     self._ask_impl(
                         irc,
                         msg,
@@ -3574,6 +3709,21 @@ class LLM(callbacks.Plugin):
                         **(bridge_handlers or {}),
                         **verse_handlers,
                     }
+                    # Storybook tool (gated): overlay a live handler that can
+                    # capture irc/msg/channel/account/nick/persona. Only wired
+                    # when the per-channel flag is on; otherwise the spec isn't
+                    # advertised and this key is never reached. The persona is
+                    # the clean character voice (NOT the system_prompt overlay).
+                    if self.registryValue("verseStorybookEnabled", channel):
+                        persona = self.db.get_avatar_persona(nick) or ""
+                        combined_handlers["verse_storybook"] = self._storybook_handler(
+                            irc=irc,
+                            msg=msg,
+                            channel=channel,
+                            account=pf.account,
+                            nick=nick,
+                            persona=persona,
+                        )
                 elif verse_list:
                     denial_handlers = make_verse_denial_handlers(verse_list)
                     combined_handlers = {

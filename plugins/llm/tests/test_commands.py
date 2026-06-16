@@ -3121,3 +3121,195 @@ class TestCheckPendingTasks:
 
         # Both results were attempted
         assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# verse_storybook
+# ---------------------------------------------------------------------------
+
+
+class TestVerseStorybook:
+    """Cover the gated verse_storybook tool: spec parity + handler gates."""
+
+    def _enable_storybook(self, plugin, mocker, *, enabled=True):
+        """Swap registryValue so verseStorybookEnabled is on and the
+        storybook tuning keys have sane numeric defaults."""
+        base = make_registry_side_effect()
+
+        def side_effect(key, *args):
+            if key == "verseStorybookEnabled":
+                return enabled
+            if key == "verseStorybookMaxPerTurn":
+                return 1
+            if key == "verseStorybookCooldownSeconds":
+                return 300
+            return base(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=side_effect)
+
+    # --- spec parity -------------------------------------------------------
+
+    def test_spec_excludes_storybook_when_flag_off(self):
+        from llm.verse.avatar import make_verse_tool_specs
+
+        specs = make_verse_tool_specs(max_actors=8, storybook=False)
+        names = {s["function"]["name"] for s in specs}
+        assert "verse_storybook" not in names
+
+    def test_spec_includes_storybook_when_flag_on(self):
+        from llm.verse.avatar import make_verse_tool_specs
+
+        specs = make_verse_tool_specs(max_actors=8, storybook=True)
+        names = {s["function"]["name"] for s in specs}
+        assert "verse_storybook" in names
+
+    def test_route_spec_tracks_flag(self, plugin_env, mocker):
+        """_verse_route_for advertises verse_storybook iff the flag is on."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        store = mocker.MagicMock()
+        store.find_avatar_by_account.return_value = None
+        store.find_avatar_by_nick.return_value = 7
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin.db, "get_avatar_persona", return_value="a sly fox")
+        mocker.patch("llm.plugin.build_verse_system_prompt", return_value="SCENE")
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.is_ooc", return_value=False)
+
+        # Flag off → no storybook spec.
+        base = make_registry_side_effect({"verseEnabled": True})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        route = plugin._verse_route_for("#test", "testnick", None, "hi")
+        assert route is not None
+        names_off = {t["function"]["name"] for t in route.tools}
+        assert "verse_storybook" not in names_off
+
+        # Flag on → storybook spec present.
+        def side_effect(key, *args):
+            if key == "verseStorybookEnabled":
+                return True
+            return base(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=side_effect)
+        route = plugin._verse_route_for("#test", "testnick", None, "hi")
+        names_on = {t["function"]["name"] for t in route.tools}
+        assert "verse_storybook" in names_on
+
+    # --- handler gates -----------------------------------------------------
+
+    def _build(self, plugin, mock_irc, mock_msg, mocker, *, account="acct"):
+        return plugin._storybook_handler(
+            irc=mock_irc,
+            msg=mock_msg,
+            channel="#test",
+            account=account,
+            nick="testnick",
+            persona="a sly fox",
+        )
+
+    def test_no_account_returns_error(self, plugin_env, mocker):
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        handler = self._build(plugin, mock_irc, mock_msg, mocker, account=None)
+
+        out = json.loads(handler({"brief": "a tale"}).content)
+        assert out["status"] == "error"
+        plugin.llm_service.generate_storybook.assert_not_called()
+        submit.assert_not_called()
+
+    def test_missing_draw_capability_returns_error(self, plugin_env, mocker):
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+
+        out = json.loads(handler({"brief": "a tale"}).content)
+        assert out["status"] == "error"
+        plugin.llm_service.generate_storybook.assert_not_called()
+        submit.assert_not_called()
+
+    def test_cooldown_active_returns_error(self, plugin_env, mocker):
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        # Pre-load the cooldown bucket so the account is already limited.
+        plugin._rate_buckets["verse_storybook:acct"] = __import__("collections").deque(
+            [time.time()], maxlen=1
+        )
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+
+        out = json.loads(handler({"brief": "a tale"}).content)
+        assert out["status"] == "error"
+        plugin.llm_service.generate_storybook.assert_not_called()
+        submit.assert_not_called()
+
+    def test_per_turn_cap_blocks_second_call(self, plugin_env, mocker):
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+
+        first = json.loads(handler({"brief": "first"}).content)
+        assert first["status"] == "generating"
+        second = json.loads(handler({"brief": "second"}).content)
+        assert second["status"] == "error"
+        # Only the first call scheduled a job.
+        assert submit.call_count == 1
+
+    def test_happy_path_returns_generating_and_schedules_job(self, plugin_env, mocker):
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+
+        out = json.loads(handler({"brief": "a grand tale"}).content)
+        assert out["status"] == "generating"
+        # Job scheduled exactly once on the executor.
+        assert submit.call_count == 1
+        assert submit.call_args[0][0] == "verse_storybook"
+        # generate_storybook is NOT invoked synchronously in the handler.
+        plugin.llm_service.generate_storybook.assert_not_called()
+
+    def test_job_delivers_url_to_channel(self, plugin_env, mocker):
+        """The scheduled job posts the storybook URL via the world.ircs path."""
+        from llm.service import StorybookResult
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin.llm_service.generate_storybook.return_value = StorybookResult(
+            url="http://h/x.md", title="A Tale", image_count=2, dropped=0
+        )
+        # Run the executor job inline so we can observe delivery.
+        submit = mocker.patch.object(
+            plugin._llm_executor,
+            "submit",
+            side_effect=lambda label, fn, *a: fn(*a),
+        )
+        # Make world.ircs yield our mock_irc which is in the channel.
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch("llm.plugin.world.ircs", [mock_irc])
+        safe_queue = mocker.patch.object(plugin, "_safe_queue", return_value=True)
+
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+        handler({"brief": "a grand tale"})
+
+        assert submit.call_count == 1
+        plugin.llm_service.generate_storybook.assert_called_once()
+        # Delivered the URL to the channel.
+        assert safe_queue.called
