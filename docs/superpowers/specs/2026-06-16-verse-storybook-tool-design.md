@@ -1,119 +1,165 @@
-# Verse Storybook Tool — Design
+# Verse Storybook Tool — Design (v2, post red-team)
 
 **Date:** 2026-06-16
-**Status:** Approved (design); pending implementation plan
+**Status:** Revised after adversarial review; one open decision (execution model) before planning.
 
 ## Summary
 
-Give **verse mode** a new, model-invoked tool that turns a rich roleplay
-scenario into a **multi-modal illustrated story**: the bot writes a short tale
-in its verse voice, decides which moment(s) deserve illustration, draws them,
-and bundles prose + images into a single **storybook-themed HTML page**. The
-bot posts an in-character line plus the page URL in channel.
+Give **verse mode** a model-invoked tool that turns a rich roleplay scenario into
+a **multi-modal illustrated story**: the bot writes a short tale in its verse
+voice, decides which moment(s) deserve illustration, draws them, and bundles
+prose + images into a single **storybook-themed HTML page**, then posts the link
+in channel.
 
-This composes three pieces that already exist:
-- the **verse voice** (verseModel + channel overlay + verse tool mechanism),
-- the **image pipeline** (`image_generation()` with its safety-rewrite loop and
-  cost tracking),
-- the **storybook HTML page** (`save_markdown_to_http`, the storybook theme, and
-  the newly-added useful `<title>`).
+It is **not** a loom feature. Tool-only trigger; the model decides when a scenario
+has earned a story.
 
-It is **not** a loom feature — no loom cycles, no loom channel, no background
-posting. It fires only when the verse model chooses to call the tool during
-normal play.
+## ⚠️ What the red-team changed
 
-## Goals / Non-goals
+Three adversarial passes (security, cost/concurrency, correctness) showed the
+"this just composes three existing things" framing was wrong on multiple seams.
+The must-fixes below are now part of the design, not afterthoughts:
 
-**Goals**
-- One new verse tool (`verse_storybook`) the model calls at its discretion.
-- Story seed = the current verse conversation; works **either** standalone
-  (invented cast) or grounded in the channel's verse cast — the model's choice.
-- The model decides how many illustrations the story needs (0..N) and **where**
-  they sit in the narrative.
-- Output is a single storybook HTML page (prose + inline illustrations).
-- Reuse existing voice/image/page machinery; keep new surface small.
+- The HTML sanitizer **strips every `<img>`** today → images would never render.
+- `image_generation()` returns **no URL field** (URL is buried in a translated
+  prose string) → nothing clean to embed.
+- Verse tool handlers run **inline on the driver thread holding a permit** →
+  story + 3 images stalls the bot for minutes and drains the 16-permit pool.
+- The verse overlay **forbids markdown/bracket output** ("plain text only, bare
+  URLs") → directly contradicts "emit markdown-in-JSON."
+- "Same gate as `@draw`" is **false**: the verse route gates on `llm.verse`, not
+  `llm.draw`, and runs `require_account=False`.
 
-**Non-goals**
-- No loom integration or auto-posting.
-- No explicit `@story` user command in v1 (tool-only trigger). Can be added later.
-- No persistence of generated stories into the verse `events` canon (v1 is
-  ephemeral output, like `@draw`).
+## Trigger & gating
 
-## Trigger
+Tool-only: `verse_storybook` added to `make_verse_tool_specs`
+(`verse/avatar.py:34`), exposed only when `verseStorybookEnabled` is true for the
+channel. Because the verse entry path is **not** `@draw`'s gate, the handler must
+enforce, before doing any work:
 
-Tool-only. `verse_storybook` is added to the verse tool specs alongside the
-existing `verse_act / verse_move / verse_look / verse_recall / verse_record`
-(`plugins/llm/src/llm/verse/avatar.py:34`, `make_verse_tool_specs`). The tool is
-exposed only when `verseStorybookEnabled` is true for the channel. Verse tools
-are already passed through `extra_tools` → `assistant_completion`
-(`plugin.py:3426/3433/3607`, `service.py:3525-3527/3565`) and dispatched via the
-verse handler map (`plugin.py:3568 _build_verse_handlers_for_route`,
-`3574 make_verse_denial_handlers`). The new tool plugs into those same seams.
+1. **Account required** — `self._require_account(irc, msg)`; bail if None.
+2. **Capability** — explicit `ircdb.checkCapability(msg.prefix, "llm.draw")`
+   (image spend), in addition to the route's `llm.verse`.
+3. **Per-account rate limit** — reuse the existing `_rate_buckets` + `_rate_buckets_lock`
+   machinery (`plugin.py:2791`), registered as a rate-limit block keyed **per
+   account** (not per channel — channel keying is rotatable). Check-and-**reserve**
+   atomically under the lock *before* generation, recording the timestamp at the
+   **start** so an in-flight multi-minute job can't be re-triggered.
+4. **Per-completion cap** — a counter in the tool executor bounds `verse_storybook`
+   to **1 invocation per completion** (config `verseStorybookMaxPerTurn`, default 1);
+   2nd+ call returns a tool error. `metaMaxSteps=12` is far too loose otherwise.
+5. **Aggregate daily image ceiling** — before drawing, check cumulative image cost
+   for the account today against `verseStorybookDailyImageCap` (default 30 images)
+   using the existing `db.log_usage` records; refuse over budget. Cooldown caps
+   *rate*; this caps *total*.
 
-## Tool interface
+## Execution model — OPEN DECISION
 
-The model calls `verse_storybook` with a brief, e.g.:
+The single biggest red-team finding: the work must **not block the driver
+thread/permit**. Two options (recommend **B**):
+
+- **(A) Bounded-inline (simplest).** Run like `@draw` does today, but bounded:
+  draw images **sequentially**, `drawAutoRewriteMax=0` (no rewrite ×4 multiplier),
+  a **short per-image timeout** (`verseStorybookImageTimeout`, default 45s), per-
+  completion cap 1. Worst case ≈ story(≤30s) + 3×45s ≈ **~2.5 min inline** on one
+  permit. Matches `@draw`'s existing risk profile ×3. Less code; still a real stall.
+- **(B) Fire-and-return (recommended).** The tool handler validates gates, then
+  **submits** the whole `generate_storybook` job to `self._llm_executor` and
+  returns immediately with an in-character "the tale is being illustrated — I'll
+  post it shortly." The worker draws sequentially under its single permit and posts
+  the URL when done (mirrors the `@draw` timeout-recovery/pending path,
+  `service.py:3953`). No driver-thread stall, no pool drain. Must detect worker
+  context: `_llm_executor.submit` raises `RecursiveSubmitError` from a worker
+  thread (`executor.py:102`), so when already on a worker, run inline-without-submit
+  under a hard wall-clock budget.
+
+Either way: **sequential image draws are required** — no side thread pool (it would
+bypass `maxConcurrentLLMCalls` or self-deadlock against the held permit).
+
+## Story generation (dedicated prompt, not the verse overlay)
+
+The verse overlay mandates "plain text only / bare URLs," which forbids the
+structured markdown output we need. So the story call uses a **dedicated storybook
+system prompt** that inherits the **persona/voice** but explicitly re-enables
+markdown and structured output — it does **not** go through the standard verse
+overlay-layering path (`service.py:3431`). The energy/length character still comes
+from the persona, not the no-markdown clauses.
+
+Structured output requested:
+```jsonc
+{
+  "title": "…",
+  "story_markdown": "…[[illustration:1]]…[[illustration:2]]…",
+  "illustrations": [ { "id": 1, "caption": "…", "image_prompt": "…" } ]   // 0..N
+}
 ```
-{ "brief": "Spin the last few turns into a short tale", "hint": "optional theme/style" }
-```
-The brief is intentionally thin — the real content comes from the verse
-conversation already in context.
 
-## Handler pipeline
+**Robust parsing** (the verse model is non-reasoning and unreliable at JSON):
+- Prefer a provider **JSON/structured-output mode** if `verseModel` supports it;
+  otherwise fall back to prompt discipline.
+- Extract with **brace-matching** (first `{` … matching last `}`), not the loom's
+  whole-message fence regex — tolerate leading/trailing in-character prose.
+- **Partial tolerance** like loom: if `title`/`story_markdown` parse but an
+  illustration entry is malformed, drop that illustration and ship.
+- **≥2 retries** with a JSON-specific nudge ("emit ONLY the JSON object").
 
-A thin verse handler delegates to a new service method,
-`LLMService.generate_storybook(brief, *, channel, conversation) -> StorybookResult`,
-so the plugin stays thin and the logic is unit-testable in isolation.
+**Denial guard:** run denial detection (`_is_verse_denial`) only on the **extracted
+`story_markdown`**, never on the raw JSON, and tolerate legitimate story text like
+"The Day That Never Happened" (don't burn the retry budget on it). Don't apply
+denial-stripping to this safety-relevant call.
 
-1. **Write the story (one verseModel call, structured output).**
-   System prompt = the short storybook framing layered on the channel's verse
-   overlay (per the "verse must inherit channel overlay" rule). The model returns:
-   ```jsonc
-   {
-     "title": "…",                          // page <title> + # heading
-     "story_markdown": "…[[illustration:1]]…[[illustration:2]]…",
-     "illustrations": [
-       { "id": 1, "caption": "…", "image_prompt": "…" },
-       { "id": 2, "caption": "…", "image_prompt": "…" }
-     ]
-   }
-   ```
-   Parsing/validation mirrors the loom proposal JSON handling. The verse denial
-   guard / history de-poisoning already in place applies to this call.
+## Illustration generation (no prompt laundering)
 
-2. **Enforce the image cap.** Honor at most `verseStorybookMaxImages` (default 3)
-   illustrations. If the model requested more, keep the first N **and `log()` how
-   many were dropped** (no silent truncation). Strip markers whose illustration
-   was dropped.
+For each kept illustration (sequential), call `image_generation(image_prompt + a
+storybook art-style prefix, channel=…)` **with `drawAutoRewriteMax=0`** — model-
+derived prompts must not be auto-re-engineered past the provider safety filter
+(that turns the tool into a prompt-laundering amplifier). Run the `image_prompt`
+through the existing `validate_prompt`/moderation before generation. A failed or
+blocked image **drops its marker and continues**.
 
-3. **Draw each kept illustration.** For each, call `image_generation(image_prompt
-   + storybook art-style prefix, channel=…)` — the existing pipeline (safety
-   rewrite, cost tracking, `imageModel`). Bounded concurrency (≤ cap) via a small
-   thread pool is acceptable; sequential is acceptable for v1. A failed or
-   safety-blocked image **drops its marker and continues** — the story still ships.
+**URL plumbing (BLOCKER fix):** add a `url: str | None` field to `ImageResult`,
+populated on success from the same save the pipeline already does — do **not**
+regex-scrape the translated `content` string.
 
-4. **Assemble the page.** Build markdown:
-   `# {title}` + `story_markdown` with each surviving `[[illustration:N]]` marker
-   replaced by `![{caption}](…image url…)` immediately followed by an emphasised
-   caption line. Orphan markers (no illustration) and orphan illustrations (no
-   marker) are handled deterministically: unknown markers removed; illustrations
-   with no marker are dropped (logged). Image URLs come from the existing image
-   host (`save_image_to_http` / `_download_and_save_image`).
+## Page assembly
 
-5. **Save + return.** `save_markdown_to_http(markdown, title=title)` → storybook
-   URL. Return `StorybookResult(url, title, image_count, dropped)` to the handler.
-   The tool result hands the URL + title back to the verse model, which announces
-   it in-character; the in-channel line therefore reads naturally and a
-   URL-title-echo bot surfaces the story's name (reusing the title work shipped
-   2026-06-16).
+1. **Sanitize the model's `story_markdown` first:** strip any user-echoed raw
+   `![...](...)` image syntax and any literal `[[illustration:N]]` tokens, so only
+   **server-controlled** markers placed by our own structured field are honored.
+2. **Truncate** `story_markdown` to `verseStorybookMaxChars` before embedding.
+3. **Single-regex marker substitution:** one `re.sub(r"\[\[illustration:(\d+)\]\]", …)`
+   pass with a callback that looks each id up in a dict (avoids the `1` vs `11`
+   substring-collision of per-id `str.replace`). Duplicate-id rule: **first marker
+   wins**, later duplicates stripped. Orphan illustrations (no marker) are dropped
+   and **logged**.
+4. Replace each surviving marker with markdown `![caption](relative-image-path)` +
+   an emphasised caption line.
+5. `save_markdown_to_http(markdown, title=title or "An Untitled Tale")` → storybook
+   URL. Default title prevents an empty `# ` heading.
 
-## Page rendering changes
+## Sanitizer & rendering changes (BLOCKER fix + XSS containment)
 
-The storybook HTML theme currently has no `img` styling. Add an `img` rule
-(max-width 100%, centered, rounded, gilt border + soft shadow) and a caption
-style, so illustrations read as framed plates in the book. Model-supplied
-captions flow through the existing `_sanitize_html` body sanitizer; the title is
-already HTML-escaped.
+`_sanitize_html` (`service.py:686`) currently has no `img`. Add — **as a called-out
+security decision**:
+- `img` to the `tags` set; `{"src", "alt", "title"}` to `attributes["img"]`.
+- Keep `url_schemes` locked to `{http, https}` for `img` (no `data:`/`mailto:`),
+  and **constrain `img src` to the bot's own image host/path** (same `http_root`),
+  so this can't become an SSRF/tracking-pixel vector on the *existing* answer/code
+  pastebin pages. Embedding images by **relative path** (same directory as the page)
+  satisfies the host-scoping and survives `localhost`/relative `httpUrlBase`.
+- Add `img`/caption CSS to the storybook theme (framed plate, centered, gilt
+  border, soft shadow).
+- **Regression test:** a saved storybook page contains a real `<img src=…>`, and
+  `javascript:`/`data:` src and `onerror` are stripped.
+
+## SSRF hardening
+
+`_download_and_save_image` only fetches provider URLs (model supplies prompts, not
+URLs) and blocks redirects (`service.py:4475`), but `validate_external_url` does no
+DNS resolution (documented, `service.py:476`). Since storybook fires up to 3
+downloads per call from a lower-trust caller, **resolve the hostname and re-check
+the resolved IP** against the private/reserved set before fetch, and cap total
+downloads per call.
 
 ## Configuration
 
@@ -121,59 +167,57 @@ already HTML-escaped.
 |-----|------|---------|---------|
 | `verseStorybookEnabled` | bool (per-channel) | false | Exposes the tool. |
 | `verseStorybookMaxImages` | int | 3 | Hard cap on illustrations per story. |
-| `verseStorybookCooldownSeconds` | int | 300 | Per-user/channel rate limit. |
-| `verseStorybookMaxChars` | int | 6000 | Story length cap. |
+| `verseStorybookMaxPerTurn` | int | 1 | Max `verse_storybook` calls per completion. |
+| `verseStorybookCooldownSeconds` | int | 300 | Per-account rate limit (reserve at start). |
+| `verseStorybookDailyImageCap` | int | 30 | Per-account daily image-spend ceiling. |
+| `verseStorybookMaxChars` | int | 6000 | Story length cap (pre-embed). |
+| `verseStorybookImageTimeout` | int | 45 | Per-image timeout for this tool (< draw's 120). |
 
-Models reuse existing keys: `verseModel` for prose, `imageModel` for art.
-
-## Guardrails
-
-- **Account required**, same capability gate as `@draw` (it spends image money).
-- **Cooldown** per user+channel (`verseStorybookCooldownSeconds`); on cooldown the
-  tool returns a polite refusal the model can voice.
-- **Image cap** with drop logging (above).
-- **Length cap** on the story.
-- **Config toggle** off by default; tool absent when disabled.
+Models reuse `verseModel` (prose) and `imageModel` (art).
 
 ## Error handling
 
 | Failure | Behaviour |
 |---------|-----------|
-| Story completion error / denial | Tool returns error; verse denial guard applies; no page. |
-| Malformed JSON from model | One retry, then graceful tool error. |
-| An image fails / is blocked | Drop that marker, keep going; story ships with fewer plates. |
-| All images fail | Ship a prose-only storybook page (still valid). |
-| `save_markdown_to_http` fails | Tool returns error (the page is the deliverable). |
-| Cap exceeded | Keep first N, log dropped count. |
+| Account/capability/cooldown/daily-cap fail | Tool returns a polite refusal the model can voice; no work. |
+| 2nd `verse_storybook` call in one completion | Tool error (per-turn cap). |
+| Story completion error / denial | Tool error; denial detection on extracted prose only. |
+| Malformed JSON | Brace-extract + ≥2 retries; partial-tolerant; then graceful error. |
+| An image fails/blocked | Drop that marker; story ships with fewer plates. |
+| All images fail | Prose-only storybook page (valid). |
+| `save_markdown_to_http` fails | Tool error (the page is the deliverable). |
+| Cap exceeded | Keep first N, **log** dropped count. |
 
 ## Components & isolation
 
-- `verse/avatar.py` — add `verse_storybook` spec to `make_verse_tool_specs`
-  (gated by config at the call site). *What:* declares the tool. *Depends on:* nothing new.
-- `plugin.py` — register the handler in `_build_verse_handlers_for_route`; gate on
-  `verseStorybookEnabled`; enforce cooldown/account; call the service method; map
-  result → `ToolResult`. *Thin glue.*
-- `service.py` — `generate_storybook(...)`: prompt build, structured parse, image
-  fan-out, marker embedding, page save. *The testable core.* Add storybook prompt
-  constant (short). *Depends on:* `image_generation`, `save_markdown_to_http`.
-- `service.py` (storybook HTML template) — add `img`/caption CSS.
-- `config.py` — four new registry keys.
+- `service.py` — `ImageResult.url` field; `generate_storybook(...)` core (prompt
+  build, robust parse, sequential image draws, sanitize+embed, save); storybook
+  system-prompt constant; `_sanitize_html` img allowlist; DNS re-check.
+- `verse/avatar.py` — `verse_storybook` tool spec (config-gated).
+- `plugin.py` — handler in `_build_verse_handlers_for_route`: account+capability+
+  rate-limit+per-turn+daily-cap gates, then execution-model dispatch (A or B);
+  worker-context detection.
+- executor / assistant — per-completion invocation counter.
+- `config.py` — seven new keys; register the rate-limit block.
 
 ## Testing
 
-- Structured-story **parse/validation**: valid, malformed (retry), missing fields.
-- **Marker embedding**: correct placement; orphan markers; orphan illustrations;
-  duplicate ids.
-- **Cap enforcement** + drop logging.
-- **Image-failure resilience**: one image fails → marker dropped, page still saved;
-  all fail → prose-only page.
-- **Cooldown** gating and **config toggle** (tool absent when disabled).
-- **Page assembly**: markdown contains `# title`, image tags, captions; title
-  passed to `save_markdown_to_http`.
-- Mock `image_generation` and the completion call; assert no real network.
+- Gates: no account, missing `llm.draw`, cooldown active, per-turn 2nd call, daily
+  cap exceeded → all refuse without spend (mock image gen asserts not called).
+- Parse: valid; prose-wrapped JSON; fenced JSON; malformed field (partial); total
+  garbage → graceful.
+- Marker embedding: placement; `1` vs `11`; duplicate ids; orphan markers/illos;
+  marker inside a code block; caption echoing the marker token; user-injected
+  `![](url)` stripped.
+- Sanitizer: storybook page has real `<img src>`; `javascript:`/`data:`/`onerror`
+  stripped; existing answer/code pages still have no `<img>` unless server-authored.
+- Image failure: one fails → marker dropped, page saved; all fail → prose-only.
+- Execution model (B): handler returns immediately; worker posts URL; worker-context
+  inline path doesn't call `submit` (no `RecursiveSubmitError`).
+- Overlay: story call uses the dedicated prompt, not the verse plain-text overlay.
 
-## Open questions (deferred, not blocking)
+## Deferred (not v1)
 
-- Should standout stories optionally be recorded into verse `events` canon later?
-  (v1: no.)
-- Explicit `@story` command for users who want to force one? (v1: no, tool-only.)
+- Recording standout stories into verse `events` canon.
+- Explicit `@story` user command.
+- Parallel image draws (sequential required for v1).
