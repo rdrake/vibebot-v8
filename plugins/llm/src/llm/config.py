@@ -537,6 +537,73 @@ conf.registerGlobalValue(
     ),
 )
 
+# ============================================================================
+# Verse Storybook (illustrated story tool)
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookEnabled",
+    registry.Boolean(
+        False,
+        _("""Expose the verse_storybook tool in this channel."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookMaxImages",
+    registry.NonNegativeInteger(
+        3,
+        _("""Max illustrations drawn per story."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookMaxPerTurn",
+    registry.NonNegativeInteger(
+        1,
+        _("""Max verse_storybook calls honored per completion."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookCooldownSeconds",
+    registry.NonNegativeInteger(
+        300,
+        _("""Per-account cooldown between stories."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookDailyImageCap",
+    registry.NonNegativeInteger(
+        30,
+        _("""Per-account daily ceiling on storybook images."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookMaxChars",
+    registry.NonNegativeInteger(
+        6000,
+        _("""Story length cap before image embedding."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "verseStorybookImageTimeout",
+    registry.NonNegativeInteger(
+        45,
+        _("""Per-image timeout (seconds) for storybook draws."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "verseCompactionMinKeepEvents",
