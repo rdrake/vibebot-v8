@@ -263,6 +263,11 @@ class TestXssPrevention:
         assert "<img" in content and 'src="img_abc.jpg"' in content
         assert 'alt="a cat"' in content
 
+    def test_storybook_has_img_css(self, service, tmp_path):
+        url = service.save_markdown_to_http("![c](img_a.jpg)", title="t")
+        content = (tmp_path / url.split("/")[-1]).read_text()
+        assert "img {" in content or "img{" in content
+
     def test_external_img_src_dropped(self, service, tmp_path):
         md = "![x](https://evil.example/track.png)"
         url = service.save_code_to_http(md)

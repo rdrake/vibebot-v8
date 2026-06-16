@@ -4339,6 +4339,8 @@ blockquote {{
 ul, ol {{ margin: 1em 0; padding-left: 2em; }}
 li {{ margin: 0.3em 0; }}
 li::marker {{ color: var(--gold); }}
+img {{ display: block; max-width: 100%; height: auto; margin: 1.6em auto; border: 1px solid rgba(154,123,63,0.55); border-radius: 4px; box-shadow: 0 6px 22px rgba(0,0,0,0.30); }}
+img + em {{ display: block; text-align: center; color: var(--ink-soft); font-size: 0.95rem; margin-top: -0.8em; }}
 pre {{
   padding: 18px 20px; overflow-x: auto; margin: 1.4em 0;
   background: var(--parchment-deep); border: 1px solid rgba(154,123,63,0.5);
