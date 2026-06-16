@@ -31,7 +31,7 @@ class VerseDispatchResult:
     error: str | None = None
 
 
-def make_verse_tool_specs(*, max_actors: int = 8) -> list[dict]:
+def make_verse_tool_specs(*, max_actors: int = 8, storybook: bool = False) -> list[dict]:
     """Return OpenAI/LiteLLM tool specs for the five verse tools.
 
     The tools are model-callable but only meaningful when the @ask path
@@ -41,7 +41,7 @@ def make_verse_tool_specs(*, max_actors: int = 8) -> list[dict]:
     ``verse_record.actors`` so the model is told the per-call cap up
     front (the dispatch branch also enforces it server-side).
     """
-    return [
+    specs: list[dict] = [
         {
             "type": "function",
             "function": {
@@ -155,6 +155,31 @@ def make_verse_tool_specs(*, max_actors: int = 8) -> list[dict]:
             },
         },
     ]
+    if storybook:
+        specs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "verse_storybook",
+                    "description": (
+                        "Turn the current scene into a short illustrated story page. "
+                        "Call ONLY when a scenario truly deserves a full tale. Returns a "
+                        "link to share in character."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "brief": {
+                                "type": "string",
+                                "description": "What the story should be about.",
+                            },
+                        },
+                        "required": ["brief"],
+                    },
+                },
+            }
+        )
+    return specs
 
 
 class VerbEffect(Enum):

@@ -219,3 +219,20 @@ def test_resolves_to_public(make_service, mocker):
     assert service._resolves_to_public("http://example.com/x.png") is True
     # no host / unresolvable → False
     assert service._resolves_to_public("not-a-url") is False
+
+
+def test_make_verse_tool_specs_includes_storybook_when_enabled():
+    from llm.verse.avatar import make_verse_tool_specs
+
+    on = make_verse_tool_specs(max_actors=2, storybook=True)
+    off = make_verse_tool_specs(max_actors=2, storybook=False)
+
+    def names(specs):
+        out = []
+        for s in specs:
+            # support either {"function":{"name":...}} or {"name":...}
+            out.append(s.get("function", s).get("name"))
+        return out
+
+    assert "verse_storybook" in names(on)
+    assert "verse_storybook" not in names(off)
