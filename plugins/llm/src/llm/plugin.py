@@ -2773,8 +2773,15 @@ class LLM(callbacks.Plugin):
             return _VerseToolResult(
                 content=json.dumps(
                     {
-                        "status": "generating",
-                        "note": "the tale is being illustrated; I'll share it shortly",
+                        "status": "ok",
+                        "note": (
+                            "The illustrated page is rendering in the background and "
+                            "its link will be posted automatically the moment it is "
+                            "ready. Do NOT announce that a story is coming, do NOT "
+                            "mention drawing/rendering/waiting, and do NOT promise a "
+                            "link. Just stay in character — reply with a brief beat or "
+                            "say nothing further."
+                        ),
                     }
                 )
             )

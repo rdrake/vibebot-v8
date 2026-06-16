@@ -3262,13 +3262,13 @@ class TestVerseStorybook:
         handler = self._build(plugin, mock_irc, mock_msg, mocker)
 
         first = json.loads(handler({"brief": "first"}).content)
-        assert first["status"] == "generating"
+        assert first["status"] == "ok"
         second = json.loads(handler({"brief": "second"}).content)
         assert second["status"] == "error"
         # Only the first call scheduled a job.
         assert submit.call_count == 1
 
-    def test_happy_path_returns_generating_and_schedules_job(self, plugin_env, mocker):
+    def test_happy_path_returns_ok_and_schedules_job(self, plugin_env, mocker):
         import json
 
         plugin, mock_irc, mock_msg = plugin_env
@@ -3278,7 +3278,9 @@ class TestVerseStorybook:
         handler = self._build(plugin, mock_irc, mock_msg, mocker)
 
         out = json.loads(handler({"brief": "a grand tale"}).content)
-        assert out["status"] == "generating"
+        assert out["status"] == "ok"
+        # The note must steer the model away from announcing a pending link.
+        assert "not announce" in out["note"].lower()
         # Job scheduled exactly once on the executor.
         assert submit.call_count == 1
         assert submit.call_args[0][0] == "verse_storybook"
