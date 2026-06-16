@@ -3719,6 +3719,30 @@ Examples (echo → action_prompt: ""):
                         )
                         continue
 
+                    if not isinstance(args, dict):
+                        # Valid JSON but not an object — xai/grok non-reasoning
+                        # sometimes emits a bare scalar/array as tool arguments.
+                        # The executor.execute path tolerates this, but the
+                        # extra_handlers (verse/Limnoria-bridge) path does
+                        # dict(args)/args.get(...) and would raise out of the
+                        # whole turn ("Sorry, something went wrong."). Treat it
+                        # exactly like the malformed-arguments case above.
+                        self.log.warning(
+                            "meta tool call %s: non-dict arguments (%s), skipping",
+                            tc.function.name,
+                            type(args).__name__,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(
+                                    {"error": "Malformed tool arguments — call skipped."}
+                                ),
+                            }
+                        )
+                        continue
+
                     self.log.info(
                         "meta tool call: %s",
                         tc.function.name,
@@ -4552,7 +4576,11 @@ h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
             # Collapse line-break chars so a stored/relayed nick cannot forge a
             # new speaker line (defense-in-depth; live IRC nicks lack newlines).
             nick = _LINE_BREAK_RE.sub(" ", nick)
-            content = msg.get("content") or ""
+            # Collapse line breaks in content too — same forgery guard as the
+            # nick above. sanitize_output deliberately preserves real newlines,
+            # so relayed/stored content re-surfacing here could otherwise inject
+            # a forged pseudo-speaker line into the model's channel-history view.
+            content = _LINE_BREAK_RE.sub(" ", msg.get("content") or "")
             # Truncate long messages
             if len(content) > CHANNEL_MSG_TRUNCATE_LEN:
                 content = content[: CHANNEL_MSG_TRUNCATE_LEN - 3] + "..."

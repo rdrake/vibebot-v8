@@ -884,6 +884,48 @@ class TestMetaCompletion:
         # The skipped call must not be recorded as a successful tool use.
         assert result.last_successful_tool != "clear_instruction"
 
+    @pytest.mark.parametrize("bad_args", ["[]", '"x"', "123", "null", "true", "[1, 2]"])
+    def test_non_dict_tool_arguments_for_extra_handler_skipped_not_aborted(
+        self, service: LLMService, mocker: MockerFixture, bad_args: str
+    ) -> None:
+        """GIVEN a tool call whose arguments are valid JSON but not an object
+        (a bare scalar/array, as xai/grok non-reasoning sometimes emits) routed
+        to an ``extra_handler`` WHEN the loop dispatches THEN the handler is
+        never invoked, an error tool-message is appended, and the turn finishes
+        with the model's next reply instead of aborting the whole turn.
+
+        The decode-error guard only catches unparseable JSON; a valid non-dict
+        flows straight into ``extra_handlers[name](args)``, where the verse /
+        Limnoria-bridge handlers do ``dict(args)``/``args.get(...)`` and raise
+        out to the function-level handler ("Sorry, something went wrong.").
+        """
+        spy = mocker.MagicMock(name="verse_handler")
+        bad_call = make_tool_call("verse_record", bad_args, call_id="call_nd")
+        first_response = make_completion_response(None, tool_calls=[bad_call])
+        second_response = make_completion_response("Carrying on in-scene.")
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        result = service.assistant_completion(
+            prompt="do a thing",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"verse_record": spy},
+        )
+
+        # The unsafe non-dict args never reach the verse/bridge handler.
+        spy.assert_not_called()
+        # The turn recovered and returned the model's follow-up, not the abort.
+        assert result.content == "Carrying on in-scene."
+        assert result.last_successful_tool != "verse_record"
+
     def test_cost_is_populated(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN meta completion WHEN successful THEN cost is calculated."""
         mock_response = make_completion_response("Done.")
