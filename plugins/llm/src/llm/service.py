@@ -276,8 +276,10 @@ _GEMINI_SAFETY_SETTINGS: list[dict[str, str]] = [
 _FENCE_WITH_LANG_RE = re.compile(r"^```(\w+)\n(.*?)\n?```$", re.DOTALL)
 _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 
-# Pre-generated Pygments CSS for monokai theme (constant across calls)
-_PYGMENTS_CSS: str = HtmlFormatter(style="monokai").get_style_defs(".highlight")
+# Pre-generated Pygments CSS for a light syntax theme (constant across calls).
+# Light to match the reading-friendly page background; "friendly" is soft on the
+# eyes while keeping good token contrast on an off-white code block.
+_PYGMENTS_CSS: str = HtmlFormatter(style="friendly").get_style_defs(".highlight")
 
 # JSON schema for structured output from memory extraction
 _EXTRACTION_SCHEMA: dict = {
@@ -4197,17 +4199,18 @@ Examples (echo → action_prompt: ""):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
-body {{ margin: 0; padding: 20px; background: #272822; color: #f8f8f2; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }}
-pre {{ padding: 16px; background: #1e1e1e; border-radius: 6px; overflow-x: auto; margin: 1em 0; }}
+body {{ margin: 0 auto; padding: 32px 20px; max-width: 760px; background: #faf9f7; color: #2b2b2b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 16px; line-height: 1.7; }}
+pre {{ padding: 16px; background: #f4f3ef; border: 1px solid #e3e0d8; border-radius: 6px; overflow-x: auto; margin: 1em 0; }}
 code {{ font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 14px; }}
+p > code, li > code {{ background: #f0eee8; padding: 1px 5px; border-radius: 4px; }}
 p {{ margin: 1em 0; }}
-strong {{ color: #fff; }}
-em {{ color: #e6db74; }}
+strong {{ color: #1a1a1a; }}
+em {{ font-style: italic; }}
 ul, ol {{ margin: 1em 0; padding-left: 2em; }}
-a {{ color: #66d9ef; }}
-h1, h2, h3, h4 {{ color: #f8f8f2; margin-top: 1.5em; }}
-.highlight {{ background: #1e1e1e; border-radius: 6px; padding: 0; }}
-.highlight pre {{ margin: 0; padding: 16px; background: transparent; }}
+a {{ color: #0b66c3; }}
+h1, h2, h3, h4 {{ color: #1a1a1a; margin-top: 1.5em; line-height: 1.3; }}
+.highlight {{ background: #f4f3ef; border: 1px solid #e3e0d8; border-radius: 6px; padding: 0; }}
+.highlight pre {{ margin: 0; padding: 16px; background: transparent; border: 0; }}
 {pygments_css}
 </style>
 <!-- KaTeX CSS -->
