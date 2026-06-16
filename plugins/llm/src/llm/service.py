@@ -508,6 +508,48 @@ def validate_external_url(url: str) -> bool:
     return True
 
 
+def _extract_json_object(text: str | None) -> dict | None:
+    """Best-effort extract a single JSON object from possibly-prose model output.
+
+    Finds the first '{' and the matching closing '}' (brace depth), tolerating
+    leading/trailing in-character prose and ```json fences. Returns None if no
+    balanced object parses.
+    """
+    import json as _json
+
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = _json.loads(text[start : i + 1])
+                except ValueError:
+                    return None
+                return obj if isinstance(obj, dict) else None
+    return None
+
+
 class LLMService:
     """Service layer for LiteLLM interactions.
 
