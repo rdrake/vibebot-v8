@@ -53,20 +53,13 @@ enforce, before doing any work:
    using the existing `db.log_usage` records; refuse over budget. Cooldown caps
    *rate*; this caps *total*.
 
-## Execution model — OPEN DECISION
+## Execution model — DECIDED: fire-and-return
 
 The single biggest red-team finding: the work must **not block the driver
-thread/permit**. Two options (recommend **B**):
-
-- **(A) Bounded-inline (simplest).** Run like `@draw` does today, but bounded:
-  draw images **sequentially**, `drawAutoRewriteMax=0` (no rewrite ×4 multiplier),
-  a **short per-image timeout** (`verseStorybookImageTimeout`, default 45s), per-
-  completion cap 1. Worst case ≈ story(≤30s) + 3×45s ≈ **~2.5 min inline** on one
-  permit. Matches `@draw`'s existing risk profile ×3. Less code; still a real stall.
-- **(B) Fire-and-return (recommended).** The tool handler validates gates, then
-  **submits** the whole `generate_storybook` job to `self._llm_executor` and
-  returns immediately with an in-character "the tale is being illustrated — I'll
-  post it shortly." The worker draws sequentially under its single permit and posts
+thread/permit**. **Chosen: fire-and-return.** The tool handler validates gates,
+then **submits** the whole `generate_storybook` job to `self._llm_executor` and
+returns immediately with an in-character "the tale is being illustrated — I'll
+post it shortly." The worker draws sequentially under its single permit and posts
   the URL when done (mirrors the `@draw` timeout-recovery/pending path,
   `service.py:3953`). No driver-thread stall, no pool drain. Must detect worker
   context: `_llm_executor.submit` raises `RecursiveSubmitError` from a worker
