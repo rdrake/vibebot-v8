@@ -4672,6 +4672,30 @@ pre, .highlight {{ background: var(--parchment-deep) !important; }}
 
         return self._save_image_bytes(image_bytes, extension)
 
+    def _resolves_to_public(self, url: str) -> bool:
+        """Return True only if every resolved IP for the URL's host is globally
+        routable. Closes the DNS-rebinding gap in validate_external_url (which
+        accepts hostnames without resolving them)."""
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+
+        host = urlparse(url).hostname
+        if not host:
+            return False
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return False
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                return False
+            if not ip.is_global:
+                return False
+        return bool(infos)
+
     def _download_and_save_image(self, url: str) -> str | None:
         """Download an image from a URL and save it locally.
 
@@ -4700,6 +4724,15 @@ pre, .highlight {{ background: var(--parchment-deep) !important; }}
                 return None
 
         opener = urllib.request.build_opener(_NoRedirect())
+
+        # DNS-rebinding guard: resolve the hostname now and confirm every
+        # returned IP is globally routable.  validate_external_url accepts
+        # hostnames without resolving them, so a rebinding attack could slip
+        # through that check.  We do this after build_opener so the no-redirect
+        # handler is already in place before we exit early.
+        if not self._resolves_to_public(url):
+            self.log.warning("Refusing image download: host did not resolve to a public IP")
+            return None
 
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})

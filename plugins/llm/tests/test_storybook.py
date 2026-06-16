@@ -209,3 +209,13 @@ def test_generate_storybook_none_when_story_fails(make_service, mocker):
     service, plugin = make_service()
     mocker.patch.object(service, "_generate_story_struct", return_value=None)
     assert service.generate_storybook("b", channel="#c", persona="v", conversation=[]) is None
+
+
+def test_resolves_to_public(make_service, mocker):
+    service, plugin = make_service()
+    mocker.patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 443))])
+    assert service._resolves_to_public("http://rebind.example/x.png") is False
+    mocker.patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+    assert service._resolves_to_public("http://example.com/x.png") is True
+    # no host / unresolvable → False
+    assert service._resolves_to_public("not-a-url") is False
