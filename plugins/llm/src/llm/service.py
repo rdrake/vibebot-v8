@@ -4198,20 +4198,84 @@ Examples (echo → action_prompt: ""):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<!-- Storybook typography -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700;900&family=Playfair+Display:ital,wght@0,600;0,800;1,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&display=swap">
 <style>
-body {{ margin: 0 auto; padding: 32px 20px; max-width: 760px; background: #faf9f7; color: #2b2b2b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 16px; line-height: 1.7; }}
-pre {{ padding: 16px; background: #f4f3ef; border: 1px solid #e3e0d8; border-radius: 6px; overflow-x: auto; margin: 1em 0; }}
-code {{ font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 14px; }}
-p > code, li > code {{ background: #f0eee8; padding: 1px 5px; border-radius: 4px; }}
+:root {{
+  --ink: #3a2c1c; --ink-soft: #5c4a35; --accent: #8a2b2b; --gold: #9a7b3f;
+  --parchment: #f4e8cf; --parchment-deep: #ecdcb8; --desk: #271d15;
+}}
+* {{ box-sizing: border-box; }}
+html {{
+  background: var(--desk);
+  background-image:
+    radial-gradient(ellipse at 50% 18%, rgba(120,90,55,0.45), transparent 60%),
+    radial-gradient(ellipse at 50% 120%, rgba(0,0,0,0.55), transparent 70%);
+  min-height: 100%;
+}}
+body {{
+  max-width: 720px; margin: 44px auto; padding: 60px 64px;
+  background-color: var(--parchment);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(255,250,235,0.55), transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  color: var(--ink);
+  font-family: 'EB Garamond', Georgia, 'Times New Roman', serif;
+  font-size: 1.24rem; line-height: 1.78; text-align: justify; hyphens: auto;
+  text-rendering: optimizeLegibility; font-feature-settings: "liga", "kern";
+  border: 1px solid rgba(122,45,45,0.35);
+  box-shadow:
+    0 0 0 7px var(--parchment), 0 0 0 9px rgba(154,123,63,0.55),
+    0 26px 60px rgba(0,0,0,0.55), inset 0 0 130px rgba(120,80,40,0.18);
+  animation: pageIn 0.8s ease both;
+}}
+@keyframes pageIn {{ from {{ opacity: 0; transform: translateY(14px); }} to {{ opacity: 1; transform: none; }} }}
+::selection {{ background: rgba(154,123,63,0.32); }}
 p {{ margin: 1em 0; }}
-strong {{ color: #1a1a1a; }}
+body > p:first-of-type::first-letter {{
+  font-family: 'Cinzel Decorative', serif; font-weight: 700;
+  font-size: 4.4rem; line-height: 0.74; float: left;
+  margin: 0.06em 0.1em -0.04em 0; color: var(--accent);
+  text-shadow: 1px 1px 0 rgba(154,123,63,0.45);
+}}
+strong {{ color: var(--accent); font-weight: 600; }}
 em {{ font-style: italic; }}
+a {{ color: var(--accent); text-decoration: underline; text-decoration-color: rgba(154,123,63,0.6); text-underline-offset: 2px; }}
+h1, h2, h3, h4 {{ color: var(--ink); line-height: 1.25; margin-top: 1.6em; }}
+h1 {{
+  font-family: 'Cinzel Decorative', serif; font-weight: 900;
+  font-size: 2.5rem; text-align: center; letter-spacing: 0.5px;
+  margin: 0.1em 0 0.2em;
+}}
+h1::after {{ content: "\\2766"; display: block; text-align: center; color: var(--gold); font-size: 1.1rem; margin-top: 0.35em; }}
+h2, h3, h4 {{ font-family: 'Playfair Display', Georgia, serif; }}
+h2 {{ font-size: 1.7rem; font-weight: 800; border-bottom: 1px solid rgba(154,123,63,0.4); padding-bottom: 0.18em; }}
+h3 {{ font-size: 1.4rem; }}
+hr {{ border: 0; margin: 2.4em 0; text-align: center; }}
+hr::before {{ content: "\\2766 \\2059 \\2766"; color: var(--gold); letter-spacing: 0.45em; font-size: 1rem; }}
+blockquote {{
+  margin: 1.3em 0; padding: 0.2em 1.2em; font-style: italic;
+  color: var(--ink-soft); border-left: 3px solid var(--gold);
+  background: rgba(154,123,63,0.08);
+}}
 ul, ol {{ margin: 1em 0; padding-left: 2em; }}
-a {{ color: #0b66c3; }}
-h1, h2, h3, h4 {{ color: #1a1a1a; margin-top: 1.5em; line-height: 1.3; }}
-.highlight {{ background: #f4f3ef; border: 1px solid #e3e0d8; border-radius: 6px; padding: 0; }}
-.highlight pre {{ margin: 0; padding: 16px; background: transparent; border: 0; }}
+li {{ margin: 0.3em 0; }}
+li::marker {{ color: var(--gold); }}
+pre {{
+  padding: 18px 20px; overflow-x: auto; margin: 1.4em 0;
+  background: var(--parchment-deep); border: 1px solid rgba(154,123,63,0.5);
+  border-radius: 3px; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2);
+  text-align: left; hyphens: none;
+}}
+code {{ font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 0.92em; }}
+p > code, li > code {{ background: rgba(154,123,63,0.16); border: 1px solid rgba(154,123,63,0.3); color: var(--accent); padding: 1px 5px; border-radius: 4px; }}
+.highlight {{ border-radius: 3px; padding: 0; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2); }}
+.highlight pre {{ margin: 0; padding: 18px 20px; background: transparent; border: 0; box-shadow: none; }}
 {pygments_css}
+/* Storybook overrides: warm code panels instead of the Pygments default gray */
+pre, .highlight {{ background: var(--parchment-deep) !important; }}
 </style>
 <!-- KaTeX CSS -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" integrity="sha384-zh0CIslj+VczCZtlzBcjt5ppRcsAmDnRem7ESsYwWwg3m/OaJ2l4x7YBZl9Kxxib" crossorigin="anonymous">
