@@ -1729,6 +1729,54 @@ class TestMetaCompletion:
 
         assert result.last_successful_tool == "run_limnoria_command"
 
+    def test_verse_storybook_short_circuits_and_suppresses_beat(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A successful verse_storybook call short-circuits: step_2 is skipped
+        and the result content is empty. The illustrated page link is posted
+        asynchronously by the background job, so the model's post-tool beat
+        must not reach the channel."""
+        tool_call = make_tool_call(
+            "verse_storybook",
+            {"brief": "a tale"},
+            call_id="call_sb",
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        # A second completion is queued but MUST NOT be consumed (step_2 skipped).
+        forbidden = make_completion_response("the lads high-five in The Clearing")
+
+        completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, forbidden],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"status": "ok", "note": "rendering"}')
+        )
+
+        result = service.assistant_completion(
+            prompt="tell me an illustrated tale",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"verse_storybook": handler},
+        )
+
+        assert result.content == ""
+        assert result.last_successful_tool == "verse_storybook"
+        # step_2 skipped — only the first (tool-calling) completion ran.
+        assert completion.call_count == 1
+
 
 class TestAssistantCompletionEchoGuard:
     """Tests for the degenerate-echo guard in assistant_completion.

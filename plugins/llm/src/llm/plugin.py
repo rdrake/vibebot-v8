@@ -2532,6 +2532,17 @@ class LLM(callbacks.Plugin):
             )
             return response, True
 
+        # verse_storybook delivers its illustrated page link from a background
+        # job, so the assistant's post-tool reply is intentionally empty (see
+        # the short-circuit in assistant_completion). Suppress it silently —
+        # no message, no empty-response error; the async link is the reply.
+        if (
+            result.last_successful_tool == "verse_storybook"
+            and not (result.final_text_after_tools or "").strip()
+        ):
+            self.log.info("suppressing verse_storybook interim reply %s/%s", channel, nick)
+            return response, True
+
         if not response or not response.strip():
             self._safe_error(irc, _("The model returned an empty response. Please try again."))
             return response, False

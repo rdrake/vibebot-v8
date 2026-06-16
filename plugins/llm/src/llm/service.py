@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3266,18 +3267,35 @@ Examples (echo → action_prompt: ""):
         if dropped:
             self.log.info("storybook: dropped %d illustrations over cap", dropped)
 
+        def _draw(it):
+            """Draw one illustration. Returns (it, ImageResult|None); never
+            raises, so one failed draw can't sink the whole batch."""
+            try:
+                styled = f"storybook illustration, painted fairytale style: {it['image_prompt']}"
+                return it, self._attempt_image_generation(styled, model, timeout, channel=channel)
+            except Exception as e:  # noqa: BLE001 — isolate per-image failures
+                self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
+                return it, None
+
+        # Draw illustrations CONCURRENTLY — each is an independent blocking
+        # image-gen call, so the old sequential loop made the user wait
+        # len(wanted)×~15s. We already run inside a background worker thread
+        # (the verse_storybook job), so a scoped pool here is safe. Cap the
+        # fan-out so a long story can't open a huge burst of image jobs.
         drawn: dict[int, tuple[str, str]] = {}
-        for it in wanted:
-            styled = f"storybook illustration, painted fairytale style: {it['image_prompt']}"
-            res = self._attempt_image_generation(styled, model, timeout, channel=channel)
-            if res and res.url and not res.error:
-                drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
-            else:
-                self.log.warning(
-                    "storybook: image id=%s failed (error=%s)",
-                    it["id"],
-                    (res.error if res else "no result"),
-                )
+        if wanted:
+            with ThreadPoolExecutor(
+                max_workers=min(len(wanted), 5), thread_name_prefix="storybook-img"
+            ) as pool:
+                for it, res in pool.map(_draw, wanted):
+                    if res and res.url and not res.error:
+                        drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
+                    else:
+                        self.log.warning(
+                            "storybook: image id=%s failed (error=%s)",
+                            it["id"],
+                            (res.error if res else "no result"),
+                        )
         self.log.info("storybook: drew %d/%d illustrations", len(drawn), len(wanted))
 
         body = self._strip_untrusted_markup(story["story_markdown"])[:max_chars]
@@ -3907,6 +3925,7 @@ Examples (echo → action_prompt: ""):
                 )
 
                 # Execute each tool call and append results
+                storybook_ok = False
                 for tc in message.tool_calls:
                     try:
                         args = json.loads(tc.function.arguments)
@@ -3975,6 +3994,8 @@ Examples (echo → action_prompt: ""):
                         parsed = None
                     if isinstance(parsed, dict) and "error" not in parsed:
                         last_successful_tool = tc.function.name
+                        if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
+                            storybook_ok = True
 
                     messages.append(
                         {
@@ -3983,6 +4004,31 @@ Examples (echo → action_prompt: ""):
                             # Defensive: a None content here would 422 on xAI.
                             "content": tool_result.content or "",
                         }
+                    )
+
+                # Short-circuit: verse_storybook posts its illustrated page
+                # link from a background job, so the model's post-tool text is
+                # just a throwaway in-character beat. Skip step_2 and return
+                # empty content so the channel sees ONLY the async link — not a
+                # disconnected sentence followed ~30s later by a surprise URL.
+                if storybook_ok:
+                    total_prompt_tokens += executor.accumulated_prompt_tokens
+                    total_completion_tokens += executor.accumulated_completion_tokens
+                    total_cost += executor.accumulated_cost
+                    self.log.info(
+                        "assistant_completion: short-circuit after verse_storybook, "
+                        "skipping step_%d",
+                        _step + 2,
+                    )
+                    return AssistantResult(
+                        content="",
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost,
+                        model=model,
+                        grounding_used=executor.grounding_used,
+                        last_successful_tool="verse_storybook",
+                        final_text_after_tools="",
                     )
 
                 # Short-circuit: if the model just called generate_image

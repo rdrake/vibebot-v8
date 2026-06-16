@@ -1116,6 +1116,44 @@ class TestDispatchAssistantReply:
         plugin.db.log_usage.assert_called_once()
 
     # ------------------------------------------------------------------
+    # verse_storybook suppression — async link is the only reply
+    # ------------------------------------------------------------------
+
+    def test_verse_storybook_empty_reply_suppressed_not_errored(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN last_successful_tool == verse_storybook and empty final text /
+        response WHEN _dispatch_assistant_reply runs THEN it sends nothing and
+        does NOT emit the empty-response error (the background job posts the
+        illustrated-page link asynchronously)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        result = AssistantResult(
+            content="",
+            grounding_used=False,
+            prompt_tokens=12,
+            completion_tokens=0,
+            cost=0.0,
+            model="gpt-4",
+            last_successful_tool="verse_storybook",
+            final_text_after_tools="",
+        )
+
+        response, should_log = plugin._dispatch_assistant_reply(
+            mock_irc,
+            mock_msg,
+            result,
+            nick="testnick",
+            channel="#test",
+            response="",
+        )
+
+        # No message and crucially NO empty-response error to the channel.
+        mock_irc.reply.assert_not_called()
+        mock_irc.queueMsg.assert_not_called()
+        mock_irc.error.assert_not_called()
+        assert should_log is True
+
+    # ------------------------------------------------------------------
     # Action rebinding — stored response carries "* botnick text"
     # ------------------------------------------------------------------
 
