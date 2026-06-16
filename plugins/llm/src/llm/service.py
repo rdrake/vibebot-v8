@@ -350,6 +350,15 @@ class ImageResult(NamedTuple):
     url: str | None = None
 
 
+class StorybookResult(NamedTuple):
+    """Result of an illustrated storybook generation."""
+
+    url: str
+    title: str
+    image_count: int
+    dropped: int
+
+
 class ExtractionResult(NamedTuple):
     """Result of memory extraction.
 
@@ -3223,6 +3232,44 @@ Examples (echo → action_prompt: ""):
                 return valid
             nudge = "\n\nIMPORTANT: emit ONLY the JSON object — no prose, no fence."
         return None
+
+    def generate_storybook(self, brief, *, channel, persona, conversation):
+        """Generate an illustrated story page; returns StorybookResult or None.
+
+        One story completion, then up to verseStorybookMaxImages illustrations drawn
+        SEQUENTIALLY via _attempt_image_generation (single attempt, no safety-rewrite
+        laundering). Failed/blocked images drop their marker; the story still ships.
+        """
+        story = self._generate_story_struct(
+            brief, channel=channel, persona=persona, conversation=conversation
+        )
+        if story is None:
+            return None
+        max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
+        max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
+        timeout = int(self.plugin.registryValue("verseStorybookImageTimeout", channel) or 45)
+        model = self.plugin.registryValue("imageModel", channel)
+
+        wanted = story["illustrations"][:max_images]
+        dropped = len(story["illustrations"]) - len(wanted)
+        if dropped:
+            self.log.info("storybook: dropped %d illustrations over cap", dropped)
+
+        drawn: dict[int, tuple[str, str]] = {}
+        for it in wanted:
+            styled = f"storybook illustration, painted fairytale style: {it['image_prompt']}"
+            res = self._attempt_image_generation(styled, model, timeout, channel=channel)
+            if res and res.url and not res.error:
+                drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
+
+        body = self._strip_untrusted_markup(story["story_markdown"])[:max_chars]
+        embedded, used = self._embed_illustrations(body, drawn)
+        title = story["title"] or "An Untitled Tale"
+        markdown_doc = f"# {title}\n\n{embedded}\n"
+        url = self.save_markdown_to_http(markdown_doc, title=title)
+        if not url:
+            return None
+        return StorybookResult(url=url, title=title, image_count=len(used), dropped=dropped)
 
     @staticmethod
     def _validate_story_obj(obj):

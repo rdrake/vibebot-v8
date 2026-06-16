@@ -117,3 +117,95 @@ def test_validate_story_obj_requires_title_and_story():
     assert S._validate_story_obj({"title": "", "story_markdown": "x"}) is None
     assert S._validate_story_obj({"title": "T", "story_markdown": "  "}) is None
     assert S._validate_story_obj("not a dict") is None
+
+
+def test_generate_storybook_embeds_and_saves(make_service, mocker, tmp_path):
+    service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "The Tin Fox",
+            "story_markdown": "Once [[illustration:1]] upon a time.",
+            "illustrations": [{"id": 1, "caption": "a fox", "image_prompt": "a tin fox"}],
+        },
+    )
+    from llm.service import ImageResult
+
+    mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="ok", url="http://h/llm/img_fox.jpg"),
+    )
+    res = service.generate_storybook("brief", channel="#c", persona="v", conversation=[])
+    assert res is not None and res.title == "The Tin Fox" and res.image_count == 1
+    page = (tmp_path / res.url.split("/")[-1]).read_text()
+    assert "<img" in page and 'src="img_fox.jpg"' in page  # bare filename embedded
+
+
+def test_generate_storybook_image_failure_drops_marker(make_service, mocker, tmp_path):
+    service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "T",
+            "story_markdown": "a [[illustration:1]] b",
+            "illustrations": [{"id": 1, "caption": "c", "image_prompt": "p"}],
+        },
+    )
+    from llm.service import ImageResult
+
+    mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="blocked", url=None, error="safety"),
+    )
+    res = service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    assert res is not None and res.image_count == 0
+    page = (tmp_path / res.url.split("/")[-1]).read_text()
+    assert "[[illustration:1]]" not in page
+
+
+def test_generate_storybook_image_none_drops_marker(make_service, mocker, tmp_path):
+    service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "T",
+            "story_markdown": "a [[illustration:1]] b",
+            "illustrations": [{"id": 1, "caption": "c", "image_prompt": "p"}],
+        },
+    )
+    mocker.patch.object(service, "_attempt_image_generation", return_value=None)
+    res = service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    assert res is not None and res.image_count == 0
+
+
+def test_generate_storybook_caps_images(make_service, mocker, tmp_path):
+    service, plugin = make_service(
+        httpRoot=str(tmp_path), httpUrlBase="http://h/llm", verseStorybookMaxImages=3
+    )
+    illos = [{"id": i, "caption": f"c{i}", "image_prompt": f"p{i}"} for i in range(1, 6)]
+    markers = " ".join(f"[[illustration:{i}]]" for i in range(1, 6))
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={"title": "T", "story_markdown": markers, "illustrations": illos},
+    )
+    from llm.service import ImageResult
+
+    gen = mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="ok", url="http://h/llm/i.jpg"),
+    )
+    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    assert gen.call_count == 3  # capped at verseStorybookMaxImages
+
+
+def test_generate_storybook_none_when_story_fails(make_service, mocker):
+    service, plugin = make_service()
+    mocker.patch.object(service, "_generate_story_struct", return_value=None)
+    assert service.generate_storybook("b", channel="#c", persona="v", conversation=[]) is None
