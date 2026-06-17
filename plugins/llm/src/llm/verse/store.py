@@ -25,7 +25,12 @@ _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 # Letting a model-proposed set_attribute write them would grant NPC immortality
 # (last_seen_ts), toggle aging enrollment (auto_created), or relocate/retype an
 # entity outside the guarded paths (location/status/kind).
-_RESERVED_ATTRIBUTE_KEYS = frozenset({"last_seen_ts", "auto_created", "status", "kind", "location"})
+_RESERVED_ATTRIBUTE_KEYS = frozenset(
+    {"last_seen_ts", "auto_created", "status", "kind", "location", "pinned"}
+)
+
+_VALID_SOURCES = frozenset({"operator", "loom", "llm", "crosspoll", "avatar"})
+_DESTRUCTIVE_OPS = frozenset({"delete_event", "delete_relation", "set_status", "set_pinned"})
 
 
 def _parse_entity_ids(raw: str, event_id: object) -> tuple[int, ...]:
@@ -1003,6 +1008,11 @@ class VerseStore:
     ) -> int | None:
         """Run the op-specific INSERT on *conn*. The caller owns the txn."""
         now = time.time()
+        if source not in _VALID_SOURCES:
+            raise ValueError(f"invalid source: {source!r}")
+        privileged = source == "operator"
+        if op in _DESTRUCTIVE_OPS and not privileged:
+            raise PermissionError(f"op {op!r} requires operator privilege")
         if op == "add_event":
             cur = conn.execute(
                 "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
@@ -1071,6 +1081,74 @@ class VerseStore:
                 ),
             )
             return cur.lastrowid
+        if op == "update_entity":
+            eid = payload["entity_id"]
+            if "kind" in payload:
+                raise ValueError("update_entity cannot change kind")
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                raise LookupError(f"entity_id {eid} does not exist")
+            sets, args = [], []
+            if "name" in payload:
+                sets.append("name=?")
+                args.append(payload["name"])
+            if "summary" in payload:
+                sets.append("summary=?")
+                args.append(payload["summary"])
+            if not sets:
+                raise ValueError("update_entity needs name and/or summary")
+            sets.append("updated_at=?")
+            args.append(now)
+            args.append(eid)
+            conn.execute(f"UPDATE entities SET {', '.join(sets)} WHERE id=?", args)
+            return None
+        if op == "set_status":
+            eid = payload["entity_id"]
+            new_status = payload["status"]
+            if new_status not in ("active", "retired"):
+                raise ValueError(f"invalid status: {new_status!r}")
+            row = conn.execute("SELECT kind FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                raise LookupError(f"entity_id {eid} does not exist")
+            if new_status == "retired" and row[0] == "avatar":
+                conn.execute("DELETE FROM avatar_link WHERE entity_id=?", (eid,))
+            conn.execute(
+                "UPDATE entities SET status=?, updated_at=? WHERE id=?", (new_status, now, eid)
+            )
+            return None
+        if op == "set_pinned":
+            eid = payload["entity_id"]
+            pinned = payload["pinned"]
+            row = conn.execute("SELECT id FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                raise LookupError(f"entity_id {eid} does not exist")
+            if pinned:
+                conn.execute(
+                    "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'pinned', '1') "
+                    "ON CONFLICT(entity_id, key) DO UPDATE SET value='1'",
+                    (eid,),
+                )
+            else:
+                conn.execute("DELETE FROM attributes WHERE entity_id=? AND key='pinned'", (eid,))
+            return None
+        if op == "edit_event":
+            ev_id = payload["event_id"]
+            cur = conn.execute(
+                "UPDATE events SET summary=? WHERE id=?", (payload["summary"], ev_id)
+            )
+            if cur.rowcount == 0:
+                raise LookupError(f"event_id {ev_id} does not exist")
+            return None
+        if op == "delete_event":
+            cur = conn.execute("DELETE FROM events WHERE id=?", (payload["event_id"],))
+            if cur.rowcount == 0:
+                raise LookupError(f"event_id {payload['event_id']} does not exist")
+            return None
+        if op == "delete_relation":
+            cur = conn.execute("DELETE FROM relations WHERE id=?", (payload["relation_id"],))
+            if cur.rowcount == 0:
+                raise LookupError(f"relation_id {payload['relation_id']} does not exist")
+            return None
         raise ValueError(f"unknown op: {op!r}")
 
     def apply_and_record_proposal(
@@ -1152,36 +1230,15 @@ class VerseStore:
         payload: dict[str, Any],
         source: str = "loom",
     ) -> int | None:
-        """Convert a proposal payload into rows.
+        """Convert a proposal payload into rows via the single core dispatcher.
 
         Returns the new entity id for ``add_entity``, the new event id for
         ``add_event``, the new relation id for ``add_relation``, or
-        ``None`` for ``set_attribute``. Raises ``ValueError`` for unknown
+        ``None`` for the mutation ops. Raises ``ValueError`` for unknown
         ops or ``KeyError`` for missing payload keys.
         """
-        if op == "add_event":
-            return self.add_event(
-                summary=payload["summary"],
-                entity_ids=payload.get("entity_ids", []),
-                source=source,
-            )
-        if op == "set_attribute":
-            self.set_attribute(payload["entity_id"], payload["key"], payload["value"])
-            return None
-        if op == "add_relation":
-            return self.add_relation(
-                from_id=payload["from_id"],
-                to_id=payload["to_id"],
-                kind=payload["kind"],
-                note=payload.get("note", ""),
-            )
-        if op == "add_entity":
-            return self.add_entity(
-                kind=payload["kind"],
-                name=payload["name"],
-                summary=payload.get("summary", ""),
-            )
-        raise ValueError(f"unknown op: {op!r}")
+        with self.write_transaction() as conn:
+            return self._apply_op_inline(conn, op=op, payload=payload, source=source)
 
     def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
         """Flip *proposal_id*'s status (audit fields written together)."""
