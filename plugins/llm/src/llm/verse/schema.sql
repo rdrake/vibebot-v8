@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS events (
     ts         REAL NOT NULL,
     summary    TEXT NOT NULL,
     entity_ids TEXT NOT NULL DEFAULT '[]',
-    source     TEXT NOT NULL CHECK (source IN ('avatar','loom','crosspoll'))
+    source     TEXT NOT NULL CHECK (source IN ('avatar','loom','crosspoll','operator','llm'))
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts     ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     id          TEXT PRIMARY KEY,
     created_at  REAL NOT NULL,
     cycle_id    TEXT NOT NULL,
-    op          TEXT NOT NULL CHECK (op IN ('add_event','set_attribute','add_relation','add_entity')),
+    op          TEXT NOT NULL CHECK (op IN ('add_event','set_attribute','add_relation','add_entity','crosspoll_seed','update_entity','set_status','edit_event','delete_event','delete_relation','set_pinned')),
     payload     TEXT NOT NULL,
     confidence  REAL NOT NULL,
     provenance  TEXT NOT NULL DEFAULT '',
