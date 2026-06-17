@@ -91,7 +91,7 @@ class Proposal(NamedTuple):
 _VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -161,13 +161,63 @@ class VerseStore:
         # in write_transaction. Mirrors persistence.py:225-229.
         conn = self._connect()
         conn.executescript(_SCHEMA_SQL)
-        existing = conn.execute("SELECT version FROM schema_version").fetchone()
-        if existing is None:
+        existing = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        current = existing[0] if existing and existing[0] is not None else None
+        if current is None:
             with self.write_transaction() as wconn:
                 wconn.execute(
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, time.time()),
                 )
+            return
+        if current < 2:
+            self._upgrade_v1_to_v2()
+
+    def _upgrade_v1_to_v2(self) -> None:
+        """Rebuild events + proposals with widened CHECK constraints.
+
+        SQLite cannot ALTER ... DROP CONSTRAINT, so use the 12-step
+        table-rebuild: create _new with the v2 CHECK, copy rows, drop old,
+        rename. Gated on schema_version < 2 by the caller; stamps version 2.
+        """
+        with self.write_transaction() as conn:
+            conn.execute(
+                "CREATE TABLE events_new ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, summary TEXT NOT NULL,"
+                " entity_ids TEXT NOT NULL DEFAULT '[]',"
+                " source TEXT NOT NULL CHECK (source IN ('avatar','loom','crosspoll','operator','llm')))"
+            )
+            conn.execute(
+                "INSERT INTO events_new (id, ts, summary, entity_ids, source) "
+                "SELECT id, ts, summary, entity_ids, source FROM events"
+            )
+            conn.execute("DROP TABLE events")
+            conn.execute("ALTER TABLE events_new RENAME TO events")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_source ON events(source)")
+
+            conn.execute(
+                "CREATE TABLE proposals_new ("
+                " id TEXT PRIMARY KEY, created_at REAL NOT NULL, cycle_id TEXT NOT NULL,"
+                " op TEXT NOT NULL CHECK (op IN ('add_event','set_attribute','add_relation',"
+                "  'add_entity','crosspoll_seed','update_entity','set_status','edit_event',"
+                "  'delete_event','delete_relation','set_pinned')),"
+                " payload TEXT NOT NULL, confidence REAL NOT NULL, provenance TEXT NOT NULL DEFAULT '',"
+                " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),"
+                " reviewer TEXT, reviewed_at REAL)"
+            )
+            conn.execute(
+                "INSERT INTO proposals_new SELECT id, created_at, cycle_id, op, payload, "
+                "confidence, provenance, status, reviewer, reviewed_at FROM proposals"
+            )
+            conn.execute("DROP TABLE proposals")
+            conn.execute("ALTER TABLE proposals_new RENAME TO proposals")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, created_at)"
+            )
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (2, ?)", (time.time(),)
+            )
 
     # ------------------------------------------------------------------
     # Entity CRUD
