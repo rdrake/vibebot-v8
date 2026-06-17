@@ -1,240 +1,290 @@
-# Verse Universe Editing — Design
+# Verse Universe Editing — Design (v2, post-red-team)
 
 **Date:** 2026-06-17
 **Status:** Approved design, pre-implementation
 **Author:** rdrake + Claude
+**Supersedes:** v1 of this file (red-teamed; v1 misdiagnosed the problem — see "What changed from v1").
 
 ## Problem
 
-The forest-verse subsystem stores a per-channel "universe" (entities, places,
+The forest-verse subsystem stores a per-channel universe (entities, places,
 factions, items, attributes, relations, events) in a SQLite store
-(`plugins/llm/src/llm/verse/store.py`). Today that universe can only be mutated
-by:
+(`plugins/llm/src/llm/verse/store.py`). Today it can only be mutated by the
+loom (propose → `@verseapprove`, or auto-apply above `verseAutoApplyThreshold`)
+and by avatar/engine lifecycle paths. There is **no operator-direct editing**
+and **no user-driven direct editing**.
 
-1. The **loom**, which proposes batched mutations that an operator approves
-   (`@verseapprove`) or that auto-apply above `verseAutoApplyThreshold`.
-2. Avatar opt-in / engine lifecycle paths.
-
-There is **no way for an operator to directly create or edit canon** (add a
-character, rename a place, fix an event, retire an NPC), and **no way for the
-in-scene LLM to mutate canon directly** — it can only emit loom proposals after
-the fact. The operator's only durable lever is the channel
-`assistantSystemPrompt` overlay, which is the wrong home for structured world
-state.
+**The deeper problem (found by red-team):** even if you *could* author canon,
+**nothing reads NPC canon into the model's context on a verse turn.**
+`build_verse_system_prompt` (`avatar.py:428-520`) injects only (a) up to ~5 of
+the speaking avatar's own recent events and (b) co-located *avatars*. It never
+enumerates `npc`/`place`/`faction` entities. So adding 15 NPC rows to SQLite is
+invisible to the model — the motivating "remember the 15 stinky lads" goal is
+**not** solved by an editing surface alone. There is no "pinned canon" path
+anywhere in `verse/`; `versecompact` only folds old events into a digest event
+that still reaches the prompt through the same ~5-event window.
 
 ## Goal
 
-Let operators and the LLM manipulate a channel's verse universe — characters,
-places, events, attributes, relations — both **manually** (operator commands)
-and **automatically** (an LLM tool), through the store's existing single
-mutation primitive, with consistent provenance and audit.
+1. **Make authored canon actually reach the model** every verse turn (the
+   consumption layer) — this is what solves roster memory.
+2. Let **authorized users** manipulate a channel's universe both **manually**
+   (operator commands) and **automatically** (an LLM tool), through one
+   validated mutation core, with consistent provenance and audit.
 
 ## Decisions (locked with user)
 
 - **Scope:** per-channel store (current model). No shared cross-channel world.
-- **Operator edits:** apply immediately (direct), recorded with
-  `source='operator'`.
-- **Automatic edits:** configurable per channel — direct-apply in trusted
-  channels, propose-and-approve elsewhere.
-- **Gating:** operator commands require the existing `llm.verse.gm` capability
-  (same as `@versedump`).
-- **Architecture:** Approach 1 — thin command/tool layer over the existing
-  unified mutation core.
+- **Shape:** single combined spec (not phased), but the consumption layer is
+  Component 1 because it is load-bearing for the stated goal.
+- **Access control:** a **single new capability `llm.verse.edit`** is THE gate.
+  "Certain users" = accounts holding it. No separate allowlist. It gates BOTH
+  the operator commands AND the LLM tool (keyed on the *triggering* user).
+- **Minimal knobs:** because editing is restricted to trusted capability
+  holders, we **drop** the v1 `verseEditEnabled`, `verseEditMode`, and
+  per-account rate-limit knobs. Authorized edits apply directly; the loom keeps
+  proposing exactly as today.
+- **Manual operator edits:** apply immediately, `source='operator'`.
+- **LLM edits:** apply immediately when the triggering user holds
+  `llm.verse.edit`; otherwise the tool is not offered / the call is refused.
+  `source='llm'`. Constructive ops only.
+- **Architecture:** thin command/tool layer over one validated mutation core
+  (the existing `_apply_op_inline`, extended).
 
-## Architecture
+## What changed from v1 (red-team deltas)
 
-### The mutation core already exists
+The v1 spec made three false claims and missed the consumption layer:
 
-`VerseStore._apply_op_inline(conn, *, op, payload, source)`
-(`store.py:946`) is the single in-transaction primitive. Every existing apply
-path routes through it:
+- ❌ "No schema change needed" — **false.** `proposals.op` and `events.source`
+  CHECK constraints reject the new ops/sources, and `_migrate` has no
+  version-stepping. → real migration added (Component 5).
+- ❌ "All callers funnel through one core" — **partly false.** `apply_proposal`
+  (`store.py:1098`) has its own op dispatch separate from `_apply_op_inline`.
+  → both dispatchers extended, or the divergent one collapsed (Component 2).
+- ❌ "Reuse loom `_validate`" — **fiction.** No such function; `parse_digest`
+  is array-shaped and covers none of the new ops. → extract real
+  `validate_payload(op, payload)` (Component 2).
+- ❌ Editing surface solves roster memory — **no.** → Component 1 added.
 
-- `apply_proposal_and_mark` (human `@verseapprove`)
-- `apply_and_record_proposal` (loom auto-apply, crosspoll receive)
-- `apply_proposal` (connection-less convenience wrapper)
+Severity-ranked findings and their resolutions are tracked in the
+"Red-team resolution table" at the end.
 
-Today it handles ops: `add_event`, `set_attribute`, `add_relation`,
-`add_entity`. It enforces two guards for proposal-sourced edits:
+## Component 1 — Consumption layer: pinned roster reaches the prompt
 
-- `_RESERVED_ATTRIBUTE_KEYS = {last_seen_ts, auto_created, status, kind,
-  location}` cannot be set via `set_attribute` (engine/lifecycle-only).
-- `set_attribute` / `add_relation` reject **retired** entity targets.
+This is the part that actually makes the lads stick.
 
-**Approach 1 reuses this primitive unchanged in spirit:** we extend its op
-vocabulary and add a privilege tier keyed on `source`. All three callers
-(operator commands, `verse_edit` tool, loom) continue to funnel through it.
+- Add a boolean entity marker **`pinned`** (an `attributes` row, key `pinned`,
+  value `"1"`; *not* a schema column — attributes are free-form, and `pinned`
+  is added to `_RESERVED_ATTRIBUTE_KEYS` so only the engine/operator path sets
+  it, never `set_attribute` from loom/LLM).
+- Extend `build_verse_system_prompt` (`avatar.py:428`) with a bounded
+  **"Established characters in this world:"** block listing active `pinned`
+  entities (any kind), `name — summary`, capped at `verseRosterMaxChars`
+  (one new knob, the only one we add for consumption; default ~600 chars) so a
+  large roster can't blow the context budget. Deterministic order (kind
+  precedence, then name) so the block is cache-stable.
+- The same block feeds the loom snapshot (`plugin.py:6364`) so the loom also
+  sees pinned canon, not just `top_entities[:5]`.
 
-### New ops added to `_apply_op_inline`
+Net effect: `@versedit add npc "Assgas Archie" … && @versedit pin "Assgas
+Archie"` (or one `@versedit add --pin`) puts Archie in *every* verse turn's
+context until unpinned. 15 pinned lads → all 15 enumerated each turn (within
+the char cap).
 
-| op | payload | effect |
-|----|---------|--------|
-| `update_entity` | `entity_id`, `name?`, `summary?` | rename / re-summarize |
-| `set_status` | `entity_id`, `status` (`active`\|`retired`) | retire / restore (soft-delete) |
-| `edit_event` | `event_id`, `summary` | fix a canon event |
-| `delete_event` | `event_id` | remove an event (leaf row) |
-| `delete_relation` | `relation_id` | remove a relation (leaf row) |
+## Component 2 — Mutation core (one validated primitive)
 
-Existing ops (`add_event`, `set_attribute`, `add_relation`, `add_entity`)
-are unchanged.
+`VerseStore._apply_op_inline(conn, *, op, payload, source)` (`store.py:946`) is
+the in-transaction primitive. We:
 
-### Privilege tier (keyed on `source`)
+1. **Add new ops:** `update_entity` (name/summary only — rejects a `kind`
+   field), `set_status` (validates `status ∈ {active,retired}`), `edit_event`,
+   `delete_event`, `delete_relation`, and `set_pinned` (engine/operator path
+   for the Component 1 marker).
+2. **Compute `privileged` *inside* the core from a validated `source` enum** —
+   never accept a caller-passed bool. `source` must be one of
+   `{operator, loom, llm, crosspoll, avatar}` (validated against a frozenset;
+   raise on anything else). `privileged = (source == 'operator')`.
+   - Privileged: may run destructive ops (`delete_event`, `delete_relation`,
+     `set_status → retired`), target retired entities (to restore), set the
+     `location` reserved key. May **not** raw-set `status`/`kind`/`pinned`/
+     bookkeeping keys (those have managed ops).
+   - Constructive (`loom`/`llm`/`crosspoll`/`avatar`): today's guards exactly —
+     no reserved keys, no retired targets, **constructive ops only**
+     (`add_entity`, `add_event`, `set_attribute` non-reserved, `add_relation`,
+     `update_entity`). Destructive ops `raise PermissionError`.
+3. **Collapse the second dispatcher:** make `apply_proposal` (`store.py:1098`)
+   call `_apply_op_inline` instead of re-dispatching, so there is exactly one
+   op→SQL mapping.
+4. **Extract `validate_payload(op, payload) -> str|None`** from the
+   `loom.py:189-199` predicate block; extend `_PAYLOAD_SCHEMA` (`loom.py:123`)
+   with entries for every new op. Both the loom and the `verse_edit` tool call
+   it **before** `_apply_op_inline`. Type/shape validation (`_is_strict_int`
+   etc.) runs server-side, never trusting LLM/operator JSON.
+5. **Idempotency:** `delete_event`/`delete_relation`/`edit_event`/`set_status`
+   check `rowcount`/existence and `raise LookupError` on a phantom id (mirror
+   `update_proposal_status`, `store.py:1145`).
 
-The primitive gains a notion of **privileged** vs **constructive** sources.
+## Component 3 — Operator commands: `@versedit`
 
-- **Privileged** (`source='operator'`): may run *destructive* ops
-  (`delete_event`, `delete_relation`, `set_status → retired`), may target a
-  **retired** entity (e.g. to restore it), and may set the **`location`**
-  reserved key (relocation). It may **not** raw-set `status`/`kind`/
-  `last_seen_ts`/`auto_created` as attributes — `status` is managed via the
-  `set_status` op; `kind` is immutable after creation; the other two are
-  engine bookkeeping. This keeps lifecycle invariants intact even for
-  operators.
-- **Constructive** (`source ∈ {'loom','llm'}`): today's behavior, exactly.
-  Constructive ops only (`add_entity`, `add_event`, `set_attribute` on
-  non-reserved keys, `add_relation`, `update_entity` summary/name). **No**
-  `set_status`, `delete_*`, retired targets, or reserved keys.
-
-Implementation: `_apply_op_inline` gains a `privileged: bool` parameter
-(default `False`). The existing guards run unless `privileged`; the new
-destructive ops raise `PermissionError` unless `privileged`. Callers pass
-`privileged=(source == 'operator')`.
-
-## Component 1 — Operator command surface: `@versedit`
-
-A single capability-gated dispatcher command (`llm.verse.gm`), direct-apply,
-`source='operator'`, `privileged=True`, channel-aware (defaults to the current
-channel; accepts an explicit `#channel`).
+Per-verb Limnoria subcommands using real `wrap()` converters (NOT a freeform
+`::` parser — v1's grammar didn't fit `wrap()` and had id-vs-name/`::`/`@`
+footguns). Each is `wrap`'d with `[("checkCapability","llm.verse.edit"),
+…slots…, optional("channel")]` so the capability is evaluated **against the
+target channel** (fixes the cross-channel scoping bug; `versedump`'s in-body
+global check is the wrong pattern to copy):
 
 ```
-@versedit add    <kind> <name> :: <summary>     new entity (npc|place|faction|item|avatar)
+@versedit add    <kind> <name> [summary]      add entity (npc|place|faction|item|avatar)
+@versedit pin    <ref>                          mark pinned (Component 1)
+@versedit unpin  <ref>
 @versedit set    <ref> <key> <value>            attribute (operator may set `location`)
-@versedit name   <ref> <new name>               rename
-@versedit desc   <ref> :: <summary>             re-summarize
-@versedit retire <ref>                          soft-delete (set_status retired)
-@versedit restore<ref>                          un-retire (set_status active)
-@versedit relate <ref> <kind> <ref> [:: note]   add relation
-@versedit unrelate <relation_id>                delete relation
-@versedit event  <summary> [@ <ref>,<ref>,...]  add canon event
-@versedit editevent <event_id> :: <summary>     edit event
-@versedit delevent  <event_id>                  delete event
-@versedit show   [<ref>]                         inspect (delegates to @look)
+@versedit name   <ref> <new-name>               rename
+@versedit desc   <ref> <summary>                re-summarize
+@versedit retire <ref>                          soft-delete
+@versedit restore<ref>
+@versedit relate <ref> <kind> <ref> [note]      add relation
+@versedit unrelate <relation-id>
+@versedit event  <summary> [ids]                add canon event
+@versedit editevent <event-id> <summary>
+@versedit delevent  <event-id>
+@versedit show   [ref]                           inspect (delegates to @look)
 ```
 
-- **`<ref>`** = entity id (int) or name. Names resolve via
-  `find_active_entity_by_name` (case-insensitive, active-only). Ambiguous or
-  missing names return a clear error listing candidates; a bare integer is
-  treated as an id.
-- **`::`** separates a free-text summary tail from positional args so summaries
-  may contain spaces. `@ id,id` attaches event actors.
-- Each subcommand maps to exactly one core op (or a `@look` read for `show`),
-  applied in one `write_transaction`, and replies with a one-line confirmation
-  including the affected id.
-- Errors (`LookupError`, `ValueError`, `PermissionError`) become friendly IRC
-  replies, never tracebacks.
+- **`<ref>` disambiguation rule (explicit):** a token of the form `#<int>`
+  (e.g. `#42`) is always an entity id; anything else is a name. This dodges the
+  "an NPC named `7`" collision. Names resolve **inside the write transaction**
+  via `_find_active_entity_by_name_inline` (`store.py:248`) so resolve+apply is
+  atomic (fixes the TOCTOU).
+- **Name-uniqueness guard:** `add`/`name`/`restore` reject creating a *second
+  active entity with an existing active name* (raise with the colliding id),
+  since `find_active_entity_by_name` is `LIMIT 1` and silent collisions brick
+  name refs.
+- Direct apply, `source='operator'`, one `write_transaction`, one-line
+  confirmation with the affected id. `LookupError`/`ValueError`/`PermissionError`
+  → friendly IRC replies, never tracebacks.
 
-Single dispatcher (vs. N top-level `verseAdd`/`verseSet`/… commands) chosen so
-gating, channel-resolution, ref-parsing, and tests live in one place, and the
-verb set maps 1:1 to the tool in Component 2.
+## Component 4 — Automatic: `verse_edit` tool (gated per triggering user)
 
-## Component 2 — Automatic surface: `verse_edit` tool
+A model-invoked tool on verse routes, **constructive ops only**, `source='llm'`.
 
-A model-invoked tool exposed **only on verse routes**, **constructive ops
-only**, `source='llm'`.
+- **Gate:** the tool only mutates when the **triggering user holds
+  `llm.verse.edit`**. The requesting account is already threaded into the tool
+  path (`service.py` account resolver at :224, `account` field at :425/:449/
+  :1875). At dispatch: resolve the triggering user's identity → check
+  `llm.verse.edit` → if absent, the tool call is refused with a benign result
+  ("not authorized to edit canon") and **no mutation occurs**. Unauthorized
+  users' messages can never change canon — this closes the prompt-injection
+  hole without a rate-limit.
+- **Apply:** authorized → apply immediately via the core through a purpose-built
+  `apply_direct(op, payload, *, source)` that writes the row(s) **and** an
+  audit `proposals` row with `status='approved'`, without the
+  `cycle_id`/`confidence`/`reviewer` ceremony `apply_and_record_proposal`
+  demands (v1 would have polluted the proposals table with synthetic-approved
+  loom-shaped rows). `apply_direct` records real provenance
+  (`provenance='verse_edit'`, the triggering account).
+- Payload validated by `validate_payload` (Component 2) before apply.
+- The loom is unchanged: still proposes; `verseAutoApplyThreshold` still governs
+  its auto-apply.
 
-### Schema (sketch)
+## Component 5 — Schema migration
 
-```jsonc
-{
-  "name": "verse_edit",
-  "description": "Create or modify forest-verse canon (entities, attributes, relations, events).",
-  "parameters": {
-    "op": "add_entity | update_entity | set_attribute | add_relation | add_event",
-    "payload": { /* op-specific, mirrors _apply_op_inline */ }
-  }
-}
-```
+The new ops/sources violate two CHECK constraints, and `_migrate`
+(`store.py:159`) currently has no upgrade path. Build minimal versioned
+migration:
 
-(One tool, `op` + `payload`, mirroring the loom proposal shape so validation is
-shared via the existing `_validate`/coercion helpers in `loom.py`.)
+- Bump `SCHEMA_VERSION` 1 → 2 (`store.py:94`).
+- `_migrate` reads `schema_version.version`; if `< 2`, run an upgrade step that
+  **rebuilds** `proposals` and `events` with widened CHECKs
+  (`proposals.op` adds the 6 new ops; `events.source` adds `'operator'`,`'llm'`)
+  via the SQLite 12-step table-rebuild (create new, copy, drop, rename, inside
+  one transaction), then stamps version 2. Idempotent and re-runnable.
+- `schema.sql` (the fresh-install DDL) updated to the v2 constraints so new
+  stores are born correct.
 
-### Per-channel mode
+## Soft-delete coherence (explicit rules)
 
-New registry keys (`config.py`):
+- **Retire is shallow by design** for non-avatars: status flips; historical
+  events keep their `entity_ids` references (intentional — canon history is
+  immutable). Prompt/snapshot builders must filter to `status='active'` when
+  *listing* entities (Component 1 lists only active pinned; presence query at
+  `avatar.py:488` already filters active).
+- **Retiring a `kind='avatar'` entity** must atomically clear its `avatar_link`
+  (reuse `unlink_avatar`'s paired status+link logic, `store.py:551`) — a bare
+  `set_status` would leave a dangling link that bricks the user
+  (`record_user_event` raises on the next action) and silently un-retires on
+  next opt-in. The `set_status → retired` op special-cases `kind='avatar'`.
+- **Restore** re-checks active-name collision before reactivating.
 
-- **`verseEditEnabled`** (channel bool, default **False**) — whether
-  `verse_edit` is advertised in the channel's tool set at all.
-- **`verseEditMode`** (channel string, default **`propose`**) — `propose` |
-  `direct`:
-  - `propose` → tool call enqueues a proposal via `add_proposal`; surfaces in
-    `@verseproposals` for `@verseapprove`. (Today's effective behavior, now
-    reachable live.)
-  - `direct` → tool call applies immediately via the core **and** records an
-    `approved` proposal row for audit via `apply_and_record_proposal`. No human
-    step.
+## Provenance, audit, error handling
 
-The operator enables `verse_edit` and sets `direct` only on trusted channels
-(e.g. the forest channel); everywhere else it stays off / `propose`.
-
-The loom is unchanged: it keeps proposing, and `verseAutoApplyThreshold`
-governs its auto-apply as before.
-
-## Data flow
-
-```
-operator  @versedit … ──► dispatcher (cap check, ref resolve, channel resolve)
-                              └─► store: write_transaction → _apply_op_inline(privileged=True, source='operator')
-
-LLM       verse_edit tool ─► mode = verseEditMode(channel)
-                              ├─ propose: store.add_proposal(...)              → @verseproposals
-                              └─ direct:  store.apply_and_record_proposal(source='llm')  → _apply_op_inline(privileged=False)
-
-loom      (unchanged) ─────► store.apply_and_record_proposal / add_proposal     → _apply_op_inline(privileged=False, source='loom')
-```
-
-## Error handling
-
-- Capability failure → standard Limnoria capability error.
-- Unknown verb / malformed args → usage string for that verb.
-- Unresolvable/ambiguous `<ref>` → error naming the problem and candidates.
-- Core raises `LookupError` (no such id / retired target when not privileged),
-  `ValueError` (bad op/status/missing key), `PermissionError` (constructive
-  source attempting a privileged op) → mapped to friendly IRC replies.
-- All mutations are single-transaction; a raised error leaves no partial write.
+- Every mutation writes a validated `source`; operator/llm/loom/crosspoll
+  distinguishable in `events.source` and the `proposals` audit rows.
+- Operator command edits also write an `approved` audit `proposals` row (via
+  the same `apply_direct`, `source='operator'`) so manual canon edits are
+  auditable (v1 left them unaudited; `events` has no `updated_at`).
+- Soft-delete only for entities (retire); only leaf event/relation rows are
+  truly deleted, and those raise `LookupError` on a missing id.
+- All mutations single-transaction; an error leaves no partial write.
 
 ## Testing
 
-Unit tests (mirror `tests/` patterns; store tests are pure-SQLite, no IRC):
+Store tests are pure-SQLite (no IRC). Add:
 
-1. **Core ops:** each new op applies correctly (`update_entity`, `set_status`,
-   `edit_event`, `delete_event`, `delete_relation`).
-2. **Privilege tier:**
-   - operator/privileged may set `location`, retire+restore, delete events;
-   - constructive (`llm`/`loom`) attempting `set_status`/`delete_*`/reserved
-     key/retired target **raises** (assert the exception type).
-3. **Command parser:** id-vs-name resolution, `::` summary splitting, `@`
-   actor-id parsing, ambiguous-name error, channel defaulting.
-4. **Tool dispatch:** `propose` mode creates a pending proposal and applies
-   nothing; `direct` mode applies and records an `approved` proposal;
-   `verseEditEnabled=False` hides the tool.
-5. **Provenance:** rows created by each path carry the expected `source`.
+1. **Migration:** open a v1 DB (legacy CHECKs), run `_migrate`, assert version 2
+   and that new ops/sources now insert; assert idempotent re-run.
+2. **Core ops:** each new op applies; `apply_proposal` and `_apply_op_inline`
+   produce identical results (single-dispatcher guarantee).
+3. **Privilege tier:** `_apply_op_inline(op='delete_event', source='llm')`
+   raises `PermissionError`; `source='operator'` succeeds; invalid `source`
+   raises; caller cannot pass `privileged`.
+4. **Gating:** `verse_edit` from an account without `llm.verse.edit` mutates
+   nothing and returns the benign refusal; with it, applies. `@versedit #B`
+   checks the cap against #B, not the origin channel.
+5. **Command parser:** `#<int>` vs name disambiguation, in-txn resolve, ambiguous
+   /colliding-name rejection, channel defaulting.
+6. **Soft-delete:** retiring a linked avatar clears the link and does not brick
+   `record_user_event`; restore re-collision-checks.
+7. **Consumption:** a pinned entity appears in `build_verse_system_prompt`
+   output; the roster block respects `verseRosterMaxChars`; unpinned drops out.
+8. **Idempotency/provenance:** delete-of-phantom raises; rows carry expected
+   `source`.
 
 ## Out of scope (YAGNI)
 
 - Cross-channel / shared global universe.
-- Hard `DELETE` of entities (retire is soft-delete; only leaf event/relation
-  rows are truly deleted).
-- Web/GUI editor, bulk import/export beyond existing `@versedump`.
-- Seeding the canonical "15 stinky lads" roster — trivial once `@versedit add`
-  exists, but a separate operator action, not part of this build.
+- Hard `DELETE` of entities (retire is soft-delete; only leaf rows truly delete).
+- Web/GUI editor; bulk import/export beyond `@versedump`.
+- Per-channel enable flag, edit-mode flag, rate-limiting (cut — the capability
+  gate makes them redundant).
 
 ## Affected files (anticipated)
 
-- `plugins/llm/src/llm/verse/store.py` — extend `_apply_op_inline` (new ops +
-  `privileged` param); small helpers for event/relation edit/delete.
-- `plugins/llm/src/llm/plugin.py` — `@versedit` dispatcher command + registration.
-- `plugins/llm/src/llm/config.py` — `verseEditEnabled`, `verseEditMode` keys.
-- `plugins/llm/src/llm/service.py` — advertise/dispatch `verse_edit` tool on
-  verse routes; mode branching.
-- `plugins/llm/src/llm/verse/loom.py` — reuse proposal validation for the tool
-  payload (no behavior change to the loom itself).
-- `tests/` — new store/command/tool tests.
+- `verse/store.py` — extend `_apply_op_inline` (new ops, validated-source
+  privilege), collapse `apply_proposal` dispatch, `apply_direct`, soft-delete
+  avatar handling, name-collision guards, `SCHEMA_VERSION`+`_migrate` upgrade.
+- `verse/schema.sql` — widen `proposals.op` / `events.source` CHECKs.
+- `verse/avatar.py` — pinned-roster block in `build_verse_system_prompt`.
+- `verse/loom.py` — extract `validate_payload`, extend `_PAYLOAD_SCHEMA`.
+- `plugin.py` — `@versedit` subcommands; add `llm.verse.edit` to the default
+  capability set (`:91`); pinned roster into the loom snapshot (`:6364`).
+- `service.py` — advertise/dispatch `verse_edit`; per-triggering-user gate.
+- `config.py` — `verseRosterMaxChars` (the one new knob).
+- `tests/` — per the Testing section.
+
+## Red-team resolution table
+
+| # | Sev | Finding | Resolution |
+|---|-----|---------|------------|
+| A1 | 🔴 | NPC canon never reaches prompt | Component 1 (pinned roster block) |
+| A2 | 🔴 | "No schema change" false (CHECKs, no migrate) | Component 5 |
+| D2 | 🟠 | Two op dispatchers | Component 2.3 (collapse) |
+| S1/S2 | 🟠 | Tool payload unvalidated; gate must be in core | Component 2.2/2.4 |
+| A3 | 🟠 | loom `_validate` fiction | Component 2.4 (`validate_payload`) |
+| D5 | 🟠 | Retire avatar dangles `avatar_link` | Soft-delete rules |
+| D6/A2b | 🟠 | No name uniqueness → ref brick | Component 3 guards + `#id` rule |
+| S5 | 🟡 | direct-mode injection sink | Per-user `llm.verse.edit` gate (Comp 4) |
+| A4 | 🟡 | `apply_and_record_proposal` impedance | `apply_direct` (Comp 4) |
+| S6 | 🟡 | cross-channel cap scoping | `wrap` checkCapability vs target channel (Comp 3) |
+| S7/D8/D9 | 🟡 | enum/kind/idempotency/audit guards | Component 2.1/2.5 + audit rows |
+| D7 | 🟡 | resolve→apply TOCTOU | in-txn name resolution (Comp 3) |
+| D3 | 🟡 | edit/delete vs compaction race | documented last-writer semantics; deletes idempotent |
