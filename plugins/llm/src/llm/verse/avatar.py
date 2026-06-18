@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NamedTuple
 
+from .loom import validate_payload
 from .store import Event, VerseStore
 
 _log = logging.getLogger(__name__)
@@ -538,6 +539,46 @@ def build_verse_system_prompt(
         parts.append("Established characters in this world:")
         parts.extend(roster_lines)
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# verse_edit: gated canon-editing tool
+# ---------------------------------------------------------------------------
+
+#: Constructive ops the verse_edit tool may apply. Destructive / lifecycle ops
+#: (delete_event, delete_relation, set_status, set_pinned, edit_event) are
+#: deliberately excluded — verse_edit grows canon, it does not tear it down.
+_VERSE_EDIT_OPS = frozenset(
+    {"add_entity", "add_event", "set_attribute", "add_relation", "update_entity"}
+)
+
+
+def dispatch_verse_edit(store, *, op, payload, authorized, account):
+    """Execute a verse_edit tool call. Constructive ops only; gated.
+
+    Returns a JSON-able dict: {status: ok|refused|error, ...}.
+
+    ``authorized`` MUST reflect whether the user who triggered this verse
+    turn holds the ``llm.verse.edit`` capability; the caller computes it.
+    An unauthorized call is a no-op (nothing is written to the store).
+    """
+    if not authorized:
+        return {
+            "status": "refused",
+            "detail": "not authorized to edit canon (needs llm.verse.edit)",
+        }
+    if op not in _VERSE_EDIT_OPS:
+        return {"status": "error", "detail": f"op {op!r} not permitted via verse_edit"}
+    reason = validate_payload(op, payload)
+    if reason is not None:
+        return {"status": "error", "detail": reason}
+    try:
+        new_id = store.apply_direct(
+            op=op, payload=payload, source="llm", provenance=f"verse_edit:{account}"
+        )
+    except (LookupError, ValueError, PermissionError) as exc:
+        return {"status": "error", "detail": str(exc)}
+    return {"status": "ok", "id": new_id}
 
 
 # ---------------------------------------------------------------------------
