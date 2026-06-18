@@ -366,6 +366,31 @@ class VerseStore:
             rows = conn.execute(sql, params).fetchall()
         return [Entity(*row) for row in rows]
 
+    def list_pinned_entities(self) -> list[Entity]:
+        """Active entities carrying the 'pinned' attribute, deterministic order.
+
+        Order: kind precedence (avatar, npc, place, faction, item) then name,
+        so the roster prompt block is cache-stable.
+        """
+        with self.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
+                "FROM entities e JOIN attributes a ON a.entity_id = e.id "
+                "WHERE a.key='pinned' AND a.value='1' AND e.status='active' "
+                "ORDER BY CASE e.kind WHEN 'avatar' THEN 0 WHEN 'npc' THEN 1 "
+                "  WHEN 'place' THEN 2 WHEN 'faction' THEN 3 ELSE 4 END, e.name COLLATE NOCASE"
+            ).fetchall()
+        return [Entity(*row) for row in rows]
+
+    def active_name_exists(self, name: str) -> bool:
+        """True if some active entity already has this name (case-insensitive)."""
+        with self.read_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM entities WHERE LOWER(name)=LOWER(?) AND status='active' LIMIT 1",
+                (name,),
+            ).fetchone()
+        return row is not None
+
     # ------------------------------------------------------------------
     # Attribute CRUD
     # ------------------------------------------------------------------
