@@ -376,6 +376,17 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseRosterMaxChars",
+    registry.PositiveInteger(
+        600,
+        _("""Max characters of the pinned-roster block injected into every verse
+        system prompt. Pinned entities beyond the cap are dropped with a
+        (roster truncated) marker."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "verseAutoApplyThreshold",

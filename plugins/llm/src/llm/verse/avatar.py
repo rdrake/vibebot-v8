@@ -429,6 +429,7 @@ def build_verse_system_prompt(
     store: VerseStore,
     avatar_id: int,
     instruct_text: str,
+    roster_max_chars: int = 600,
 ) -> str:
     """Build the system prompt for the verse-aware @ask flow.
 
@@ -508,6 +509,22 @@ def build_verse_system_prompt(
     # personality overlay only carries scene context; per-call tool
     # argument shapes come from the tool schemas themselves.
 
+    # --- Established (pinned) characters — durable canon every turn ---
+    pinned = store.list_pinned_entities()
+    roster_lines: list[str] = []
+    if pinned:
+        used = 0
+        truncated = False
+        for e in pinned:
+            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+            if used + len(line) + 1 > roster_max_chars:
+                truncated = True
+                break
+            roster_lines.append(line)
+            used += len(line) + 1
+        if truncated:
+            roster_lines.append("- (roster truncated)")
+
     parts = [
         identity_line,
         persona_line,
@@ -517,6 +534,9 @@ def build_verse_system_prompt(
         others_header,
         other_bullets,
     ]
+    if roster_lines:
+        parts.append("Established characters in this world:")
+        parts.extend(roster_lines)
     return "\n".join(parts)
 
 

@@ -2639,7 +2639,12 @@ class LLM(callbacks.Plugin):
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
         persona = self.db.get_avatar_persona(nick) or ""
-        system_prompt = build_verse_system_prompt(store, avatar_id, persona)
+        system_prompt = build_verse_system_prompt(
+            store,
+            avatar_id,
+            persona,
+            roster_max_chars=self.registryValue("verseRosterMaxChars", channel),
+        )
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         tools = make_verse_tool_specs(
             max_actors=max_actors,
