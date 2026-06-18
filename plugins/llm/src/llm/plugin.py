@@ -429,6 +429,21 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("%versecompact #afnet",),
         category="utility",
     ),
+    CommandInfo(
+        name="versedit",
+        args="<verb> <args...> [#channel]",
+        description=(
+            "Edit the verse universe: add/pin/unpin/set/name/desc/retire/restore/"
+            "relate/unrelate/event/editevent/delevent/show. "
+            "Requires the llm.verse.edit capability."
+        ),
+        examples=(
+            "%versedit add npc Assgas Archie :: Y11 windbag",
+            "%versedit pin Assgas Archie",
+            "%versedit retire #42",
+        ),
+        category="utility",
+    ),
 )
 
 

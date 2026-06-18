@@ -683,6 +683,7 @@ class TestCommandRegistry:
             "verseapprove",
             "versereject",
             "versecompact",
+            "versedit",
         }
         assert names == expected
 
