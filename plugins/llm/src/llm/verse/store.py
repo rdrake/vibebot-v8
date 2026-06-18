@@ -1190,6 +1190,34 @@ class VerseStore:
             )
         return pid
 
+    def apply_direct(
+        self,
+        *,
+        op: str,
+        payload: dict[str, Any],
+        source: str,
+        provenance: str,
+    ) -> int | None:
+        """Apply *op* immediately and write an approved audit proposal row.
+
+        For operator commands (source='operator') and the verse_edit tool
+        (source='llm'). Unlike apply_and_record_proposal this carries no loom
+        ceremony (cycle_id/confidence/reviewer are synthesized for audit only).
+        Returns the new row id for creating ops, else None.
+        """
+        pid = uuid.uuid4().hex
+        now = time.time()
+        with self.write_transaction() as conn:
+            result = self._apply_op_inline(conn, op=op, payload=payload, source=source)
+            conn.execute(
+                "INSERT INTO proposals "
+                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
+                " status, reviewer, reviewed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
+                (pid, now, "direct", op, json.dumps(payload), 1.0, provenance, source, now),
+            )
+        return result
+
     def apply_proposal_and_mark(
         self,
         proposal_id: str,
