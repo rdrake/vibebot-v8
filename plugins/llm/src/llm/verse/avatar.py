@@ -155,6 +155,42 @@ def make_verse_tool_specs(*, max_actors: int = 8, storybook: bool = False) -> li
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "verse_edit",
+                "description": (
+                    "Create or modify forest-verse canon (entities, "
+                    "attributes, relations, events). Requires the caller to "
+                    "hold llm.verse.edit; calls from anyone else are refused. "
+                    "Constructive ops only — you cannot delete or retire "
+                    "anything with this tool. ``op`` selects the kind of "
+                    "change; ``payload`` carries its fields (add_entity: kind, "
+                    "name, summary?; add_event: summary, entity_ids; "
+                    "set_attribute: entity_id, key, value; add_relation: "
+                    "from_id, to_id, kind, note?; update_entity: entity_id "
+                    "plus name and/or summary). Reuse existing entity ids from "
+                    "the roster; do not invent ids."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "op": {
+                            "type": "string",
+                            "enum": [
+                                "add_entity",
+                                "add_event",
+                                "set_attribute",
+                                "add_relation",
+                                "update_entity",
+                            ],
+                        },
+                        "payload": {"type": "object"},
+                    },
+                    "required": ["op", "payload"],
+                },
+            },
+        },
     ]
     if storybook:
         specs.append(

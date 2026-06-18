@@ -2040,7 +2040,7 @@ class TestVerseRouteForC7c:
         assert route.avatar_id is not None
         assert isinstance(route.system_prompt, str)
         assert "alice" in route.system_prompt
-        assert len(route.tools) == 5
+        assert len(route.tools) == 6
         assert route.store is store
 
     def test_slash_ooc_bypasses_route_even_with_avatar(self, verse_env) -> None:
@@ -2078,7 +2078,7 @@ class TestVerseRouteForC7c:
         assert "Scene:" in route.system_prompt
 
     def test_route_tools_have_expected_names(self, verse_env) -> None:
-        """Returned tools must be the five verse tool specs."""
+        """Returned tools must be the six verse tool specs (incl. verse_edit)."""
         plugin, _irc, _msg, _store = verse_env
 
         route = plugin._verse_route_for("#afnet", "alice", None, "hello")
@@ -2091,6 +2091,7 @@ class TestVerseRouteForC7c:
             "verse_look",
             "verse_recall",
             "verse_record",
+            "verse_edit",
         }
 
 

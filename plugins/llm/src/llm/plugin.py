@@ -58,6 +58,7 @@ from .verse.aging import AgingOutcome
 from .verse.avatar import (
     _VerseToolResult,
     build_verse_system_prompt,
+    dispatch_verse_edit,
     is_ooc,
     make_verse_denial_handlers,
     make_verse_extra_handlers,
@@ -2835,6 +2836,56 @@ class LLM(callbacks.Plugin):
         _call.__name__ = "_verse_handler_verse_storybook"
         return _call
 
+    def _verse_edit_handler(
+        self,
+        *,
+        msg: IrcMsg,
+        store: VerseStore,
+        account: str | None,
+    ) -> Callable[[dict], _VerseToolResult]:
+        """Build the ``verse_edit`` tool handler for one completion.
+
+        The handler is bound to the TRIGGERING user's IRC prefix (``msg.prefix``)
+        so the ``llm.verse.edit`` capability check reflects who actually drove
+        this verse turn — NOT the avatar that happens to be active in the
+        channel. This is the security-load-bearing gate: an unauthorized caller
+        gets a refusal and nothing is written to the store.
+
+        ``dispatch_verse_edit`` (the pure handler) enforces the
+        constructive-ops whitelist and payload validation; this wrapper only
+        resolves authorization and adapts the result dict to the
+        ``_VerseToolResult`` JSON the assistant loop expects. A refused/error
+        result is re-emitted with an ``error`` key so the loop's success
+        detector (service.py: "error" not in parsed) counts it as a failure.
+        """
+        authorized = ircdb.checkCapability(msg.prefix, "llm.verse.edit")
+
+        def _call(args: dict) -> _VerseToolResult:
+            op = args.get("op") if isinstance(args, dict) else None
+            payload = args.get("payload") if isinstance(args, dict) else None
+            if not isinstance(payload, dict):
+                payload = {}
+            result = dispatch_verse_edit(
+                store,
+                op=op,
+                payload=payload,
+                authorized=authorized,
+                account=account or "anon",
+            )
+            if result.get("status") != "ok":
+                return _VerseToolResult(
+                    content=json.dumps(
+                        {
+                            "status": result.get("status", "error"),
+                            "error": result.get("detail", "verse_edit failed"),
+                        }
+                    )
+                )
+            return _VerseToolResult(content=json.dumps(result))
+
+        _call.__name__ = "_verse_handler_verse_edit"
+        return _call
+
     def _draw_for_assistant(
         self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
     ) -> ToolCallbackResult:
@@ -3762,6 +3813,18 @@ class LLM(callbacks.Plugin):
                         **(bridge_handlers or {}),
                         **verse_handlers,
                     }
+                    # verse_edit (gated): overlay a live handler bound to the
+                    # TRIGGERING user's prefix so the llm.verse.edit capability
+                    # check reflects who drove this turn, not the channel's
+                    # active avatar. The tool spec is always advertised on a
+                    # verse route (make_verse_tool_specs), so the handler must
+                    # always be present here — an unauthorized caller is refused
+                    # inside dispatch_verse_edit, not by withholding the tool.
+                    combined_handlers["verse_edit"] = self._verse_edit_handler(
+                        msg=msg,
+                        store=verse_route.store,
+                        account=pf.account,
+                    )
                     # Storybook tool (gated): overlay a live handler that can
                     # capture irc/msg/channel/account/nick/persona. Only wired
                     # when the per-channel flag is on; otherwise the spec isn't

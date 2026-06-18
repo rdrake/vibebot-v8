@@ -555,10 +555,14 @@ class TestOOC:
 class TestMakeVerseToolSpecs:
     """Tests for make_verse_tool_specs() (C7c)."""
 
-    def test_lists_five_tools_with_correct_names(self) -> None:
-        """GIVEN make_verse_tool_specs() THEN exactly 5 tool specs with the right names."""
+    def test_lists_six_tools_with_correct_names(self) -> None:
+        """GIVEN make_verse_tool_specs() THEN exactly 6 tool specs with the right names.
+
+        verse_edit (gated canon editing) joined the base set in Task 11; the
+        storybook tool is still flag-gated and absent by default.
+        """
         specs = make_verse_tool_specs()
-        assert len(specs) == 5
+        assert len(specs) == 6
         names = {s["function"]["name"] for s in specs}
         assert names == {
             "verse_act",
@@ -566,6 +570,7 @@ class TestMakeVerseToolSpecs:
             "verse_look",
             "verse_recall",
             "verse_record",
+            "verse_edit",
         }
 
     def test_each_spec_is_function_type(self) -> None:
@@ -895,11 +900,11 @@ class TestHandlerConsumesResult:
 
 
 class TestVerseRecordToolSpec:
-    def test_make_verse_tool_specs_returns_five_with_default_max(self) -> None:
+    def test_make_verse_tool_specs_returns_six_with_default_max(self) -> None:
         from llm.verse.avatar import make_verse_tool_specs
 
         specs = make_verse_tool_specs()
-        assert len(specs) == 5
+        assert len(specs) == 6
         names = {s["function"]["name"] for s in specs}
         assert names == {
             "verse_act",
@@ -907,6 +912,7 @@ class TestVerseRecordToolSpec:
             "verse_look",
             "verse_recall",
             "verse_record",
+            "verse_edit",
         }
         record = next(s for s in specs if s["function"]["name"] == "verse_record")
         params = record["function"]["parameters"]
