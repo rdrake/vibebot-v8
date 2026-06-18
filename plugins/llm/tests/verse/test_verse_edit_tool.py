@@ -31,6 +31,35 @@ def test_verse_edit_authorized_applies(tmp_path):
     assert [e.name for e in store.list_entities_by_kind("npc")] == ["Archie"]
 
 
+def test_verse_edit_apply_error_is_reported(tmp_path):
+    """A constructive op that raises in apply_direct (e.g. relating to a
+    nonexistent entity) returns status=error with the exception message,
+    not an unhandled traceback."""
+    store = VerseStore(tmp_path, "#chan")
+    result = dispatch_verse_edit(
+        store,
+        op="add_relation",
+        payload={"from_id": 999, "to_id": 998, "kind": "knows"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "does not exist" in result["detail"]
+
+
+def test_verse_edit_invalid_payload_rejected(tmp_path):
+    """validate_payload rejects a malformed payload before apply_direct."""
+    store = VerseStore(tmp_path, "#chan")
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": "npc"},  # missing name
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+
+
 def test_verse_edit_rejects_destructive_op(tmp_path):
     store = VerseStore(tmp_path, "#chan")
     result = dispatch_verse_edit(
