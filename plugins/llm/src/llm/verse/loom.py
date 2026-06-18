@@ -143,7 +143,26 @@ _PAYLOAD_SCHEMA: dict[str, tuple[tuple[str, Callable[[Any], bool], str], ...]] =
         ("summary", lambda v: isinstance(v, str), "str"),
         ("entity_ids", _is_int_list, "list[int]"),
     ),
+    "update_entity": (("entity_id", _is_strict_int, "int"),),
 }
+
+
+def validate_payload(op: str, payload: dict[str, Any]) -> str | None:
+    """Return None if *payload* is valid for *op*, else a human reason string.
+
+    Shared by parse_digest (loom) and the verse_edit tool so one schema
+    governs both. Only constructive ops have entries; an op without a
+    schema entry is rejected.
+    """
+    schema = _PAYLOAD_SCHEMA.get(op)
+    if schema is None:
+        return f"unknown or non-constructive op: {op!r}"
+    for key, predicate, label in schema:
+        if key not in payload:
+            return f"missing {key}"
+        if not predicate(payload[key]):
+            return f"{key} not {label}"
+    return None
 
 
 class ParsedProposal(NamedTuple):
@@ -186,14 +205,7 @@ def parse_digest(text: str) -> list[ParsedProposal]:
         if not isinstance(payload, dict):
             log.warning("loom proposal %d payload not dict; dropped", i)
             continue
-        bad_field: str | None = None
-        for key, predicate, label in _PAYLOAD_SCHEMA[op]:
-            if key not in payload:
-                bad_field = f"missing {key}"
-                break
-            if not predicate(payload[key]):
-                bad_field = f"{key} not {label}"
-                break
+        bad_field = validate_payload(op, payload)
         if bad_field is not None:
             log.warning("loom proposal %d %s; dropped", i, bad_field)
             continue
