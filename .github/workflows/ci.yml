@@ -3,6 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-only pushes don't affect the runtime image. Skipping CI here also
+    # skips the downstream Docker build + prod restart (docker.yml triggers on
+    # CI success via workflow_run), so editing docs no longer bounces the bot.
+    # GitHub evaluates paths-ignore across all commits in the push, so a push
+    # that also touches runtime files still runs. Docs still publish via
+    # pages.yml (its own docs/** trigger). PRs are intentionally unfiltered so
+    # required status checks always report.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'mkdocs.yml'
   pull_request:
     branches: [main]
 
