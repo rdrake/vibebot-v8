@@ -5970,6 +5970,12 @@ class LLM(callbacks.Plugin):
     versedit = wrap(
         versedit,
         [
+            # NB: ("checkCapability", ...) checks the cap GLOBALLY against
+            # msg.prefix (like verseapprove's llm.verse.gm) — it does NOT
+            # channel-scope to the optional("channel") arg. llm.verse.edit is
+            # a global cap everywhere in this plugin; a per-channel grant would
+            # fail closed (deny), never escalate. Do not assume per-channel
+            # enforcement exists here.
             ("checkCapability", "llm.verse.edit"),
             "text",
             optional("channel"),
