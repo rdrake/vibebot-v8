@@ -124,6 +124,24 @@ class TestAgeAutoCreatedEntities:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (avatar_id,)).fetchone()
         assert row[0] == "active"
 
+    def test_skips_pinned_entities(self, store: VerseStore) -> None:
+        """A pinned auto_created NPC is explicit operator canon and must
+        never be auto-retired, even when silent well past the cutoff.
+        Pinned entities are protected, not aging candidates: scanned stays
+        0 and the entity remains active."""
+        from llm.verse.aging import age_auto_created_entities
+
+        eid = store.add_entity("npc", "assgas archie", "")
+        store.set_attribute(eid, "auto_created", "1")
+        store.set_attribute(eid, "last_seen_ts", "0.0")  # ancient
+        store.set_attribute(eid, "pinned", "1")
+
+        outcome = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert outcome == (0, 0)
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+        assert row[0] == "active"
+
     def test_digest_insert_bumps_last_seen(self, store: VerseStore) -> None:
         """When _replace_events_with_source inserts a digest, every entity
         in entity_ids has last_seen_ts bumped to ts. The bump is on the
