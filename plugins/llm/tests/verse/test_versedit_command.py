@@ -86,6 +86,24 @@ class TestVerseditCommand:
         ent_id = store.resolve_ref("Archie")
         assert store.get_entity(ent_id).summary == "stinky"
 
+    def test_add_with_leading_channel_works_in_pm(self, verse_env):
+        """A leading #channel token targets that channel from a private message.
+
+        In a PM the message carries no channel of its own (msg.channel is None
+        and msg.args[0] is the bot's nick), so without the leading-channel
+        escape hatch the command can only error. This lets operators batch
+        edits in a DM without flooding the channel.
+        """
+        plugin, irc, msg, store = verse_env
+        msg.channel = None
+        msg.args = ("testbot", "")
+        plugin.versedit(irc, msg, ["#afnet", "add", "npc", "Archie", "::", "stinky"])
+        assert not irc.error.called
+        reply = irc.reply.call_args[0][0]
+        assert "added npc" in reply
+        assert store.active_name_exists("Archie")
+        assert store.get_entity(store.resolve_ref("Archie")).summary == "stinky"
+
     def test_unknown_verb_errors(self, verse_env):
         plugin, irc, msg, _store = verse_env
         plugin.versedit(irc, msg, ["frobnicate", "stuff"])

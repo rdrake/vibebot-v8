@@ -6024,12 +6024,22 @@ class LLM(callbacks.Plugin):
         rest: str,
         channel_arg: str | None = None,
     ) -> None:
-        """<verb> <args...> [#channel]
+        """[#channel] <verb> <args...>
 
         Edit the verse universe: add, pin, unpin, set, name, desc, retire,
         restore, relate, unrelate, event, editevent, delevent, show.
-        Requires the llm.verse.edit capability.
+        Requires the llm.verse.edit capability. A leading #channel targets
+        that channel (useful in a PM, to avoid flooding the channel itself);
+        otherwise the channel the command was run in is used.
         """
+        # A leading "#channel" token lets an operator target a channel from a
+        # private message — where msg carries no channel of its own (msg.channel
+        # is None and msg.args[0] is the bot's nick) — so a batch of edits can be
+        # pasted into a DM without flooding the channel. Explicit beats implicit.
+        parts = rest.split(None, 1)
+        if parts and ircutils.isChannel(parts[0]):
+            channel_arg = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
         channel = channel_arg or (msg.args[0] if msg.args else None)
         if not channel or not ircutils.isChannel(channel):
             irc.error("Specify a channel.", prefixNick=False)
