@@ -5935,6 +5935,191 @@ class LLM(callbacks.Plugin):
     versedump = wrap(versedump, [optional("text")])
 
     # ------------------------------------------------------------------
+    # @versedit <verb> <args...> [#channel]  — operator universe editing
+    # ------------------------------------------------------------------
+
+    def versedit(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        rest: str,
+        channel_arg: str | None = None,
+    ) -> None:
+        """<verb> <args...> [#channel]
+
+        Edit the verse universe: add, pin, unpin, set, name, desc, retire,
+        restore, relate, unrelate, event, editevent, delevent, show.
+        Requires the llm.verse.edit capability.
+        """
+        channel = channel_arg or (msg.args[0] if msg.args else None)
+        if not channel or not ircutils.isChannel(channel):
+            irc.error("Specify a channel.", prefixNick=False)
+            return
+        store = self._get_or_create_verse_store(channel)
+        tokens = rest.split(None, 1)
+        verb = tokens[0].lower() if tokens else ""
+        body = tokens[1] if len(tokens) > 1 else ""
+        try:
+            reply = self._versedit_dispatch(store, verb, body)
+        except (LookupError, ValueError, PermissionError) as exc:
+            irc.error(str(exc), prefixNick=False)
+            return
+        irc.reply(reply, prefixNick=False)
+
+    versedit = wrap(
+        versedit,
+        [
+            ("checkCapability", "llm.verse.edit"),
+            "text",
+            optional("channel"),
+        ],
+    )
+
+    def _versedit_dispatch(self, store: VerseStore, verb: str, body: str) -> str:
+        if verb == "add":
+            kind_rest = body.split(None, 1)
+            if len(kind_rest) < 2:
+                raise ValueError("usage: versedit add <kind> <name> [:: summary]")
+            kind, name_part = kind_rest[0], kind_rest[1]
+            name, summary = (name_part.split("::", 1) + [""])[:2]
+            name, summary = name.strip(), summary.strip()
+            if kind not in ("avatar", "npc", "place", "faction", "item"):
+                raise ValueError("kind must be avatar|npc|place|faction|item")
+            if store.active_name_exists(name):
+                raise ValueError(f"an active entity named {name!r} already exists")
+            new_id = store.apply_direct(
+                op="add_entity",
+                payload={"kind": kind, "name": name, "summary": summary},
+                source="operator",
+                provenance="@versedit add",
+            )
+            return f"added {kind} #{new_id}: {name}"
+        if verb in ("pin", "unpin"):
+            eid = store.resolve_ref(body.strip())
+            store.apply_direct(
+                op="set_pinned",
+                payload={"entity_id": eid, "pinned": verb == "pin"},
+                source="operator",
+                provenance=f"@versedit {verb}",
+            )
+            return f"{verb}ned #{eid}"
+        if verb == "set":
+            parts = body.split(None, 2)
+            if len(parts) < 3:
+                raise ValueError("usage: versedit set <ref> <key> <value>")
+            eid = store.resolve_ref(parts[0])
+            store.apply_direct(
+                op="set_attribute",
+                payload={"entity_id": eid, "key": parts[1], "value": parts[2]},
+                source="operator",
+                provenance="@versedit set",
+            )
+            return f"set {parts[1]} on #{eid}"
+        if verb == "name":
+            ref, _, newname = body.partition(" ")
+            newname = newname.strip()
+            if not newname:
+                raise ValueError("usage: versedit name <ref> <new-name>")
+            eid = store.resolve_ref(ref)
+            if store.active_name_exists(newname):
+                raise ValueError(f"an active entity named {newname!r} already exists")
+            store.apply_direct(
+                op="update_entity",
+                payload={"entity_id": eid, "name": newname},
+                source="operator",
+                provenance="@versedit name",
+            )
+            return f"renamed #{eid} -> {newname}"
+        if verb == "desc":
+            ref, _, summary = body.partition("::")
+            eid = store.resolve_ref(ref.strip())
+            store.apply_direct(
+                op="update_entity",
+                payload={"entity_id": eid, "summary": summary.strip()},
+                source="operator",
+                provenance="@versedit desc",
+            )
+            return f"updated summary of #{eid}"
+        if verb in ("retire", "restore"):
+            eid = store.resolve_ref(body.strip())
+            status = "retired" if verb == "retire" else "active"
+            store.apply_direct(
+                op="set_status",
+                payload={"entity_id": eid, "status": status},
+                source="operator",
+                provenance=f"@versedit {verb}",
+            )
+            return f"{verb}d #{eid}"
+        if verb == "relate":
+            head, _, note = body.partition("::")
+            parts = head.split()
+            if len(parts) != 3:
+                raise ValueError("usage: versedit relate <ref> <kind> <ref> [:: note]")
+            from_id = store.resolve_ref(parts[0])
+            to_id = store.resolve_ref(parts[2])
+            rid = store.apply_direct(
+                op="add_relation",
+                payload={
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "kind": parts[1],
+                    "note": note.strip(),
+                },
+                source="operator",
+                provenance="@versedit relate",
+            )
+            return f"related #{from_id} -{parts[1]}-> #{to_id} (relation #{rid})"
+        if verb == "unrelate":
+            rid = int(body.strip())
+            store.apply_direct(
+                op="delete_relation",
+                payload={"relation_id": rid},
+                source="operator",
+                provenance="@versedit unrelate",
+            )
+            return f"deleted relation #{rid}"
+        if verb == "event":
+            summary, _, ids_part = body.partition("@")
+            entity_ids = (
+                [int(x) for x in ids_part.split(",") if x.strip().isdigit()] if ids_part else []
+            )
+            new_id = store.apply_direct(
+                op="add_event",
+                payload={"summary": summary.strip(), "entity_ids": entity_ids},
+                source="operator",
+                provenance="@versedit event",
+            )
+            return f"added event #{new_id}"
+        if verb == "editevent":
+            id_part, _, summary = body.partition("::")
+            ev_id = int(id_part.strip())
+            store.apply_direct(
+                op="edit_event",
+                payload={"event_id": ev_id, "summary": summary.strip()},
+                source="operator",
+                provenance="@versedit editevent",
+            )
+            return f"edited event #{ev_id}"
+        if verb == "delevent":
+            ev_id = int(body.strip())
+            store.apply_direct(
+                op="delete_event",
+                payload={"event_id": ev_id},
+                source="operator",
+                provenance="@versedit delevent",
+            )
+            return f"deleted event #{ev_id}"
+        if verb == "show":
+            eid = store.resolve_ref(body.strip())
+            ent = store.get_entity(eid)
+            if ent is None:
+                raise LookupError(f"entity #{eid} does not exist")
+            attrs = store.list_attributes(eid)
+            return f"#{eid} {ent.kind} {ent.name} [{ent.status}] — {ent.summary} | attrs={attrs}"
+        raise ValueError(f"unknown verb: {verb!r}")
+
+    # ------------------------------------------------------------------
     # @versepurge #chan [token]  — wipe a channel's verse with 2-step confirm
     # ------------------------------------------------------------------
 
