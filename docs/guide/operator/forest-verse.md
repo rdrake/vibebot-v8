@@ -172,6 +172,64 @@ forcing a digest before the daily timer fires. Requires capability
 `llm.verse.gm`. Reports the outcome (`compacted`, `skipped_no_events`,
 `skipped_below_floor`, `skipped_disabled`).
 
+## Editing the verse manually (`@versedit`)
+
+`@versedit` lets an authorized user hand-edit a channel's verse — entities,
+attributes, relations, and events — as operator canon (writes are immediate
+and audit-logged). It requires the `llm.verse.edit` capability, which is
+**checked globally** against the caller's account (a channel-scoped grant
+fails closed; grant trusted accounts globally). The same constructive edits
+are also available to the model through the `verse_edit` tool, gated on the
+same capability per triggering user.
+
+### Targeting a channel (and editing from a PM)
+
+By default the edit applies to the channel the command was run in. A **leading
+`#channel`** token overrides that — and because it supplies the channel
+explicitly, it lets you run `@versedit` in a **private message** to the bot,
+so a batch of edits never floods the channel:
+
+```
+/query yourbot
+@versedit #afternet add npc Gurning Gary :: Y9 supply teacher with a twitchy eye
+@versedit #afternet pin Gurning Gary
+```
+
+Every reply comes back in the query. Run in a channel without the token, it
+edits that channel as before.
+
+### Verbs
+
+A `<ref>` is either `#<id>` or an entity name. Summaries are separated from
+the preceding argument with `::`.
+
+| Verb | Syntax | Effect |
+|------|--------|--------|
+| `add` | `add <kind> <name> [:: summary]` | Create an entity. `kind` ∈ `avatar`/`npc`/`place`/`faction`/`item`. Rejects a duplicate *active* name. |
+| `show` | `show <ref>` | Inspect id, kind, status, summary, and attributes. |
+| `desc` | `desc <ref> :: <summary>` | Replace the entity summary. |
+| `name` | `name <ref> <new-name>` | Rename (rejects a duplicate active name). |
+| `set` | `set <ref> <key> <value>` | Set an attribute. |
+| `pin` / `unpin` | `pin <ref>` | Add/remove from the always-on pinned roster (subject to `verseRosterMaxChars`). |
+| `retire` / `restore` | `retire <ref>` | Soft-delete / restore an entity (flips `status`; reversible, no hard single-entity delete). |
+| `relate` | `relate <ref> <kind> <ref> [:: note]` | Add a directed relation; replies with the new relation id. |
+| `unrelate` | `unrelate <relation-id>` | Delete a relation by id. |
+| `event` | `event <summary> [@id,id,…]` | Add a timeline event, optionally linking entity ids. |
+| `editevent` | `editevent <event-id> :: <summary>` | Edit an event summary. |
+| `delevent` | `delevent <event-id>` | Delete an event. |
+
+```
+@versedit add npc Mad Miss Muffet :: Unhinged dinner-lady who laces lunches with beans
+@versedit relate Mad Miss Muffet leads The Dinner Ladies :: ringleader
+@versedit event Muffet spikes the Year 7 lunch @58
+@versedit pin Mad Miss Muffet
+```
+
+Pinning is what makes a character appear in **every** verse turn; unpinned
+entities surface contextually through the events and relations that reference
+them. See `verseRosterMaxChars` and `verseAutoEntityRetireDays` below — note
+pinned entities are exempt from auto-retirement.
+
 ## Loom orchestrator
 
 The loom is a separate orchestrator that runs cheap-model cycles inside one
@@ -272,6 +330,8 @@ A verse cannot consume its own emissions.
 | `verseCrosspollPerCycleLimit` | global | int | `1` | Maximum crosspoll seeds a source verse may emit per loom cycle |
 | `verseCompactionDailyAt` | global | str | `"03:00"` | Local-time `HH:MM` for the daily retention-compaction sweep |
 | `verseCompactionMinKeepEvents` | global | int | `20` | Floor on total events; verses below this count are skipped by compaction |
+| `verseRosterMaxChars` | per-channel | int | `600` | Max characters of the pinned-roster block injected into every verse system prompt; pins beyond the cap are dropped with a `(roster truncated)` marker |
+| `verseAutoEntityRetireDays` | per-channel | int | `14` | Days of no reference before auto-created NPCs retire (`0` disables the sweep). Pinned entities are exempt |
 | `verseAutoApplyThreshold` | global | float | `0.85` | Minimum confidence at which loom proposals auto-apply without operator review (`add_entity` always queues) |
 | `loomNetwork` | global | str | `""` | Network where the loom orchestrator runs. Empty = disabled |
 | `loomChannel` | global | str | `""` | Channel where the loom orchestrator runs. Empty = disabled |
