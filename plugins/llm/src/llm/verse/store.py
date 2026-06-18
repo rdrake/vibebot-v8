@@ -334,6 +334,23 @@ class VerseStore:
         with self.read_connection() as conn:
             return self._find_active_entity_by_name_inline(conn, name)
 
+    def resolve_ref(self, ref: str) -> int:
+        """Resolve an operator <ref> to an entity id.
+
+        '#<int>' is always an id; anything else is a name (so an entity
+        literally named '7' is addressable). Raises LookupError if unknown.
+        """
+        ref = ref.strip()
+        if ref.startswith("#") and ref[1:].isdigit():
+            eid = int(ref[1:])
+            if self.get_entity(eid) is None:
+                raise LookupError(f"no entity #{eid}")
+            return eid
+        ent = self.find_active_entity_by_name(ref)
+        if ent is None:
+            raise LookupError(f"no active entity named {ref!r}")
+        return ent.id
+
     def _set_status_inline(
         self,
         conn: sqlite3.Connection,

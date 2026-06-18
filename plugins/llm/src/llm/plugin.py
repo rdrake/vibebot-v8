@@ -88,7 +88,17 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
-    {"llm.ask", "llm.code", "llm.draw", "llm.verse", "llm.verse.gm", "owner", "admin", "trusted"}
+    {
+        "llm.ask",
+        "llm.code",
+        "llm.draw",
+        "llm.verse",
+        "llm.verse.gm",
+        "llm.verse.edit",
+        "owner",
+        "admin",
+        "trusted",
+    }
 )
 
 # Pending-task mutation tools whose successful execution already produced
