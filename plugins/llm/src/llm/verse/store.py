@@ -334,6 +334,36 @@ class VerseStore:
         with self.read_connection() as conn:
             return self._find_active_entity_by_name_inline(conn, name)
 
+    def _reactivate_auto_npc_inline(
+        self,
+        conn: sqlite3.Connection,
+        name: str,
+        ts: float,
+    ) -> int | None:
+        """If a retired auto-created npc exists by this name, reactivate it
+        (status->active, refresh last_seen_ts) and return its id; else None.
+
+        This is what stops aged-out NPCs from spawning duplicate rows when
+        they are mentioned again: aging retires ``auto_created`` npcs, and a
+        re-mention reuses the same id instead of inserting a fresh entity.
+        Scoped to ``auto_created`` npcs so the avatar lifecycle (opted-out
+        avatars) and deliberate operator retirements of canon are never
+        silently undone. Caller-provided open conn (used inside
+        record_user_event's write transaction)."""
+        row = conn.execute(
+            "SELECT e.id FROM entities e JOIN attributes a ON a.entity_id = e.id"
+            " WHERE LOWER(e.name) = LOWER(?) AND e.kind = 'npc'"
+            "   AND e.status = 'retired' AND a.key = 'auto_created' AND a.value = '1'"
+            " ORDER BY e.updated_at DESC, e.id DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        eid = int(row[0])
+        self._set_status_inline(conn, eid, "active")
+        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+        return eid
+
     def resolve_ref(self, ref: str) -> int:
         """Resolve an operator <ref> to an entity id.
 
@@ -600,9 +630,11 @@ class VerseStore:
             for name in actor_names:
                 entity = self._find_active_entity_by_name_inline(conn, name)
                 if entity is None:
-                    eid = self._add_entity_inline(conn, "npc", name, "")
-                    self._set_attribute_inline(conn, eid, "auto_created", "1")
-                    self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+                    eid = self._reactivate_auto_npc_inline(conn, name, ts)
+                    if eid is None:
+                        eid = self._add_entity_inline(conn, "npc", name, "")
+                        self._set_attribute_inline(conn, eid, "auto_created", "1")
+                        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
                 else:
                     eid = entity.id
                     if entity.kind != "avatar":
@@ -662,34 +694,60 @@ class VerseStore:
         self,
         limit: int = 10,
         exclude_sources: Sequence[str] = (),
+        *,
+        require_active_entity: bool = False,
     ) -> list[Event]:
-        """Return events newest-first, optionally excluding given sources."""
+        """Return events newest-first, optionally excluding given sources.
+
+        When ``require_active_entity`` is True, events whose every referenced
+        entity is retired or deleted ("dead lore") are skipped, so a retired
+        entity's name/id is not replayed into a prompt via the event log.
+        Entity-less narration events are always kept. ``limit`` then counts
+        surviving rows, so the SQL LIMIT is dropped and the cursor is scanned
+        lazily newest-first until ``limit`` survivors are collected."""
+        where = ""
+        params: list = []
         if exclude_sources:
             placeholders = ",".join("?" * len(exclude_sources))
-            sql = (
-                f"SELECT id, ts, summary, entity_ids, source FROM events"
-                f" WHERE source NOT IN ({placeholders})"
-                f" ORDER BY ts DESC, id DESC LIMIT ?"
-            )
-            params: tuple = (*exclude_sources, limit)
-        else:
-            sql = (
-                "SELECT id, ts, summary, entity_ids, source FROM events"
-                " ORDER BY ts DESC, id DESC LIMIT ?"
-            )
-            params = (limit,)
+            where = f" WHERE source NOT IN ({placeholders})"
+            params.extend(exclude_sources)
+        base = (
+            "SELECT id, ts, summary, entity_ids, source FROM events"
+            f"{where} ORDER BY ts DESC, id DESC"
+        )
         with self.read_connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [
-            Event(
-                id=row[0],
-                ts=row[1],
-                summary=row[2],
-                entity_ids=_parse_entity_ids(row[3], row[0]),
-                source=row[4],
-            )
-            for row in rows
-        ]
+            if not require_active_entity:
+                rows = conn.execute(f"{base} LIMIT ?", (*params, limit)).fetchall()
+                return [
+                    Event(
+                        id=row[0],
+                        ts=row[1],
+                        summary=row[2],
+                        entity_ids=_parse_entity_ids(row[3], row[0]),
+                        source=row[4],
+                    )
+                    for row in rows
+                ]
+            active_ids = {
+                r[0] for r in conn.execute("SELECT id FROM entities WHERE status='active'")
+            }
+            out: list[Event] = []
+            for row in conn.execute(base, params):
+                ids = _parse_entity_ids(row[3], row[0])
+                if ids and not any(i in active_ids for i in ids):
+                    continue
+                out.append(
+                    Event(
+                        id=row[0],
+                        ts=row[1],
+                        summary=row[2],
+                        entity_ids=ids,
+                        source=row[4],
+                    )
+                )
+                if len(out) >= limit:
+                    break
+            return out
 
     def _replace_events_with_source(
         self,

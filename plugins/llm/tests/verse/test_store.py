@@ -421,6 +421,53 @@ class TestEventsCrud:
         store = VerseStore(verse_db_dir, "#afnet")
         assert store.recent_events() == []
 
+    def test_recent_events_require_active_entity_drops_dead_only(self, verse_db_dir: Path) -> None:
+        """require_active_entity=True excludes events whose every referenced
+        entity is retired (dead lore), but keeps events with at least one
+        active entity and keeps entity-less narration."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        live = store.add_entity("npc", "live", "")
+        dead = store.add_entity("npc", "dead", "")
+        store.set_status(dead, "retired")
+        store.add_event("dead-only", [dead], "loom")
+        store.add_event("live-only", [live], "loom")
+        store.add_event("mixed", [live, dead], "loom")
+        store.add_event("narration", [], "loom")
+
+        out = store.recent_events(limit=10, require_active_entity=True)
+        assert {ev.summary for ev in out} == {"live-only", "mixed", "narration"}
+
+    def test_recent_events_require_active_entity_default_keeps_dead(
+        self, verse_db_dir: Path
+    ) -> None:
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        dead = store.add_entity("npc", "dead", "")
+        store.set_status(dead, "retired")
+        store.add_event("dead-only", [dead], "loom")
+        assert len(store.recent_events(limit=10)) == 1
+
+    def test_recent_events_require_active_entity_limit_counts_post_filter(
+        self, verse_db_dir: Path
+    ) -> None:
+        """limit counts surviving rows: dead-only events interleaved among
+        live ones must not eat limit slots."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        live = store.add_entity("npc", "live", "")
+        dead = store.add_entity("npc", "dead", "")
+        store.set_status(dead, "retired")
+        for i in range(3):
+            store.add_event(f"dead {i}", [dead], "loom")
+            store.add_event(f"live {i}", [live], "loom")
+        out = store.recent_events(limit=2, require_active_entity=True)
+        assert len(out) == 2
+        assert all("live" in ev.summary for ev in out)
+
 
 class TestAvatarLinkCrud:
     def test_link_inserts_row(self, verse_db_dir: Path) -> None:

@@ -404,7 +404,7 @@ def verse_recall(store: VerseStore, query: str) -> list[Event]:
     tokens = [t for t in query.lower().split() if t]
     if not tokens:
         return []
-    events = store.recent_events(limit=100)
+    events = store.recent_events(limit=100, require_active_entity=True)
     filtered = [
         event for event in events if any(token in event.summary.lower() for token in tokens)
     ]

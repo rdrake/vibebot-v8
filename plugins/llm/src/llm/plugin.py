@@ -6661,7 +6661,9 @@ class _PluginLoomBridge:
         store = self._plugin._get_or_create_verse_store(channel)
         avatars = store.list_entities_by_kind("avatar", status="active")[:5]
         places = store.list_entities_by_kind("place")[:5]
-        events = store.recent_events(limit=10, exclude_sources=("crosspoll",))
+        events = store.recent_events(
+            limit=10, exclude_sources=("crosspoll",), require_active_entity=True
+        )
         return VerseSnapshot(
             channel=channel,
             summary=f"{len(avatars)} active avatars, {len(places)} places",

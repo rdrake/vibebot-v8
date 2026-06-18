@@ -151,7 +151,37 @@ class TestRecordUserEvent:
         zorps = [e for e in store.list_entities_by_kind("npc") if e.name == "zorp"]
         assert len(zorps) == 1, f"expected exactly one 'zorp' entity, got {len(zorps)}"
 
+    def test_retired_auto_npc_reactivated_by_name(self, store: VerseStore) -> None:
+        """An aged-out auto-created npc is REACTIVATED on re-mention (same id,
+        status flips back to active, heartbeat refreshed) instead of spawning a
+        duplicate row. This is the fix for the duplicate-cluster churn: aging
+        retires auto npcs, and re-mention used to create a brand-new id."""
+        alice_id = _opt_in(store)
+        dan_id = store.add_entity("npc", "dan", "")
+        store.set_attribute(dan_id, "auto_created", "1")
+        store.set_attribute(dan_id, "last_seen_ts", "50.0")
+        store.set_status(dan_id, "retired")
+
+        event_id = store.record_user_event(
+            actor_id=alice_id,
+            summary="dan crawls back out of the void",
+            actor_names=["dan"],
+            now=lambda: 300.0,
+        )
+
+        rows = [e for e in store.list_entities_by_kind("npc", status=None) if e.name == "dan"]
+        assert len(rows) == 1, "must reuse the retired auto-npc, not duplicate it"
+        assert rows[0].id == dan_id
+        assert rows[0].status == "active"
+        assert store.get_attribute(dan_id, "last_seen_ts") == "300.0"
+        ev = next(e for e in store.recent_events(limit=10) if e.id == event_id)
+        assert dan_id in ev.entity_ids
+
     def test_retired_entity_not_rehydrated(self, store: VerseStore) -> None:
+        # A retired npc WITHOUT the auto_created marker (e.g. operator canon, or
+        # the npc shell left behind by an opted-out avatar) is NOT reactivated:
+        # reactivation is scoped to auto_created npcs so the avatar lifecycle and
+        # deliberate operator retirements are preserved.
         alice_id = _opt_in(store)
         old_id = store.add_entity("npc", "ghost", "")
         store.set_status(old_id, "retired")
