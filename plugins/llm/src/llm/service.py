@@ -3895,12 +3895,18 @@ Examples (echo → action_prompt: ""):
             # dampen the run-on/repetition spiral a non-reasoning model falls
             # into over a long roleplay thread; other profiles leave these None
             # and keep provider defaults. setdefault so an explicit caller
-            # kwarg still wins. grok-fast and gemini-flash accept both via
-            # LiteLLM.
+            # kwarg still wins. Providers differ on which sampling params they
+            # accept — xAI/grok rejects frequency_penalty (raising
+            # UnsupportedParamsError), while gemini accepts it — so pass
+            # drop_params=True whenever we set one: LiteLLM silently drops the
+            # params the target provider doesn't support instead of failing the
+            # whole completion, keeping each override where it's honoured.
             if profile.temperature is not None:
                 optional_kwargs.setdefault("temperature", profile.temperature)
             if profile.frequency_penalty is not None:
                 optional_kwargs.setdefault("frequency_penalty", profile.frequency_penalty)
+            if profile.temperature is not None or profile.frequency_penalty is not None:
+                optional_kwargs.setdefault("drop_params", True)
 
             executor = AssistantToolExecutor(
                 db=db,

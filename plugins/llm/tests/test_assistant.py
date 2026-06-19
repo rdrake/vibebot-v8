@@ -1079,6 +1079,45 @@ class TestMetaCompletion:
         assert "does NOT apply in verse" in content
         assert "the length it deserves" in content
 
+    def test_assistant_completion_verse_sampling_overrides_drop_unsupported(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Verse sets temperature + frequency_penalty to dampen the run-on
+        spiral, but xAI/grok rejects frequency_penalty with
+        UnsupportedParamsError — which previously failed the whole completion
+        (user saw the generic error). The call must pass drop_params=True so
+        LiteLLM drops provider-unsupported sampling params instead of raising,
+        keeping each override where the provider honours it.
+        """
+        from llm.service import PROFILE_VERSE, PROFILES
+
+        mock_response = make_completion_response("Done.")
+        captured_kwargs: dict = {}
+
+        def capture_completion(**kwargs: object) -> object:
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="describe the scene",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a brooding cat avatar named {bot_nick}.",
+            route_profile=PROFILE_VERSE,
+        )
+
+        profile = PROFILES[PROFILE_VERSE]
+        assert captured_kwargs.get("temperature") == profile.temperature
+        assert captured_kwargs.get("frequency_penalty") == profile.frequency_penalty
+        # The fix: unsupported params are dropped, not fatal.
+        assert captured_kwargs.get("drop_params") is True
+
     def test_assistant_completion_depoisons_channel_history_for_verse(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
