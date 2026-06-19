@@ -17,10 +17,14 @@ from llm.plugin import LLM, Identity
 from llm.prompts import CHAT_SYSTEM_PROMPT
 from llm.service import (
     LLMService,
+    _depoison_verse_history,
+    _is_degraded_reply,
     _is_echo_reply,
     _is_verse_denial,
     _normalize_for_echo,
+    _strip_degraded,
     _strip_verse_denials,
+    _trim_history_window,
 )
 
 from .conftest import (
@@ -2187,6 +2191,255 @@ class TestVerseDenialGuard:
             },
         ]
         assert _strip_verse_denials(history) == history
+
+
+class TestVerseDegradedGuard:
+    """Tests for the quality-collapse guard in assistant_completion.
+
+    Distinct from the denial guard (which is verse-only): a non-reasoning
+    model imitates its own recent prose, so one degraded reply (a long
+    run-on, or text looping the same few words) seeds a spiral into
+    grammar-free gibberish even though no message ever refused the premise.
+    _is_degraded_reply detects the collapse; the loop nudges and retries
+    once on every route (verse scenes and @ask long answers alike) and the
+    every-turn strip keeps collapsed turns out of future history.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    @staticmethod
+    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
+        resp = mocker.MagicMock()
+        choice = mocker.MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = None
+        resp.choices = [choice]
+        return resp
+
+    # A 200-word passage looping the same five words: low unique ratio, but
+    # punctuated so it trips the diversity branch, not the run-on branch.
+    LOOPING = "The lads sharted and then. " * 40
+    # 160 distinct words with no sentence terminator: trips the run-on branch
+    # while keeping unique ratio high, isolating that branch.
+    RUN_ON = " ".join(f"word{i}" for i in range(160))
+    # A vivid, well-formed long scene — the false-positive case the guard
+    # must NOT flag: 150+ words, varied vocabulary, real sentence breaks.
+    CLEAN_SCENE = (
+        "The lab lights flickered violet as the Stinky Lads kicked open the "
+        "double doors. Dan vaulted the front bench, scattering beakers like "
+        "bowling pins. A green fog of methane rolled across the floor while "
+        "Professor Blenkinsop dove behind the fume hood. Somewhere a Bunsen "
+        "burner roared to life, casting jagged shadows up the periodic table. "
+        "Mikey skidded across a puddle of spilled acid, cackling like a hyena. "
+        "The fire alarm shrieked, drowned out by the lads chanting their "
+        "dinner-hall anthem. Test tubes shattered against the whiteboard in a "
+        "spray of glittering shards. Outside, seagulls scattered from the "
+        "rooftop as smoke curled through a cracked window. Dan grabbed the "
+        "intercom and bellowed a garbled war cry. The caretaker sprinted down "
+        "the corridor, mop raised like a halberd. Glass crunched underfoot as "
+        "they regrouped near the storeroom. Blenkinsop emerged, soot-streaked "
+        "and furious, shaking a singed register at the smoke-filled ceiling."
+    )
+
+    @pytest.mark.parametrize("reply", [LOOPING, RUN_ON])
+    def test_is_degraded_reply_detects_collapse(self, reply: str) -> None:
+        """GIVEN run-on or looping prose WHEN checked THEN it is degraded."""
+        assert _is_degraded_reply(reply) is True
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            CLEAN_SCENE,
+            # Short replies are never judged — too small a sample.
+            "and then and then and then the lads ran and ran and ran off.",
+            "Stinky Dan kicked the door wide, unleashing a volley of guff.",
+            "",
+        ],
+    )
+    def test_is_degraded_reply_false_for_clean_or_short(self, reply: str) -> None:
+        """GIVEN a clean scene or a short reply WHEN checked THEN not degraded."""
+        assert _is_degraded_reply(reply) is False
+
+    def test_strip_degraded_removes_assistant_collapses(self) -> None:
+        """GIVEN a thread with a collapsed turn WHEN stripped THEN only the
+        model's degraded turn drops; user and clean turns are kept."""
+        history = [
+            {"role": "user", "content": "what happened in the science lab"},
+            {"role": "assistant", "content": self.LOOPING},
+            {"role": "user", "content": "and after that"},
+            {"role": "assistant", "content": "The lads stormed the dorm next."},
+        ]
+        assert _strip_degraded(history) == [
+            {"role": "user", "content": "what happened in the science lab"},
+            {"role": "user", "content": "and after that"},
+            {"role": "assistant", "content": "The lads stormed the dorm next."},
+        ]
+
+    def test_strip_degraded_handles_none_and_empty(self) -> None:
+        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
+        assert _strip_degraded(None) is None
+        assert _strip_degraded([]) == []
+
+    def test_strip_degraded_keeps_clean_thread_intact(self) -> None:
+        """GIVEN a thread with no collapses WHEN stripped THEN nothing drops."""
+        history = [
+            {"role": "user", "content": "set the scene"},
+            {"role": "assistant", "content": self.CLEAN_SCENE},
+        ]
+        assert _strip_degraded(history) == history
+
+    def test_trim_history_window_keeps_last_n(self) -> None:
+        """GIVEN history longer than the window WHEN trimmed THEN only the
+        most recent entries survive."""
+        history = [{"role": "user", "content": str(i)} for i in range(15)]
+        trimmed = _trim_history_window(history, 10)
+        assert trimmed == history[-10:]
+        assert len(trimmed) == 10
+
+    @pytest.mark.parametrize("max_messages", [10, 0, -1])
+    def test_trim_history_window_noop_cases(self, max_messages: int) -> None:
+        """GIVEN history within the window, None, empty, or a non-positive
+        cap WHEN trimmed THEN it is returned unchanged."""
+        short = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+        assert _trim_history_window(short, max_messages) == short
+        assert _trim_history_window(None, max_messages) is None
+        assert _trim_history_window([], max_messages) == []
+
+    def test_depoison_verse_history_strips_both_and_windows(self) -> None:
+        """GIVEN a thread with a denial, a collapse, clean turns, and more
+        than the window WHEN de-poisoned THEN both poisoned assistant turns
+        are gone and the result is capped at the verse window."""
+        history = [
+            {"role": "user", "content": "what happened at alton towers"},
+            {"role": "assistant", "content": "That never happened, pure fiction not in the canon."},
+            {"role": "user", "content": "and the science lab"},
+            {"role": "assistant", "content": self.LOOPING},
+            *(
+                msg
+                for i in range(12)
+                for msg in (
+                    {"role": "user", "content": f"then what {i}"},
+                    {"role": "assistant", "content": f"The lads charged onward, scene {i}."},
+                )
+            ),
+        ]
+        result = _depoison_verse_history(history)
+        assert result is not None
+        # Windowed to the verse cap.
+        assert len(result) == 10
+        # Neither poisoned turn survives.
+        assert all(_is_verse_denial(m["content"]) is False for m in result)
+        assert all(_is_degraded_reply(m["content"]) is False for m in result)
+
+    def test_retries_and_recovers_when_verse_reply_collapses(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a verse reply collapses once WHEN it recovers on retry THEN
+        assistant_completion returns the clean scene, not the gibberish."""
+        from llm.service import PROFILE_VERSE
+
+        story = "The lab erupted as the Stinky Lads stormed in with guff-grenades."
+        responses = [
+            self._text_response(mocker, self.LOOPING),
+            self._text_response(mocker, story),
+        ]
+        seen_messages: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen_messages) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="what happened in the science lab",
+            nick="fc42",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+        )
+
+        assert result.content == story
+        assert result.error is None
+        assert len(seen_messages) == 2
+        # The retry call carries the corrective nudge as a user message.
+        assert any(
+            m.get("role") == "user" and "Rewrite it cleanly" in str(m.get("content", ""))
+            for m in seen_messages[1]
+        )
+
+    def test_chat_profile_retries_and_recovers_when_reply_collapses(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a chat reply (the @ask fallback) collapses once WHEN it
+        recovers on retry THEN the clean answer is returned, not the
+        gibberish — the guard is not verse-only."""
+        from llm.service import PROFILE_CHAT
+
+        answer = "The meeting covered the budget, the roadmap, and the hiring plan."
+        responses = [
+            self._text_response(mocker, self.LOOPING),
+            self._text_response(mocker, answer),
+        ]
+        seen: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="summarize the meeting",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        assert result.content == answer
+        assert result.error is None
+        assert len(seen) == 2
+        # The retry call carries the corrective nudge as a user message.
+        assert any(
+            m.get("role") == "user" and "Rewrite it cleanly" in str(m.get("content", ""))
+            for m in seen[1]
+        )
+
+    def test_returns_best_effort_when_verse_keeps_collapsing(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a verse reply collapses on every step WHEN the retry budget
+        is spent THEN the last attempt is delivered (not an error)."""
+        from llm.service import PROFILE_VERSE
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=lambda **_kw: self._text_response(mocker, self.LOOPING),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="what happened in the dorm",
+            nick="fc42",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+        )
+
+        assert result.content
+        assert result.error is None
 
 
 # =========================================================================

@@ -69,6 +69,10 @@ class Profile:
         force_search_on_explicit: If True and an explicit search trigger
             matches the user prompt, force
             ``tool_choice={search_web}`` on step 0.
+        temperature: Sampling temperature for the LiteLLM completion.
+            ``None`` leaves the provider default in place.
+        frequency_penalty: Frequency penalty for the LiteLLM completion.
+            ``None`` leaves the provider default in place.
     """
 
     id: str
@@ -78,6 +82,8 @@ class Profile:
     overlay_setting: str | None
     max_output_tokens: int | None
     force_search_on_explicit: bool
+    temperature: float | None = None
+    frequency_penalty: float | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -123,8 +129,21 @@ PROFILES: dict[str, Profile] = {
         api_key_setting="assistantApiKey",
         prompt_id="verse",
         overlay_setting="assistantSystemPrompt",
-        max_output_tokens=None,
+        # Bounded (was None/unbounded). Verse is long-form, but a
+        # non-reasoning model loses coherence in the tail of a very long
+        # generation — run-on sentences and gibberish — and that degraded
+        # prose then poisons the next turn via self-imitation. 2000 (~1500
+        # words, matching PROFILE_CHAT) is generous enough for a full multi-
+        # paragraph scene while capping the worst-case run-on blob; overflow
+        # still pastebins via _send_long_reply.
+        max_output_tokens=2000,
         force_search_on_explicit=False,
+        # Dampen the run-on/repetition spiral a non-reasoning model falls into
+        # over a long roleplay thread: a modest temperature keeps prose varied
+        # without drifting incoherent, and a frequency penalty discourages the
+        # token-looping that precedes a quality collapse.
+        temperature=0.8,
+        frequency_penalty=0.4,
     ),
     PROFILE_REMIND_ACTION: Profile(
         id=PROFILE_REMIND_ACTION,

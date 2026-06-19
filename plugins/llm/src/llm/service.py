@@ -197,6 +197,25 @@ def _is_verse_denial(content: str) -> bool:
     return _VERSE_DENIAL_PATTERNS.search(content[:_VERSE_DENIAL_OPENING_CHARS]) is not None
 
 
+def _strip_assistant_turns(
+    history: list[dict[str, str]] | None,
+    predicate: Callable[[str], bool],
+) -> list[dict[str, str]] | None:
+    """Drop assistant turns whose content matches ``predicate``.
+
+    Shared filter behind the verse de-poison passes: only the model's own
+    replies are considered, so user turns (the premises that anchor the
+    scene) are always kept. ``None``/empty history is returned unchanged.
+    """
+    if not history:
+        return history
+    return [
+        m
+        for m in history
+        if m.get("role") != Role.ASSISTANT or not predicate(str(m.get("content", "")))
+    ]
+
+
 def _strip_verse_denials(
     history: list[dict[str, str]] | None,
 ) -> list[dict[str, str]] | None:
@@ -208,17 +227,132 @@ def _strip_verse_denials(
     makes the next turn deny too. Filtering assistant turns that broke the
     frame — every turn, before the model sees them — de-poisons even a
     thread that was already polluted (fc42's had 20+) and any best-effort
-    denial that slipped through the retry budget. User turns are kept; only
-    the model's own frame-breaking replies are removed, so the premise the
-    user offered still anchors the scene.
+    denial that slipped through the retry budget.
     """
-    if not history:
+    return _strip_assistant_turns(history, _is_verse_denial)
+
+
+# Quality-collapse guard. Distinct from the denial guard above (which is
+# verse-only): a non-reasoning model treats its own recent prose as the style
+# exemplar, so one degraded reply (a 200-word run-on, or text that loops the
+# same handful of words) becomes an in-context few-shot example the next turn
+# imitates and amplifies — the thread spirals into run-on, grammar-free
+# gibberish even though no single message ever refused the premise. This is a
+# long-form failure (verse scenes and @ask long answers alike — @ask falls
+# back to the chat profile), NOT verse-specific, so the guard runs on every
+# route. We detect the collapse with conservative structural heuristics
+# (extreme run-on OR low lexical diversity over a long passage), strip flagged
+# assistant turns from history every turn so they can't seed the next one, and
+# nudge+retry once when a fresh reply collapses. Thresholds are deliberately
+# extreme so vivid, legitimately long replies never trip — false positives
+# strip good prose and waste a retry, which is worse than missing a marginal
+# case (the output cap and the every-turn strip catch the rest). Short replies
+# (the chat 3-line cap) sit far under the word floor and are never judged.
+_MAX_DEGRADED_RETRIES = 1
+_DEGRADED_RETRY_NUDGE = (
+    "Stop — that reply collapsed into run-on, repetitive, or grammar-free "
+    "text. Rewrite it cleanly: well-formed sentences, varied wording, real "
+    "punctuation, vivid but controlled prose. Keep it tight and readable."
+)
+# A reply shorter than this (in words) is never judged: collapse is a
+# long-passage phenomenon, and short replies lack the sample size for the
+# diversity ratio to be meaningful.
+_DEGRADED_MIN_WORDS = 150
+# Words per sentence-terminator above this means essentially no sentence
+# breaks across a long passage — a pathological run-on, not normal prose
+# (vivid IRC scenes run ~15-30 words/sentence).
+_DEGRADED_MAX_WORDS_PER_SENTENCE = 90.0
+# Unique-word ratio below this over a long passage means the text is looping
+# the same few tokens ("and the and the the the") — coherent English runs
+# ~0.4-0.7 even over long passages.
+_DEGRADED_MIN_UNIQUE_RATIO = 0.22
+# Stripped from word edges before the diversity comparison so "lab," "lab."
+# and "lab" count as one word.
+_DEGRADED_WORD_TRIM = ".,!?;:\"'()[]{}…—–-"
+
+
+def _is_degraded_reply(content: str) -> bool:
+    """Return True iff a reply has collapsed into run-on/looping text.
+
+    Profile-agnostic structural collapse detection (verse scenes and @ask
+    long answers alike). Conservative by design — only flags clear collapse
+    so a legitimately vivid long reply is never stripped or retried:
+
+    * fewer than ``_DEGRADED_MIN_WORDS`` words → never judged;
+    * an extreme words-per-sentence ratio (no sentence breaks) → degraded;
+    * a very low unique-word ratio (token looping) → degraded.
+    """
+    text = (content or "").strip()
+    if not text:
+        return False
+    words = text.split()
+    n = len(words)
+    if n < _DEGRADED_MIN_WORDS:
+        return False
+    terminators = text.count(".") + text.count("!") + text.count("?")
+    words_per_sentence = n / terminators if terminators else float(n)
+    if words_per_sentence > _DEGRADED_MAX_WORDS_PER_SENTENCE:
+        return True
+    normalized = [s for w in words if (s := w.strip(_DEGRADED_WORD_TRIM).casefold())]
+    if normalized:
+        unique_ratio = len(set(normalized)) / len(normalized)
+        if unique_ratio < _DEGRADED_MIN_UNIQUE_RATIO:
+            return True
+    return False
+
+
+def _strip_degraded(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop the model's own collapsed replies from history.
+
+    Mirrors :func:`_strip_verse_denials`: only assistant turns are
+    considered, and only those that :func:`_is_degraded_reply` flags as
+    run-on/looping are removed, so the user's premises and the model's
+    clean turns still anchor the thread. Run every turn before the model
+    sees the thread, this breaks the self-imitation spiral at the root —
+    the degraded prose never becomes the next turn's style exemplar.
+    """
+    return _strip_assistant_turns(history, _is_degraded_reply)
+
+
+# Verse history is trimmed to this many of the most recent messages before
+# the model sees it — tighter than the 20-deep personal context window. A
+# non-reasoning model anchors on its own recent prose, so a shorter window
+# means fewer past replies to imitate (and less room for a slow-building
+# quality drift); cross-turn continuity is carried separately by the
+# verse_record event store injected into the system prompt.
+_VERSE_HISTORY_MAX_MESSAGES = 10
+
+
+def _trim_history_window(
+    history: list[dict[str, str]] | None,
+    max_messages: int,
+) -> list[dict[str, str]] | None:
+    """Keep only the last ``max_messages`` entries of ``history``.
+
+    Returns the input unchanged when it is falsy or already within the
+    window. Used to give verse a tighter context window than the global
+    chat history without touching the shared ContextConfig.
+    """
+    if not history or max_messages <= 0 or len(history) <= max_messages:
         return history
-    return [
-        m
-        for m in history
-        if not (m.get("role") == Role.ASSISTANT and _is_verse_denial(str(m.get("content", ""))))
-    ]
+    return history[-max_messages:]
+
+
+def _depoison_verse_history(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """De-poison and window one verse history list before the model sees it.
+
+    Strips the bot's own frame-breaking refusals and collapsed (run-on /
+    looping) turns, then caps the result at the tighter verse window. Safe
+    on the personal thread and the shared channel summary alike — the strips
+    key on the assistant role, so other participants' channel lines are kept.
+    """
+    history = _strip_verse_denials(history)
+    history = _strip_degraded(history)
+    return _trim_history_window(history, _VERSE_HISTORY_MAX_MESSAGES)
 
 
 def account_from_server_tags(msg: IrcMsg) -> str | None:
@@ -3706,17 +3840,23 @@ Examples (echo → action_prompt: ""):
             # system prompt cache-stable across users.
             effective_prompt = framework
 
-            # De-poison verse history before the model sees it: strip the
-            # bot's own past premise-refusals so they can't seed another
-            # refusal (the retry guard catches new ones; this clears legacy
-            # ones and any best-effort denial that slipped the budget).
-            # Both the personal thread AND the shared channel summary carry the
-            # bot's lines; a refusal left in either is re-injected every turn,
-            # so both are de-poisoned. ``_strip_verse_denials`` keys on the
-            # assistant role, so other participants' channel lines are kept.
+            # De-poison history before the model sees it. Both the personal
+            # thread AND the shared channel summary carry the bot's own lines;
+            # a refusal or collapsed turn left in either is re-injected every
+            # turn, seeding the next reply via self-imitation.
+            #
+            # Verse runs the full pass (strip denials → strip degraded →
+            # tight window). Every other route — notably @ask, which falls
+            # back to the chat profile and produces long answers that can
+            # collapse the same way — strips only the bot's collapsed turns:
+            # no denial strip (premise-refusal is a verse concept) and no
+            # tighter window, so chat keeps its normal context depth.
             if route_profile == PROFILE_VERSE:
-                history = _strip_verse_denials(history)
-                channel_history = _strip_verse_denials(channel_history)
+                history = _depoison_verse_history(history)
+                channel_history = _depoison_verse_history(channel_history)
+            else:
+                history = _strip_degraded(history)
+                channel_history = _strip_degraded(channel_history)
 
             messages = self._build_messages(
                 prompt,
@@ -3743,11 +3883,24 @@ Examples (echo → action_prompt: ""):
             # so the user gets a teaser+URL anyway. The cap was 600 originally
             # but truncated explicit story / essay requests in the URL itself —
             # bumped to 2000 (~1500 words, ~40s worst case) so long-form asks
-            # complete. forest/code/draw/verse are unbounded: forest+verse are
-            # opt-in long-form; code/draw produce short summaries plus a URL
-            # by design.
+            # complete. code/draw stay unbounded (short summaries plus a URL by
+            # design); verse is now capped at 2000 too — see PROFILE_VERSE —
+            # because an unbounded non-reasoning generation collapses into
+            # run-on gibberish in its tail.
             if profile.max_output_tokens is not None:
                 optional_kwargs["max_tokens"] = profile.max_output_tokens
+
+            # Per-profile sampling overrides (data-driven, like max_tokens
+            # above). Verse sets a modest temperature + frequency penalty to
+            # dampen the run-on/repetition spiral a non-reasoning model falls
+            # into over a long roleplay thread; other profiles leave these None
+            # and keep provider defaults. setdefault so an explicit caller
+            # kwarg still wins. grok-fast and gemini-flash accept both via
+            # LiteLLM.
+            if profile.temperature is not None:
+                optional_kwargs.setdefault("temperature", profile.temperature)
+            if profile.frequency_penalty is not None:
+                optional_kwargs.setdefault("frequency_penalty", profile.frequency_penalty)
 
             executor = AssistantToolExecutor(
                 db=db,
@@ -3799,6 +3952,9 @@ Examples (echo → action_prompt: ""):
             # Count of verse premise-refusal retries spent this invocation
             # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
             verse_denial_retries = 0
+            # Count of quality-collapse retries spent this invocation (see
+            # _is_degraded_reply / _MAX_DEGRADED_RETRIES). All routes.
+            degraded_retries = 0
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -3892,6 +4048,33 @@ Examples (echo → action_prompt: ""):
                         )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
+                        continue
+
+                    # Quality-collapse guard (all routes): a reply that has
+                    # degraded into run-on or token-looping gibberish is
+                    # invalid even though it never refused the premise. This
+                    # hits long-form replies on any profile — verse scenes and
+                    # @ask long answers alike (@ask falls back to chat). Nudge
+                    # (asking for clean, well-formed prose) and retry once; the
+                    # corrected reply is delivered AND stored so the collapse
+                    # doesn't seed the next turn. After the budget, fall
+                    # through and deliver the best effort — the every-turn
+                    # _strip_degraded pass keeps it out of future history
+                    # regardless.
+                    if _is_degraded_reply(content) and degraded_retries < _MAX_DEGRADED_RETRIES:
+                        degraded_retries += 1
+                        self.log.warning(
+                            "assistant_completion: reply collapsed into "
+                            "run-on/looping text, nudging and retrying (%d/%d) "
+                            "model=%s channel=%s route=%s",
+                            degraded_retries,
+                            _MAX_DEGRADED_RETRIES,
+                            model,
+                            channel,
+                            route_profile,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _DEGRADED_RETRY_NUDGE})
                         continue
 
                     # Fold in any costs accumulated by leaf tool calls
