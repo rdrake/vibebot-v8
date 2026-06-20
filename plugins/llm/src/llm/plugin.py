@@ -705,6 +705,9 @@ class LLM(callbacks.Plugin):
         self._rate_buckets: dict[str, collections.deque[float]] = {}
         self._rate_buckets_lock = threading.Lock()
 
+        # Channels already warned about an empty verseModel (warn once per channel).
+        self._verse_model_warned: set[str] = set()
+
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
 
@@ -3721,6 +3724,14 @@ class LLM(callbacks.Plugin):
             # at a non-reasoning model (e.g. gemini-flash-latest) for richer
             # long-form scenes without affecting chat-mode behavior.
             verse_model = self.registryValue("verseModel", preflight.channel) or None
+            if verse_model is None and preflight.channel not in self._verse_model_warned:
+                self._verse_model_warned.add(preflight.channel)
+                self.log.warning(
+                    "verse turn on channel=%s has empty verseModel; falling back to "
+                    "assistantModel — set a non-reasoning verseModel or verse prose may be "
+                    "cratered by a reasoning model",
+                    preflight.channel,
+                )
             self._ask_impl(
                 irc,
                 msg,

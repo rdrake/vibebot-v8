@@ -2278,6 +2278,33 @@ class TestAskWithVerseRoute:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs.get("model_override") == "openrouter/grok-3-non-reasoning"
 
+    def test_verse_model_empty_warns_once_per_channel(
+        self, verse_ask_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an UNSET verseModel WHEN @ask in verse twice on the same channel
+        THEN log.warning fires exactly once (mentioning verseModel + assistantModel)."""
+        plugin, irc, msg, _store = verse_ask_env
+        original = plugin.registryValue.side_effect
+
+        def _registry(key, *args):
+            if key == "verseModel":
+                return ""  # explicit: unset verseModel
+            return original(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        plugin.ask(irc, msg, ["hello"])
+        plugin.ask(irc, msg, ["hello again"])
+
+        verse_warnings = [
+            c
+            for c in plugin.log.warning.call_args_list
+            if c.args and "verseModel" in str(c.args[0])
+        ]
+        assert len(verse_warnings) == 1  # warn-once-per-channel
+        fmt = str(verse_warnings[0].args[0])
+        assert "verseModel" in fmt and "assistantModel" in fmt
+
 
 class TestAskOnVerseChannelWithoutOptIn:
     """Verse-enabled channel + speaker who hasn't opted in: the tool surface
