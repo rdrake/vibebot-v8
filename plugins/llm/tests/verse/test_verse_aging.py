@@ -343,3 +343,40 @@ class TestAgingExemptsAuthorLocked:
 
         age_auto_created_entities(store, retire_after_days=1, now=lambda: _t.time())
         assert store.get_entity(h).status == "active"
+
+
+class TestAgingExemptsOccupiedPlace:
+    def test_occupied_place_survives_aging(self, store: VerseStore) -> None:
+        """A stale auto_created place that is still an active avatar's
+        location must never be auto-retired: retiring it would strand the
+        avatar at a ghost location. The place is exempt (not scanned)."""
+        from llm.verse.aging import age_auto_created_entities
+
+        place_id = store.add_entity("place", "The Clearing", "a quiet glade")
+        store.set_attribute(place_id, "auto_created", "1")
+        store.set_attribute(place_id, "last_seen_ts", "0")  # ancient
+
+        avatar_id = store.add_entity("avatar", "wanderer", "")
+        store.set_attribute(avatar_id, "location", "The Clearing")
+
+        outcome = age_auto_created_entities(store, retire_after_days=30, now=lambda: 1e9)
+        assert store.get_entity(place_id).status == "active"
+        assert outcome.retired == 0
+        # Exemption must sit BEFORE `scanned += 1` (same as pinned/author_locked),
+        # so an occupied place is not even counted as scanned.
+        assert outcome.scanned == 0
+
+    def test_unoccupied_stale_place_is_retired(self, store: VerseStore) -> None:
+        """Same ancient auto_created place, but with NO avatar standing in
+        it, is retired normally. Guards against the occupancy exemption
+        being too broad."""
+        from llm.verse.aging import age_auto_created_entities
+
+        place_id = store.add_entity("place", "The Clearing", "a quiet glade")
+        store.set_attribute(place_id, "auto_created", "1")
+        store.set_attribute(place_id, "last_seen_ts", "0")  # ancient
+
+        outcome = age_auto_created_entities(store, retire_after_days=30, now=lambda: 1e9)
+        assert store.get_entity(place_id).status == "retired"
+        assert outcome.retired == 1
+        assert outcome.scanned == 1  # not exempt → counted and retired

@@ -440,6 +440,31 @@ class TestSystemPrompt:
         prompt = build_verse_system_prompt(store, avatar_id, "a spirit")
         assert "nowhere in particular" in prompt
 
+    def test_retired_location_drops_co_located_avatars_and_scene(self, store: VerseStore) -> None:
+        """A retired place is a 'ghost location': you cannot be co-located
+        at a place that no longer actively exists. While the place is
+        active, a second avatar standing there is listed; once the place is
+        retired, the co-located block must show the no-other-avatars marker
+        and the scene must read 'nowhere in particular'."""
+        place_id = store.add_entity("place", "The Glade", "A mossy hollow.")
+        alice_id = store.add_entity("avatar", "alice", "A wanderer.")
+        store.set_attribute(alice_id, "location", "The Glade")
+        bob_id = store.add_entity("avatar", "bob", "Another wanderer.")
+        store.set_attribute(bob_id, "location", "The Glade")
+
+        # Positive control: active place -> bob is co-located with alice.
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "The Glade" in prompt
+        assert "Other avatars present here:" in prompt
+        assert "bob" in prompt
+        assert "(no other avatars present)" not in prompt
+
+        # Retire the place: it becomes a ghost location.
+        store.set_status(place_id, "retired")
+        prompt2 = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "(no other avatars present)" in prompt2
+        assert "nowhere in particular" in prompt2
+
     def test_unknown_avatar_id_raises(self, store: VerseStore) -> None:
         with pytest.raises(ValueError, match="avatar not found"):
             build_verse_system_prompt(store, 99999, "something")

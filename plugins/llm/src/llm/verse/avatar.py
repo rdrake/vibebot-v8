@@ -539,7 +539,7 @@ def build_verse_system_prompt(
     parts.extend([f"- {ev.summary}" for ev in own] or ["- (none yet)"])
 
     others = []
-    if location is not None:
+    if place is not None:
         for a in store.list_entities_by_kind("avatar", status="active"):
             if a.id != avatar_id and store.get_attribute(a.id, "location") == location:
                 others.append(a)

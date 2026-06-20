@@ -29,13 +29,21 @@ def age_auto_created_entities(
     older than now - retire_after_days*86400. Skips kind='avatar'
     defensively, pinned entities (explicit operator canon), and
     author_locked entities (durable author canon) — both protect against
-    auto-retirement. Returns counts (scanned, retired).
-    retire_after_days<=0 disables — returns (0, 0)."""
+    auto-retirement. Also skips a place that is still some active avatar's
+    location: retiring an occupied room would strand its avatars at a
+    "ghost location" (a retired place that is still an avatar's room).
+    Returns counts (scanned, retired). retire_after_days<=0 disables —
+    returns (0, 0)."""
     if retire_after_days <= 0:
         return AgingOutcome(scanned=0, retired=0)
 
     cutoff = now() - retire_after_days * _SECONDS_PER_DAY
     candidates = store.list_entities_with_attribute(key="auto_created", value="1", status="active")
+    occupied_places = {
+        loc.casefold()
+        for a in store.list_entities_by_kind("avatar", status="active")
+        if (loc := store.get_attribute(a.id, "location")) is not None
+    }
     scanned = 0
     retired = 0
     for entity in candidates:
@@ -46,6 +54,8 @@ def age_auto_created_entities(
             or store.get_attribute(entity.id, "author_locked") == "1"
         ):
             continue  # pinned = operator canon; author_locked = author canon; never auto-retire
+        if entity.kind == "place" and entity.name.casefold() in occupied_places:
+            continue  # occupied room — retiring it would strand its avatars at a ghost location
         scanned += 1
         last_seen_str = store.get_attribute(entity.id, "last_seen_ts")
         if last_seen_str is None:
