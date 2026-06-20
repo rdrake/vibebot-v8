@@ -1,100 +1,159 @@
-# Verse Retention Fix — Implementation Plan
+# Verse Retention Fix — Implementation Plan (v2, post plan-red-team)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Executor discipline (a plan-red-team finding):** the embedded code/SQL/test snippets are verified against the real files, but you MUST still open and re-read each target region before editing — match real signatures, fixtures, and call sites. Treat snippets as precise guidance, not blind paste.
 
-**Goal:** Make the verse model reliably remember canon — inject the full author-locked/pinned roster plus the scene-relevant cast, their relations, and their recent events into every verse turn, and let the conversational author lock canon just by talking.
+**Goal:** Make the verse model reliably remember canon — inject the full canon roster (pinned OR author-locked) plus the scene-relevant cast, their relations, and their recent events into every verse turn; let an operator/author lock canon explicitly via `@canon`.
 
-**Architecture:** Minimal, in-place changes to the existing `llm` plugin's verse path (no new plugin, no data port). One additive SQLite migration (v2→v3) adds an `entity_alias` table and an `event_actor` join table. `build_verse_system_prompt` is reordered stable-first (canon roster in the cacheable prefix; all volatile/retrieved context after) and enriched with message-matched cast + 1-hop relations + active-only scene events. A `msg.prefix`-bound `verse_record` handler overlay promotes human-offered, reinforced names to `author_locked`. chat/code/draw are untouched.
+**Architecture:** Minimal, in-place changes to the existing `llm` plugin's verse path (no new plugin, no data port). One additive SQLite migration (v2→v3) adds `entity_alias` and an `event_actor` join table. `build_verse_system_prompt` is reordered stable-first (canon roster in the cacheable prefix; volatile/retrieved context after) and enriched with message-matched cast + 1-hop relations + active-only scene events. chat/code/draw untouched.
 
-**Tech Stack:** Python 3, Limnoria/Supybot plugin, SQLite (WAL, schema.sql + `schema_version` table), pytest (real SQLite fixtures, no mocks), litellm. Run tests with `cd plugins/llm && uv run pytest <path> -v` (or `make test`). Lint/typecheck: `cd plugins/llm && make lint && make typecheck`.
+**Tech Stack:** Python 3, Limnoria/Supybot plugin, SQLite (WAL; `schema.sql` + `schema_version` table; `SCHEMA_VERSION` constant), pytest (real SQLite, no mocks), litellm.
 
-**Key files:**
-- `plugins/llm/src/llm/verse/schema.sql` — additive DDL (new tables/indexes)
-- `plugins/llm/src/llm/verse/store.py` — migration, new store methods, retrieval
-- `plugins/llm/src/llm/verse/avatar.py` — `build_verse_system_prompt` reorder + retrieval injection
-- `plugins/llm/src/llm/verse/aging.py` — extend pinned-exemption to `author_locked`
-- `plugins/llm/src/llm/plugin.py` — thread message text into `_verse_route_for`; `verse_record` promotion overlay; `@canon` command; storybook canon-write; verseModel warning
-- `plugins/llm/src/llm/config.py` — new channel knobs
-- `plugins/llm/tests/verse/` — tests
+**Commands (verified — repo ROOT, there is NO `plugins/llm/Makefile`):**
+- Single test: `uv run pytest plugins/llm/tests/verse/test_x.py::TestClass -v`
+- Full gate (coverage `--cov-fail-under=93`): `make test`
+- Lint/format/type: `make lint && make typecheck`
+- Because `make test` enforces 93% coverage, every new code branch needs a test or the suite fails — Task 0 builds the shared fixtures first so new branches are reachable.
 
-**Conventions to follow (from the codebase):**
-- Every mutator has a private `_<name>_inline(self, conn, ...)` twin that takes a caller-owned `conn`; the public method wraps it in `with self.write_transaction() as conn:`. `self._lock` is NOT reentrant — never call a public store method from inside an open `write_transaction`.
-- Lifecycle flags are EAV rows in `attributes(entity_id, key, value)` (TEXT values), not columns. `pinned='1'`, `last_seen_ts='<float>'`, `auto_created='1'`, `location='<place>'`. Engine-only keys are in `_RESERVED_ATTRIBUTE_KEYS`.
-- Additive migration: add `CREATE TABLE/INDEX IF NOT EXISTS` to `schema.sql` (fresh DBs), bump `SCHEMA_VERSION`, add `if current < N: self._upgrade_v(N-1)_to_v(N)()` in `_migrate`, and a new `_upgrade_*` method running in one `write_transaction` that ends by stamping `schema_version`.
-- Tests use real SQLite (no mocks), class-grouped, `verse_db_dir`/`store` fixtures, assert on `Entity(...)` dataclass attrs. Prompt tests split the returned string on a header marker and assert on the segment.
+**Scope note (deferred after the plan-red-team):** Auto-lock-canon-by-talking (promotion-on-reinforcement) is **deferred to a fast-follow**. Tasks 6–7 inject the full roster + scene cast every turn, and the #afternet stinky-lads roster is *already pinned* — so the immediate "it forgot the lads" is fixed by retrieval alone. `author_locked` + `@canon` cover explicit locking. Talking-only auto-promotion is added later only if fc42's live ~5:1 benchmark shows it's needed.
+
+**Spec deltas (deliberate, documented — do not claim §5/§9 compliance):**
+- §5 cache: v1 keeps the canon roster as the *tail-stable* lead of the single system message (volatile content follows it), rather than splitting scene into a separate user-role message. The plan-red-team verified the roster lands in the cacheable byte-prefix this way; the user-role split is a later refinement.
+- §9 verse model: v1 *warns loudly* when `verseModel` is empty (falls back to `assistantModel`) rather than hard-failing. Hard-fail + reasoning-model startup validation is deferred.
+
+**Conventions (from the codebase):** `_<name>_inline(self, conn, ...)` twin per mutator; `self._lock` is NOT reentrant (never call a public store method inside an open `write_transaction`); lifecycle flags are EAV rows in `attributes` (TEXT values), engine-only keys in `_RESERVED_ATTRIBUTE_KEYS`; additive migration = `CREATE ... IF NOT EXISTS` in `schema.sql` + bump `SCHEMA_VERSION` + `if current < N:` branch + `_upgrade_*` in one `write_transaction` stamping `schema_version`; tests use real SQLite, class-grouped, assert on `Entity(...)` attrs.
 
 ---
 
-## Task 1: Additive migration — `entity_alias` + `event_actor` tables (v2→v3)
+## Task 0: Shared verse test fixtures (prerequisite — unblocks Tasks 2,3,5,6,13)
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/schema.sql` (append new tables/indexes)
-- Modify: `plugins/llm/src/llm/verse/store.py:99` (`SCHEMA_VERSION = 2` → `3`), `:178-179` (`_migrate` dispatch), add `_upgrade_v2_to_v3` after `_upgrade_v1_to_v2` (`:225`)
-- Test: `plugins/llm/tests/verse/test_store_migration.py`
+- Modify: `plugins/llm/tests/verse/conftest.py`
 
-- [ ] **Step 1: Write the failing test**
+> The plan-red-team verified `tests/verse/conftest.py` has only `verse_db_dir` — there is **no** shared `store` fixture (the per-file ones in `test_avatar.py`/`test_verse_record.py` are local). New store-level test classes need it, or they error at collection ("fixture 'store' not found"), masking the real assertion.
+
+- [ ] **Step 1: Add fixtures + make the test event-insert helper populate `event_actor`**
+
+Append to `plugins/llm/tests/verse/conftest.py`:
 
 ```python
-# append to plugins/llm/tests/verse/test_store_migration.py
-import sqlite3
+from llm.verse.store import VerseStore
+
+
+@pytest.fixture
+def store(verse_db_dir: Path):
+    """A migrated VerseStore on a real per-test SQLite file."""
+    return VerseStore(verse_db_dir, "#test")
+
+
+@pytest.fixture
+def store_with_avatar(store):
+    """(store, avatar_id) — an opted-in avatar named 'me' for prompt/retrieval tests."""
+    avatar_id = store.opt_in_avatar(nick="me", account="me-acct").entity_id
+    return store, avatar_id
+```
+
+Update `insert_event_at` so test-seeded events also get `event_actor` rows (Task 1 adds the table; this keeps the test helper consistent with production after Task 2):
+
+```python
+    with store.write_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+            (ts, summary, _json.dumps(list(entity_ids)), source),
+        )
+        event_id = int(cur.lastrowid)
+        for eid in dict.fromkeys(entity_ids):
+            if conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone():
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
+                    (event_id, eid),
+                )
+        return event_id
+```
+
+> Confirm `opt_in_avatar`'s return type exposes `.entity_id` (store.py:861, `AvatarOptInResult`). If the field name differs, adjust.
+
+- [ ] **Step 2: Smoke-check the fixtures import**
+
+Run: `uv run pytest plugins/llm/tests/verse/ -v -k "nonexistent_smoke" ; echo "collection ok if no fixture errors"`
+Expected: no collection errors (the `-k` matches nothing; we're checking conftest imports cleanly).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add plugins/llm/tests/verse/conftest.py
+git commit -m "test(verse): shared store/store_with_avatar fixtures; event_actor in insert_event_at"
+```
+
+---
+
+## Task 1: Additive migration — `entity_alias` + `event_actor` (v2→v3)
+
+**Files:**
+- Modify: `plugins/llm/src/llm/verse/schema.sql`
+- Modify: `plugins/llm/src/llm/verse/store.py:99` (`SCHEMA_VERSION`), `_migrate` (`:178-179`), add `_upgrade_v2_to_v3` after `_upgrade_v1_to_v2` (`:225`)
+- Test: `plugins/llm/tests/verse/test_store_migration.py`
+
+- [ ] **Step 1: Write failing tests (mirror the existing `_make_v1_db` pattern)**
+
+```python
+# append to tests/verse/test_store_migration.py — reuses _make_v1_db + VerseStore(base, channel)
 import json
-from llm.verse.store import VerseStore, SCHEMA_VERSION
+from llm.verse.store import SCHEMA_VERSION
 
 
-def test_v3_tables_exist_on_fresh_db(tmp_path):
-    store = VerseStore(str(tmp_path / "v.db"))
+def _seed_v2_event(base, channel, entity_ids):
+    """Add an entity + one event (with possibly-bad entity_ids) to a v1 DB so the
+    v1->v2->v3 chain backfills event_actor element-wise."""
+    path = _make_v1_db(base, channel)
+    raw = sqlite3.connect(path)
+    raw.execute("INSERT INTO entities(id,kind,name,created_at,updated_at) VALUES (1,'npc','Harry',0,0)")
+    raw.execute("INSERT INTO events(id,ts,summary,entity_ids,source) VALUES (1,0,'x',?, 'avatar')",
+                (json.dumps(entity_ids),))
+    raw.commit(); raw.close()
+    return path
+
+
+def test_fresh_db_is_v3_with_new_tables(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
     with store.read_connection() as conn:
-        names = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
-    assert {"entity_alias", "event_actor"} <= names
-    with store.read_connection() as conn:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert {"entity_alias", "event_actor"} <= names
     assert ver == SCHEMA_VERSION == 3
 
 
-def test_v2_db_upgrades_and_backfills_event_actor(tmp_path):
-    # Build a v2 DB by hand: one entity, one event referencing it + a garbage id.
-    path = str(tmp_path / "v2.db")
-    raw = sqlite3.connect(path)
-    raw.executescript(
-        "CREATE TABLE schema_version(version INTEGER NOT NULL, applied_at REAL NOT NULL);"
-        "CREATE TABLE entities(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,"
-        " name TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',"
-        " created_at REAL NOT NULL, updated_at REAL NOT NULL);"
-        "CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,"
-        " summary TEXT NOT NULL, entity_ids TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL);"
-    )
-    raw.execute("INSERT INTO entities(id,kind,name,created_at,updated_at) VALUES (1,'npc','Harry',0,0)")
-    raw.execute("INSERT INTO events(id,ts,summary,entity_ids,source) VALUES (1,0,'x',?, 'avatar')",
-                (json.dumps([1, 99999, "garbage"]),))
-    raw.execute("INSERT INTO schema_version(version, applied_at) VALUES (2, 0)")
-    raw.commit()
-    raw.close()
-
-    store = VerseStore(path)  # opening runs _migrate
+def test_v1_to_v3_chain_backfills_event_actor_elementwise(tmp_path):
+    _seed_v2_event(tmp_path, "#chan", [1, 99999, "garbage"])
+    store = VerseStore(tmp_path, "#chan")  # runs v1->v2->v3
     with store.read_connection() as conn:
         rows = conn.execute("SELECT event_id, entity_id FROM event_actor ORDER BY entity_id").fetchall()
-    # Element-wise tolerant: keep valid existing id 1, drop 99999 (no such entity) and 'garbage'.
-    assert rows == [(1, 1)]
-    with store.read_connection() as conn:
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert rows == [(1, 1)]   # keep valid existing id 1; drop 99999 + 'garbage'
     assert ver == 3
+
+
+def test_v3_migration_idempotent_on_reopen(tmp_path):
+    _seed_v2_event(tmp_path, "#chan", [1])
+    VerseStore(tmp_path, "#chan")
+    store2 = VerseStore(tmp_path, "#chan")  # second open must not double-apply
+    with store2.read_connection() as conn:
+        v3rows = conn.execute("SELECT COUNT(*) FROM schema_version WHERE version=3").fetchone()[0]
+        ea = conn.execute("SELECT COUNT(*) FROM event_actor").fetchone()[0]
+    assert v3rows == 1 and ea == 1   # INSERT OR IGNORE keeps the backfill a no-op
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run → fail**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store_migration.py -v -k "v3 or backfill"`
-Expected: FAIL (`no such table: event_actor`, and `SCHEMA_VERSION == 2`).
+Run: `uv run pytest plugins/llm/tests/verse/test_store_migration.py -v -k "v3 or chain or fresh"`
+Expected: FAIL (no `entity_alias`/`event_actor`; `SCHEMA_VERSION == 2`).
 
-- [ ] **Step 3: Append DDL to `schema.sql`**
-
-Append to `plugins/llm/src/llm/verse/schema.sql`:
+- [ ] **Step 3: Append DDL to `schema.sql`** (note `alias ... COLLATE NOCASE` so the PK dedups case-variants)
 
 ```sql
 CREATE TABLE IF NOT EXISTS entity_alias (
     entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-    alias     TEXT NOT NULL,
+    alias     TEXT NOT NULL COLLATE NOCASE,
     PRIMARY KEY (entity_id, alias)
 );
 CREATE INDEX IF NOT EXISTS idx_entity_alias_alias ON entity_alias(alias COLLATE NOCASE);
@@ -107,27 +166,18 @@ CREATE TABLE IF NOT EXISTS event_actor (
 CREATE INDEX IF NOT EXISTS idx_event_actor_entity ON event_actor(entity_id, event_id);
 ```
 
-- [ ] **Step 4: Bump `SCHEMA_VERSION` and add the migration branch + method**
+- [ ] **Step 4: Bump version + add migration**
 
-In `store.py:99` change `SCHEMA_VERSION = 2` to `SCHEMA_VERSION = 3`.
-
-In `_migrate` (after `if current < 2: self._upgrade_v1_to_v2()`) add:
-
-```python
-        if current < 3:
-            self._upgrade_v2_to_v3()
-```
-
-Add this method directly after `_upgrade_v1_to_v2`:
+`store.py:99`: `SCHEMA_VERSION = 3`. In `_migrate` after the `if current < 2:` branch add `if current < 3: self._upgrade_v2_to_v3()`. Add after `_upgrade_v1_to_v2`:
 
 ```python
     def _upgrade_v2_to_v3(self) -> None:
-        """Additive: add entity_alias + event_actor (created by executescript on
-        fresh/existing DBs via CREATE IF NOT EXISTS), then backfill event_actor
-        from the legacy events.entity_ids JSON blob using an ELEMENT-WISE
-        tolerant decode (keep valid existing ids, drop bad elements — never the
-        all-or-nothing _parse_entity_ids). Idempotent: INSERT OR IGNORE on the
-        (event_id, entity_id) PK makes a re-run a no-op. Ends by stamping v3."""
+        """Additive: entity_alias + event_actor (created via schema.sql executescript
+        on open). Backfill event_actor from the legacy events.entity_ids JSON blob,
+        ELEMENT-WISE tolerant (keep valid existing ids, drop bad elements — never the
+        all-or-nothing _parse_entity_ids). Idempotent via INSERT OR IGNORE on the PK.
+        NOTE: the v1->v2 rebuild DROP TABLE events cascade-empties event_actor under
+        foreign_keys=ON, but this backfill runs LAST so v1->v3 ends correct."""
         with self.write_transaction() as conn:
             existing = {r[0] for r in conn.execute("SELECT id FROM entities")}
             for ev_id, raw in conn.execute("SELECT id, entity_ids FROM events"):
@@ -150,57 +200,72 @@ Add this method directly after `_upgrade_v1_to_v2`:
             )
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 5: Run → pass**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store_migration.py -v`
-Expected: PASS.
+Run: `uv run pytest plugins/llm/tests/verse/test_store_migration.py -v`
+Expected: PASS (incl. the existing v1→v2 tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add plugins/llm/src/llm/verse/schema.sql plugins/llm/src/llm/verse/store.py plugins/llm/tests/verse/test_store_migration.py
-git commit -m "feat(verse): add entity_alias + event_actor tables (schema v3) with tolerant backfill"
+git commit -m "feat(verse): entity_alias + event_actor (schema v3), element-wise tolerant backfill"
 ```
 
 ---
 
-## Task 2: Write `event_actor` on every new event
+## Task 2: Populate `event_actor` from ALL THREE event-insert sites
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` — `_add_event_inline` (`:567-587`)
+- Modify: `plugins/llm/src/llm/verse/store.py` — `_add_event_inline` (`:567-587`); route `_replace_events_with_source` (`:770`) and `_apply_op_inline` add_event (`:1118`) through it
 - Test: `plugins/llm/tests/verse/test_store.py`
 
-- [ ] **Step 1: Write the failing test**
+> Plan-red-team MF1 (real data bug): there are THREE runtime `INSERT INTO events` sites — `_add_event_inline:581`, `_replace_events_with_source:770` (loom digest), `_apply_op_inline:1118` (every proposal/`verse_edit`/`apply_direct` add_event). Patching only one leaves author-authored canon invisible to `events_for_entities` (Task 6), which JOINs strictly on `event_actor`. Make `_add_event_inline` the single writer and route the other two through it.
+
+- [ ] **Step 1: Write failing test (covers the apply_direct path specifically)**
 
 ```python
-# add to plugins/llm/tests/verse/test_store.py (new class)
-class TestEventActorWrite:
-    def test_add_event_populates_event_actor_for_existing_entities(self, store):
+class TestEventActorAllSites:
+    def test_add_event_populates_event_actor(self, store):
         a = store.add_entity("npc", "Harry")
         ev = store.add_event("Harry did a thing", [a, 99999], source="avatar")
         with store.read_connection() as conn:
-            rows = conn.execute(
-                "SELECT entity_id FROM event_actor WHERE event_id=? ORDER BY entity_id", (ev,)
-            ).fetchall()
-        # 99999 has no entities row -> skipped (FK-safe); a is recorded.
-        assert rows == [(a,)]
+            rows = conn.execute("SELECT entity_id FROM event_actor WHERE event_id=?", (ev,)).fetchall()
+        assert rows == [(a,)]   # 99999 has no entities row -> FK-safe skip
+
+    def test_apply_direct_add_event_populates_event_actor(self, store):
+        a = store.add_entity("npc", "Harry")
+        store.apply_direct(op="add_event",
+                           payload={"summary": "Harry returned", "entity_ids": [a]},
+                           source="operator", provenance="test")
+        evs = store.events_for_entities([a], limit=10)   # JOINs on event_actor
+        assert any("returned" in e.summary for e in evs)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+> Confirm the `add_event` payload keys `_apply_op_inline` expects (`grep -n "op == \"add_event\"" store.py`); adjust `payload` to the real keys.
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestEventActorWrite -v`
-Expected: FAIL (no `event_actor` rows written by `add_event`).
+- [ ] **Step 2: Run → fail**
 
-- [ ] **Step 3: Populate `event_actor` in `_add_event_inline`**
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestEventActorAllSites -v`
+Expected: FAIL (apply_direct path writes no `event_actor`; `events_for_entities` undefined until Task 6 — run this test after Task 6 is in, or stub `events_for_entities`; see ordering note below).
 
-In `_add_event_inline`, after `assert cur.lastrowid is not None` and before `return cur.lastrowid`:
+> **Ordering:** `events_for_entities` is built in Task 6. Either implement Task 6 before Task 2's second assertion, or split: do Step 3 here, assert `event_actor` rows directly via SQL now, and add the `events_for_entities` assertion in Task 6. Recommended: assert via SQL here.
+
+- [ ] **Step 3: Make `_add_event_inline` the single writer**
+
+In `_add_event_inline`, after the INSERT, populate `event_actor` (FK-safe), then route the other two sites through it. `_add_event_inline` final form:
 
 ```python
+    def _add_event_inline(self, conn, *, summary, entity_ids, source, ts=None) -> int:
+        if ts is None:
+            ts = time.time()
+        cur = conn.execute(
+            "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
+            (ts, summary, json.dumps(list(entity_ids)), source),
+        )
         event_id = cur.lastrowid
-        for eid in dict.fromkeys(entity_ids):  # de-dup, preserve order
-            # entity_ids is an unconstrained list; event_actor has a real FK,
-            # so only link ids that actually exist (mirror the bump_last_seen
-            # defensive existence check).
+        assert event_id is not None
+        for eid in dict.fromkeys(entity_ids):
             if conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone():
                 conn.execute(
                     "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
@@ -209,18 +274,18 @@ In `_add_event_inline`, after `assert cur.lastrowid is not None` and before `ret
         return event_id
 ```
 
-(Remove the old `return cur.lastrowid`.)
+At `_replace_events_with_source:770` and `_apply_op_inline:1118`, replace the raw `conn.execute("INSERT INTO events ...")` with `self._add_event_inline(conn, summary=<s>, entity_ids=<ids>, source=<src>, ts=<ts>)`. **Read each site first** — map its local variable names (and whether it captures `lastrowid`) to the helper call; preserve any downstream use of the returned id.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run → pass**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestEventActorWrite -v`
-Expected: PASS. Also run `cd plugins/llm && uv run pytest tests/verse/test_store.py -v` to confirm no regressions.
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestEventActorAllSites tests/verse/test_loom.py tests/verse/test_compaction.py -v`
+(Run from repo root with the `plugins/llm/` prefix on each path.) Expected: PASS (loom/compaction exercise sites 770/1118).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add plugins/llm/src/llm/verse/store.py plugins/llm/tests/verse/test_store.py
-git commit -m "feat(verse): populate event_actor join on every new event (FK-safe)"
+git commit -m "fix(verse): populate event_actor from all 3 event-insert sites (single writer)"
 ```
 
 ---
@@ -228,24 +293,21 @@ git commit -m "feat(verse): populate event_actor join on every new event (FK-saf
 ## Task 3: `author_locked` flag + canon roster (pinned OR author_locked)
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` — `_RESERVED_ATTRIBUTE_KEYS` (`:28-30`); add `set_author_locked` (+inline), `list_canon_entities`
+- Modify: `plugins/llm/src/llm/verse/store.py` — `_RESERVED_ATTRIBUTE_KEYS` (`:28`); add `set_author_locked` (+inline), `list_canon_entities`
 - Test: `plugins/llm/tests/verse/test_store_pinned.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing test**
 
 ```python
-# add to plugins/llm/tests/verse/test_store_pinned.py
 class TestAuthorLocked:
-    def test_set_author_locked_and_list_canon(self, store):
+    def test_list_canon_unions_pinned_and_author_locked(self, store):
         h = store.add_entity("npc", "Harry", "year 8")
         t = store.add_entity("npc", "Toby", "year 9")
-        store.set_attribute(t, "pinned", "1")          # operator pin
-        store.set_author_locked(h, True)               # author lock
-        canon = store.list_canon_entities()
-        names = {e.name for e in canon}
-        assert names == {"Harry", "Toby"}              # union of pinned + author_locked
+        store.set_attribute(t, "pinned", "1")
+        store.set_author_locked(h, True)
+        assert {e.name for e in store.list_canon_entities()} == {"Harry", "Toby"}
 
-    def test_author_locked_reserved_against_proposal_writes(self, store):
+    def test_author_locked_is_reserved(self):
         from llm.verse.store import _RESERVED_ATTRIBUTE_KEYS
         assert "author_locked" in _RESERVED_ATTRIBUTE_KEYS
 
@@ -256,44 +318,28 @@ class TestAuthorLocked:
         assert store.list_canon_entities() == []
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run → fail**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store_pinned.py::TestAuthorLocked -v`
-Expected: FAIL (`set_author_locked` / `list_canon_entities` undefined).
+Run: `uv run pytest plugins/llm/tests/verse/test_store_pinned.py::TestAuthorLocked -v`
+Expected: FAIL.
 
-- [ ] **Step 3: Implement**
-
-Add `"author_locked"` to `_RESERVED_ATTRIBUTE_KEYS`:
+- [ ] **Step 3: Implement** (add `"author_locked"` to `_RESERVED_ATTRIBUTE_KEYS`; add methods near `list_pinned_entities`)
 
 ```python
-_RESERVED_ATTRIBUTE_KEYS = frozenset(
-    {"last_seen_ts", "auto_created", "status", "kind", "location", "pinned", "author_locked"}
-)
-```
-
-Add to `VerseStore` (place near `list_pinned_entities`):
-
-```python
-    def _set_author_locked_inline(
-        self, conn: sqlite3.Connection, entity_id: int, locked: bool
-    ) -> None:
+    def _set_author_locked_inline(self, conn, entity_id: int, locked: bool) -> None:
         if locked:
             self._set_attribute_inline(conn, entity_id, "author_locked", "1")
         else:
-            conn.execute(
-                "DELETE FROM attributes WHERE entity_id=? AND key='author_locked'", (entity_id,)
-            )
+            conn.execute("DELETE FROM attributes WHERE entity_id=? AND key='author_locked'", (entity_id,))
 
     def set_author_locked(self, entity_id: int, locked: bool) -> None:
-        """Mark/unmark an entity as author-locked durable canon (always injected,
-        aging-exempt, loom-protected). Reversible."""
+        """Lock/unlock durable canon (always injected, aging-exempt, loom-protected)."""
         with self.write_transaction() as conn:
             self._set_author_locked_inline(conn, entity_id, locked)
 
     def list_canon_entities(self) -> list[Entity]:
-        """Active entities that are durable canon: pinned (operator) OR
-        author_locked (author). Deterministic kind-then-name order so the roster
-        block stays cache-stable. Superset of list_pinned_entities."""
+        """Active entities that are durable canon: pinned (operator) OR author_locked.
+        DISTINCT (an entity may carry both). Deterministic kind-then-name order."""
         with self.read_connection() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
@@ -305,153 +351,130 @@ Add to `VerseStore` (place near `list_pinned_entities`):
         return [Entity(*row) for row in rows]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run → pass / commit**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store_pinned.py::TestAuthorLocked -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
+Run: `uv run pytest plugins/llm/tests/verse/test_store_pinned.py::TestAuthorLocked -v`
 
 ```bash
 git add plugins/llm/src/llm/verse/store.py plugins/llm/tests/verse/test_store_pinned.py
-git commit -m "feat(verse): author_locked canon flag + list_canon_entities (pinned OR author_locked)"
+git commit -m "feat(verse): author_locked canon flag + list_canon_entities"
 ```
 
 ---
 
-## Task 4: Aging + loom exempt `author_locked` entities
+## Task 4: Aging + loom exempt `author_locked`
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/aging.py` (locate the pinned-exemption predicate; extend to `author_locked`)
-- Test: `plugins/llm/tests/verse/test_verse_aging.py`
+- Modify: `plugins/llm/src/llm/verse/aging.py:43-44` (the Python pinned-exemption check)
+- Test: `plugins/llm/tests/verse/test_verse_aging.py`, `plugins/llm/tests/verse/test_store_privilege.py`
 
-> **Locate first:** `grep -n "pinned" plugins/llm/src/llm/verse/aging.py`. Aging already exempts `pinned='1'` entities (memory: fix f8aaede). Extend that same predicate to also exempt `author_locked='1'`. If aging selects retirement candidates via a SQL `WHERE` that excludes pinned, widen it to exclude `author_locked` too.
+> Plan-red-team MF4: aging's public fn is `age_auto_created_entities(store, *, retire_after_days, now)` (aging.py:22) and the exemption is a **Python check** at line 43 (`if store.get_attribute(entity.id, "pinned") == "1": continue`) — there is no SQL WHERE. Loom-protection is already structural: `author_locked` is reserved, so `_apply_op_inline` raises `ValueError` on a loom/proposal `set_attribute` to it.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing aging test**
 
 ```python
-# add to plugins/llm/tests/verse/test_verse_aging.py
 class TestAgingExemptsAuthorLocked:
     def test_author_locked_npc_not_retired(self, store):
-        # An auto-created npc that has aged out would normally retire; author_locked must save it.
         import time as _t
         h = store.add_entity("npc", "Harry")
         store.set_attribute(h, "auto_created", "1")
-        store.set_attribute(h, "last_seen_ts", str(0.0))   # ancient -> aging candidate
+        store.set_attribute(h, "last_seen_ts", "0.0")     # ancient
         store.set_author_locked(h, True)
-        from llm.verse.aging import age_out_entities  # adjust to the real entry-point name
-        age_out_entities(store, retain_days=1, now=lambda: _t.time())
-        ent = store.get_entity(h)
-        assert ent.status == "active"   # author_locked saved it from retirement
+        from llm.verse.aging import age_auto_created_entities
+        age_auto_created_entities(store, retire_after_days=1, now=lambda: _t.time())
+        assert store.get_entity(h).status == "active"
 ```
 
-> Adjust the import/call to aging.py's actual public function and signature (read aging.py to confirm the name, e.g. `run_aging`/`age_out_entities` and its params).
+> Confirm `age_auto_created_entities`'s retirement criterion (it reads `last_seen_ts` vs `retire_after_days`); the ancient `last_seen_ts` makes Harry a candidate.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run → fail**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_verse_aging.py::TestAgingExemptsAuthorLocked -v`
-Expected: FAIL (the author_locked npc is retired).
+Run: `uv run pytest plugins/llm/tests/verse/test_verse_aging.py::TestAgingExemptsAuthorLocked -v`
+Expected: FAIL (Harry retired).
 
-- [ ] **Step 3: Extend the pinned-exemption to author_locked in aging.py**
-
-Wherever aging checks for the `pinned` exemption, broaden it. If it reads pinned via an attribute join, change the predicate to include `author_locked`. Example (adapt to the real code):
+- [ ] **Step 3: Widen the exemption (aging.py:43)**
 
 ```python
-        # was: WHERE a.key='pinned' AND a.value='1'
-        # now: WHERE a.key IN ('pinned','author_locked') AND a.value='1'
+        if (store.get_attribute(entity.id, "pinned") == "1"
+                or store.get_attribute(entity.id, "author_locked") == "1"):
+            continue  # pinned = operator canon; author_locked = author canon; never auto-retire
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_verse_aging.py -v`
-Expected: PASS (full file, to confirm no regression to existing pinned-exemption tests).
-
-- [ ] **Step 5: Loom-protection — locate and extend**
-
-Run `grep -n "pinned\|_RESERVED_ATTRIBUTE_KEYS\|set_attribute" plugins/llm/src/llm/verse/loom.py`. The loom applies proposals via the store's reserved-key guard, which already rejects writes to `pinned`/`status`. Adding `author_locked` to `_RESERVED_ATTRIBUTE_KEYS` (Task 3) means the loom **cannot set or clear `author_locked`** via a `set_attribute` proposal — the protection is already structural. Add a test asserting it:
+- [ ] **Step 4: Add the loom-forging guard test (apply_direct needs source + provenance)**
 
 ```python
-# add to plugins/llm/tests/verse/test_loom.py (or test_store_privilege.py)
-def test_loom_cannot_write_author_locked(store):
-    h = store.add_entity("npc", "Harry")
+# tests/verse/test_store_privilege.py
+def test_loom_cannot_forge_author_locked(store):
     import pytest
+    h = store.add_entity("npc", "Harry")
     with pytest.raises(ValueError):
-        # the apply path used by loom proposals for op=set_attribute
         store.apply_direct(op="set_attribute",
-                           payload={"entity_id": h, "key": "author_locked", "value": "1"})
+                           payload={"entity_id": h, "key": "author_locked", "value": "1"},
+                           source="loom", provenance="test")
 ```
 
-> Adjust `apply_direct`'s call shape to the real signature (`grep -n "def apply_direct" store.py`). The point: a reserved-key write raises `ValueError`, so the loom can't forge author-lock.
+- [ ] **Step 5: Run → pass / commit**
 
-- [ ] **Step 6: Run + commit**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_verse_aging.py tests/verse/test_loom.py -v`
+Run: `uv run pytest plugins/llm/tests/verse/test_verse_aging.py plugins/llm/tests/verse/test_store_privilege.py -v`
 
 ```bash
-git add plugins/llm/src/llm/verse/aging.py plugins/llm/tests/verse/test_verse_aging.py plugins/llm/tests/verse/test_loom.py
-git commit -m "feat(verse): exempt author_locked from aging; reserved-key blocks loom forging it"
+git add plugins/llm/src/llm/verse/aging.py plugins/llm/tests/verse/test_verse_aging.py plugins/llm/tests/verse/test_store_privilege.py
+git commit -m "feat(verse): aging exempts author_locked; reserved-key blocks loom forging it"
 ```
 
 ---
 
-## Task 5: Alias storage + name-or-alias resolution
+## Task 5: Aliases + name-or-alias resolution
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` — add `add_alias` (+inline), `list_aliases`, `find_entity_by_name_or_alias`
+- Modify: `plugins/llm/src/llm/verse/store.py` — `add_alias` (+inline), `list_aliases`, `find_entity_by_name_or_alias`
 - Test: `plugins/llm/tests/verse/test_store.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing test**
 
 ```python
 class TestAliases:
-    def test_add_and_resolve_alias(self, store):
+    def test_resolve_alias_case_insensitive(self, store):
         t = store.add_entity("npc", "Toby")
         store.add_alias(t, "Tobes")
-        found = store.find_entity_by_name_or_alias("tobes")  # case-insensitive
-        assert found is not None and found.id == t
+        assert store.find_entity_by_name_or_alias("tobes").id == t
 
-    def test_name_takes_precedence_over_alias(self, store):
+    def test_exact_active_name_beats_alias(self, store):
         real = store.add_entity("npc", "Tobes")
         other = store.add_entity("npc", "Toby")
         store.add_alias(other, "Tobes")
-        found = store.find_entity_by_name_or_alias("Tobes")
-        assert found.id == real  # exact active name wins over an alias
+        assert store.find_entity_by_name_or_alias("Tobes").id == real
 
-    def test_list_aliases(self, store):
+    def test_alias_pk_dedups_case_variants(self, store):
         t = store.add_entity("npc", "Toby")
         store.add_alias(t, "Tobes")
-        store.add_alias(t, "T")
-        assert set(store.list_aliases(t)) == {"Tobes", "T"}
+        store.add_alias(t, "tobes")   # COLLATE NOCASE PK -> same row
+        assert store.list_aliases(t) == ["Tobes"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run → fail**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestAliases -v`
-Expected: FAIL (methods undefined).
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestAliases -v`
+Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```python
-    def _add_alias_inline(self, conn: sqlite3.Connection, entity_id: int, alias: str) -> None:
-        conn.execute(
-            "INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)",
-            (entity_id, alias),
-        )
+    def _add_alias_inline(self, conn, entity_id: int, alias: str) -> None:
+        conn.execute("INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)",
+                     (entity_id, alias))
 
     def add_alias(self, entity_id: int, alias: str) -> None:
-        """Record a nickname/alias for an entity (case-insensitive lookup)."""
         with self.write_transaction() as conn:
             self._add_alias_inline(conn, entity_id, alias)
 
     def list_aliases(self, entity_id: int) -> list[str]:
         with self.read_connection() as conn:
             return [r[0] for r in conn.execute(
-                "SELECT alias FROM entity_alias WHERE entity_id=?", (entity_id,)
-            )]
+                "SELECT alias FROM entity_alias WHERE entity_id=?", (entity_id,))]
 
     def find_entity_by_name_or_alias(self, name: str) -> Entity | None:
-        """Active-entity resolution by canonical name (precedence) then alias.
-        Exact active name wins; alias is the fallback so nicknames resolve."""
+        """Active resolution: canonical name (kind-precedence) first, then alias."""
         with self.read_connection() as conn:
             ent = self._find_active_entity_by_name_inline(conn, name)
             if ent is not None:
@@ -459,74 +482,67 @@ Expected: FAIL (methods undefined).
             row = conn.execute(
                 "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
                 "FROM entities e JOIN entity_alias al ON al.entity_id = e.id "
-                "WHERE al.alias = ? COLLATE NOCASE AND e.status='active' "
-                "ORDER BY e.id ASC LIMIT 1",
-                (name,),
-            ).fetchone()
+                "WHERE al.alias = ? COLLATE NOCASE AND e.status='active' ORDER BY e.id ASC LIMIT 1",
+                (name,)).fetchone()
         return Entity(*row) if row else None
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run → pass / commit**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestAliases -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestAliases -v`
 
 ```bash
 git add plugins/llm/src/llm/verse/store.py plugins/llm/tests/verse/test_store.py
-git commit -m "feat(verse): entity aliases + name-or-alias resolution"
+git commit -m "feat(verse): entity aliases (NOCASE) + name-or-alias resolution"
 ```
 
 ---
 
-## Task 6: Scene retrieval — match cast, 1-hop relations, active-only scene events
+## Task 6: Scene retrieval — cast (word-boundary), 1-hop relations, active-only events
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` — add `match_entities_in_text`, `relations_for`, `events_for_entities`
+- Modify: `plugins/llm/src/llm/verse/store.py` — add `RelationView`, `match_entities_in_text`, `relations_for`, `events_for_entities`
 - Test: `plugins/llm/tests/verse/test_store.py`
 
-- [ ] **Step 1: Write the failing test**
+> Plan-red-team SC2: replace the substring heuristic with a **word-boundary regex** + a min-length floor (skip names/aliases ≤2 chars) + a tiny stoplist, to avoid both punctuation misses ("Tobes?") and common-word false-positives (an NPC named "Will"/"Di").
+
+- [ ] **Step 1: Write failing test**
 
 ```python
 class TestSceneRetrieval:
-    def test_match_entities_in_text_by_name_and_alias(self, store):
+    def test_match_word_boundary_and_alias(self, store):
         h = store.add_entity("npc", "Harry")
-        t = store.add_entity("npc", "Toby")
-        store.add_alias(t, "Tobes")
-        store.add_entity("npc", "Andrew")  # not mentioned
-        got = {e.id for e in store.match_entities_in_text("did Harry and Tobes fight?")}
+        t = store.add_entity("npc", "Toby"); store.add_alias(t, "Tobes")
+        store.add_entity("npc", "Di")  # 2 chars -> skipped (too short)
+        got = {e.id for e in store.match_entities_in_text("did Harry and Tobes fight? ask Di.")}
         assert got == {h, t}
 
-    def test_relations_for_one_hop(self, store):
-        h = store.add_entity("npc", "Harry")
-        t = store.add_entity("npc", "Toby")
-        store.add_relation(h, t, "rival_of", "since year 7")
-        rels = store.relations_for([h])
-        assert any(r.from_name == "Harry" and r.to_name == "Toby" and r.kind == "rival_of"
-                   for r in rels)
+    def test_match_handles_punctuation_and_avoids_common_words(self, store):
+        w = store.add_entity("npc", "Will")
+        assert store.match_entities_in_text("I will go") == []          # common-word, not the name
+        assert {e.id for e in store.match_entities_in_text("Will, run!")} == {w}
 
-    def test_events_for_entities_active_only_via_join(self, store):
-        h = store.add_entity("npc", "Harry")
-        gone = store.add_entity("npc", "Ghost")
+    def test_relations_for_one_hop(self, store):
+        h = store.add_entity("npc", "Harry"); t = store.add_entity("npc", "Toby")
+        store.add_relation(h, t, "rival_of", "since year 7")
+        assert any(r.from_name == "Harry" and r.to_name == "Toby" and r.kind == "rival_of"
+                   for r in store.relations_for([h]))
+
+    def test_events_for_entities_active_only(self, store):
+        h = store.add_entity("npc", "Harry"); g = store.add_entity("npc", "Ghost")
         store.add_event("Harry won", [h], source="avatar")
-        store.add_event("Ghost faded", [gone], source="avatar")
-        store.set_status(gone, "retired")
-        evs = store.events_for_entities([h, gone], limit=10)
-        sums = [e.summary for e in evs]
-        assert "Harry won" in sums
-        # Ghost retired -> its event excluded (active-only, SQL-side via event_actor)
-        assert "Ghost faded" not in sums
+        store.add_event("Ghost faded", [g], source="avatar")
+        store.set_status(g, "retired")
+        sums = [e.summary for e in store.events_for_entities([h, g], limit=10)]
+        assert "Harry won" in sums and "Ghost faded" not in sums
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run → fail**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestSceneRetrieval -v`
-Expected: FAIL (methods undefined; `relations_for` return shape needs `from_name`/`to_name`).
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestSceneRetrieval -v`
+Expected: FAIL.
 
-- [ ] **Step 3: Implement**
-
-Add a small result type near the top of `store.py` (next to the other NamedTuples):
+- [ ] **Step 3: Implement** (add `import re` at top of store.py if absent)
 
 ```python
 class RelationView(NamedTuple):
@@ -534,255 +550,150 @@ class RelationView(NamedTuple):
     to_name: str
     kind: str
     note: str
-```
 
-Methods on `VerseStore`:
+
+_MATCH_STOPLIST = frozenset({"the", "and", "you", "him", "her", "they", "will", "are", "was"})
+```
 
 ```python
     def match_entities_in_text(self, text: str, limit: int = 12) -> list[Entity]:
-        """Active entities whose canonical name OR alias appears as a token-ish
-        substring in `text` (case-insensitive). Plain scan over active entities —
-        the world is small (tens of entities); no FTS needed. Deterministic order."""
-        lowered = f" {text.lower()} "
-        out: list[Entity] = []
-        seen: set[int] = set()
+        """Active entities whose name OR alias appears as a whole word in `text`
+        (case-insensitive). Names/aliases <=2 chars or in the stoplist are skipped
+        to avoid common-word false positives. Plain scan — the world is small."""
+        low = text.lower()
         with self.read_connection() as conn:
-            rows = conn.execute(
+            ent_rows = conn.execute(
                 "SELECT id, kind, name, summary, status, created_at, updated_at "
-                "FROM entities WHERE status='active' ORDER BY id"
-            ).fetchall()
+                "FROM entities WHERE status='active' ORDER BY id").fetchall()
             alias_rows = conn.execute(
                 "SELECT al.entity_id, al.alias FROM entity_alias al "
-                "JOIN entities e ON e.id=al.entity_id WHERE e.status='active'"
-            ).fetchall()
-        alias_by_id: dict[int, list[str]] = {}
+                "JOIN entities e ON e.id=al.entity_id WHERE e.status='active'").fetchall()
+        aliases: dict[int, list[str]] = {}
         for eid, al in alias_rows:
-            alias_by_id.setdefault(eid, []).append(al)
-        for row in rows:
+            aliases.setdefault(eid, []).append(al)
+
+        def hit(token: str) -> bool:
+            t = token.lower()
+            if len(t) <= 2 or t in _MATCH_STOPLIST:
+                return False
+            return re.search(r"(?<!\w)" + re.escape(t) + r"(?!\w)", low) is not None
+
+        out: list[Entity] = []
+        for row in ent_rows:
             ent = Entity(*row)
-            names = [ent.name, *alias_by_id.get(ent.id, [])]
-            if any(f" {n.lower()} " in lowered or n.lower() in text.lower().split()
-                   for n in names if n):
-                if ent.id not in seen:
-                    out.append(ent)
-                    seen.add(ent.id)
+            if any(hit(n) for n in (ent.name, *aliases.get(ent.id, [])) if n):
+                out.append(ent)
             if len(out) >= limit:
                 break
         return out
 
-    def relations_for(self, entity_ids: Sequence[int], limit: int = 30) -> list[RelationView]:
-        """1-hop relations touching any of entity_ids, with both endpoint names,
-        active endpoints only. Deterministic order."""
+    def relations_for(self, entity_ids, limit: int = 30) -> list[RelationView]:
         if not entity_ids:
             return []
         ph = ",".join("?" * len(entity_ids))
         with self.read_connection() as conn:
             rows = conn.execute(
-                f"SELECT ef.name, et.name, r.kind, r.note "
-                f"FROM relations r "
-                f"JOIN entities ef ON ef.id = r.from_id "
-                f"JOIN entities et ON et.id = r.to_id "
+                f"SELECT ef.name, et.name, r.kind, r.note FROM relations r "
+                f"JOIN entities ef ON ef.id=r.from_id JOIN entities et ON et.id=r.to_id "
                 f"WHERE (r.from_id IN ({ph}) OR r.to_id IN ({ph})) "
-                f"  AND ef.status='active' AND et.status='active' "
-                f"ORDER BY r.id LIMIT ?",
-                (*entity_ids, *entity_ids, limit),
-            ).fetchall()
-        return [RelationView(*row) for row in rows]
+                f"  AND ef.status='active' AND et.status='active' ORDER BY r.id LIMIT ?",
+                (*entity_ids, *entity_ids, limit)).fetchall()
+        return [RelationView(*r) for r in rows]
 
-    def events_for_entities(
-        self, entity_ids: Sequence[int], limit: int = 8
-    ) -> list[Event]:
-        """Recent events whose actors (via event_actor join) include any of
-        entity_ids, restricted to events that still have at least one ACTIVE
-        actor. SQL-side active filter (no Python full-scan)."""
+    def events_for_entities(self, entity_ids, limit: int = 8) -> list[Event]:
+        """Recent events linking any of entity_ids (via event_actor), restricted to
+        events that still have >=1 ACTIVE actor. SQL-side active filter."""
         if not entity_ids:
             return []
         ph = ",".join("?" * len(entity_ids))
         with self.read_connection() as conn:
             rows = conn.execute(
-                f"SELECT DISTINCT ev.id, ev.ts, ev.summary, ev.entity_ids, ev.source "
-                f"FROM events ev "
-                f"JOIN event_actor ea ON ea.event_id = ev.id "
-                f"WHERE ea.entity_id IN ({ph}) "
+                f"SELECT DISTINCT ev.id, ev.ts, ev.summary, ev.entity_ids, ev.source FROM events ev "
+                f"JOIN event_actor ea ON ea.event_id=ev.id WHERE ea.entity_id IN ({ph}) "
                 f"  AND EXISTS (SELECT 1 FROM event_actor ea2 JOIN entities e2 ON e2.id=ea2.entity_id "
                 f"              WHERE ea2.event_id=ev.id AND e2.status='active') "
-                f"ORDER BY ev.ts DESC, ev.id DESC LIMIT ?",
-                (*entity_ids, limit),
-            ).fetchall()
-        return [
-            Event(id=r[0], ts=r[1], summary=r[2], entity_ids=_parse_entity_ids(r[3], r[0]), source=r[4])
-            for r in rows
-        ]
+                f"ORDER BY ev.ts DESC, ev.id DESC LIMIT ?", (*entity_ids, limit)).fetchall()
+        return [Event(id=r[0], ts=r[1], summary=r[2], entity_ids=_parse_entity_ids(r[3], r[0]), source=r[4])
+                for r in rows]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run → pass / commit**
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestSceneRetrieval -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
+Run: `uv run pytest plugins/llm/tests/verse/test_store.py::TestSceneRetrieval -v`
 
 ```bash
 git add plugins/llm/src/llm/verse/store.py plugins/llm/tests/verse/test_store.py
-git commit -m "feat(verse): scene retrieval — match cast, 1-hop relations, active-only events via event_actor"
+git commit -m "feat(verse): scene retrieval (word-boundary match, 1-hop relations, active-only events)"
 ```
 
 ---
 
-## Task 7: Reorder + enrich `build_verse_system_prompt` (cache-stable + retrieval)
+## Task 7: Reorder + enrich `build_verse_system_prompt`
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/avatar.py` — `build_verse_system_prompt` (`:465-577`); add `message_text` param
-- Modify: `plugins/llm/src/llm/plugin.py` — `_verse_route_for` to pass the message text (`:2660-2679`); its caller to supply `text`
+- Modify: `plugins/llm/src/llm/verse/avatar.py` — `build_verse_system_prompt` (`:465-577`) + `message_text` param + `VERSE_SCENE_MARKER`
+- Modify: `plugins/llm/src/llm/plugin.py:2668` — add `message_text=message_text` to the existing call (the param already exists on `_verse_route_for`)
+- Modify: `plugins/llm/src/llm/config.py:379-388` — raise `verseRosterMaxChars` default to `4000`
 - Test: `plugins/llm/tests/verse/test_verse_prompt_roster.py`
 
-- [ ] **Step 1: Write the failing test**
+> Plan-red-team MF7: `_verse_route_for(self, channel, nick, account, message_text)` ALREADY takes `message_text` (plugin.py:2638) and the caller passes `text` (plugin.py:3655). Do NOT change its signature — the only edit is forwarding `message_text` into `build_verse_system_prompt` at plugin.py:2668.
+> MF8: name the breaking tests and fix the char-cap slice; the renderer emits `rival of` (`kind.replace('_',' ')`), so assertions must use `rival of`.
+
+- [ ] **Step 1: Write failing tests**
 
 ```python
-# add to plugins/llm/tests/verse/test_verse_prompt_roster.py
-def test_canon_roster_is_stable_prefix_and_scene_is_after(store_with_avatar):
+from llm.verse.avatar import build_verse_system_prompt, VERSE_SCENE_MARKER
+
+
+def test_canon_first_scene_after(store_with_avatar):
     store, avatar_id = store_with_avatar
-    h = store.add_entity("npc", "Harry", "year 8")
-    store.set_author_locked(h, True)
-    t = store.add_entity("npc", "Toby", "year 9")
-    store.add_relation(h, t, "rival_of")
-    from llm.verse.avatar import build_verse_system_prompt
+    h = store.add_entity("npc", "Harry", "year 8"); store.set_author_locked(h, True)
+    t = store.add_entity("npc", "Toby", "year 9"); store.add_relation(h, t, "rival_of")
     out = build_verse_system_prompt(store, avatar_id, "be a year 8 boy",
-                                    roster_max_chars=4000,
-                                    message_text="did Harry and Toby fight?")
-    # Stable canon block comes BEFORE the volatile scene block.
-    assert out.index("Established characters") < out.index("In play right now")
-    # Author-locked Harry is in the canon roster; both appear in scene cast; relation surfaced.
-    assert "Harry" in out and "Toby" in out and "rival_of" in out
+                                    roster_max_chars=4000, message_text="did Harry and Toby fight?")
+    assert out.index("Established characters") < out.index(VERSE_SCENE_MARKER)
+    assert "Harry" in out and "Toby" in out and "rival of" in out
 
 
-def test_prefix_is_byte_identical_when_message_changes_but_canon_does_not(store_with_avatar):
+def test_prefix_byte_identical_when_only_message_changes(store_with_avatar):
     store, avatar_id = store_with_avatar
-    h = store.add_entity("npc", "Harry", "year 8")
-    store.set_author_locked(h, True)
-    from llm.verse.avatar import build_verse_system_prompt, VERSE_SCENE_MARKER
+    h = store.add_entity("npc", "Harry", "year 8"); store.set_author_locked(h, True)
     a = build_verse_system_prompt(store, avatar_id, "p", roster_max_chars=4000, message_text="hi Harry")
     b = build_verse_system_prompt(store, avatar_id, "p", roster_max_chars=4000, message_text="yo Toby")
-    # Everything up to the scene marker (the cache-stable prefix) is identical.
     assert a.split(VERSE_SCENE_MARKER)[0] == b.split(VERSE_SCENE_MARKER)[0]
 ```
 
-> Add a `store_with_avatar` fixture to `tests/verse/conftest.py` if absent: create a store, `opt_in_avatar`/`link_avatar` an avatar, yield `(store, avatar_id)`. Mirror the `_opt_in` helper used in `test_avatar.py`.
+- [ ] **Step 2: Run → fail**
 
-- [ ] **Step 2: Run test to verify it fails**
+Run: `uv run pytest plugins/llm/tests/verse/test_verse_prompt_roster.py -v -k "canon_first or byte_identical"`
+Expected: FAIL.
 
-Run: `cd plugins/llm && uv run pytest tests/verse/test_verse_prompt_roster.py -v -k "stable_prefix or byte_identical"`
-Expected: FAIL (`message_text` param + `VERSE_SCENE_MARKER` + new layout don't exist).
-
-- [ ] **Step 3: Rewrite `build_verse_system_prompt` stable-first with retrieval**
-
-Add a module constant near the top of `avatar.py`:
+- [ ] **Step 3: Rewrite `build_verse_system_prompt` stable-first** (use the full body from the v1 plan §Task 7 Step 3 — canon roster via `list_canon_entities`, `VERSE_SCENE_MARKER = "In play right now:"` constant, volatile scene/events(active-only)/others/matched-cast/relations/scene-events after the marker; relation line uses `r.kind.replace('_',' ')`).
 
 ```python
 VERSE_SCENE_MARKER = "In play right now:"
 ```
 
-Replace the body so it assembles **stable parts first** (identity, persona, canon roster) then the **volatile scene block** (after `VERSE_SCENE_MARKER`): the avatar's scene/location, active-only recent events, co-located avatars, then the message-matched cast, their 1-hop relations, and their recent events.
+> Implement exactly as in the prior plan revision's Task 7 Step 3 body. KEY invariants the tests pin: (a) identity+persona+`Established characters in this world:`+roster come BEFORE `VERSE_SCENE_MARKER`; (b) everything message-dependent comes after; (c) relation lines render `from kind-with-spaces to`.
+
+- [ ] **Step 4: Forward `message_text` (one line, plugin.py:2668)**
+
+Add `message_text=message_text,` to the existing `build_verse_system_prompt(store, avatar_id, persona, roster_max_chars=...)` call. Do NOT touch `_verse_route_for`'s signature.
+
+- [ ] **Step 5: Raise the roster cap (config.py:379-388)** — change the `PositiveInteger(600, ...)` default to `PositiveInteger(4000, ...)`; update the func-signature default in `build_verse_system_prompt` to `4000`.
+
+- [ ] **Step 6: Fix the named breaking tests**
+
+`test_verse_prompt_roster.py::test_roster_respects_char_cap` (and any `TestSystemPrompt` ordering assertions): the roster is now BEFORE the scene block, so `prompt.split("Established characters in this world:")[1]` includes the whole scene tail. Re-slice between the roster header and `VERSE_SCENE_MARKER`:
 
 ```python
-def build_verse_system_prompt(
-    store: VerseStore,
-    avatar_id: int,
-    instruct_text: str,
-    roster_max_chars: int = 4000,
-    message_text: str = "",
-) -> str:
-    avatar = store.get_entity(avatar_id)
-    if avatar is None:
-        raise ValueError("avatar not found")
-
-    # ===== STABLE PREFIX (cacheable across turns) =====
-    identity_line = f"You are {avatar.name}."
-    persona_line = f"Persona: {instruct_text}" if instruct_text.strip() else "Persona: no persona set."
-
-    canon = store.list_canon_entities()
-    roster_lines: list[str] = []
-    if canon:
-        used = 0
-        for e in canon:
-            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
-            if used + len(line) + 1 > roster_max_chars:
-                roster_lines.append("- (roster truncated)")
-                break
-            roster_lines.append(line)
-            used += len(line) + 1
-
-    parts: list[str] = [identity_line, persona_line]
-    if roster_lines:
-        parts.append("Established characters in this world:")
-        parts.extend(roster_lines)
-
-    # ===== VOLATILE SCENE BLOCK (per-turn; not in the cached prefix) =====
-    parts.append(VERSE_SCENE_MARKER)
-
-    location = store.get_attribute(avatar_id, "location")
-    place = (store.find_entity_by_name(location, kind="place", active_only=True)
-             if location is not None else None)
-    parts.append(f"Scene: You are at {place.name}. {place.summary}" if place
-                 else "Scene: You are nowhere in particular.")
-
-    # Avatar's own recent events — active-only (dead-lore filtered).
-    own = [ev for ev in store.recent_events(limit=50, require_active_entity=True)
-           if avatar_id in ev.entity_ids][:5]
-    parts.append("Recent events involving you:")
-    parts.extend([f"- {ev.summary}" for ev in own] or ["- (none yet)"])
-
-    # Co-located other avatars (unchanged behaviour).
-    others = []
-    if location is not None:
-        for a in store.list_entities_by_kind("avatar", status="active"):
-            if a.id != avatar_id and store.get_attribute(a.id, "location") == location:
-                others.append(a)
-    parts.append("Other avatars present here:")
-    parts.extend(
-        [f"- {a.name}: {a.summary}" if a.summary else f"- {a.name}" for a in others]
-        or ["- (no other avatars present)"]
-    )
-
-    # Message-matched cast (not already in canon roster), their relations + events.
-    roster_ids = {e.id for e in canon}
-    scene = [e for e in store.match_entities_in_text(message_text) if e.id != avatar_id]
-    fresh = [e for e in scene if e.id not in roster_ids]
-    if fresh:
-        parts.append("Characters referenced in this scene:")
-        parts.extend([f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}" for e in fresh])
-
-    rel_ids = list(roster_ids | {e.id for e in scene} | {avatar_id})
-    rels = store.relations_for(rel_ids)
-    if rels:
-        parts.append("Known relationships:")
-        parts.extend([f"- {r.from_name} {r.kind.replace('_', ' ')} {r.to_name}"
-                      + (f" ({r.note})" if r.note else "") for r in rels])
-
-    scene_events = store.events_for_entities([e.id for e in scene], limit=8)
-    if scene_events:
-        parts.append("Recent events involving them:")
-        parts.extend([f"- {ev.summary}" for ev in scene_events])
-
-    return "\n".join(parts)
+    seg = prompt.split("Established characters in this world:")[1].split(VERSE_SCENE_MARKER)[0]
+    assert len(seg) <= <cap>
 ```
 
-- [ ] **Step 4: Thread `message_text` through the call site**
+Run `uv run pytest plugins/llm/tests/verse/test_verse_prompt_roster.py plugins/llm/tests/verse/test_avatar.py -v` and fix every assertion that depended on the OLD ordering (intended change). Search those files for the old scene/roster ordering assumptions.
 
-In `plugin.py`, change `_verse_route_for` to accept and pass the user's message text. Update its signature (e.g. `_verse_route_for(self, channel, account, nick, message_text="")`) and the `build_verse_system_prompt(...)` call to pass `message_text=message_text`. Update the caller (where `_verse_route_for`/`VerseRoute` is built, near `verse_model = self.registryValue("verseModel", ...)`) to pass the incoming `text`.
-
-> Locate with `grep -n "_verse_route_for\|build_verse_system_prompt" plugins/llm/src/llm/plugin.py`. Pass the same `text` that becomes the user turn.
-
-- [ ] **Step 5: Update the roster registry default**
-
-In `config.py:379-388`, raise `verseRosterMaxChars` default from `600` to `4000` (the locked roster must never truncate a ~15-NPC cast). Update the function-signature default in `build_verse_system_prompt` to match (`4000`).
-
-- [ ] **Step 6: Run tests to verify they pass**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_verse_prompt_roster.py tests/verse/test_avatar.py -v`
-Expected: PASS. Fix any existing prompt tests that asserted the OLD ordering (roster-last) — update them to the new stable-first layout (this is intended behaviour change, documented in the spec).
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Run → pass / commit**
 
 ```bash
 git add plugins/llm/src/llm/verse/avatar.py plugins/llm/src/llm/plugin.py plugins/llm/src/llm/config.py plugins/llm/tests/verse/
@@ -791,184 +702,39 @@ git commit -m "feat(verse): stable-first verse prompt with scene cast + relation
 
 ---
 
-## Task 8: Promotion-on-reinforcement — `msg.prefix`-bound `verse_record` overlay
+## Task 8 (DEFERRED): auto-lock-canon-by-talking
 
-**Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` — add `bump_author_mention` returning the new count + promotion at threshold
-- Modify: `plugins/llm/src/llm/plugin.py` — overlay a `msg.prefix`-bound `verse_record` handler in `combined_handlers` (next to `verse_edit`, `:3825-3857`)
-- Modify: `plugins/llm/src/llm/config.py` — add `verseAuthorLockMentions` (channel, default 2)
-- Test: `plugins/llm/tests/verse/test_store.py` + `plugins/llm/tests/test_plugin_verse.py`
-
-- [ ] **Step 1: Write the failing store test**
-
-```python
-class TestAuthorMentionPromotion:
-    def test_promotes_after_threshold(self, store):
-        h = store.add_entity("npc", "Harry")
-        assert store.bump_author_mention(h, threshold=2) == 1   # first human mention
-        assert store.get_attribute(h, "author_locked") is None
-        assert store.bump_author_mention(h, threshold=2) == 2   # second -> promote
-        assert store.get_attribute(h, "author_locked") == "1"
-```
-
-- [ ] **Step 2: Run + fail**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestAuthorMentionPromotion -v`
-Expected: FAIL (`bump_author_mention` undefined).
-
-- [ ] **Step 3: Implement `bump_author_mention`**
-
-```python
-    def bump_author_mention(self, entity_id: int, *, threshold: int = 2) -> int:
-        """Increment the human-reinforcement counter for an entity; at >=threshold
-        set author_locked. Returns the new count. Used only for HUMAN-offered
-        names by an authorized author (the caller enforces both). Stored as the
-        reserved EAV key 'author_mentions'."""
-        with self.write_transaction() as conn:
-            row = conn.execute(
-                "SELECT value FROM attributes WHERE entity_id=? AND key='author_mentions'",
-                (entity_id,),
-            ).fetchone()
-            count = (int(row[0]) if row and str(row[0]).isdigit() else 0) + 1
-            self._set_attribute_inline(conn, entity_id, "author_mentions", str(count))
-            if count >= threshold:
-                self._set_author_locked_inline(conn, entity_id, True)
-            return count
-```
-
-Add `"author_mentions"` to `_RESERVED_ATTRIBUTE_KEYS`.
-
-- [ ] **Step 4: Run + pass**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestAuthorMentionPromotion -v`
-Expected: PASS.
-
-- [ ] **Step 5: Add the config knob**
-
-In `config.py` (Verse section), add:
-
-```python
-conf.registerChannelValue(
-    LLM,
-    "verseAuthorLockMentions",
-    registry.PositiveInteger(
-        2,
-        _("""How many times an authorized author must mention a human-offered name
-        before it is promoted to durable author-locked canon (always remembered)."""),
-    ),
-)
-```
-
-- [ ] **Step 6: Write the plugin overlay test**
-
-```python
-# add to plugins/llm/tests/test_plugin_verse.py
-def test_verse_record_overlay_promotes_human_offered_name(verse_plugin_ctx):
-    """An authorized author (llm.verse.edit) who names a NEW character in their
-    message, twice, gets it auto-locked; a model-invented name (absent from the
-    user's message) never promotes."""
-    ctx = verse_plugin_ctx  # fixture: plugin + channel + authed author msg + store + avatar
-    # Turn 1: author says "Harry joined"; model records actors=["Harry"].
-    ctx.run_verse_record(message_text="Harry joined us", actors=["Harry"])
-    # Turn 2: same.
-    ctx.run_verse_record(message_text="Harry scored again", actors=["Harry"])
-    h = ctx.store.find_active_entity_by_name("Harry")
-    assert ctx.store.get_attribute(h.id, "author_locked") == "1"
-    # Model-invented name not in the user's message must NOT promote.
-    ctx.run_verse_record(message_text="tell me a tale", actors=["Gandalf"])
-    g = ctx.store.find_active_entity_by_name("Gandalf")
-    assert ctx.store.get_attribute(g.id, "author_locked") is None
-```
-
-> Build `verse_plugin_ctx` to mirror existing `test_plugin_verse.py` harness patterns (it already exercises verse handlers). The helper must run the overlaid `verse_record` handler with a `msg` whose prefix has `llm.verse.edit`.
-
-- [ ] **Step 7: Implement the overlay handler in plugin.py**
-
-In the block that builds `combined_handlers` (where `verse_edit` is overlaid, `:3825-3857`), overlay `verse_record` with a wrapper that (a) runs the normal dispatch, then (b) for each recorded actor name that appears in the user's message text AND when the caller holds `llm.verse.edit`, bumps the author-mention counter:
-
-```python
-                base_record = combined_handlers.get("verse_record")
-                authed_author = ircdb.checkCapability(msg.prefix, "llm.verse.edit")
-                lock_threshold = self.registryValue("verseAuthorLockMentions", channel)
-                user_text_lower = text.lower()
-
-                def _record_with_promotion(args: dict, _base=base_record,
-                                           _store=verse_route.store):
-                    result = _base(args) if _base else None
-                    if authed_author and isinstance(args, dict):
-                        for raw in args.get("actors") or []:
-                            if not isinstance(raw, str) or not raw.strip():
-                                continue
-                            name = raw.strip()
-                            # human-offered: the author typed this name (or its alias) this turn
-                            ent = _store.find_entity_by_name_or_alias(name)
-                            mentioned = name.lower() in user_text_lower or (
-                                ent is not None and ent.name.lower() in user_text_lower
-                            )
-                            if not mentioned:
-                                continue
-                            target = ent or _store.find_active_entity_by_name(name)
-                            if target is not None:
-                                _store.bump_author_mention(target.id, threshold=lock_threshold)
-                    return result
-
-                combined_handlers["verse_record"] = _record_with_promotion
-```
-
-> `text` (the user's message), `msg`, `channel`, `verse_route` are all in scope here (this is the same block that builds `verse_edit`/`verse_storybook` with `msg=msg`). The base `verse_record` handler is the avatar-bound one already in `combined_handlers` from `_build_verse_handlers_for_route`.
-
-- [ ] **Step 8: Run + pass**
-
-Run: `cd plugins/llm && uv run pytest tests/test_plugin_verse.py -k promot -v` and `cd plugins/llm && uv run pytest tests/verse/test_store.py::TestAuthorMentionPromotion -v`
-Expected: PASS.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add plugins/llm/src/llm/verse/store.py plugins/llm/src/llm/plugin.py plugins/llm/src/llm/config.py plugins/llm/tests/
-git commit -m "feat(verse): promote human-offered reinforced names to author_locked (gated on llm.verse.edit)"
-```
+Deferred to a fast-follow per the plan-red-team + the keep-it-simple decision. Tasks 6–7 + the already-pinned roster + `@canon` deliver the v1 retention win. When added later, the hardening is: `msg.prefix`-bound `verse_record` overlay gated on `llm.verse.edit`, word-boundary human-offered match, **alias-aware** target resolution (resolve to canonical id before the base `record_user_event` auto-creates a duplicate), promote only on a parsed `{status:ok}` event, de-dup actors per turn, single write transaction, threshold via a new `verseAuthorLockMentions` channel knob.
 
 ---
 
-## Task 9: `@canon` command (explicit lock/unlock/forget — human, invisible to Grok)
+## Task 9: `@canon lock/unlock/forget` command (author-gated)
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` — add a `canon` command near `verse`/`look`/`who` (`:5790-5882`)
-- Test: `plugins/llm/tests/test_commands.py`
+- Modify: `plugins/llm/src/llm/plugin.py` — add `canon` command near `verse`/`look`/`who` (`:5790-5882`)
+- Test: `plugins/llm/tests/test_plugin_verse.py` (has the real verse-command harness)
 
-- [ ] **Step 1: Write the failing test**
+> Plan-red-team MF6: verse commands take `(irc, msg, args[, target])` and resolve the channel **in-body** via `channel = self._check_verse_channel(irc, msg)` (plugin.py:5732). Do NOT put `channel` in the signature/wrap.
 
-```python
-# add to plugins/llm/tests/test_commands.py (verse command group)
-def test_canon_lock_and_forget(verse_command_ctx):
-    ctx = verse_command_ctx
-    ctx.store.add_entity("npc", "Harry")
-    ctx.run("canon lock Harry")
-    h = ctx.store.find_active_entity_by_name("Harry")
-    assert ctx.store.get_attribute(h.id, "author_locked") == "1"
-    ctx.run("canon forget Harry")
-    assert ctx.store.get_attribute(h.id, "author_locked") is None
-```
+- [ ] **Step 1: Write failing test** — mirror the existing `@look`/`@verse` command test in `test_plugin_verse.py` (same harness: real plugin, `_check_verse_channel` returns the channel, `ircdb.checkCapability` granted). Assert: after `canon lock Harry`, `store.get_attribute(h.id, "author_locked") == "1"`; after `canon forget Harry`, it's `None`.
 
-> Mirror the existing verse-command test harness (`@verse`, `@look` tests already exist in this file).
+- [ ] **Step 2: Run → fail**
 
-- [ ] **Step 2: Run + fail**
+Run: `uv run pytest plugins/llm/tests/test_plugin_verse.py -k canon -v`
+Expected: FAIL.
 
-Run: `cd plugins/llm && uv run pytest tests/test_commands.py -k canon -v`
-Expected: FAIL (no `canon` command).
-
-- [ ] **Step 3: Implement the command**
-
-Add a `canon` command gated on `llm.verse.edit` (the author capability), with subcommands `lock <name>` / `unlock <name>` / `forget <name>` (forget == unlock), resolving via `find_entity_by_name_or_alias` and calling `set_author_locked`. Follow the `wrap(...)` idiom used by `verse`/`look`:
+- [ ] **Step 3: Implement**
 
 ```python
-    def canon(self, irc, msg, args, channel, action, name):
+    def canon(self, irc, msg, args, action, name):
         """<lock|unlock|forget> <name>
 
         Lock or release a character as durable canon (always remembered).
         Requires the llm.verse.edit capability.
         """
+        channel = self._check_verse_channel(irc, msg)
+        if channel is None:
+            return
         store = self._get_or_create_verse_store(channel)
         ent = store.find_entity_by_name_or_alias(name)
         if ent is None:
@@ -980,257 +746,143 @@ Add a `canon` command gated on `llm.verse.edit` (the author capability), with su
                          ("literal", ("lock", "unlock", "forget")), "text"])
 ```
 
-> Map `"forget"` to unlock inside the body if you prefer an explicit branch; the literal set keeps Grok-free determinism. Confirm `channel` injection matches the other verse commands' `wrap` spec (they use `("checkCapability","llm.verse")` first — here use `llm.verse.edit`).
+(`action == "lock"` → lock; `unlock`/`forget` → unlock.)
 
-- [ ] **Step 4: Run + pass / commit**
+- [ ] **Step 4: Run → pass / commit**
 
-Run: `cd plugins/llm && uv run pytest tests/test_commands.py -k canon -v`
-
-```bash
-git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_commands.py
-git commit -m "feat(verse): @canon lock/unlock/forget command (author-gated, Grok-invisible)"
-```
-
----
-
-## Task 10: Guarantee canon-write on storybook turns
-
-**Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` — `_submit_storybook_job` / storybook handler (`:2809-2834`)
-- Test: `plugins/llm/tests/test_storybook.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# add to plugins/llm/tests/test_storybook.py
-def test_storybook_records_a_canon_event(storybook_ctx):
-    """An illustrated turn short-circuits before any verse_record model step,
-    so the handler itself must log a canon event for the story."""
-    ctx = storybook_ctx  # fixture: plugin + verse channel + avatar + store
-    before = len(ctx.store.recent_events(limit=100))
-    ctx.fire_storybook(brief="the stinky lads raid the cafeteria")
-    after = ctx.store.recent_events(limit=100)
-    assert len(after) == before + 1
-    assert "cafeteria" in after[0].summary.lower() or "storybook" in after[0].summary.lower()
-```
-
-- [ ] **Step 2: Run + fail**
-
-Run: `cd plugins/llm && uv run pytest tests/test_storybook.py -k records_a_canon -v`
-Expected: FAIL (no event written).
-
-- [ ] **Step 3: Record canon in the storybook handler**
-
-In the storybook `_call` handler, right after reserving the per-turn slot and before/after `_submit_storybook_job`, record a canon event attributed to the caller's avatar so the illustrated turn is not invisible to canon:
-
-```python
-            # Illustrated turns short-circuit before any verse_record model step,
-            # so log the story as canon here (best-effort; never block the page).
-            try:
-                route = self._verse_route_for(channel, account, nick)
-                if route is not None:
-                    summary = (brief.strip()[:200] or "told an illustrated tale")
-                    self._get_or_create_verse_store(channel).record_user_event(
-                        actor_id=route.avatar_id, summary=summary, actor_names=[],
-                    )
-            except Exception:
-                self.log.exception("storybook canon-record failed (non-fatal)")
-            self._submit_storybook_job(channel=channel, nick=nick, persona=persona, brief=brief)
-```
-
-> `brief` is computed just above in the handler. Keep this best-effort and non-fatal — the illustrated page must still post even if recording fails.
-
-- [ ] **Step 4: Run + pass / commit**
-
-Run: `cd plugins/llm && uv run pytest tests/test_storybook.py -v`
-
-```bash
-git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_storybook.py
-git commit -m "fix(verse): record a canon event on storybook turns (they short-circuit verse_record)"
-```
-
----
-
-## Task 11: Loud warning when verse silently rides a non-verse model
-
-**Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` — the `verseModel` read site (`:3702`)
-- Test: `plugins/llm/tests/test_plugin_verse.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-def test_empty_verse_model_logs_warning(verse_plugin_ctx, caplog):
-    ctx = verse_plugin_ctx
-    ctx.plugin.setRegistryValue("verseModel", "", channel=ctx.channel)
-    import logging
-    with caplog.at_level(logging.WARNING):
-        ctx.trigger_verse_turn("hello")
-    assert any("verseModel" in r.message and "assistantModel" in r.message
-               for r in caplog.records)
-```
-
-- [ ] **Step 2: Run + fail**
-
-Run: `cd plugins/llm && uv run pytest tests/test_plugin_verse.py -k verse_model_logs -v`
-Expected: FAIL (no warning emitted).
-
-- [ ] **Step 3: Emit the warning**
-
-At `plugin.py:3702`, after reading `verse_model`:
-
-```python
-            verse_model = self.registryValue("verseModel", preflight.channel) or None
-            if verse_model is None:
-                self.log.warning(
-                    "verse turn on channel=%s has empty verseModel; falling back to "
-                    "assistantModel — set a non-reasoning verseModel or verse prose may "
-                    "be cratered by a reasoning model",
-                    preflight.channel,
-                )
-```
-
-> Keep the existing fallback behaviour (do NOT hard-fail). This only surfaces the foot-gun. Rate-limiting the log (once per channel) is a nice-to-have, not required.
-
-- [ ] **Step 4: Run + pass / commit**
-
-Run: `cd plugins/llm && uv run pytest tests/test_plugin_verse.py -k verse_model -v`
+Run: `uv run pytest plugins/llm/tests/test_plugin_verse.py -k canon -v`
 
 ```bash
 git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_plugin_verse.py
-git commit -m "feat(verse): loud warning when verseModel is empty and falls back to assistantModel"
+git commit -m "feat(verse): @canon lock/unlock/forget (author-gated, channel resolved in-body)"
 ```
 
 ---
 
-## Task 12: Characterize the denial/degrade retry re-seed (do NOT change behaviour)
+## Task 10: Record canon on storybook turns (in `_submit_storybook_job`)
+
+**Files:**
+- Modify: `plugins/llm/src/llm/plugin.py` — `_submit_storybook_job` (`:2739`); add `account` param; update its 2 callers
+- Test: `plugins/llm/tests/test_storybook.py`
+
+> Plan-red-team MF5: storybook short-circuits before any `verse_record` model step, so record canon in the shared `_submit_storybook_job` (covers BOTH the tool handler and `@story`). Resolve the avatar inline (no route rebuild), guard non-None, best-effort.
+
+- [ ] **Step 1: Write failing test** — using the existing `test_storybook.py` harness (service-level via the plugin), fire a storybook for a channel whose store has an avatar for the caller; assert exactly one new event recorded with the brief text. Mirror the file's existing storybook test setup.
+
+- [ ] **Step 2: Run → fail**
+
+Run: `uv run pytest plugins/llm/tests/test_storybook.py -k canon -v`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement** — add `account: str | None = None` to `_submit_storybook_job`'s keyword-only params; at the TOP of the method body (before the `submit`), best-effort record:
+
+```python
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = (store.find_avatar_by_account(account) if account else None) \
+                or store.find_avatar_by_nick(nick)
+            if avatar_id is not None:
+                store.record_user_event(actor_id=avatar_id,
+                                        summary=(brief.strip()[:200] or "told an illustrated tale"),
+                                        actor_names=[])
+        except Exception:
+            self.log.exception("storybook canon-record failed (non-fatal) channel=%s", channel)
+```
+
+Update both callers to pass `account=`: the storybook tool handler (`_storybook_handler` `_call`, ~plugin.py:2834 — it has `account` in scope) and the `@story` command (plugin.py:4155 — pass its account if any, else `None`; a no-avatar `@story` simply skips the record via the guard).
+
+- [ ] **Step 4: Run → pass / commit**
+
+Run: `uv run pytest plugins/llm/tests/test_storybook.py -v`
+
+```bash
+git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_storybook.py
+git commit -m "fix(verse): record a canon event on storybook turns (tool + @story)"
+```
+
+---
+
+## Task 11: Loud warning when `verseModel` is empty (falls back to assistantModel)
+
+**Files:**
+- Modify: `plugins/llm/src/llm/plugin.py:3702`
+- Test: `plugins/llm/tests/test_plugin_verse.py`
+
+> Plan-red-team SC3: `self.log` is a supybot plugin logger `caplog` cannot capture — assert on `plugin.log.warning.call_args` (the documented pattern at `test_plugin_verse.py:2787`). Gate the warning **once per channel** (don't fire every turn on an unset channel). Spec-delta vs §9 (warn, not hard-fail) is documented in the header.
+
+- [ ] **Step 1: Write failing test** — mirror the `test_plugin_verse.py:2787` logging-assertion pattern: with `verseModel` empty for the channel, drive a verse turn; assert `plugin.log.warning` was called with a message mentioning `verseModel` and `assistantModel`; drive a second turn on the same channel and assert it is NOT warned again (once-per-channel).
+
+- [ ] **Step 2: Run → fail**
+
+Run: `uv run pytest plugins/llm/tests/test_plugin_verse.py -k verse_model_warn -v`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement** — at plugin.py:3702, after reading `verse_model`, with a per-instance `set` guard (e.g. `self._verse_model_warned`):
+
+```python
+            verse_model = self.registryValue("verseModel", preflight.channel) or None
+            if verse_model is None and preflight.channel not in self._verse_model_warned:
+                self._verse_model_warned.add(preflight.channel)
+                self.log.warning(
+                    "verse turn on channel=%s has empty verseModel; falling back to "
+                    "assistantModel — set a non-reasoning verseModel or verse prose may be "
+                    "cratered by a reasoning model", preflight.channel)
+```
+
+Initialize `self._verse_model_warned: set[str] = set()` in `__init__`.
+
+- [ ] **Step 4: Run → pass / commit**
+
+Run: `uv run pytest plugins/llm/tests/test_plugin_verse.py -k verse_model_warn -v`
+
+```bash
+git add plugins/llm/src/llm/plugin.py plugins/llm/tests/test_plugin_verse.py
+git commit -m "feat(verse): warn-once-per-channel when verseModel empty and falls back"
+```
+
+---
+
+## Task 12: Characterize the denial/degrade retry re-seed (no behaviour change)
 
 **Files:**
 - Test only: `plugins/llm/tests/test_service_completion.py`
 
-> The spec (§9) treats the "re-seed rejected reply before retry" as deliberate, not a bug. Pin the current behaviour so a future refactor can A/B against it — do not modify service.py here.
+> Pin current behaviour (service.py appends `[assistant: rejected, user: nudge]` before `continue`); do NOT modify service.py. Build on the existing stub-client harness in `test_service_completion.py` (it already drives multi-step completions). If the existing harness cannot snapshot the in-flight `messages`, downscope to asserting the corrected (not rejected) text is returned and add an inline comment that the re-seed is intentional.
 
-- [ ] **Step 1: Write the characterization test**
-
-```python
-def test_verse_denial_retry_reseeds_rejected_reply_then_nudges(service_ctx):
-    """CHARACTERIZATION (pins current behaviour): on a verse denial, the in-flight
-    message list gets [assistant: rejected_reply, user: nudge] appended before the
-    retry, and the corrected reply (not the rejected one) is what is returned."""
-    ctx = service_ctx.verse_denial_then_recover()  # stub model: turn1 refuses, turn2 recovers
-    result = ctx.run()
-    assert result.content == ctx.recovered_text          # rejected text never returned
-    assert ctx.seen_messages_before_retry[-2:] == [
-        {"role": "assistant", "content": ctx.rejected_text},
-        {"role": "user", "content": ctx.denial_nudge},
-    ]
-```
-
-> Build on the existing `test_service_completion.py` stub-client harness (it already drives multi-step completions with canned model replies). Capture the in-flight `messages` snapshot at the retry boundary.
-
-- [ ] **Step 2: Run to verify it passes against current code**
-
-Run: `cd plugins/llm && uv run pytest tests/test_service_completion.py -k reseeds -v`
-Expected: PASS (it characterizes existing behaviour). If it fails, fix the TEST to match reality — do NOT change service.py.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add plugins/llm/tests/test_service_completion.py
-git commit -m "test(verse): characterize denial-retry re-seed behaviour (pin before any future change)"
-```
+- [ ] **Step 1: Write the characterization test** (against the real harness; corrected text returned, rejected text never delivered).
+- [ ] **Step 2: Run → pass** (`uv run pytest plugins/llm/tests/test_service_completion.py -k reseed -v`). If it can't be expressed on the real harness, write the narrower "corrected-text-returned" assertion instead.
+- [ ] **Step 3: Commit** (`test(verse): characterize denial-retry re-seed before any future change`).
 
 ---
 
-## Task 13: Integration test — full retrieval path end-to-end
+## Task 13: End-to-end retrieval integration test
 
 **Files:**
 - Test: `plugins/llm/tests/verse/test_retrieval_integration.py` (new)
 
-- [ ] **Step 1: Write the integration test**
-
-```python
-"""End-to-end: a locked roster member absent from the message still appears;
-a scene-named member + relation + event appear; a retired entity does not."""
-from llm.verse.avatar import build_verse_system_prompt, VERSE_SCENE_MARKER
-
-
-def test_full_retrieval(store_with_avatar):
-    store, avatar_id = store_with_avatar
-    harry = store.add_entity("npc", "Harry", "year 8 ringleader")
-    toby = store.add_entity("npc", "Toby", "year 9")
-    ghost = store.add_entity("npc", "Ghost")
-    store.set_author_locked(harry, True)          # locked roster (not named in message)
-    store.add_alias(toby, "Tobes")
-    store.add_relation(harry, toby, "rival_of")
-    store.add_event("Toby nicked the register", [toby], source="avatar")
-    store.add_event("Ghost vanished", [ghost], source="avatar")
-    store.set_status(ghost, "retired")
-
-    out = build_verse_system_prompt(store, avatar_id, "be a year 8 boy",
-                                    roster_max_chars=4000,
-                                    message_text="what's Tobes up to?")
-    prefix, scene = out.split(VERSE_SCENE_MARKER)
-    assert "Harry" in prefix                       # locked roster member, even unmentioned
-    assert "Toby" in scene                          # resolved via alias 'Tobes'
-    assert "rival_of".replace("_", " ") in scene    # 1-hop relation surfaced
-    assert "register" in scene                      # Toby's event surfaced
-    assert "Ghost" not in out                        # retired -> excluded everywhere
-```
-
-- [ ] **Step 2: Run + pass**
-
-Run: `cd plugins/llm && uv run pytest tests/verse/test_retrieval_integration.py -v`
-Expected: PASS.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add plugins/llm/tests/verse/test_retrieval_integration.py
-git commit -m "test(verse): end-to-end retrieval integration (roster + alias + relation + event + dead-lore)"
-```
+- [ ] **Step 1: Write** — uses `store_with_avatar`; locked roster member unmentioned still appears in the prefix; alias-resolved member + relation (`rival of`) + their event appear in the scene block; a retired entity appears nowhere. (Body as in the prior revision's Task 13, with `rival of` spacing and `VERSE_SCENE_MARKER` split.)
+- [ ] **Step 2: Run → pass** (`uv run pytest plugins/llm/tests/verse/test_retrieval_integration.py -v`).
+- [ ] **Step 3: Commit** (`test(verse): end-to-end retrieval integration`).
 
 ---
 
-## Task 14: Full suite + lint/typecheck gate
+## Task 14: Full gate
 
-- [ ] **Step 1: Run the full verse + plugin test suite**
-
-Run: `cd plugins/llm && uv run pytest tests/verse tests/test_plugin_verse.py tests/test_storybook.py tests/test_commands.py tests/test_service_completion.py -v`
-Expected: PASS. Fix any prompt-ordering tests that asserted the old layout (intended change).
-
-- [ ] **Step 2: Lint + typecheck**
-
-Run: `cd plugins/llm && make lint && make typecheck`
-Expected: clean.
-
-- [ ] **Step 3: Confirm chat/code/draw untouched**
-
-Run: `cd plugins/llm && uv run pytest tests/test_assistant.py tests/test_service_core.py -v`
-Expected: PASS (no behaviour change to non-verse paths).
-
-- [ ] **Step 4: Commit any fixups**
-
-```bash
-git add -A && git commit -m "test(verse): suite green + lint/typecheck clean for retention fix"
-```
+- [ ] **Step 1:** `make test` (full suite + 93% coverage). Fix any prompt-ordering tests that asserted the old layout.
+- [ ] **Step 2:** `make lint && make typecheck` → clean.
+- [ ] **Step 3:** Confirm non-verse untouched: `uv run pytest plugins/llm/tests/test_assistant.py plugins/llm/tests/test_service_core.py -v`.
+- [ ] **Step 4:** Commit any fixups.
 
 ---
 
-## Rollout (post-merge, operator)
+## Rollout (operator, post-merge)
+1. v2→v3 migration runs automatically on first open of each verse store (additive; backfills `event_actor`; idempotent). #afternet DB is ~2.9MB — backfill is a fast single transaction.
+2. Verse stays behind the existing per-channel `verseEnabled` flag; rollback = registry flip / revert (v3 is additive, nothing to un-migrate).
+3. Watch `docker logs vibebot` for the `verseModel` warning and any migration error on first open.
+4. Optionally seed roster aliases later (no `@canon alias` verb in v1).
 
-Not code tasks — operator steps once merged and deployed:
-1. The v2→v3 migration runs automatically on first open of #afternet's store (additive; backfills `event_actor`).
-2. Optionally seed aliases for the known roster (`@canon` has no alias verb in v1; aliases accrue via future use or a one-off `add_alias` script). The existing pinned roster already shows via `list_canon_entities`.
-3. Verse stays behind the existing per-channel `verseEnabled` flag; rollback is a registry flip / revert (no data migration to undo — v3 is additive).
-4. Watch `docker logs vibebot` for the new `verseModel` warning and any migration errors.
+## Coverage (plan vs spec)
+§3.1 retrieval → Tasks 6,7,13. §3.2 author_locked + explicit lock → Tasks 3,9 (auto-promotion deferred, Task 8). §3.3 alias → Task 5. §3.4 event_actor → Tasks 1,2,6. §3.5 cache (stable-first, documented delta) → Task 7. §3.6 generation (verseModel warn, documented delta) → Task 11. §3.7 storybook canon-write → Task 10. Aging/loom protection → Task 4. Re-seed characterize → Task 12.
 
-## Coverage check (plan vs spec)
-- Spec §3.1 retrieval → Tasks 6, 7, 13. §3.2 author_locked promotion → Tasks 3, 8, 9. §3.3 alias → Task 5. §3.4 event_actor → Tasks 1, 2, 6. §3.5 cache byte-freeze → Task 7. §3.6 generation fixes → Task 11 (+ §9 freq_penalty note: see Open Items). §3.7 storybook canon-write → Task 10. Aging/loom protection → Task 4. Re-seed characterize → Task 12.
-
-## Open items (carry into review)
-- **Measurement (spec §8):** no code task — the re-scoped gate is fc42's live ~5:1 benchmark, not a shadow/A-B subsystem. Optional lightweight observability: log the injected canon-entity ids per verse turn (one `self.log.info` near the `_verse_route_for` call) so recall can be eyeballed. Deferred unless review wants it in v1.
-- **Test harness fixtures:** the plugin/service/command/storybook tests reference context fixtures (`verse_plugin_ctx`, `storybook_ctx`, `service_ctx`, `verse_command_ctx`, `store_with_avatar`) named illustratively — the executor must wire these to the REAL harness in `tests/conftest.py` / `tests/verse/conftest.py` (e.g. the existing `_opt_in` helper, the `test_plugin_verse.py` verse-handler harness). Store-level tests use the real `store`/`verse_db_dir` fixtures and stand as written.
-- **frequency_penalty drop log (spec §9):** add a one-time loud log when a verse sampling param is dropped for the active provider, at `service.py:3906-3909`. Small; fold into Task 11 or a follow-up — it is observability, not behaviour.
-- **`match_entities_in_text` matching quality:** the substring/token heuristic is deliberately simple; if it over/under-matches in shadow, tighten to word-boundary regex. Flagged for the plan red-team.
-- **aging.py / loom.py exact predicates (Task 4):** the executor must read those files to place the edits precisely; tests pin the behaviour.
+## Deferred / fast-follow
+Auto-lock-by-talking (Task 8); freq_penalty drop-log observability; lightweight injected-vs-referenced telemetry (§8); §5 user-role-message cache split; §9 hard-fail + reasoning-model startup validation; new-plugin / gen-core / story-fan-out / portraits (later phases per spec §11).
