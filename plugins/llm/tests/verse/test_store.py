@@ -1778,3 +1778,48 @@ class TestAliases:
         store.add_alias(t, "Tobes")
         store.add_alias(t, "tobes")  # COLLATE NOCASE PK -> same row
         assert store.list_aliases(t) == ["Tobes"]
+
+
+class TestSceneRetrieval:
+    def test_match_word_boundary_and_alias(self, store):
+        h = store.add_entity("npc", "Harry")
+        t = store.add_entity("npc", "Toby")
+        store.add_alias(t, "Tobes")
+        store.add_entity("npc", "Di")  # 2 chars -> skipped (too short)
+        got = {e.id for e in store.match_entities_in_text("did Harry and Tobes fight? ask Di.")}
+        assert got == {h, t}
+
+    def test_match_handles_punctuation_and_avoids_common_words(self, store):
+        w = store.add_entity("npc", "Will")
+        assert store.match_entities_in_text("I will go") == []  # common-word, not the name
+        assert {e.id for e in store.match_entities_in_text("Will, run!")} == {w}
+
+    def test_relations_for_one_hop(self, store):
+        h = store.add_entity("npc", "Harry")
+        t = store.add_entity("npc", "Toby")
+        store.add_relation(h, t, "rival_of", "since year 7")
+        assert any(
+            r.from_name == "Harry" and r.to_name == "Toby" and r.kind == "rival_of"
+            for r in store.relations_for([h])
+        )
+
+    def test_events_for_entities_active_only(self, store):
+        h = store.add_entity("npc", "Harry")
+        g = store.add_entity("npc", "Ghost")
+        store.add_event("Harry won", [h], source="avatar")
+        store.add_event("Ghost faded", [g], source="avatar")
+        store.set_status(g, "retired")
+        sums = [e.summary for e in store.events_for_entities([h, g], limit=10)]
+        assert "Harry won" in sums and "Ghost faded" not in sums
+
+    def test_apply_direct_event_retrievable_via_events_for_entities(self, store):
+        # closes the Task-2 loop: author/operator add_event must be retrievable
+        a = store.add_entity("npc", "Harry")
+        store.apply_direct(
+            op="add_event",
+            payload={"summary": "Harry returned", "entity_ids": [a]},
+            source="operator",
+            provenance="test",
+        )
+        evs = store.events_for_entities([a], limit=10)
+        assert any("returned" in e.summary for e in evs)

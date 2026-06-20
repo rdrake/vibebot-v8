@@ -31,6 +31,7 @@ _RESERVED_ATTRIBUTE_KEYS = frozenset(
 
 _VALID_SOURCES = frozenset({"operator", "loom", "llm", "crosspoll", "avatar"})
 _DESTRUCTIVE_OPS = frozenset({"delete_event", "delete_relation", "set_status", "set_pinned"})
+_MATCH_STOPLIST = frozenset({"the", "and", "you", "him", "her", "they", "will", "are", "was"})
 
 
 def _parse_entity_ids(raw: str, event_id: object) -> tuple[int, ...]:
@@ -91,6 +92,13 @@ class Proposal(NamedTuple):
     status: str
     reviewer: str | None
     reviewed_at: float | None
+
+
+class RelationView(NamedTuple):
+    from_name: str
+    to_name: str
+    kind: str
+    note: str
 
 
 _VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
@@ -854,6 +862,89 @@ class VerseStore:
                 if len(out) >= limit:
                     break
             return out
+
+    def match_entities_in_text(self, text: str, limit: int = 12) -> list[Entity]:
+        """Active entities whose name OR alias appears as a whole word in ``text``.
+
+        Names/aliases <=2 chars are skipped. A name/alias that is a common English
+        word (stoplist) only matches when it appears CAPITALIZED as a whole word
+        (proper-noun usage) — so an NPC "Will" matches "Will, run!" but not
+        "I will go". All other names match case-insensitively. Plain scan — the
+        world is small."""
+        low = text.lower()
+        with self.read_connection() as conn:
+            ent_rows = conn.execute(
+                "SELECT id, kind, name, summary, status, created_at, updated_at "
+                "FROM entities WHERE status='active' ORDER BY id"
+            ).fetchall()
+            alias_rows = conn.execute(
+                "SELECT al.entity_id, al.alias FROM entity_alias al "
+                "JOIN entities e ON e.id=al.entity_id WHERE e.status='active'"
+            ).fetchall()
+        aliases: dict[int, list[str]] = {}
+        for eid, al in alias_rows:
+            aliases.setdefault(eid, []).append(al)
+
+        def hit(token: str) -> bool:
+            t = token.lower()
+            if len(t) <= 2:
+                return False
+            if t in _MATCH_STOPLIST:
+                proper = t[0].upper() + t[1:]
+                return re.search(r"(?<!\w)" + re.escape(proper) + r"(?!\w)", text) is not None
+            return re.search(r"(?<!\w)" + re.escape(t) + r"(?!\w)", low) is not None
+
+        out: list[Entity] = []
+        for row in ent_rows:
+            ent = Entity(*row)
+            if any(hit(n) for n in (ent.name, *aliases.get(ent.id, [])) if n):
+                out.append(ent)
+            if len(out) >= limit:
+                break
+        return out
+
+    def relations_for(self, entity_ids: Sequence[int], limit: int = 30) -> list[RelationView]:
+        """One-hop relations touching any of ``entity_ids`` (either endpoint),
+        both endpoints active. Ordered by relation id."""
+        if not entity_ids:
+            return []
+        ph = ",".join("?" * len(entity_ids))
+        with self.read_connection() as conn:
+            rows = conn.execute(
+                f"SELECT ef.name, et.name, r.kind, r.note FROM relations r "
+                f"JOIN entities ef ON ef.id=r.from_id JOIN entities et ON et.id=r.to_id "
+                f"WHERE (r.from_id IN ({ph}) OR r.to_id IN ({ph})) "
+                f"  AND ef.status='active' AND et.status='active' ORDER BY r.id LIMIT ?",
+                (*entity_ids, *entity_ids, limit),
+            ).fetchall()
+        return [RelationView(*r) for r in rows]
+
+    def events_for_entities(self, entity_ids: Sequence[int], limit: int = 8) -> list[Event]:
+        """Recent events linking any of ``entity_ids`` (via ``event_actor``),
+        restricted to events that still have >=1 ACTIVE actor (SQL-side filter).
+        Newest first."""
+        if not entity_ids:
+            return []
+        ph = ",".join("?" * len(entity_ids))
+        with self.read_connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT ev.id, ev.ts, ev.summary, ev.entity_ids, ev.source FROM events ev "
+                f"JOIN event_actor ea ON ea.event_id=ev.id WHERE ea.entity_id IN ({ph}) "
+                f"  AND EXISTS (SELECT 1 FROM event_actor ea2 JOIN entities e2 ON e2.id=ea2.entity_id "
+                f"              WHERE ea2.event_id=ev.id AND e2.status='active') "
+                f"ORDER BY ev.ts DESC, ev.id DESC LIMIT ?",
+                (*entity_ids, limit),
+            ).fetchall()
+        return [
+            Event(
+                id=r[0],
+                ts=r[1],
+                summary=r[2],
+                entity_ids=_parse_entity_ids(r[3], r[0]),
+                source=r[4],
+            )
+            for r in rows
+        ]
 
     def _replace_events_with_source(
         self,
