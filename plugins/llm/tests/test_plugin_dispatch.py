@@ -677,6 +677,7 @@ class TestCommandRegistry:
             "verse",
             "look",
             "who",
+            "canon",
             "versedump",
             "versepurge",
             "verseproposals",

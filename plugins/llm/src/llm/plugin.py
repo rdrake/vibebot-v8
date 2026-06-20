@@ -444,6 +444,17 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         ),
         category="utility",
     ),
+    CommandInfo(
+        name="canon",
+        args="<lock|unlock|forget> <name>",
+        description=(
+            "Lock or release a character as durable canon (always remembered, "
+            "aging-exempt). 'forget' is an alias for 'unlock'. "
+            "Requires the llm.verse.edit capability and a verse-enabled channel."
+        ),
+        examples=("%canon lock Harry", "%canon unlock Harry", "%canon forget Harry"),
+        category="utility",
+    ),
 )
 
 
