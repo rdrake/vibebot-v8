@@ -96,7 +96,7 @@ class Proposal(NamedTuple):
 _VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -177,6 +177,8 @@ class VerseStore:
             return
         if current < 2:
             self._upgrade_v1_to_v2()
+        if current < 3:
+            self._upgrade_v2_to_v3()
 
     def _upgrade_v1_to_v2(self) -> None:
         """Rebuild events + proposals with widened CHECK constraints.
@@ -222,6 +224,34 @@ class VerseStore:
             )
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (2, ?)", (time.time(),)
+            )
+
+    def _upgrade_v2_to_v3(self) -> None:
+        """Additive: entity_alias + event_actor (created via schema.sql executescript
+        on open). Backfill event_actor from the legacy events.entity_ids JSON blob,
+        ELEMENT-WISE tolerant (keep valid existing ids, drop bad elements — never the
+        all-or-nothing _parse_entity_ids). Idempotent via INSERT OR IGNORE on the PK.
+        NOTE: the v1->v2 rebuild DROP TABLE events cascade-empties event_actor under
+        foreign_keys=ON, but this backfill runs LAST so v1->v3 ends correct."""
+        with self.write_transaction() as conn:
+            existing = {r[0] for r in conn.execute("SELECT id FROM entities")}
+            for ev_id, raw in conn.execute("SELECT id, entity_ids FROM events"):
+                try:
+                    decoded = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    decoded = []
+                for x in decoded if isinstance(decoded, list) else []:
+                    try:
+                        eid = int(x)
+                    except (TypeError, ValueError):
+                        continue
+                    if eid in existing:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
+                            (ev_id, eid),
+                        )
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (3, ?)", (time.time(),)
             )
 
     # ------------------------------------------------------------------

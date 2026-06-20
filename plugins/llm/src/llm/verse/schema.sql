@@ -71,3 +71,17 @@ CREATE TABLE IF NOT EXISTS proposals (
     reviewed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, created_at);
+
+CREATE TABLE IF NOT EXISTS entity_alias (
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    alias     TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (entity_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_alias_alias ON entity_alias(alias COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS event_actor (
+    event_id  INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    PRIMARY KEY (event_id, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_actor_entity ON event_actor(entity_id, event_id);
