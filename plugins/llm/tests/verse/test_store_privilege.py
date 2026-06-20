@@ -152,3 +152,15 @@ def test_resolve_ref_by_id_and_name(tmp_path):
     eid = store.add_entity("npc", "Bob")
     assert store.resolve_ref(f"#{eid}") == eid
     assert store.resolve_ref("Bob") == eid
+
+
+def test_loom_cannot_forge_author_locked(tmp_path):
+    store = VerseStore(tmp_path, "#priv")
+    h = store.add_entity("npc", "Harry")
+    with pytest.raises(ValueError):
+        store.apply_direct(
+            op="set_attribute",
+            payload={"entity_id": h, "key": "author_locked", "value": "1"},
+            source="loom",
+            provenance="test",
+        )

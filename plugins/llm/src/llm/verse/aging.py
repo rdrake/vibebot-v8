@@ -27,8 +27,9 @@ def age_auto_created_entities(
 ) -> AgingOutcome:
     """Soft-retire auto_created='1' entities whose last_seen_ts is
     older than now - retire_after_days*86400. Skips kind='avatar'
-    defensively and pinned entities (explicit operator canon — pinning
-    protects against auto-retirement). Returns counts (scanned, retired).
+    defensively, pinned entities (explicit operator canon), and
+    author_locked entities (durable author canon) — both protect against
+    auto-retirement. Returns counts (scanned, retired).
     retire_after_days<=0 disables — returns (0, 0)."""
     if retire_after_days <= 0:
         return AgingOutcome(scanned=0, retired=0)
@@ -40,8 +41,11 @@ def age_auto_created_entities(
     for entity in candidates:
         if entity.kind == "avatar":
             continue  # defensive — auto_created on an avatar is a bug, not a target
-        if store.get_attribute(entity.id, "pinned") == "1":
-            continue  # pinned = explicit operator canon; never auto-retire
+        if (
+            store.get_attribute(entity.id, "pinned") == "1"
+            or store.get_attribute(entity.id, "author_locked") == "1"
+        ):
+            continue  # pinned = operator canon; author_locked = author canon; never auto-retire
         scanned += 1
         last_seen_str = store.get_attribute(entity.id, "last_seen_ts")
         if last_seen_str is None:

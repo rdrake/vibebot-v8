@@ -329,3 +329,17 @@ class TestAgeAutoCreatedEntities:
         outcome = apply_or_queue(store, prop, cycle_id="cyc-r", threshold=0.7)
         assert outcome.outcome != "applied"
         assert store.get_attribute(real_eid, "last_seen_ts") == "0.0"
+
+
+class TestAgingExemptsAuthorLocked:
+    def test_author_locked_npc_not_retired(self, store):
+        import time as _t
+
+        h = store.add_entity("npc", "Harry")
+        store.set_attribute(h, "auto_created", "1")
+        store.set_attribute(h, "last_seen_ts", "0.0")  # ancient
+        store.set_author_locked(h, True)
+        from llm.verse.aging import age_auto_created_entities
+
+        age_auto_created_entities(store, retire_after_days=1, now=lambda: _t.time())
+        assert store.get_entity(h).status == "active"
