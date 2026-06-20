@@ -364,6 +364,39 @@ class VerseStore:
         with self.read_connection() as conn:
             return self._find_active_entity_by_name_inline(conn, name)
 
+    def _add_alias_inline(self, conn: sqlite3.Connection, entity_id: int, alias: str) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)",
+            (entity_id, alias),
+        )
+
+    def add_alias(self, entity_id: int, alias: str) -> None:
+        with self.write_transaction() as conn:
+            self._add_alias_inline(conn, entity_id, alias)
+
+    def list_aliases(self, entity_id: int) -> list[str]:
+        with self.read_connection() as conn:
+            return [
+                r[0]
+                for r in conn.execute(
+                    "SELECT alias FROM entity_alias WHERE entity_id=?", (entity_id,)
+                )
+            ]
+
+    def find_entity_by_name_or_alias(self, name: str) -> Entity | None:
+        """Active resolution: canonical name (kind-precedence) first, then alias."""
+        with self.read_connection() as conn:
+            ent = self._find_active_entity_by_name_inline(conn, name)
+            if ent is not None:
+                return ent
+            row = conn.execute(
+                "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
+                "FROM entities e JOIN entity_alias al ON al.entity_id = e.id "
+                "WHERE al.alias = ? COLLATE NOCASE AND e.status='active' ORDER BY e.id ASC LIMIT 1",
+                (name,),
+            ).fetchone()
+        return Entity(*row) if row else None
+
     def _reactivate_auto_npc_inline(
         self,
         conn: sqlite3.Connection,

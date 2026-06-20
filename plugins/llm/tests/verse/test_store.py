@@ -1759,3 +1759,22 @@ class TestEventActorAllSites:
                 "WHERE ev.summary = 'Harry returned'"
             ).fetchall()
         assert rows == [(a,)]
+
+
+class TestAliases:
+    def test_resolve_alias_case_insensitive(self, store):
+        t = store.add_entity("npc", "Toby")
+        store.add_alias(t, "Tobes")
+        assert store.find_entity_by_name_or_alias("tobes").id == t
+
+    def test_exact_active_name_beats_alias(self, store):
+        real = store.add_entity("npc", "Tobes")
+        other = store.add_entity("npc", "Toby")
+        store.add_alias(other, "Tobes")
+        assert store.find_entity_by_name_or_alias("Tobes").id == real
+
+    def test_alias_pk_dedups_case_variants(self, store):
+        t = store.add_entity("npc", "Toby")
+        store.add_alias(t, "Tobes")
+        store.add_alias(t, "tobes")  # COLLATE NOCASE PK -> same row
+        assert store.list_aliases(t) == ["Tobes"]
