@@ -1720,3 +1720,42 @@ class TestListEntitiesWithAttribute:
         store.set_attribute(a, "auto_created", "0")
         rows = store.list_entities_with_attribute(key="auto_created", value="1", status="active")
         assert rows == []
+
+
+class TestEventActorAllSites:
+    def test_add_event_populates_event_actor(self, store):
+        a = store.add_entity("npc", "Harry")
+        ev = store.add_event("Harry did a thing", [a, 99999], source="avatar")
+        with store.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT entity_id FROM event_actor WHERE event_id=?", (ev,)
+            ).fetchall()
+        assert rows == [(a,)]  # 99999 has no entities row -> FK-safe skip
+
+    def test_loom_digest_populates_event_actor(self, store):
+        a = store.add_entity("npc", "Harry")
+        ev = store.replace_events_with_lore_digest(
+            delete_ids=[], summary="loom digest", entity_ids=[a, 99999], ts=123.0
+        )
+        with store.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT entity_id FROM event_actor WHERE event_id=?", (ev,)
+            ).fetchall()
+        assert rows == [(a,)]  # loom-digest site routes through the single writer
+
+    def test_apply_direct_add_event_populates_event_actor(self, store):
+        a = store.add_entity("npc", "Harry")
+        store.apply_direct(
+            op="add_event",
+            payload={"summary": "Harry returned", "entity_ids": [a]},
+            source="operator",
+            provenance="test",
+        )
+        # events_for_entities() arrives in Task 6; assert via SQL here (plan ordering note).
+        with store.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT ea.entity_id FROM event_actor ea "
+                "JOIN events ev ON ev.id = ea.event_id "
+                "WHERE ev.summary = 'Harry returned'"
+            ).fetchall()
+        assert rows == [(a,)]

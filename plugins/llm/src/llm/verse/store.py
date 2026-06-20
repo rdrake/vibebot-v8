@@ -603,16 +603,28 @@ class VerseStore:
         source: str,
         ts: float | None = None,
     ) -> int:
-        """Insert an event on the caller's open ``conn`` and return its id."""
+        """Insert an event on the caller's open ``conn`` and return its id.
+
+        Single writer for both ``events`` and the ``event_actor`` join. The
+        join is populated FK-safe (only ids that resolve to an ``entities``
+        row), de-duped, via ``INSERT OR IGNORE``.
+        """
         if ts is None:
             ts = time.time()
-        encoded = json.dumps(list(entity_ids))
+        ids = list(entity_ids)
         cur = conn.execute(
             "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
-            (ts, summary, encoded, source),
+            (ts, summary, json.dumps(ids), source),
         )
         assert cur.lastrowid is not None
-        return cur.lastrowid
+        event_id = int(cur.lastrowid)
+        for eid in dict.fromkeys(ids):
+            if conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone():
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
+                    (event_id, eid),
+                )
+        return event_id
 
     def add_event(
         self,
@@ -796,12 +808,9 @@ class VerseStore:
                     f"DELETE FROM events WHERE id IN ({placeholders})",
                     tuple(delete_ids),
                 )
-            cur = conn.execute(
-                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
-                (ts, summary, json.dumps(list(entity_ids)), source),
+            new_id = self._add_event_inline(
+                conn, summary=summary, entity_ids=entity_ids, source=source, ts=ts
             )
-            assert cur.lastrowid is not None
-            new_id = int(cur.lastrowid)
             # Heartbeat: bump last_seen_ts on every entity referenced in
             # the digest. ``events.entity_ids`` is a JSON blob with no FK
             # enforcement, so we defensively skip ids that do not resolve
@@ -1144,16 +1153,13 @@ class VerseStore:
         if op in _DESTRUCTIVE_OPS and not privileged:
             raise PermissionError(f"op {op!r} requires operator privilege")
         if op == "add_event":
-            cur = conn.execute(
-                "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
-                (
-                    now,
-                    payload["summary"],
-                    json.dumps(list(payload.get("entity_ids", []))),
-                    source,
-                ),
+            return self._add_event_inline(
+                conn,
+                summary=payload["summary"],
+                entity_ids=payload.get("entity_ids", []),
+                source=source,
+                ts=now,
             )
-            return cur.lastrowid
         if op == "set_attribute":
             eid = payload["entity_id"]
             key = payload["key"]
