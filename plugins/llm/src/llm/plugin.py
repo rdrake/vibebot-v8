@@ -2737,7 +2737,9 @@ class LLM(callbacks.Plugin):
             bucket.append(now)
             return False
 
-    def _submit_storybook_job(self, *, channel: str, nick: str, persona: str, brief: str) -> None:
+    def _submit_storybook_job(
+        self, *, channel: str, nick: str, persona: str, brief: str, account: str | None = None
+    ) -> None:
         """Fire a background job that renders a storybook for ``brief`` and
         posts the resulting link to ``channel``. Fire-and-return — never raises
         to the caller. Shared by the verse_storybook tool and the @story command.
@@ -2745,6 +2747,22 @@ class LLM(callbacks.Plugin):
         Delivery looks up the live IRC connection via ``world.ircs`` (not a
         captured, possibly-stale ``irc``), mirroring ``_deliver_pending_result``.
         """
+        # Record a canon event so an illustrated turn isn't invisible to verse
+        # retention (the tool/@story paths short-circuit before any verse record
+        # step). Best-effort: never break delivery if the store/avatar lookup fails.
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = (
+                store.find_avatar_by_account(account) if account else None
+            ) or store.find_avatar_by_nick(nick)
+            if avatar_id is not None:
+                store.record_user_event(
+                    actor_id=avatar_id,
+                    summary=(brief.strip()[:200] or "told an illustrated tale"),
+                    actor_names=[],
+                )
+        except Exception:
+            self.log.exception("storybook canon-record failed (non-fatal) channel=%s", channel)
 
         def _deliver(text: str) -> None:
             collapsed = self._collapse_for_irc(text) or text
@@ -2832,7 +2850,9 @@ class LLM(callbacks.Plugin):
                 raw = args.get("brief")
                 if isinstance(raw, str):
                     brief = raw
-            self._submit_storybook_job(channel=channel, nick=nick, persona=persona, brief=brief)
+            self._submit_storybook_job(
+                channel=channel, nick=nick, persona=persona, brief=brief, account=account
+            )
             return _VerseToolResult(
                 content=json.dumps(
                     {
@@ -4153,7 +4173,9 @@ class LLM(callbacks.Plugin):
         # user gets the link when it's ready with no interim chatter (mirrors
         # the verse_storybook UX). Persona is the caller's avatar voice if set.
         persona = self.db.get_avatar_persona(nick) or ""
-        self._submit_storybook_job(channel=channel, nick=nick, persona=persona, brief=brief)
+        self._submit_storybook_job(
+            channel=channel, nick=nick, persona=persona, brief=brief, account=pf.account
+        )
 
     story = wrap(story, [("checkCapability", "llm.draw"), "text"])
 

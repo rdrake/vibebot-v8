@@ -236,3 +236,38 @@ def test_make_verse_tool_specs_includes_storybook_when_enabled():
 
     assert "verse_storybook" in names(on)
     assert "verse_storybook" not in names(off)
+
+
+def test_storybook_job_records_canon_event(plugin_env, tmp_path, mocker):
+    from llm.verse.store import VerseStore
+
+    plugin, irc, msg = plugin_env
+    store = VerseStore(tmp_path / "verse", "#afnet")
+    avatar_id = store.opt_in_avatar(nick="alice", account="alice-acct", instruct_text="").entity_id
+    mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+    # Neutralize the async render/post job; the canon-record runs synchronously before it.
+    mocker.patch.object(plugin, "_llm_executor")
+
+    plugin._submit_storybook_job(
+        channel="#afnet", nick="alice", persona="", brief="a tale of dragons", account="alice-acct"
+    )
+
+    events = store.recent_events(limit=10)
+    assert len(events) == 1
+    assert "dragons" in events[0].summary
+    assert avatar_id in events[0].entity_ids
+
+
+def test_storybook_job_no_avatar_skips_record(plugin_env, tmp_path, mocker):
+    from llm.verse.store import VerseStore
+
+    plugin, irc, msg = plugin_env
+    store = VerseStore(tmp_path / "verse", "#afnet")  # nobody opted in
+    mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+    mocker.patch.object(plugin, "_llm_executor")
+
+    plugin._submit_storybook_job(
+        channel="#afnet", nick="ghost", persona="", brief="x", account=None
+    )
+
+    assert store.recent_events(limit=10) == []
