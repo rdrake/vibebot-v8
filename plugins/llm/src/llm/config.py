@@ -380,10 +380,10 @@ conf.registerChannelValue(
     LLM,
     "verseRosterMaxChars",
     registry.PositiveInteger(
-        600,
-        _("""Max characters of the pinned-roster block injected into every verse
-        system prompt. Pinned entities beyond the cap are dropped with a
-        (roster truncated) marker."""),
+        4000,
+        _("""Max characters of the canon-roster block (pinned or author-locked
+        entities) injected into every verse system prompt. Canon entities
+        beyond the cap are dropped with a (roster truncated) marker."""),
     ),
 )
 

@@ -2670,6 +2670,7 @@ class LLM(callbacks.Plugin):
             avatar_id,
             persona,
             roster_max_chars=self.registryValue("verseRosterMaxChars", channel),
+            message_text=message_text,
         )
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         tools = make_verse_tool_specs(

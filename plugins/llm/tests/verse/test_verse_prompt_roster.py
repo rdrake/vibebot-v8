@@ -1,4 +1,4 @@
-from llm.verse.avatar import build_verse_system_prompt
+from llm.verse.avatar import VERSE_SCENE_MARKER, build_verse_system_prompt
 from llm.verse.store import VerseStore
 
 
@@ -36,6 +36,36 @@ def test_roster_respects_char_cap(tmp_path):
             provenance="t",
         )
     prompt = build_verse_system_prompt(store, me, "", roster_max_chars=200)
-    roster = prompt.split("Established characters in this world:")[1]
+    roster = prompt.split("Established characters in this world:")[1].split(VERSE_SCENE_MARKER)[0]
     assert len(roster) <= 260  # cap + the truncation marker line
     assert "(roster truncated)" in roster
+
+
+def test_canon_first_scene_after(store_with_avatar):
+    store, avatar_id = store_with_avatar
+    h = store.add_entity("npc", "Harry", "year 8")
+    store.set_author_locked(h, True)
+    t = store.add_entity("npc", "Toby", "year 9")
+    store.add_relation(h, t, "rival_of")
+    out = build_verse_system_prompt(
+        store,
+        avatar_id,
+        "be a year 8 boy",
+        roster_max_chars=4000,
+        message_text="did Harry and Toby fight?",
+    )
+    assert out.index("Established characters") < out.index(VERSE_SCENE_MARKER)
+    assert "Harry" in out and "Toby" in out and "rival of" in out
+
+
+def test_prefix_byte_identical_when_only_message_changes(store_with_avatar):
+    store, avatar_id = store_with_avatar
+    h = store.add_entity("npc", "Harry", "year 8")
+    store.set_author_locked(h, True)
+    a = build_verse_system_prompt(
+        store, avatar_id, "p", roster_max_chars=4000, message_text="hi Harry"
+    )
+    b = build_verse_system_prompt(
+        store, avatar_id, "p", roster_max_chars=4000, message_text="yo Toby"
+    )
+    assert a.split(VERSE_SCENE_MARKER)[0] == b.split(VERSE_SCENE_MARKER)[0]

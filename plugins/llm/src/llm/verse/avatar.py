@@ -15,6 +15,12 @@ from .store import Event, VerseStore
 
 _log = logging.getLogger(__name__)
 
+#: Boundary between the cacheable stable prefix (identity + persona + durable
+#: CANON roster) and the per-turn volatile scene block in the verse system
+#: prompt. Everything before this marker is byte-stable across turns so the
+#: LLM prefix cache can hit it; everything after is message-/scene-derived.
+VERSE_SCENE_MARKER = "In play right now:"
+
 
 @dataclass(frozen=True)
 class VerseDispatchResult:
@@ -466,114 +472,107 @@ def build_verse_system_prompt(
     store: VerseStore,
     avatar_id: int,
     instruct_text: str,
-    roster_max_chars: int = 600,
+    roster_max_chars: int = 4000,
+    message_text: str = "",
 ) -> str:
-    """Build the system prompt for the verse-aware @ask flow.
+    """Build the verse-aware @ask system prompt, STABLE-FIRST for prefix caching.
 
-    Composes (in order):
+    Cacheable prefix (changes only on explicit author/operator action):
     - "You are <avatar.name>."
-    - "Persona: <instruct_text>" — or "Persona: no persona set." if instruct_text is empty/whitespace.
-    - "Scene: You are at <place name>. <place summary>" — derived from avatar's
-      ``location`` attribute. If no location set or place not found,
-      "Scene: You are nowhere in particular." is used.
-    - "Recent events involving you:" followed by up to 5 bulleted lines.
-      Each line is "- <event.summary>". If no events, "- (none yet)".
-    - "Other avatars present here:" followed by bulleted lines for each ACTIVE
-      avatar (kind='avatar', status='active') whose location matches this
-      avatar's own location, EXCLUDING this avatar. Each line: "- <name>: <summary>"
-      (or just "- <name>" if summary is empty). If none,
-      "- (no other avatars present)".
+    - "Persona: <instruct_text>" (or "Persona: no persona set.")
+    - "Established characters in this world:" + the durable CANON roster
+      (pinned OR author_locked), char-capped.
+    Then VERSE_SCENE_MARKER, after which everything is per-turn / message-derived:
+    scene/location, active-only recent events involving the avatar, co-located
+    avatars, message-matched cast (not already in the roster), their 1-hop
+    relations, and their recent events. Nothing time/heartbeat-derived appears
+    before the marker, so the prefix stays byte-stable across turns.
     """
     avatar = store.get_entity(avatar_id)
     if avatar is None:
         raise ValueError("avatar not found")
 
-    # --- Identity ---
+    # ===== STABLE PREFIX (cacheable across turns) =====
     identity_line = f"You are {avatar.name}."
+    persona_line = (
+        f"Persona: {instruct_text}" if instruct_text.strip() else "Persona: no persona set."
+    )
 
-    # --- Persona ---
-    if instruct_text.strip():
-        persona_line = f"Persona: {instruct_text}"
-    else:
-        persona_line = "Persona: no persona set."
+    canon = store.list_canon_entities()
+    roster_lines: list[str] = []
+    if canon:
+        used = 0
+        for e in canon:
+            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+            if used + len(line) + 1 > roster_max_chars:
+                roster_lines.append("- (roster truncated)")
+                break
+            roster_lines.append(line)
+            used += len(line) + 1
 
-    # --- Scene ---
+    parts: list[str] = [identity_line, persona_line]
+    if roster_lines:
+        parts.append("Established characters in this world:")
+        parts.extend(roster_lines)
+
+    # ===== VOLATILE SCENE BLOCK (per-turn; not in the cached prefix) =====
+    parts.append(VERSE_SCENE_MARKER)
+
     location = store.get_attribute(avatar_id, "location")
     place = (
         store.find_entity_by_name(location, kind="place", active_only=True)
         if location is not None
         else None
     )
+    parts.append(
+        f"Scene: You are at {place.name}. {place.summary}"
+        if place is not None
+        else "Scene: You are nowhere in particular."
+    )
 
-    if place is not None:
-        scene_line = f"Scene: You are at {place.name}. {place.summary}"
-    else:
-        scene_line = "Scene: You are nowhere in particular."
+    own = [
+        ev
+        for ev in store.recent_events(limit=50, require_active_entity=True)
+        if avatar_id in ev.entity_ids
+    ][:5]
+    parts.append("Recent events involving you:")
+    parts.extend([f"- {ev.summary}" for ev in own] or ["- (none yet)"])
 
-    # --- Recent events involving this avatar ---
-    all_events = store.recent_events(limit=50)
-    avatar_events = [ev for ev in all_events if avatar_id in ev.entity_ids][:5]
-
-    events_header = "Recent events involving you:"
-    if avatar_events:
-        event_bullets = "\n".join(f"- {ev.summary}" for ev in avatar_events)
-    else:
-        event_bullets = "- (none yet)"
-
-    # --- Other avatars present at same location ---
-    others_header = "Other avatars present here:"
+    others = []
     if location is not None:
-        all_avatars = store.list_entities_by_kind("avatar", status="active")
-        others = [
-            a
-            for a in all_avatars
-            if a.id != avatar_id and store.get_attribute(a.id, "location") == location
-        ]
-    else:
-        others = []
+        for a in store.list_entities_by_kind("avatar", status="active"):
+            if a.id != avatar_id and store.get_attribute(a.id, "location") == location:
+                others.append(a)
+    parts.append("Other avatars present here:")
+    parts.extend(
+        [f"- {a.name}: {a.summary}" if a.summary else f"- {a.name}" for a in others]
+        or ["- (no other avatars present)"]
+    )
 
-    if others:
-        other_bullets = "\n".join(
-            f"- {a.name}: {a.summary}" if a.summary else f"- {a.name}" for a in others
+    roster_ids = {e.id for e in canon}
+    scene = [e for e in store.match_entities_in_text(message_text) if e.id != avatar_id]
+    fresh = [e for e in scene if e.id not in roster_ids]
+    if fresh:
+        parts.append("Characters referenced in this scene:")
+        parts.extend([f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}" for e in fresh])
+
+    rel_ids = list(roster_ids | {e.id for e in scene} | {avatar_id})
+    rels = store.relations_for(rel_ids)
+    if rels:
+        parts.append("Known relationships:")
+        parts.extend(
+            [
+                f"- {r.from_name} {r.kind.replace('_', ' ')} {r.to_name}"
+                + (f" ({r.note})" if r.note else "")
+                for r in rels
+            ]
         )
-    else:
-        other_bullets = "- (no other avatars present)"
 
-    # The verse_record / verse_act behavior rules and the length-cap
-    # exception live in the verse framework (VERSE_SYSTEM_PROMPT in
-    # prompts.py) so they get the framework footer's "rules above still
-    # apply — personality changes voice, not structure" weight. The
-    # personality overlay only carries scene context; per-call tool
-    # argument shapes come from the tool schemas themselves.
+    scene_events = store.events_for_entities([e.id for e in scene], limit=8)
+    if scene_events:
+        parts.append("Recent events involving them:")
+        parts.extend([f"- {ev.summary}" for ev in scene_events])
 
-    # --- Established (pinned) characters — durable canon every turn ---
-    pinned = store.list_pinned_entities()
-    roster_lines: list[str] = []
-    if pinned:
-        used = 0
-        truncated = False
-        for e in pinned:
-            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
-            if used + len(line) + 1 > roster_max_chars:
-                truncated = True
-                break
-            roster_lines.append(line)
-            used += len(line) + 1
-        if truncated:
-            roster_lines.append("- (roster truncated)")
-
-    parts = [
-        identity_line,
-        persona_line,
-        scene_line,
-        events_header,
-        event_bullets,
-        others_header,
-        other_bullets,
-    ]
-    if roster_lines:
-        parts.append("Established characters in this world:")
-        parts.extend(roster_lines)
     return "\n".join(parts)
 
 
