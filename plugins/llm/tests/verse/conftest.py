@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from llm.verse.store import VerseStore
 
 
 @pytest.fixture
@@ -16,6 +17,19 @@ def verse_db_dir(tmp_path: Path) -> Path:
     d = tmp_path / "verse"
     d.mkdir()
     return d
+
+
+@pytest.fixture
+def store(verse_db_dir: Path) -> VerseStore:
+    """A migrated VerseStore on a real per-test SQLite file."""
+    return VerseStore(verse_db_dir, "#test")
+
+
+@pytest.fixture
+def store_with_avatar(store: VerseStore) -> tuple[VerseStore, int]:
+    """(store, avatar_id) — an opted-in avatar named 'me' for prompt/retrieval tests."""
+    avatar_id = store.opt_in_avatar(nick="me", account="me-acct", instruct_text="").entity_id
+    return store, avatar_id
 
 
 def fixture_text(name: str) -> str:
@@ -38,9 +52,17 @@ def insert_event_at(
     bypasses that for retention/compaction tests. Lives in conftest so
     no production class carries test-only methods.
     """
+    ids = list(entity_ids)
     with store.write_transaction() as conn:
         cur = conn.execute(
             "INSERT INTO events (ts, summary, entity_ids, source) VALUES (?, ?, ?, ?)",
-            (ts, summary, _json.dumps(list(entity_ids)), source),
+            (ts, summary, _json.dumps(ids), source),
         )
-        return int(cur.lastrowid)
+        event_id = int(cur.lastrowid)
+        for eid in dict.fromkeys(ids):
+            if conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone():
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
+                    (event_id, eid),
+                )
+        return event_id
