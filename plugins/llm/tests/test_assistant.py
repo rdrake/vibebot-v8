@@ -2022,6 +2022,70 @@ class TestAssistantCompletionEchoGuard:
         assert "echo" in result.error.lower()
 
 
+class TestVerseDenialReseed:
+    """Characterizes the verse denial re-seed retry in assistant_completion.
+
+    Current behavior (pinned, NOT under change): in PROFILE_VERSE, a reply that
+    refuses the premise is detected (_is_verse_denial), the rejected reply + a
+    nudge are appended to the in-flight messages, and the loop retries once. The
+    CORRECTED reply is returned; the rejected refusal is never delivered. This
+    test documents the existing re-seed so any future change to it is a
+    conscious decision.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    def test_verse_denial_is_reseeded_and_corrected_reply_returned(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a verse reply refuses the premise WHEN it narrates on retry
+        THEN the corrected reply is returned and the refusal never reaches the
+        caller (the re-seed retried exactly once)."""
+        from llm.service import PROFILE_VERSE
+
+        denial = "That didn't happen — it isn't canon."  # _is_verse_denial -> True
+        corrected = "The Year 8 lads stormed the assembly hall in a fog of glory."
+
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                make_completion_response(denial),
+                make_completion_response(corrected),
+            ],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        result = service.assistant_completion(
+            prompt="tell the tale of the assgas assembly",
+            nick="alice",
+            channel="#afnet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_VERSE,
+        )
+
+        # The re-seed retried once and the CORRECTED reply is returned;
+        # the rejected refusal never reaches the caller.
+        assert result.content == corrected
+        assert mock_completion.call_count == 2
+
+        # Stronger snapshot of the pinned re-seed: the loop mutates ONE messages
+        # list in place, so the last completion call's ``messages`` arg is the
+        # final state and must carry BOTH the rejected denial and the nudge.
+        from llm.service import _VERSE_DENIAL_RETRY_NUDGE
+
+        last_call = mock_completion.call_args_list[-1]
+        final_messages = last_call.kwargs.get("messages")
+        if final_messages is not None:
+            joined = " ".join((m.get("content") or "") for m in final_messages)
+            assert denial in joined  # rejected reply was re-seeded
+            assert _VERSE_DENIAL_RETRY_NUDGE in joined  # nudge was re-seeded
+
+
 class TestVerseDenialGuard:
     """Tests for the verse premise-refusal guard in assistant_completion.
 
