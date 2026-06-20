@@ -3356,3 +3356,69 @@ class TestVerseapproveCrosspollSource:
         with store.read_connection() as conn:
             row = conn.execute("SELECT source FROM events WHERE summary='regular event'").fetchone()
         assert row is not None and row[0] == "loom"
+
+
+# =============================================================================
+# TestCanonCommand
+# =============================================================================
+
+
+class TestCanonCommand:
+    """Tests for the @canon lock|unlock|forget <name> command (author-gated)."""
+
+    @pytest.fixture
+    def verse_env(self, plugin_env, tmp_path, mocker):
+        """Extend plugin_env with a real VerseStore and verse-enabled channel."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+
+        store = VerseStore(tmp_path / "verse", "#afnet")
+
+        mocker.patch.object(
+            plugin,
+            "_get_or_create_verse_store",
+            return_value=store,
+        )
+
+        def _registry(key, *args):
+            if key == "verseEnabled":
+                return True
+            from tests.conftest import make_registry_side_effect
+
+            return make_registry_side_effect()(key, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value=None)
+
+        msg.args = ("#afnet", "@canon")
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        msg.server_tags = {}
+
+        return plugin, irc, msg, store
+
+    def test_canon_lock_sets_author_locked(self, verse_env):
+        plugin, irc, msg, store = verse_env
+        h = store.add_entity("npc", "Harry", "year 8")
+        plugin.canon(irc, msg, ["lock", "Harry"])
+        assert store.get_attribute(h, "author_locked") == "1"
+
+    def test_canon_forget_unlocks(self, verse_env):
+        plugin, irc, msg, store = verse_env
+        h = store.add_entity("npc", "Harry", "year 8")
+        plugin.canon(irc, msg, ["lock", "Harry"])
+        plugin.canon(irc, msg, ["forget", "Harry"])
+        assert store.get_attribute(h, "author_locked") is None
+
+    def test_canon_unknown_character_errors(self, verse_env):
+        plugin, irc, msg, store = verse_env
+        plugin.canon(irc, msg, ["lock", "Nobody"])
+        assert irc.error.called

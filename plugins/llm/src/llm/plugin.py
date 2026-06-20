@@ -5883,6 +5883,49 @@ class LLM(callbacks.Plugin):
     who = wrap(who, [("checkCapability", "llm.verse")])
 
     # ------------------------------------------------------------------
+    # @canon lock|unlock|forget <name> — author-gated durable canon
+    # ------------------------------------------------------------------
+
+    def canon(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        action: str,
+        name: str,
+    ) -> None:
+        """<lock|unlock|forget> <name>
+
+        Lock or release a character as durable canon (always remembered,
+        aging-exempt). 'forget' is an alias for 'unlock'.
+
+          @canon lock <name>   — mark a character as durable canon.
+          @canon unlock <name> — release it.
+          @canon forget <name> — same as unlock.
+
+        Requires the llm.verse.edit capability and a verse-enabled channel.
+        """
+        channel = self._check_verse_channel(irc, msg)
+        if channel is None:
+            return
+        store = self._get_or_create_verse_store(channel)
+        ent = store.find_entity_by_name_or_alias(name)
+        if ent is None:
+            irc.error(f"No such character: {name}", prefixNick=False)
+            return
+        store.set_author_locked(ent.id, action == "lock")
+        irc.replySuccess()
+
+    canon = wrap(
+        canon,
+        [
+            ("checkCapability", "llm.verse.edit"),
+            ("literal", ("lock", "unlock", "forget")),
+            "text",
+        ],
+    )
+
+    # ------------------------------------------------------------------
     # @versedump #chan [--format=json]  — owner dump of full verse state
     # ------------------------------------------------------------------
 
