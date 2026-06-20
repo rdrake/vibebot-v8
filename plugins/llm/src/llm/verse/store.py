@@ -26,7 +26,7 @@ _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 # (last_seen_ts), toggle aging enrollment (auto_created), or relocate/retype an
 # entity outside the guarded paths (location/status/kind).
 _RESERVED_ATTRIBUTE_KEYS = frozenset(
-    {"last_seen_ts", "auto_created", "status", "kind", "location", "pinned"}
+    {"last_seen_ts", "auto_created", "status", "kind", "location", "pinned", "author_locked"}
 )
 
 _VALID_SOURCES = frozenset({"operator", "loom", "llm", "crosspoll", "avatar"})
@@ -454,6 +454,37 @@ class VerseStore:
                 "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
                 "FROM entities e JOIN attributes a ON a.entity_id = e.id "
                 "WHERE a.key='pinned' AND a.value='1' AND e.status='active' "
+                "ORDER BY CASE e.kind WHEN 'avatar' THEN 0 WHEN 'npc' THEN 1 "
+                "  WHEN 'place' THEN 2 WHEN 'faction' THEN 3 ELSE 4 END, e.name COLLATE NOCASE"
+            ).fetchall()
+        return [Entity(*row) for row in rows]
+
+    def _set_author_locked_inline(
+        self, conn: sqlite3.Connection, entity_id: int, locked: bool
+    ) -> None:
+        if locked:
+            self._set_attribute_inline(conn, entity_id, "author_locked", "1")
+        else:
+            conn.execute(
+                "DELETE FROM attributes WHERE entity_id=? AND key='author_locked'", (entity_id,)
+            )
+
+    def set_author_locked(self, entity_id: int, locked: bool) -> None:
+        """Lock/unlock durable canon (always injected, aging-exempt, loom-protected)."""
+        with self.write_transaction() as conn:
+            self._set_author_locked_inline(conn, entity_id, locked)
+
+    def list_canon_entities(self) -> list[Entity]:
+        """Active entities that are durable canon: pinned (operator) OR author_locked.
+
+        DISTINCT (an entity may carry both). Deterministic kind-then-name order
+        (matches list_pinned_entities so the roster prompt block stays cache-stable).
+        """
+        with self.read_connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
+                "FROM entities e JOIN attributes a ON a.entity_id = e.id "
+                "WHERE a.key IN ('pinned','author_locked') AND a.value='1' AND e.status='active' "
                 "ORDER BY CASE e.kind WHEN 'avatar' THEN 0 WHEN 'npc' THEN 1 "
                 "  WHEN 'place' THEN 2 WHEN 'faction' THEN 3 ELSE 4 END, e.name COLLATE NOCASE"
             ).fetchall()

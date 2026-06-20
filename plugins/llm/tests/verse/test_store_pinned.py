@@ -24,3 +24,23 @@ def test_active_name_exists(tmp_path):
     store.add_entity("npc", "Archie")
     assert store.active_name_exists("archie") is True
     assert store.active_name_exists("nobody") is False
+
+
+class TestAuthorLocked:
+    def test_list_canon_unions_pinned_and_author_locked(self, store):
+        h = store.add_entity("npc", "Harry", "year 8")
+        t = store.add_entity("npc", "Toby", "year 9")
+        store.set_attribute(t, "pinned", "1")
+        store.set_author_locked(h, True)
+        assert {e.name for e in store.list_canon_entities()} == {"Harry", "Toby"}
+
+    def test_author_locked_is_reserved(self):
+        from llm.verse.store import _RESERVED_ATTRIBUTE_KEYS
+
+        assert "author_locked" in _RESERVED_ATTRIBUTE_KEYS
+
+    def test_unlock_removes_from_canon(self, store):
+        h = store.add_entity("npc", "Harry")
+        store.set_author_locked(h, True)
+        store.set_author_locked(h, False)
+        assert store.list_canon_entities() == []
