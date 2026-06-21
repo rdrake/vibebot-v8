@@ -1410,6 +1410,10 @@ Execute only after the whole branch above is merged and deployed. Destructive pr
    print(result)   # PurgeResult(events_deleted=…, entities_deleted=…, digests_restamped=…)
    ```
    `digests_restamped` MUST equal the number of ids you reviewed. Log the full result. Restart the bot.
+
+   **Operator cautions (from the adversarial purge review):**
+   - After the run, scan the log for any `purge: unparseable entity_ids on surviving event id=…` WARNING. A corrupt JSON blob is skipped for dual-linkage protection (warned, not fatal); if one appears, manually confirm the entity it referenced wasn't wrongly deleted before trusting the counts.
+   - The dual-linkage guard only protects entity ids that appear as **integers** in a surviving event's `entity_ids` JSON. The #afternet store writes int arrays (and `event_actor` was backfilled in v1), so this is safe in practice; if you suspect any hand-inserted rows with string ids, confirm before running.
 5. **Spot-check a verse turn for fc42:** roster + authored events + the chronicle digests present; no #idlerpg combat lines.
 
 **Rollback:** revert the PR + restore the DB backup.
