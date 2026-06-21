@@ -5850,7 +5850,8 @@ class LLM(callbacks.Plugin):
             {"entity_id": row[0], "nick": row[1], "account": row[2]} for row in avatar_link_rows
         ]
 
-        # Proposals excluded (no writer for proposals in PR 1).
+        # Proposals (the @versedit audit trail) are not included in the dump;
+        # versedump focuses on entities, relations, events, and avatar links.
         dump = {
             "schema_version": 1,
             "channel": channel,
