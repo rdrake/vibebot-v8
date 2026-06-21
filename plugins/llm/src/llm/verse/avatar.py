@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NamedTuple
 
-from .loom import validate_payload
 from .store import Event, VerseStore
+from .validation import validate_payload
 
 _log = logging.getLogger(__name__)
 

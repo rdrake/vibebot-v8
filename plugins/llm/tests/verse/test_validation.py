@@ -1,4 +1,4 @@
-from llm.verse.loom import validate_payload
+from llm.verse.validation import validate_payload
 
 
 def test_validate_payload_ok():
