@@ -5331,7 +5331,7 @@ class LLM(callbacks.Plugin):
     # =========================================================================
 
     # -------------------------------------------------------------------------
-    # Loom orchestrator wiring (PR 2)
+    # Verse subsystem channel helpers
     # -------------------------------------------------------------------------
 
     def _all_known_channels(self) -> set[str]:
@@ -5393,8 +5393,8 @@ class LLM(callbacks.Plugin):
         verse-enabled channel. This callback fires on Limnoria's scheduler
         thread — the IRC driver's main loop — which cannot flush the
         outbound queue or answer PINGs while a callback runs. So the work is
-        handed to ``_llm_executor`` instead of running inline; the loom
-        offloads its phases the same way, and ``_dispatch_addressed_async``
+        handed to ``_llm_executor`` instead of running inline, and
+        ``_dispatch_addressed_async``
         carries the full rationale for why blocking the driver thread is the
         bug to avoid. The re-arm runs in ``finally`` so a failed submit never
         kills the timer — the next day still gets a shot.
@@ -6193,8 +6193,8 @@ class LLM(callbacks.Plugin):
             # Step 2: confirm purge.
             if self._versepurge_check_token(channel, token_presented):
                 # Pop the store AND unlink its files under the SAME lock. The
-                # plugin is threaded=True, so verse @ask (a SupyThread) and loom
-                # workers (executor) hold their own thread-local conns — the
+                # plugin is threaded=True, so verse @ask (a SupyThread) and
+                # executor workers hold their own thread-local conns — the
                 # scheduler thread is NOT the sole holder. Both this block and
                 # _get_or_create_verse_store take _verse_stores_lock, so holding
                 # it across the unlink prevents a concurrent cache-miss from
