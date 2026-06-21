@@ -23,7 +23,11 @@ class PurgeResult(NamedTuple):
     digests_restamped: int
 
 
-def list_loom_digest_candidates(store: Any, *, min_chars: int = 300) -> list[tuple[int, str]]:
+def list_loom_digest_candidates(
+    store: Any, *, min_chars: int = 300
+) -> list[
+    tuple[int, str]
+]:  # 300: compaction digests are long chronicles; #idlerpg combat lines are <~80 chars
     """Return ``(id, summary)`` for ``source='loom'`` events long enough to be
     compaction lore-digests rather than #idlerpg combat lines.
 
@@ -50,7 +54,9 @@ def purge_loom_data(store: Any, *, digest_ids: Sequence[int] = ()) -> PurgeResul
 
     One ``write_transaction``: on any error the whole op rolls back.
     """
-    digest_id_list = [int(x) for x in digest_ids]
+    digest_id_list = [
+        int(x) for x in digest_ids
+    ]  # coerce in case operator passes str ids (e.g. from CLI parsing)
     with store.write_transaction() as conn:
         # 0. Protect reviewed compaction digests (only flip rows still 'loom').
         restamped = 0
@@ -97,8 +103,8 @@ def purge_loom_data(store: Any, *, digest_ids: Sequence[int] = ()) -> PurgeResul
         # row. Never delete such an entity even if event_actor says orphan.
         if orphan_ids:
             referenced_json: set[int] = set()
-            for (blob,) in conn.execute(
-                "SELECT entity_ids FROM events WHERE source NOT IN ('loom','crosspoll')"
+            for ev_id, blob in conn.execute(
+                "SELECT id, entity_ids FROM events WHERE source NOT IN ('loom','crosspoll')"
             ).fetchall():
                 try:
                     for eid in json.loads(blob or "[]"):
@@ -112,8 +118,9 @@ def purge_loom_data(store: Any, *, digest_ids: Sequence[int] = ()) -> PurgeResul
                     # counts — an entity that should have been spared could
                     # otherwise be deleted unnoticed.
                     _LOG.warning(
-                        "purge: unparseable entity_ids on a surviving event; "
-                        "skipping it for dual-linkage protection"
+                        "purge: unparseable entity_ids on surviving event id=%s; "
+                        "skipping it for dual-linkage protection",
+                        ev_id,
                     )
                     continue
             orphan_ids -= referenced_json

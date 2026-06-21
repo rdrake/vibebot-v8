@@ -2,6 +2,8 @@ import json
 
 from llm.verse.purge import list_loom_digest_candidates, purge_loom_data
 
+_MIN_CHARS = 300
+
 
 def _add_event(store, summary, entity_ids, source):
     """Seed one event with an event_actor link, returning its id."""
@@ -27,6 +29,7 @@ def test_apply_direct_writes_event_actor(store):
 
 
 def test_purge_removes_idlerpg_junk_keeps_canon(store):
+    """End-to-end: loom/crosspoll junk deleted, reviewed digest re-stamped to 'llm', pinned canon and non-orphan auto-NPCs preserved."""
     # --- canon: a pinned roster entity with mixed-source events ---
     freddie = store.add_entity("npc", "Farty Freddie", "")
     store.set_attribute(freddie, "pinned", "1")
@@ -42,7 +45,7 @@ def test_purge_removes_idlerpg_junk_keeps_canon(store):
     digest_summary = "Chronicler fc42 recounts the anarchic reign of the Stinky Lads. " + (
         "Poo Pete and Assripping Alex schemed through the long winter, while " * 6
     )
-    assert len(digest_summary) > 300
+    assert len(digest_summary) > _MIN_CHARS
     digest_ev = _add_event(store, digest_summary, [chronicler], "loom")
 
     # --- orphan auto-NPC: only loom events ---
@@ -57,7 +60,7 @@ def test_purge_removes_idlerpg_junk_keeps_canon(store):
     _add_event(store, "survivor combat junk", [survivor], "loom")
 
     # --- digest review: operator confirms the digest id(s) ---
-    candidates = list_loom_digest_candidates(store, min_chars=300)
+    candidates = list_loom_digest_candidates(store, min_chars=_MIN_CHARS)
     cand_ids = [cid for cid, _ in candidates]
     assert digest_ev in cand_ids
 
