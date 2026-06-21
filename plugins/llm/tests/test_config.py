@@ -244,26 +244,6 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.verseEventRetentionDays() == 30
 
-    def test_loom_registry_defaults(self) -> None:
-        """PR 2 / C1: loom orchestrator registry defaults match the operator
-        guide. Defaults are empty / disabled — wiring is gated on
-        loomNetwork + loomChannel both being set."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        cfg = conf.supybot.plugins.LLM
-        assert cfg.loomNetwork() == ""
-        assert cfg.loomChannel() == ""
-        assert cfg.loomModel() == "gemini/gemini-flash-lite-latest"
-        assert cfg.loomCycleInterval() == 5
-        assert cfg.loomVerseCooldown() == 20
-        assert cfg.loomBeatWindow() == 90
-        assert cfg.loomTranscriptMaxLines() == 40
-        assert cfg.loomTranscriptMaxChars() == 8000
-        assert cfg.loomBotNicks() == ""
-        assert cfg.loomCaptureTranscript() is True
-        assert cfg.verseAutoApplyThreshold() == 0.85
-
 
 class TestRateLimitDefaults:
     """Pin the 18 rate-limit (key, default) pairs produced by _register_rate_limit_block."""
@@ -339,28 +319,7 @@ class TestValidatedModelNameThreadSafety:
 
 
 class TestPR3RegistryKeys:
-    """F1: five PR 3 registry keys (crosspoll + compaction)."""
-
-    def test_verse_crosspoll_allow_send_per_channel_false(self) -> None:
-        """verseCrosspollAllowSend is per-channel and defaults to False."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseCrosspollAllowSend() is False
-
-    def test_verse_crosspoll_allow_receive_per_channel_false(self) -> None:
-        """verseCrosspollAllowReceive is per-channel and defaults to False."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseCrosspollAllowReceive() is False
-
-    def test_verse_crosspoll_per_cycle_limit_global_one(self) -> None:
-        """verseCrosspollPerCycleLimit is global PositiveInteger, default 1."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseCrosspollPerCycleLimit() == 1
+    """F1: compaction registry keys."""
 
     def test_verse_compaction_daily_at_default(self) -> None:
         """verseCompactionDailyAt is global String, default '03:00'."""
