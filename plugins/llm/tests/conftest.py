@@ -483,6 +483,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "maxConcurrentLLMCalls": 16,
         # Verse subsystem
         "verseEnabled": False,
+        "verseCompactionModel": "gemini/gemini-flash-lite-latest",
     }
     if overrides:
         defaults.update(overrides)

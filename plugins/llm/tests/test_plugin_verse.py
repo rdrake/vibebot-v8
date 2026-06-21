@@ -2180,7 +2180,7 @@ class TestCompactionTimerWiring:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else "03:00"
@@ -2226,7 +2226,7 @@ class TestCompactionTimerWiring:
                 return True
             if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
                 raise RuntimeError("registry not loaded")
-            if key == "loomModel":
+            if key == "verseCompactionModel":
                 return "gemini/x"
             return ""
 
@@ -2264,7 +2264,7 @@ class TestCompactionTimerWiring:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else "03:00"
@@ -2316,7 +2316,7 @@ class TestRunCompactionPassCallsAging:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else 14
@@ -2373,7 +2373,7 @@ class TestRunCompactionPassCallsAging:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else 14
@@ -2425,7 +2425,7 @@ class TestRunCompactionPassCallsAging:
                 return 30
             if key == "verseCompactionMinKeepEvents":
                 return 20
-            if key == "loomModel":
+            if key == "verseCompactionModel":
                 return "gemini/x"
             if key == "verseAutoEntityRetireDays":
                 return 14
@@ -2468,7 +2468,7 @@ class TestRunCompactionPassCallsAging:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else 14
@@ -2524,7 +2524,7 @@ class TestRunCompactionPassCallsAging:
                     30
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 20
                     if key == "verseCompactionMinKeepEvents"
                     else 14
@@ -2657,7 +2657,7 @@ class TestVersecompactCommand:
                 return 30
             if key == "verseCompactionMinKeepEvents":
                 return 20
-            if key == "loomModel":
+            if key == "verseCompactionModel":
                 return "gemini/gemini-flash-lite-latest"
             return defaults(key, *args)
 
@@ -2680,10 +2680,15 @@ class TestVersecompactCommand:
         )
 
         # Substitute a fake compaction client so no network call happens.
+        # Capture the model kwarg to assert the mocked verseCompactionModel
+        # value is genuinely load-bearing (not the production fallback).
+        captured_models: list[str] = []
+
         class _FakeClient:
             def call(self, *, op, model, messages):
                 from llm.verse.compaction import VerseCallUsage
 
+                captured_models.append(model)
                 return "A digest of the past.", VerseCallUsage(
                     prompt_tokens=10, completion_tokens=20, cost=0.0
                 )
@@ -2710,6 +2715,9 @@ class TestVersecompactCommand:
         reply_text = irc.reply.call_args[0][0]
         assert "compaction outcome for #afnet" in reply_text
         assert "compacted" in reply_text
+        # Verify the mocked verseCompactionModel value ("gemini/gemini-flash-lite-latest")
+        # was passed to the client — confirming the mock is load-bearing, not the fallback.
+        assert captured_models == ["gemini/gemini-flash-lite-latest"]
 
     def test_disabled_verse_says_so(self, compact_env, mocker) -> None:
         """GIVEN verseEnabled=False WHEN @versecompact THEN reply names verseEnabled."""
@@ -2769,7 +2777,7 @@ class TestVersecompactCommand:
                 return True
             if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
                 raise RuntimeError("registry not loaded")
-            if key == "loomModel":
+            if key == "verseCompactionModel":
                 return "gemini/gemini-flash-lite-latest"
             if key == "assistantApiKey":
                 return ""
@@ -2818,7 +2826,7 @@ class TestVersecompactCommand:
                 return 0
             if key == "verseCompactionMinKeepEvents":
                 return 0
-            if key == "loomModel":
+            if key == "verseCompactionModel":
                 return "gemini/gemini-flash-lite-latest"
             if key == "assistantApiKey":
                 return ""
@@ -2866,7 +2874,7 @@ class TestVersecompactCommand:
                     0
                     if key == "verseEventRetentionDays"
                     else "gemini/x"
-                    if key == "loomModel"
+                    if key == "verseCompactionModel"
                     else 0
                     if key == "verseCompactionMinKeepEvents"
                     else "03:00"
