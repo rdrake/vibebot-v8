@@ -1141,7 +1141,7 @@ class TestApplyAndRecordProposal:
 
         The relations FK enforces existence but not status, so a retired
         endpoint on either side must be rejected explicitly — covering
-        auto-apply, verseapprove of a since-retired proposal, and crosspoll.
+        auto-apply of a since-retired proposal, and crosspoll.
         """
         from llm.verse.store import VerseStore
 

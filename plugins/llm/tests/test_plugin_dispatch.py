@@ -680,9 +680,6 @@ class TestCommandRegistry:
             "canon",
             "versedump",
             "versepurge",
-            "verseproposals",
-            "verseapprove",
-            "versereject",
             "versecompact",
             "versedit",
         }
