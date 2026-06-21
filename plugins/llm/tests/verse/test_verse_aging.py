@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -215,10 +216,8 @@ class TestAgeAutoCreatedEntities:
         assert set(truncated_status) == {"retired"}
 
     def test_applied_add_event_bumps_last_seen(self, store: VerseStore) -> None:
-        """apply_direct(add_event) followed by an explicit heartbeat bumps
-        last_seen_ts on the referenced entity — aging then keeps it alive."""
-        import time
-
+        """apply_direct(add_event) does NOT auto-bump last_seen_ts; an explicit
+        heartbeat is required. After the heartbeat, aging keeps the entity alive."""
         from llm.verse.aging import age_auto_created_entities
 
         eid = store.add_entity("npc", "ghost", "")
@@ -231,19 +230,26 @@ class TestAgeAutoCreatedEntities:
             source="llm",
             provenance="test",
         )
+        # Step 3: op must NOT auto-bump — last_seen_ts stays at "0.0"
+        assert store.get_attribute(eid, "last_seen_ts") == "0.0"
+
+        # Step 4: explicit heartbeat
         store.set_attribute(eid, "last_seen_ts", str(time.time()))
 
+        # Step 5: bump recorded
         last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
         assert last_seen > 0.0
+
+        # Step 6: aging keeps the recently-heartbeated entity alive
         keep = age_auto_created_entities(
             store, retire_after_days=14, now=lambda: last_seen + SECONDS_PER_DAY
         )
         assert keep.retired == 0
 
     def test_applied_set_attribute_bumps_last_seen(self, store: VerseStore) -> None:
-        """apply_direct(set_attribute) followed by an explicit heartbeat bumps
-        last_seen_ts on the target entity."""
-        import time
+        """apply_direct(set_attribute) does NOT auto-bump last_seen_ts; an explicit
+        heartbeat is required. After the heartbeat, aging keeps the entity alive."""
+        from llm.verse.aging import age_auto_created_entities
 
         eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(eid, "auto_created", "1")
@@ -255,15 +261,27 @@ class TestAgeAutoCreatedEntities:
             source="llm",
             provenance="test",
         )
+        # Step 3: op must NOT auto-bump — last_seen_ts stays at "0.0"
+        assert store.get_attribute(eid, "last_seen_ts") == "0.0"
+
+        # Step 4: explicit heartbeat
         store.set_attribute(eid, "last_seen_ts", str(time.time()))
 
+        # Step 5: bump recorded
         last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
         assert last_seen > 0.0
 
+        # Step 6: aging keeps the recently-heartbeated entity alive
+        keep = age_auto_created_entities(
+            store, retire_after_days=14, now=lambda: last_seen + SECONDS_PER_DAY
+        )
+        assert keep.retired == 0
+
     def test_applied_add_relation_bumps_both_endpoints(self, store: VerseStore) -> None:
-        """apply_direct(add_relation) followed by explicit heartbeats bumps
-        last_seen_ts on both from_id and to_id endpoints."""
-        import time
+        """apply_direct(add_relation) does NOT auto-bump last_seen_ts on either
+        endpoint; explicit heartbeats are required. After the heartbeats, aging
+        keeps both entities alive."""
+        from llm.verse.aging import age_auto_created_entities
 
         a = store.add_entity("npc", "alpha", "")
         b = store.add_entity("npc", "beta", "")
@@ -277,12 +295,26 @@ class TestAgeAutoCreatedEntities:
             source="llm",
             provenance="test",
         )
+        # Step 3: op must NOT auto-bump either endpoint
+        assert store.get_attribute(a, "last_seen_ts") == "0.0"
+        assert store.get_attribute(b, "last_seen_ts") == "0.0"
+
+        # Step 4: explicit heartbeats on both endpoints
         now_ts = str(time.time())
         store.set_attribute(a, "last_seen_ts", now_ts)
         store.set_attribute(b, "last_seen_ts", now_ts)
 
-        assert float(store.get_attribute(a, "last_seen_ts") or "0") > 0.0
-        assert float(store.get_attribute(b, "last_seen_ts") or "0") > 0.0
+        # Step 5: bumps recorded on both
+        last_seen_a = float(store.get_attribute(a, "last_seen_ts") or "0")
+        last_seen_b = float(store.get_attribute(b, "last_seen_ts") or "0")
+        assert last_seen_a > 0.0
+        assert last_seen_b > 0.0
+
+        # Step 6: aging keeps both recently-heartbeated entities alive
+        keep = age_auto_created_entities(
+            store, retire_after_days=14, now=lambda: last_seen_a + SECONDS_PER_DAY
+        )
+        assert keep.retired == 0
 
     def test_add_event_with_invalid_ref_does_not_bump(self, store: VerseStore) -> None:
         """apply_direct(add_event) with a nonexistent entity id in entity_ids
@@ -329,15 +361,13 @@ class TestAgeAutoCreatedEntities:
 
 class TestAgingExemptsAuthorLocked:
     def test_author_locked_npc_not_retired(self, store):
-        import time as _t
-
         h = store.add_entity("npc", "Harry")
         store.set_attribute(h, "auto_created", "1")
         store.set_attribute(h, "last_seen_ts", "0.0")  # ancient
         store.set_author_locked(h, True)
         from llm.verse.aging import age_auto_created_entities
 
-        age_auto_created_entities(store, retire_after_days=1, now=lambda: _t.time())
+        age_auto_created_entities(store, retire_after_days=1, now=lambda: time.time())
         assert store.get_entity(h).status == "active"
 
 
