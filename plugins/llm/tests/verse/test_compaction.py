@@ -7,6 +7,15 @@ from pathlib import Path
 import pytest
 
 
+def test_verse_compaction_model_key_registered() -> None:
+    """The new global key exists with the old loomModel default."""
+    import llm.config  # noqa: F401 — import side effect registers the values
+    from supybot import conf
+
+    val = conf.supybot.plugins.LLM.verseCompactionModel()
+    assert val == "gemini/gemini-flash-lite-latest"
+
+
 @pytest.fixture
 def verse_db_dir(tmp_path: Path) -> Path:
     d = tmp_path / "verse"

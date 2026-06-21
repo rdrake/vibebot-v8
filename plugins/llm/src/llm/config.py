@@ -432,6 +432,18 @@ conf.registerGlobalValue(
 
 conf.registerGlobalValue(
     LLM,
+    "verseCompactionModel",
+    registry.String(
+        "gemini/gemini-flash-lite-latest",
+        _("""Model used by the verse compaction job to summarise old events
+        into a lore digest. Mirrors the default of the old
+        ``loomModel`` key; split out when the loom was removed so compaction
+        can be configured independently."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
     "loomCycleInterval",
     registry.PositiveInteger(
         5,
