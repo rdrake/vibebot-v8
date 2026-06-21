@@ -130,8 +130,7 @@ def list_active_verses(base_dir: Path) -> list[Path]:
 class VerseStore:
     """Per-channel verse SQLite store. Thread-local connection + WAL +
     per-store write lock. Mirrors plugins/llm/src/llm/persistence.py:160-229,
-    with an added threading.Lock to serialise writers across IRC commands and
-    (later) the loom callback."""
+    with an added threading.Lock to serialise writers across IRC commands."""
 
     def __init__(self, base_dir: Path, channel: str) -> None:
         self.path = db_path_for_channel(base_dir, channel)
@@ -511,7 +510,7 @@ class VerseStore:
             )
 
     def set_author_locked(self, entity_id: int, locked: bool) -> None:
-        """Lock/unlock durable canon (always injected, aging-exempt, loom-protected)."""
+        """Lock/unlock durable canon (always injected, aging-exempt, edit-gated)."""
         with self.write_transaction() as conn:
             self._set_author_locked_inline(conn, entity_id, locked)
 
@@ -1394,23 +1393,6 @@ class VerseStore:
                 (pid, now, "direct", op, json.dumps(payload), 1.0, provenance, source, now),
             )
         return result
-
-    def apply_proposal(
-        self,
-        *,
-        op: str,
-        payload: dict[str, Any],
-        source: str = "loom",
-    ) -> int | None:
-        """Convert a proposal payload into rows via the single core dispatcher.
-
-        Returns the new entity id for ``add_entity``, the new event id for
-        ``add_event``, the new relation id for ``add_relation``, or
-        ``None`` for the mutation ops. Raises ``ValueError`` for unknown
-        ops or ``KeyError`` for missing payload keys.
-        """
-        with self.write_transaction() as conn:
-            return self._apply_op_inline(conn, op=op, payload=payload, source=source)
 
     def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
         """Flip *proposal_id*'s status (audit fields written together)."""
