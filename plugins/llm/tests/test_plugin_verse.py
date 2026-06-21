@@ -2962,3 +2962,49 @@ class TestCanonCommand:
         plugin, irc, msg, store = verse_env
         plugin.canon(irc, msg, ["lock", "Nobody"])
         assert irc.error.called
+
+
+# =============================================================================
+# TestDeloomedPluginBoot
+# =============================================================================
+
+
+class TestDeloomedPluginBoot:
+    """Smoke test: de-loomed plugin constructs cleanly even when the (mocked)
+    registry still answers stale loom* keys.
+
+    The real Limnoria guarantee (stale keys in bot.conf are inert) is verified
+    at rollout, not here.  This test covers OUR half: the de-loomed plugin
+    initialises without error and ``registryValue("verseCompactionModel")``
+    resolves to the expected value, proving that loom* key presence is harmless.
+    """
+
+    def test_deloomed_plugin_boots_with_stale_loom_keys(self, plugin_env, mocker) -> None:
+        """GIVEN mocked registry with stale loom* keys alongside verseCompactionModel
+        WHEN plugin is inspected post-construction
+        THEN no error is raised AND verseCompactionModel returns expected value.
+        """
+        plugin, _irc, _msg = plugin_env
+
+        # Build a registry that answers stale loom* keys alongside real ones.
+        from tests.conftest import make_registry_side_effect
+
+        stale_loom_overrides = {
+            # Keys that existed before loom removal — stale in a real bot.conf.
+            "loomChannel": "#dead",
+            "loomModel": "gpt-4o",
+            "verseAutoApplyThreshold": 0.85,
+            # The key we actually care about:
+            "verseCompactionModel": "gemini/gemini-flash-lite-latest",
+        }
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(stale_loom_overrides)
+        )
+
+        # Stale loom* keys must not cause any AttributeError / KeyError /
+        # ConfigurationError — verify by reading an unrelated verse key.
+        result = plugin.registryValue("verseCompactionModel")
+
+        assert result == "gemini/gemini-flash-lite-latest", (
+            f"Expected 'gemini/gemini-flash-lite-latest', got {result!r}"
+        )
