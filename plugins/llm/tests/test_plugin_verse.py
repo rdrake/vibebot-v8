@@ -2658,7 +2658,7 @@ class TestVersecompactCommand:
             if key == "verseCompactionMinKeepEvents":
                 return 20
             if key == "verseCompactionModel":
-                return "gemini/gemini-flash-lite-latest"
+                return "test/distinct-compaction-model"
             return defaults(key, *args)
 
         plugin.registryValue = mocker.MagicMock(side_effect=_registry)
@@ -2715,9 +2715,11 @@ class TestVersecompactCommand:
         reply_text = irc.reply.call_args[0][0]
         assert "compaction outcome for #afnet" in reply_text
         assert "compacted" in reply_text
-        # Verify the mocked verseCompactionModel value ("gemini/gemini-flash-lite-latest")
-        # was passed to the client — confirming the mock is load-bearing, not the fallback.
-        assert captured_models == ["gemini/gemini-flash-lite-latest"]
+        # Verify the mocked verseCompactionModel value reaches the client.
+        # Using a sentinel distinct from the production fallback
+        # ("gemini/gemini-flash-lite-latest") so this assertion fails if the
+        # code reads the wrong key or falls back to the constant.
+        assert captured_models == ["test/distinct-compaction-model"]
 
     def test_disabled_verse_says_so(self, compact_env, mocker) -> None:
         """GIVEN verseEnabled=False WHEN @versecompact THEN reply names verseEnabled."""
