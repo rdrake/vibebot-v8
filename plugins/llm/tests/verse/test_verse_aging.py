@@ -290,7 +290,13 @@ class TestAgeAutoCreatedEntities:
         but no heartbeat is written — last_seen_ts stays 0.0.
 
         The heartbeat is always explicit and must not fire when the write
-        is invalid from the caller's perspective."""
+        is invalid from the caller's perspective.
+
+        Aging invariant: because last_seen_ts remains 0.0, the entity IS
+        past the retirement cutoff and MUST be retired by aging — the flip
+        side of test_applied_add_event_bumps_last_seen."""
+        from llm.verse.aging import age_auto_created_entities
+
         real_eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(real_eid, "auto_created", "1")
         store.set_attribute(real_eid, "last_seen_ts", "0.0")
@@ -310,6 +316,15 @@ class TestAgeAutoCreatedEntities:
         )
         # No heartbeat — assert no bump
         assert store.get_attribute(real_eid, "last_seen_ts") == "0.0"
+
+        # Because last_seen_ts stayed at 0.0 (epoch), aging at now=1e9
+        # (well past any retirement cutoff) MUST retire the entity.
+        # This fails if aging wrongly treats the event write as a heartbeat.
+        result = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
+        assert result.retired == 1
+        with store.read_connection() as conn:
+            row = conn.execute("SELECT status FROM entities WHERE id=?", (real_eid,)).fetchone()
+        assert row[0] == "retired"
 
 
 class TestAgingExemptsAuthorLocked:
