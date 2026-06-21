@@ -1,4 +1,4 @@
-"""Plugin verse: verse commands, avatars, routing, compaction, crosspoll."""
+"""Plugin verse: verse commands, avatars, routing, compaction."""
 
 from __future__ import annotations
 
@@ -2619,7 +2619,7 @@ class TestVersecompactCommand:
     Strategy mirrors @versepurge tests: direct method
     calls (bypassing wrap), real VerseStore in tmp_path, ircdb.checkCapability
     monkeypatched. The happy-path test inserts >min_keep events older than
-    the retention window and monkeypatches compact_verse's loom client
+    the retention window and monkeypatches compact_verse's compaction client
     constructor so no network call is attempted.
     """
 
@@ -2679,12 +2679,12 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        # Substitute a fake loom client so no network call happens.
+        # Substitute a fake compaction client so no network call happens.
         class _FakeClient:
             def call(self, *, op, model, messages):
-                from llm.verse.compaction import VerseCallUsage as LoomCallUsage
+                from llm.verse.compaction import VerseCallUsage
 
-                return "A digest of the past.", LoomCallUsage(
+                return "A digest of the past.", VerseCallUsage(
                     prompt_tokens=10, completion_tokens=20, cost=0.0
                 )
 
