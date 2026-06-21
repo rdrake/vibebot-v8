@@ -275,8 +275,11 @@ def test_relocated_client_types_importable_from_compaction():
 
     usage = VerseCallUsage(prompt_tokens=1, completion_tokens=2, cost=0.0)
     assert usage.completion_tokens == 2
-    # Protocol + concrete client are exported and constructible.
-    assert isinstance(LiteLLMVerseClient(), VerseModelClient)
+    # Structural check only. Do NOT use isinstance(LiteLLMVerseClient(),
+    # VerseModelClient): VerseModelClient is a plain Protocol (not
+    # @runtime_checkable), so isinstance() would raise TypeError, not pass.
+    assert callable(getattr(LiteLLMVerseClient, "call", None))
+    assert hasattr(VerseModelClient, "call")
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -666,9 +669,11 @@ Remove (~889–891):
 
 Remove the whole block (~1233–1255) starting `# Forest-verse loom transcript hook (PR 2).` through the `except Exception: self.log.exception("loom transcript capture failed (non-fatal)")`.
 
-- [ ] **Step 6: Delete `_wire_loom_if_enabled`**
+- [ ] **Step 6: Delete `_wire_loom_if_enabled` AND its call site**
 
 Remove the entire method (grep `def _wire_loom_if_enabled`, ~5434–5520), including its `from .verse.loom import LiteLLMLoomClient, Loom, LoomConfig` line and the `schedule.removeEvent("llm_loom_after_chime")` teardown inside it.
+
+**Also delete the unconditional call site `self._wire_loom_if_enabled()` in `__init__` (~plugin.py:805).** Grep `_wire_loom_if_enabled(` and remove every call. The second call (inside `_on_loom_config_change`) is already gone with Step 3, but the `__init__` call is NOT — if left, `__init__` will `AttributeError` at plugin construction, which every plugin test triggers in Step 10.
 
 - [ ] **Step 7: Delete `_get_or_create_crosspoll_store`**
 
@@ -718,10 +723,15 @@ Remove `_proposal_snippet` (~6438–6452), `_proposal_target_store` (~6454–646
 
 Remove the three `CommandInfo(name="verseproposals"…)`, `CommandInfo(name="verseapprove"…)`, `CommandInfo(name="versereject"…)` blocks (~377–410).
 
-- [ ] **Step 4: Remove dangling test references**
+- [ ] **Step 4: Delete the orphaned test classes + dispatch-list entries**
 
+These commands have dedicated test classes that exist solely to exercise them — delete them **wholesale** (they have no value without the commands), don't try to "adjust" them:
+- In `plugins/llm/tests/test_plugin_verse.py`: delete the entire `TestVerseproposalsCommand`, `TestVerseapproveRejectCommands`, and `TestVerseapproveCrosspollSource` classes (the last tests the now-deleted `event_source="crosspoll"` branch; it also mocks `store.apply_proposal_and_mark`, which Task 9 deletes).
+- In `plugins/llm/tests/test_plugin_dispatch.py`: remove `"verseproposals"`, `"verseapprove"`, `"versereject"` from the dispatch / help-sync assertion (~lines 683–685) so the `COMMAND_REGISTRY` ↔ command consistency test stays green.
+
+Then confirm nothing dangling remains:
 Run: `grep -rn "verseproposals\|verseapprove\|versereject" plugins/llm/tests/`
-Delete or adjust any test asserting these commands dispatch (e.g. a dispatch/help-sync case in `test_plugin_verse.py`). The `COMMAND_REGISTRY` ↔ real-command consistency test (help-sync) must stay green now that command and registry entry are both gone.
+Expected: no matches. (Class names/line numbers are hints — locate by grep, delete by class.)
 
 - [ ] **Step 5: Confirm `@versedit` and `@canon` survive**
 
@@ -799,22 +809,9 @@ Keep the existing assertion (`last_seen_ts > 0.0`). Add `import time` at the top
 
 > Rationale: the aging logic being tested reads `last_seen_ts`; the loom merely produced the write. The direct apply + heartbeat reproduces the *state* the loom created without importing it. The "applied → bump" semantics are preserved.
 
-- [ ] **Step 3: Rewrite seeding site 2 (`test_loom_queued_proposal_does_not_bump`)**
+- [ ] **Step 3: DELETE seeding site 2 (`test_loom_queued_proposal_does_not_bump`)**
 
-This test asserted a low-confidence proposal was *queued* (not applied) and therefore did not bump. With no loom/queue, the equivalent is simply "nothing was written," so the entity keeps `last_seen_ts=0.0`. Replace the `apply_or_queue` block with: seed the entity, do **not** write any event/heartbeat, and assert no bump:
-
-```python
-        eid = store.add_entity("npc", "ghost", "")
-        store.set_attribute(eid, "auto_created", "1")
-        store.set_attribute(eid, "last_seen_ts", "0.0")
-        # No loom queue any more: a would-be-queued (un-applied) proposal
-        # simply never touches the store, so last_seen_ts stays at the floor.
-        assert float(store.get_attribute(eid, "last_seen_ts") or "0") == 0.0
-```
-
-Drop the now-irrelevant `outcome.outcome == "queued"` assertion.
-
-> If, after this rewrite, the test is a tautology that adds no aging coverage, instead **delete it** and note the deletion in the commit message — do not keep a vacuous test. Use judgement: keep it only if the surrounding aging assertions still exercise real behaviour.
+This test only asserted that the loom *queued* (did not apply) a low-confidence proposal, so `last_seen_ts` stayed at the floor. With no loom and no proposal queue, any rewrite collapses to a tautology (set `0.0`, read back `0.0`) that exercises no aging logic. **Delete the test method outright** — do not rewrite it. The "applied → bump" direction is still covered by sites 1/3/4; the "no write → no bump" direction adds nothing once the queue is gone. Note the deletion in the commit message.
 
 - [ ] **Step 4: Rewrite seeding sites 3, 4, 5**
 
@@ -901,9 +898,19 @@ Expected: matches only inside `store.py` definitions themselves (and possibly de
 
 Remove from `store.py`: `add_proposal` (~1243–1293), `apply_and_record_proposal` (~1445–1482), `apply_proposal_and_mark` (~1512–1543), and `bump_last_seen_ts` (~566–587). **Do not** touch `apply_direct`, `_apply_op_inline`, `_set_attribute_inline`, `replace_events_with_lore_digest`, or the `proposals`-table read helpers (`get_proposal`/`list_proposals`/`update_proposal_status`) unless Step 5 shows they are now uncovered.
 
-- [ ] **Step 3: Delete/adjust any dedicated tests**
+- [ ] **Step 3: Delete the dedicated store tests for the removed methods**
 
-If Step 1 surfaced tests calling the deleted methods directly (e.g. in `test_store.py`), delete those specific test functions. Re-run `grep -rn "apply_and_record_proposal\|apply_proposal_and_mark\|bump_last_seen_ts" plugins/llm/tests/` → expect no matches.
+`test_store.py` has whole classes that exist only to test these methods — delete them **wholesale** (locate by grep, delete by class):
+- Every class/test calling `add_proposal` (the `TestProposal*` / `TestProposalsCRUD` / `TestAddProposal*` group, ~lines 813–979).
+- `TestApplyAndRecordProposal` (~lines 1060–1170).
+- `TestApplyProposalAndMark` (~lines 1171–1236).
+- `TestApplyProposalAndMarkEventSource` (~lines 1559–1625).
+
+**Keep** the read-helper tests `test_get_proposal_*`, `test_list_proposals_*`, `test_update_proposal_status_*` — those methods are NOT deleted (and now provide the only coverage for them once the moderation commands are gone, so deleting them would drop coverage).
+
+Verify no callers remain in the suite:
+Run: `grep -rn "add_proposal\|apply_and_record_proposal\|apply_proposal_and_mark\|bump_last_seen_ts" plugins/llm/tests/`
+Expected: no matches.
 
 - [ ] **Step 4: Reword the `apply_direct` docstring**
 
@@ -982,36 +989,37 @@ git commit -m "chore(verse): remove 14 loom-family config keys"
 Prove the de-loomed plugin starts cleanly even when a prod `bot.conf` still carries stale `loom*` registry values, and that the coverage gate holds.
 
 **Files:**
-- Add: `plugins/llm/tests/test_stale_loom_keys_start.py` (or extend an existing plugin-startup test)
+- Modify: `plugins/llm/tests/test_plugin_verse.py` (add a de-loomed-boot smoke test beside the existing plugin-boot tests)
 
-- [ ] **Step 1: Write the stale-keys start test**
+- [ ] **Step 1: Write a de-loomed-boot smoke test (real fixture pattern, NOT file I/O)**
 
-Limnoria ignores registry entries with no registered definition on load, so stale `loom*` lines must not be fatal. Add:
+Goal (spec §5.5/§7): the de-loomed plugin constructs cleanly and reads `verseCompactionModel`, even when a stale prod registry still answers `loom*` keys. Do **not** use `registry.open_registry` — it loads the global registry module and proves nothing about the plugin. Instead reuse the plugin-construction helper already used in `test_plugin_verse.py` (grep `make_registry_side_effect` in `plugins/llm/tests/conftest.py` and how the plugin-boot tests build a plugin), supplying a registry whose lookups also return stale `loom*` values:
 
 ```python
-def test_stale_loom_registry_values_do_not_break_load(tmp_path):
-    """A bot.conf carrying retired loom* keys loads without error.
+def test_deloomed_plugin_boots_with_stale_loom_keys(mocker):
+    """Construct the plugin with a registry that STILL answers stale loom*
+    keys; it must build and resolve verseCompactionModel without error.
 
-    Limnoria ignores registry entries whose definitions no longer exist;
-    this guards against a future change that would hard-fail on unknown keys.
+    Adapt the construction to the existing make_registry_side_effect helper
+    (arg names per conftest.py). The point: nothing in the de-loomed plugin
+    reads loom* keys, so their lingering presence is inert; verseCompactionModel
+    is the only model key compaction now reads.
     """
-    from supybot import registry
-
-    conf_path = tmp_path / "stale.conf"
-    conf_path.write_text(
-        "supybot.plugins.LLM.loomChannel: #dead\n"
-        "supybot.plugins.LLM.loomModel: gemini/gemini-flash-lite-latest\n"
-        "supybot.plugins.LLM.verseAutoApplyThreshold: 0.85\n"
-    )
-    # Should not raise on unknown keys.
-    registry.open_registry(str(conf_path))
+    overrides = {
+        "loomChannel": "#dead",           # stale, must be harmless
+        "loomModel": "gemini/gemini-flash-lite-latest",
+        "verseAutoApplyThreshold": 0.85,
+        "verseCompactionModel": "gemini/gemini-flash-lite-latest",
+    }
+    plugin = _construct_plugin_with_registry(mocker, overrides)  # per existing helper
+    assert plugin.registryValue("verseCompactionModel") == "gemini/gemini-flash-lite-latest"
 ```
 
-> If `registry.open_registry` is not the API used elsewhere in the test suite, mirror whatever the existing startup/config test uses to load a `bot.conf` (grep `open_registry`/`registryValue` in `plugins/llm/tests/`). The assertion is simply "loading a conf with stale `loom*` keys does not raise."
+> The "stale keys in a real `bot.conf` don't fatal" guarantee is Limnoria's (it ignores registry entries with no registered definition); that half is verified for real at rollout step 1, not in a unit test. This test covers *our* half: the de-loomed plugin neither reads nor trips over `loom*` keys.
 
 - [ ] **Step 2: Run it**
 
-Run: `uv run pytest plugins/llm/tests/test_stale_loom_keys_start.py -v`
+Run: `uv run pytest plugins/llm/tests/test_plugin_verse.py -k deloomed_plugin_boots -v`
 Expected: PASS.
 
 - [ ] **Step 3: Full gate**
@@ -1027,8 +1035,8 @@ Expected: clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add plugins/llm/tests/test_stale_loom_keys_start.py
-git commit -m "test(verse): guard clean load with stale loom* registry keys"
+git add plugins/llm/tests/test_plugin_verse.py
+git commit -m "test(verse): smoke-test de-loomed plugin boot with stale loom* keys present"
 ```
 
 ---
@@ -1176,6 +1184,29 @@ def test_purge_no_digests_is_safe(store):
     result = purge_loom_data(store, digest_ids=[])
     assert result.digests_restamped == 0
     assert result.events_deleted == 1
+
+
+def test_purge_spares_autocreated_entity_whose_only_event_is_a_restamped_digest(store):
+    """The re-stamp (step 0) runs BEFORE orphan computation (step 1): an
+    UNPINNED auto-NPC whose sole event is a reviewed digest keeps a surviving
+    ('llm') link after the re-stamp and is therefore NOT deleted. This is the
+    case the big test misses (it uses a pinned chronicler, which survives for a
+    different reason) — it proves the ordering matters."""
+    npc = store.add_entity("npc", "lonely-chronicled-npc", "")
+    store.set_attribute(npc, "auto_created", "1")
+    long_summary = "A chronicle of the lonely npc's deeds. " + (
+        "It wandered far and its doings were recorded at length. " * 8
+    )
+    assert len(long_summary) > 300
+    digest = _add_event(store, long_summary, [npc], "loom")
+
+    result = purge_loom_data(store, digest_ids=[digest])
+
+    assert result.digests_restamped == 1
+    with store.read_connection() as conn:
+        assert conn.execute("SELECT 1 FROM entities WHERE id=?", (npc,)).fetchone()
+        src = conn.execute("SELECT source FROM events WHERE id=?", (digest,)).fetchone()
+        assert src is not None and src[0] == "llm"
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1200,8 +1231,11 @@ public store methods from inside it.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any, NamedTuple
+
+_LOG = logging.getLogger("llm.verse.purge")
 
 
 class PurgeResult(NamedTuple):
@@ -1293,6 +1327,16 @@ def purge_loom_data(store: Any, *, digest_ids: Sequence[int] = ()) -> PurgeResul
                         if isinstance(eid, int):
                             referenced_json.add(eid)
                 except (ValueError, TypeError):
+                    # A corrupt entity_ids blob on a SURVIVING event must not
+                    # silently lose its protective effect in a destructive op.
+                    # We skip the row (its ids aren't added to the protected
+                    # set) but WARN so the operator reviews before trusting the
+                    # counts — an entity that should have been spared could
+                    # otherwise be deleted unnoticed.
+                    _LOG.warning(
+                        "purge: unparseable entity_ids on a surviving event; "
+                        "skipping it for dual-linkage protection"
+                    )
                     continue
             orphan_ids -= referenced_json
 
@@ -1340,8 +1384,32 @@ Execute only after the whole branch above is merged and deployed. Destructive pr
 
 1. **Deploy Part A** (merge → auto-deploy on Docker green). Confirm a clean start: `docker logs vibebot` shows no fatal on stale `loom*` registry keys and **no** empty-`loomBotNicks` WARN (the loom is gone). Confirm the daily compaction timer arms (grep the boot log for the compaction schedule).
 2. **WAL-safe backup** of prod `_afternet_2de47b99.db` (+ `-wal`/`-shm`) — copy to a timestamped path. (Host has no `sqlite3` binary; use host `python3`'s stdlib `sqlite3`, or `scp` the DB local and run via `PYTHONPATH=plugins/llm/src uv run python`.)
-3. **Review the digest ids:** run `list_loom_digest_candidates(store, min_chars=300)` against a `/tmp` copy; eyeball each summary and confirm it is a chronicle digest (not a long combat brag). Record the confirmed id list.
-4. **Run the purge once** against prod #afternet: `purge_loom_data(store, digest_ids=<reviewed ids>)`. Log the returned `(events_deleted, entities_deleted, digests_restamped)`.
+3. **Review the digest ids** against a local copy first (the bot must be running for this read-only step is fine; or use the backup from step 2):
+
+   ```bash
+   scp -i ~/.ssh/id_rsa "vibebot@rdrake.org:/config/data/verse/_afternet_2de47b99.db*" /tmp/verse-afnet/
+   ```
+   ```python
+   # from repo root: PYTHONPATH=plugins/llm/src uv run python
+   from llm.verse.store import VerseStore
+   from llm.verse.purge import list_loom_digest_candidates
+   store = VerseStore("/tmp/verse-afnet", "#afternet")   # same (data_dir, channel) the bot uses
+   for cid, summary in list_loom_digest_candidates(store, min_chars=300):
+       print(cid, repr(summary[:120]))
+   ```
+   Read every row and confirm each is a chronicle digest, not a long combat brag. Record the confirmed id list, e.g. `[1234, 1240, …]`.
+
+4. **Run the purge once** against the **prod** DB, with the bot stopped to avoid WAL contention (mirror the stop→write→start procedure used for `bot.conf` edits — see the `reference_verse_prod_db_ops` memory for the exact paths/one-off-container path):
+
+   ```python
+   # PYTHONPATH=plugins/llm/src uv run python, pointed at the PROD verse data dir
+   from llm.verse.store import VerseStore
+   from llm.verse.purge import purge_loom_data
+   store = VerseStore("<prod verse data dir>", "#afternet")
+   result = purge_loom_data(store, digest_ids=[1234, 1240])   # the reviewed ids
+   print(result)   # PurgeResult(events_deleted=…, entities_deleted=…, digests_restamped=…)
+   ```
+   `digests_restamped` MUST equal the number of ids you reviewed. Log the full result. Restart the bot.
 5. **Spot-check a verse turn for fc42:** roster + authored events + the chronicle digests present; no #idlerpg combat lines.
 
 **Rollback:** revert the PR + restore the DB backup.
@@ -1356,4 +1424,18 @@ Execute only after the whole branch above is merged and deployed. Destructive pr
 
 **Type/name consistency:** relocated client is `LiteLLMVerseClient`/`VerseCallUsage`/`VerseModelClient` everywhere (compaction.py defn, plugin repoint, `_fakes`, `_FakeClient`, patch target `llm.verse.compaction.LiteLLMVerseClient`). Validator is `llm.verse.validation.validate_payload`. New config key is `verseCompactionModel` (global `registry.String`). Purge API is `purge_loom_data(store, *, digest_ids)` + `list_loom_digest_candidates(store, *, min_chars)` → `PurgeResult(events_deleted, entities_deleted, digests_restamped)`.
 
-**Known assumption flagged for the red-team:** the purge orphan logic and Task 7's heartbeat rewrite both assume `apply_direct(op="add_event")` writes `event_actor` rows (verified by `test_apply_direct_writes_event_actor`, with a STOP instruction if false). The dual-linkage guard covers the legacy-JSON-only edge regardless.
+**Load-bearing assumption — VERIFIED by red-team:** the purge orphan logic and Task 7's heartbeat rewrite assume `apply_direct(op="add_event")` writes `event_actor` rows. Confirmed real: `apply_direct → _apply_op_inline → _add_event_inline` (store.py:687–699) writes both the `events` row and `event_actor` joins. The `test_apply_direct_writes_event_actor` sanity test + STOP instruction remain as a guard. The dual-linkage guard covers the legacy-JSON-only edge regardless.
+
+## Red-team outcome (task wl60fx910 — 45 agents, find→verify)
+
+A 7-dimension adversarial red-team of this plan (every finding code-cited, then independently verified) surfaced **11 confirmed defects** (38 raised, 27 refuted). All 11 are folded in above:
+
+1. **[blocker]** `isinstance()` on a non-`@runtime_checkable` Protocol would `TypeError` → Task 3 test now uses a structural `hasattr`/`callable` check.
+2. **[high]** Task 5 missed the `self._wire_loom_if_enabled()` call site in `__init__` (plugin.py:805) → Step 6 now deletes it explicitly.
+3–4. **[high]** Tasks 6 & 9 under-specified which test classes to delete → both steps now name the classes (`TestVerseproposalsCommand`/`TestVerseapproveRejectCommands`/`TestVerseapproveCrosspollSource`; `TestApplyAndRecordProposal`/`TestApplyProposalAndMark`/`TestApplyProposalAndMarkEventSource`/`TestProposal*`) + the `test_plugin_dispatch.py` help-sync list.
+5. **[high]** Task 11's `registry.open_registry` test proved nothing → replaced with a real plugin-boot smoke test via `make_registry_side_effect`.
+6. **[high]** Part B had no concrete operator invocation → rollout runbook now has the exact `VerseStore`/`purge_loom_data` REPL incantation.
+7. **[medium]** Purge's JSON-parse `except` was silent in a destructive context → now `_LOG.warning`s.
+8. **[medium]** Task 7's rewritten queued-proposal test was a tautology → now deleted outright; plus a new purge test for the unpinned-digest-only ordering case.
+
+The 27 refuted findings **validated the purge core**: FK `ON DELETE CASCADE` is enforced (`PRAGMA foreign_keys=ON` in store.py `_connect`), `_add_event_inline` writes `event_actor`, attribute booleans are TEXT `'1'`, `apply_direct(op="add_event")` returns the new event id, and the single-`write_transaction` atomicity holds.
