@@ -2682,7 +2682,7 @@ class TestVersecompactCommand:
         # Substitute a fake loom client so no network call happens.
         class _FakeClient:
             def call(self, *, op, model, messages):
-                from llm.verse.loom import LoomCallUsage
+                from llm.verse.compaction import VerseCallUsage as LoomCallUsage
 
                 return "A digest of the past.", LoomCallUsage(
                     prompt_tokens=10, completion_tokens=20, cost=0.0
