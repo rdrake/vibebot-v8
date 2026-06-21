@@ -39,6 +39,32 @@ def verse_db_dir(tmp_path: Path) -> Path:
     return d
 
 
+def test_lore_digest_is_stamped_llm(store):
+    """Compaction digests are now source='llm', not 'loom'."""
+    e1 = store.add_entity("npc", "Aldous", "")
+    ev1 = store.apply_direct(
+        op="add_event",
+        payload={"summary": "old deed one", "entity_ids": [e1]},
+        source="avatar",
+        provenance="test",
+    )
+    ev2 = store.apply_direct(
+        op="add_event",
+        payload={"summary": "old deed two", "entity_ids": [e1]},
+        source="avatar",
+        provenance="test",
+    )
+    store.replace_events_with_lore_digest(
+        delete_ids=[ev1, ev2],
+        summary="A digest of Aldous's old deeds.",
+        entity_ids=[e1],
+        ts=1000.0,
+    )
+    with store.read_connection() as conn:
+        rows = conn.execute("SELECT source FROM events WHERE summary LIKE 'A digest%'").fetchall()
+    assert rows and all(r[0] == "llm" for r in rows)
+
+
 class _FakeClient:
     def __init__(self, content: str = "A digest of past events.") -> None:
         self.content = content
@@ -167,7 +193,7 @@ class TestCompactVerse:
         # The digest is stamped at now() so it lands as the NEWEST row
         # (last in ASC order). Stamping at max(batch.ts) used to put it
         # ahead of the cutoff and re-summarise it the next day.
-        assert rows[-1][1] == "loom"
+        assert rows[-1][1] == "llm"
         assert "Past events" in rows[-1][0]
         assert client.calls and client.calls[0]["op"] == "compact"
         assert len(usage_calls) == 1
@@ -329,9 +355,9 @@ class TestCompactVerse:
         # MUST survive; their ids are the OLDEST ones (lowest ts).
         with store.read_connection() as conn:
             rows = conn.execute("SELECT id, source FROM events ORDER BY ts ASC, id ASC").fetchall()
-        # 1 digest row (source='loom') + (n_events - kept_bullet_lines) survivors.
-        survivor_ids = [r[0] for r in rows if r[1] != "loom"]
-        digest_rows = [r for r in rows if r[1] == "loom"]
+        # 1 digest row (source='llm') + (n_events - kept_bullet_lines) survivors.
+        survivor_ids = [r[0] for r in rows if r[1] != "llm"]
+        digest_rows = [r for r in rows if r[1] == "llm"]
         assert len(digest_rows) == 1
         # Number of deletions equals number of bullet lines actually shown.
         assert len(survivor_ids) == n_events - kept_bullet_lines
@@ -407,7 +433,7 @@ class TestCompactVerse:
         assert any("entity_ids truncated" in r.message for r in caplog.records)
         with store.read_connection() as conn:
             row = conn.execute(
-                "SELECT entity_ids FROM events WHERE source='loom' ORDER BY id DESC LIMIT 1"
+                "SELECT entity_ids FROM events WHERE source='llm' ORDER BY id DESC LIMIT 1"
             ).fetchone()
         assert len(_json.loads(row[0])) == _MAX_DIGEST_ENTITY_IDS
 

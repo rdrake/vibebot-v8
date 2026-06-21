@@ -986,7 +986,7 @@ class VerseStore:
         entity_ids: Sequence[int],
         ts: float,
     ) -> int:
-        """Replace ``delete_ids`` with a single ``source='loom'`` digest event.
+        """Replace ``delete_ids`` with a single ``source='llm'`` digest event.
 
         All work happens inside one ``write_transaction``; on error the whole
         operation rolls back and the originals survive.
@@ -996,7 +996,7 @@ class VerseStore:
             summary=summary,
             entity_ids=entity_ids,
             ts=ts,
-            source="loom",
+            source="llm",
         )
 
     def events_older_than(self, *, cutoff_ts: float) -> list[Event]:

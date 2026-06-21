@@ -1380,7 +1380,7 @@ class TestReplaceEventsWithLoreDigest:
         assert len(rows) == 1
         assert rows[0][0] == new_id
         assert rows[0][1] == "A digest of five small events."
-        assert rows[0][2] == "loom"
+        assert rows[0][2] == "llm"
 
     def test_rolls_back_on_invalid_source(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
