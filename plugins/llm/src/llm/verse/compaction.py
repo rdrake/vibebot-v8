@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 _LOG = logging.getLogger("llm.verse.compaction")
 SECONDS_PER_DAY = 86400
@@ -214,8 +215,6 @@ def _next_local_time(hhmm: str, *, now: Callable[[], float]) -> float:
 
     Falls back to one hour from now if ``hhmm`` is malformed.
     """
-    import time
-
     try:
         h, m = (int(x) for x in hhmm.split(":", 1))
         if not (0 <= h <= 23 and 0 <= m <= 59):
@@ -240,3 +239,84 @@ def _next_local_time(hhmm: str, *, now: Callable[[], float]) -> float:
     if candidate <= now():
         candidate += SECONDS_PER_DAY
     return candidate
+
+
+class VerseCallUsage(NamedTuple):
+    prompt_tokens: int
+    completion_tokens: int
+    cost: float
+
+
+class VerseModelClient(Protocol):
+    def call(
+        self, *, op: str, model: str, messages: list[dict[str, str]]
+    ) -> tuple[str, VerseCallUsage]: ...
+
+
+class LiteLLMVerseClient:
+    """Default verse completion client (used by retention compaction).
+
+    Calls ``litellm.completion`` synchronously (already on a worker thread
+    by the time this runs) and returns the content string plus a
+    ``VerseCallUsage``. Errors propagate to the caller.
+    """
+
+    def __init__(
+        self,
+        log: logging.Logger | None = None,
+        *,
+        api_key: str | None = None,
+    ) -> None:
+        self._log = log or logging.getLogger("llm.verse.compaction")
+        self._api_key = api_key or None
+
+    def call(
+        self, *, op: str, model: str, messages: list[dict[str, str]]
+    ) -> tuple[str, VerseCallUsage]:
+        import litellm
+
+        t0 = time.monotonic()
+        kwargs: dict[str, Any] = {}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        response = litellm.completion(model=model, messages=messages, **kwargs)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        try:
+            content = response.choices[0].message.content or ""
+        except (AttributeError, IndexError):
+            content = ""
+        try:
+            usage = response.usage
+            pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+            ct = int(getattr(usage, "completion_tokens", 0) or 0)
+        except AttributeError:
+            pt = ct = 0
+        try:
+            cost = float(litellm.completion_cost(completion_response=response, model=model) or 0.0)
+        except Exception:
+            cost = 0.0
+        # Sanity clamp: litellm.completion_cost falls back to a token count
+        # for models without pricing data (observed in prod for
+        # gemini-flash-lite-latest, returning ~365). Anything over $1 for a
+        # single short cheap-model call is implausible — assume the
+        # accounting is wrong and zero it out so @usage isn't polluted with
+        # nonsense. This is a soft clamp; remove once litellm pricing
+        # catches up or once we add explicit pricing tables.
+        if cost > 1.0:
+            self._log.warning(
+                f"loom completion_cost returned implausible value {cost!r} "
+                f"for model={model}; clamping to 0.0 (likely missing "
+                "pricing data in litellm)"
+            )
+            cost = 0.0
+        # The "loom:" op-prefix is kept verbatim on purpose: it is the @usage accounting key,
+        # and renaming it would silently re-key historical usage records.
+        # Match service.py:_log_completion_timing's f-string convention.
+        # %-args formatting was partially failing under the bot's runtime
+        # logger setup (some args substituted, %d ones not) — see #66.
+        self._log.warning(
+            f"completion_timing op=loom:{op} model={model} "
+            f"elapsed_ms={elapsed_ms:.0f} "
+            f"prompt_tokens={pt} completion_tokens={ct} cost={cost:.6f}"
+        )
+        return content, VerseCallUsage(pt, ct, cost)

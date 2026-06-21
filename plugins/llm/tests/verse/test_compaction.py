@@ -16,6 +16,22 @@ def test_verse_compaction_model_key_registered() -> None:
     assert val == "gemini/gemini-flash-lite-latest"
 
 
+def test_relocated_client_types_importable_from_compaction():
+    from llm.verse.compaction import (
+        LiteLLMVerseClient,
+        VerseCallUsage,
+        VerseModelClient,
+    )
+
+    usage = VerseCallUsage(prompt_tokens=1, completion_tokens=2, cost=0.0)
+    assert usage.completion_tokens == 2
+    # Structural check only. Do NOT use isinstance(LiteLLMVerseClient(),
+    # VerseModelClient): VerseModelClient is a plain Protocol (not
+    # @runtime_checkable), so isinstance() would raise TypeError, not pass.
+    assert callable(getattr(LiteLLMVerseClient, "call", None))
+    assert hasattr(VerseModelClient, "call")
+
+
 @pytest.fixture
 def verse_db_dir(tmp_path: Path) -> Path:
     d = tmp_path / "verse"
@@ -29,10 +45,10 @@ class _FakeClient:
         self.calls: list[dict] = []
 
     def call(self, *, op: str, model: str, messages: list[dict[str, str]]):
-        from llm.verse.loom import LoomCallUsage
+        from llm.verse.compaction import VerseCallUsage
 
         self.calls.append({"op": op, "model": model, "messages": messages})
-        return self.content, LoomCallUsage(prompt_tokens=10, completion_tokens=20, cost=0.0)
+        return self.content, VerseCallUsage(prompt_tokens=10, completion_tokens=20, cost=0.0)
 
 
 class TestCompactVerse:

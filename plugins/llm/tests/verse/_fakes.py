@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from llm.verse.loom import LoomCallUsage, LoomConfig, VerseSnapshot
+from llm.verse.compaction import VerseCallUsage as LoomCallUsage
+from llm.verse.loom import LoomConfig, VerseSnapshot
 
 
 def make_loom_config(**overrides: Any) -> LoomConfig:

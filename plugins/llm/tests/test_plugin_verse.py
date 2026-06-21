@@ -2995,7 +2995,7 @@ class TestVersecompactCommand:
                 )
 
         mocker.patch(
-            "llm.verse.loom.LiteLLMLoomClient",
+            "llm.verse.compaction.LiteLLMVerseClient",
             return_value=_FakeClient(),
         )
 
@@ -3041,7 +3041,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.loom.LiteLLMLoomClient",
+            "llm.verse.compaction.LiteLLMVerseClient",
             return_value=mocker.MagicMock(),
         )
 
@@ -3087,7 +3087,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.loom.LiteLLMLoomClient",
+            "llm.verse.compaction.LiteLLMVerseClient",
             return_value=mocker.MagicMock(),
         )
 
@@ -3136,7 +3136,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.loom.LiteLLMLoomClient",
+            "llm.verse.compaction.LiteLLMVerseClient",
             return_value=mocker.MagicMock(),
         )
 

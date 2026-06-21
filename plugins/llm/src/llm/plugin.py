@@ -5584,7 +5584,6 @@ class LLM(callbacks.Plugin):
         """
         from llm.verse import compaction as _compaction
         from llm.verse.aging import age_auto_created_entities
-        from llm.verse.loom import LiteLLMLoomClient
 
         retention_days_default = 30
         # NB: explicit ``int(value)`` rather than ``int(value or 20)``
@@ -5599,9 +5598,9 @@ class LLM(callbacks.Plugin):
             min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
         except (TypeError, ValueError):
             min_keep = 20
-        model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
-        loom_api_key = self.registryValue("assistantApiKey") or None
-        client = LiteLLMLoomClient(api_key=loom_api_key)
+        model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
+        api_key = self.registryValue("assistantApiKey") or None
+        client = _compaction.LiteLLMVerseClient(api_key=api_key)
 
         def _log_usage(*, op: str, model: str, usage, channel: str) -> None:
             self.db.log_usage(
@@ -6638,7 +6637,6 @@ class LLM(callbacks.Plugin):
             return
 
         from llm.verse import compaction as _compaction
-        from llm.verse.loom import LiteLLMLoomClient
 
         store = self._get_or_create_verse_store(channel)
         # Honour zero — see ``_run_compaction_pass`` note.
@@ -6659,9 +6657,9 @@ class LLM(callbacks.Plugin):
             min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
         except (TypeError, ValueError):
             min_keep = 20
-        model = self.registryValue("loomModel") or "gemini/gemini-flash-lite-latest"
-        loom_api_key = self.registryValue("assistantApiKey") or None
-        client = LiteLLMLoomClient(api_key=loom_api_key)
+        model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
+        api_key = self.registryValue("assistantApiKey") or None
+        client = _compaction.LiteLLMVerseClient(api_key=api_key)
 
         def _log_usage(*, op: str, model: str, usage, channel: str = channel) -> None:
             self.db.log_usage(
