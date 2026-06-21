@@ -2970,41 +2970,135 @@ class TestCanonCommand:
 
 
 class TestDeloomedPluginBoot:
-    """Smoke test: de-loomed plugin constructs cleanly even when the (mocked)
-    registry still answers stale loom* keys.
+    """Real guard: the de-loomed plugin must never read any of the 14 removed
+    loom config keys, and must read ``verseCompactionModel`` on the compaction
+    code path.
 
-    The real Limnoria guarantee (stale keys in bot.conf are inert) is verified
-    at rollout, not here.  This test covers OUR half: the de-loomed plugin
-    initialises without error and ``registryValue("verseCompactionModel")``
-    resolves to the expected value, proving that loom* key presence is harmless.
+    The approach: install a ``registryValue`` side-effect that RAISES on any
+    removed key, then drive the production compaction path (``plugin.versecompact``)
+    under that guard.  If any removed key is read, the test fails.  If
+    ``verseCompactionModel`` is *not* read (e.g. compaction short-circuits or
+    reads a different key), the sentinel assertion fails.
     """
 
-    def test_deloomed_plugin_boots_with_stale_loom_keys(self, plugin_env, mocker) -> None:
-        """GIVEN mocked registry with stale loom* keys alongside verseCompactionModel
-        WHEN plugin is inspected post-construction
-        THEN no error is raised AND verseCompactionModel returns expected value.
-        """
-        plugin, _irc, _msg = plugin_env
+    # The 14 config keys removed when loom was de-coupled.  Reading any of these
+    # at runtime would raise on a real bot (no registered key → ConfigurationError).
+    REMOVED_LOOM_KEYS: frozenset[str] = frozenset(
+        {
+            "loomNetwork",
+            "loomChannel",
+            "loomModel",
+            "loomCycleInterval",
+            "loomVerseCooldown",
+            "loomBeatWindow",
+            "loomTranscriptMaxLines",
+            "loomTranscriptMaxChars",
+            "loomBotNicks",
+            "loomCaptureTranscript",
+            "verseCrosspollAllowSend",
+            "verseCrosspollAllowReceive",
+            "verseCrosspollPerCycleLimit",
+            "verseAutoApplyThreshold",
+        }
+    )
 
-        # Build a registry that answers stale loom* keys alongside real ones.
+    def _make_guarded_registry(self, mocker):
+        """Return (side_effect_fn, queried_keys_list).
+
+        The side_effect raises ``AssertionError`` if any REMOVED_LOOM_KEYS key is
+        read.  All other keys delegate to ``make_registry_side_effect`` with a
+        distinctive ``verseCompactionModel`` sentinel.  Every key queried is
+        appended to ``queried_keys`` so assertions can confirm the path ran.
+        """
         from tests.conftest import make_registry_side_effect
 
-        stale_loom_overrides = {
-            # Keys that existed before loom removal — stale in a real bot.conf.
-            "loomChannel": "#dead",
-            "loomModel": "gpt-4o",
-            "verseAutoApplyThreshold": 0.85,
-            # The key we actually care about:
-            "verseCompactionModel": "gemini/gemini-flash-lite-latest",
-        }
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(stale_loom_overrides)
+        sentinel_model_name = "test/deloomed-guard-sentinel"
+
+        base = make_registry_side_effect(
+            {
+                "verseEnabled": True,
+                "verseEventRetentionDays": 30,
+                "verseCompactionMinKeepEvents": 20,
+                "verseCompactionModel": sentinel_model_name,
+            }
         )
 
-        # Stale loom* keys must not cause any AttributeError / KeyError /
-        # ConfigurationError — verify by reading an unrelated verse key.
-        result = plugin.registryValue("verseCompactionModel")
+        queried_keys: list[str] = []
 
-        assert result == "gemini/gemini-flash-lite-latest", (
-            f"Expected 'gemini/gemini-flash-lite-latest', got {result!r}"
+        def _guarded(key, *args):
+            queried_keys.append(key)
+            if key in TestDeloomedPluginBoot.REMOVED_LOOM_KEYS:
+                raise AssertionError(f"de-loomed plugin must not read removed key {key!r}")
+            return base(key, *args)
+
+        return mocker.MagicMock(side_effect=_guarded), queried_keys, sentinel_model_name
+
+    def test_deloomed_plugin_boots_with_stale_loom_keys(self, plugin_env, tmp_path, mocker) -> None:
+        """GIVEN raising guard on all 14 removed loom keys
+        WHEN plugin.versecompact() runs the real compaction path
+        THEN no removed key is read AND verseCompactionModel sentinel is queried.
+
+        This test would FAIL if:
+        - Any removed key (loomModel, loomChannel, …) is read → raises immediately.
+        - verseCompactionModel is not queried → sentinel assertion fails.
+        """
+        from llm.verse.store import VerseStore
+
+        from plugins.llm.tests.verse.conftest import insert_event_at
+
+        plugin, irc, msg = plugin_env
+
+        # Wire the guarded registry — covers ALL subsequent registryValue calls.
+        guarded_rv, queried_keys, sentinel_model = self._make_guarded_registry(mocker)
+        plugin.registryValue = guarded_rv
+
+        # Wire a real VerseStore with >min_keep old events so compaction
+        # actually reaches the model-read line (rather than short-circuiting).
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        plugin._verse_stores["#afnet"] = store
+
+        seconds_per_day = 86_400
+        now_ts = 100_000_000.0
+        for i in range(25):
+            insert_event_at(
+                store,
+                summary=f"old_event_{i}",
+                entity_ids=[],
+                source="avatar",
+                ts=now_ts - 60 * seconds_per_day,
+            )
+
+        # Stub the LLM client so no network call is attempted.
+        class _FakeClient:
+            def call(self, *, op, model, messages):
+                from llm.verse.compaction import VerseCallUsage
+
+                return "digest", VerseCallUsage(prompt_tokens=5, completion_tokens=5, cost=0.0)
+
+        mocker.patch(
+            "llm.verse.compaction.LiteLLMVerseClient",
+            return_value=_FakeClient(),
+        )
+
+        # Set up msg for direct method call (bypassing wrap).
+        msg.args = ("#afnet", "@versecompact #afnet")
+        msg.prefix = "owner!user@host"
+        msg.nick = "owner"
+        msg.server_tags = {}
+
+        # Drive the real production path: versecompact reads verseCompactionModel.
+        # If any REMOVED_LOOM_KEYS key is touched, _guarded raises immediately.
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        # (1) The compaction path did NOT read any removed key (no raise above).
+        removed_keys_read = [k for k in queried_keys if k in self.REMOVED_LOOM_KEYS]
+        assert removed_keys_read == [], (
+            f"Production code read removed loom key(s): {removed_keys_read}"
+        )
+
+        # (2) verseCompactionModel WAS queried — the guard has teeth.
+        assert "verseCompactionModel" in queried_keys, (
+            "verseCompactionModel was never queried; compaction path may have "
+            "short-circuited or read a different key — test is no longer armed"
         )
