@@ -73,7 +73,6 @@ if TYPE_CHECKING:
 
     from .assistant import ToolCallbackResult, ToolResult
     from .service import PendingTaskResult
-    from .verse.crosspoll_store import CrosspollStore
 
 _ = PluginInternationalization("LLM")
 
@@ -729,24 +728,10 @@ class LLM(callbacks.Plugin):
         self._verse_stores: dict[str, VerseStore] = {}
         self._verse_stores_lock = threading.Lock()
 
-        # Process-wide CrosspollStore singleton (lazily created on first use).
-        self._crosspoll_store: CrosspollStore | None = None
-        self._crosspoll_store_lock = threading.Lock()
-
         # In-memory versepurge confirmation tokens: channel -> (token, expires_at).
         # Resets on plugin reload/bot restart (by design; documented in operator guide).
         self._versepurge_tokens: dict[str, tuple[str, float]] = {}
         self._versepurge_tokens_lock = threading.Lock()
-
-        # Forest-verse loom orchestrator (PR 2). All four caches must be
-        # initialised before doPrivmsg can run so the transcript hook never
-        # reads an unset attribute.
-        self._loom = None
-        self._loom_bridge = None
-        self._loom_channel_cache: str | None = None
-        self._loom_network_cache: str | None = None
-        self._loom_bot_nicks_cache: tuple[str, ...] = ()
-        self._loom_capture_transcript_cache: bool = True
 
         # Reload persisted reminders from database
         self._reload_reminders(irc)
@@ -800,28 +785,6 @@ class LLM(callbacks.Plugin):
         # Register callback for live log level changes
         conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
 
-        # Wire the loom orchestrator if loomNetwork + loomChannel are set.
-        # Safe to call on every init/reload — idempotent.
-        self._wire_loom_if_enabled()
-
-        # Re-wire the loom on live config changes. Without this, an operator
-        # who sets loomNetwork + loomChannel via @config has to @reload LLM
-        # before the orchestrator notices.
-        for _key in (
-            "loomNetwork",
-            "loomChannel",
-            "loomModel",
-            "loomCycleInterval",
-            "loomVerseCooldown",
-            "loomBeatWindow",
-            "loomTranscriptMaxLines",
-            "loomTranscriptMaxChars",
-            "loomBotNicks",
-            "loomCaptureTranscript",
-            "verseAutoApplyThreshold",
-        ):
-            getattr(conf.supybot.plugins.LLM, _key).addCallback(self._on_loom_config_change)
-
         # Daily verse compaction timer (PR 3 / E3). Registry keys
         # ``verseCompactionDailyAt`` and ``verseCompactionMinKeepEvents``
         # are added by F1; until then ``_register_compaction_timer``'s
@@ -840,23 +803,6 @@ class LLM(callbacks.Plugin):
     def _on_log_level_change(self, *args: object) -> None:
         """Called when logLevel config changes at runtime."""
         self._apply_log_level()
-
-    def _on_loom_config_change(self, *args: object) -> None:
-        """Re-wire the loom when any loom-* registry value changes at runtime.
-
-        ``_wire_loom_if_enabled`` is idempotent: if the (network, channel)
-        tuple is unchanged it short-circuits, so callbacks for
-        ``loomBotNicks`` etc. correctly tear down + rebuild only when the
-        target identity flips.
-        """
-        # Force a rebuild even when (network, channel) didn't change so
-        # bot-nicks / cycle-interval changes take effect.
-        self._loom_channel_cache = None
-        self._loom_network_cache = None
-        try:
-            self._wire_loom_if_enabled()
-        except Exception:
-            self.log.exception("loom re-wire failed (non-fatal)")
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
@@ -886,9 +832,6 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_queue_wakeup")
-        # Loom orchestrator teardown (reactive trigger; single beat window).
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent("llm_loom_after_chime")
         # Daily compaction timer teardown (PR 3 / E3).
         if hasattr(self, "_compaction_timer_name"):
             self._cancel_compaction_timer()
@@ -1229,30 +1172,6 @@ class LLM(callbacks.Plugin):
         if text[0] in prefix_chars:
             # Explicit command — Limnoria's dispatcher handles it.
             return
-
-        # Forest-verse loom transcript hook (PR 2). Runs *after* the
-        # prefix-char early-out so @verseapprove etc. aren't captured as
-        # improv. The four caches are initialised in __init__ so this
-        # never AttributeErrors even before _wire_loom_if_enabled has run.
-        # Channel and network comparisons use ircutils.strEqual because IRC
-        # treats both as case-insensitive (per RFC 2812 lowercase mapping)
-        # and supybot/server may emit a different case than what the
-        # operator typed into @config.
-        loom = self._loom
-        if loom is not None and self._loom_capture_transcript_cache:
-            try:
-                irc_network = getattr(irc, "network", None) or ""
-                cache_network = self._loom_network_cache or ""
-                target_arg = msg.args[0] if msg.args else ""
-                cache_channel = self._loom_channel_cache or ""
-                if ircutils.strEqual(irc_network, cache_network) and ircutils.strEqual(
-                    target_arg, cache_channel
-                ):
-                    allowlist = self._loom_bot_nicks_cache or ()
-                    if not allowlist or any(ircutils.strEqual(n, msg.nick) for n in allowlist):
-                        loom.observe_transcript(msg.nick, text)
-            except Exception:
-                self.log.exception("loom transcript capture failed (non-fatal)")
 
         target = msg.args[0]
         is_pm = ircutils.nickEqual(target, irc.nick)
@@ -5431,94 +5350,6 @@ class LLM(callbacks.Plugin):
                 out.append(ch)
         return out
 
-    def _wire_loom_if_enabled(self) -> None:
-        """Build the Loom + bridge when loomNetwork + loomChannel are set.
-
-        Idempotent: re-wires only when the (network, channel) pair changes.
-        Tears down cleanly when either is unset.
-        """
-        network = self.registryValue("loomNetwork") or ""
-        channel = self.registryValue("loomChannel") or ""
-        # `loomChannel` is `registry.String` so it accepts arbitrary text
-        # (e.g. smart-quoted "“”" pasted from a doc). Without a chantype
-        # prefix the bot would PRIVMSG that string as a *nick*, producing
-        # a 401 storm — see post_to_loom_channel. Reject anything that
-        # isn't a valid IRC channel name; treat as unset.
-        if channel and not ircutils.isChannel(channel):
-            self.log.warning(
-                "loomChannel %r is not a valid IRC channel name; loom disabled",
-                channel,
-            )
-            channel = ""
-        if not network or not channel:
-            if self._loom is not None:
-                with contextlib.suppress(KeyError):
-                    schedule.removeEvent("llm_loom_after_chime")
-            self._loom = None
-            self._loom_bridge = None
-            self._loom_channel_cache = None
-            self._loom_network_cache = None
-            self._loom_bot_nicks_cache = ()
-            self._loom_capture_transcript_cache = True
-            return
-        if (
-            self._loom is not None
-            and self._loom_channel_cache == channel
-            and self._loom_network_cache == network
-        ):
-            # Identity unchanged but auxiliary caches may have flipped via
-            # @config (e.g. loomCaptureTranscript). Refresh them.
-            self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
-            return
-
-        from .verse.loom import LiteLLMLoomClient, Loom, LoomConfig
-
-        bot_nicks_raw = self.registryValue("loomBotNicks") or ""
-        cfg = LoomConfig(
-            network=network,
-            loom_channel=channel,
-            bot_nicks=tuple(n.strip() for n in bot_nicks_raw.split(",") if n.strip()),
-            model=self.registryValue("loomModel"),
-            cycle_interval_s=self.registryValue("loomCycleInterval") * 60,
-            verse_cooldown_s=self.registryValue("loomVerseCooldown") * 60,
-            beat_window_s=self.registryValue("loomBeatWindow"),
-            transcript_max_lines=self.registryValue("loomTranscriptMaxLines"),
-            transcript_max_chars=self.registryValue("loomTranscriptMaxChars"),
-            auto_apply_threshold=self.registryValue("verseAutoApplyThreshold"),
-            crosspoll_per_cycle_limit=int(self.registryValue("verseCrosspollPerCycleLimit") or 1),
-        )
-        self._loom_bridge = _PluginLoomBridge(self, network, channel)
-        # Loom shares the assistant's API key — both sides hit Gemini and
-        # there's no operational benefit to running them on separate keys
-        # today. (If someone wants split keys later, add ``loomApiKey`` and
-        # default it to ``assistantApiKey``.)
-        loom_api_key = self.registryValue("assistantApiKey") or None
-        self._loom = Loom(
-            cfg=cfg,
-            bridge=self._loom_bridge,
-            client=LiteLLMLoomClient(api_key=loom_api_key),
-        )
-        self._loom_channel_cache = channel
-        self._loom_network_cache = network
-        self._loom_bot_nicks_cache = cfg.bot_nicks
-        # Consent guard: an empty loomBotNicks captures EVERY participant in the
-        # loom channel — humans included — into transcripts that drive verse
-        # canon (and can crosspoll into other channels). That is fine for a
-        # bot-only venue (the intended deployment) but a hazard on a mixed
-        # channel, so flag it loudly at wiring time. We do NOT silently change
-        # the capture default, which a bot-only venue relies on.
-        if not cfg.bot_nicks:
-            self.log.warning(
-                "loomChannel %s is set but loomBotNicks is empty: the loom will "
-                "capture ALL participants in that channel, including humans, into "
-                "transcripts that drive verse canon. Point the loom at a bot-only "
-                "channel, or set loomBotNicks to the bot allowlist.",
-                channel,
-            )
-        self._loom_capture_transcript_cache = bool(self.registryValue("loomCaptureTranscript"))
-        # No periodic timer: the loom is reactive and arms itself via
-        # observe_transcript (the doPrivmsg hook).
-
     # -------------------------------------------------------------------------
     # Daily verse compaction timer (PR 3 / E3)
     # -------------------------------------------------------------------------
@@ -5691,23 +5522,6 @@ class LLM(callbacks.Plugin):
                 store = VerseStore(base, channel)
                 self._verse_stores[channel] = store
             return store
-
-    def _get_or_create_crosspoll_store(self):
-        """Return the process-wide CrosspollStore singleton, creating it on
-        first access. The store lives under the same ``verse/`` data dir as
-        the per-channel VerseStores."""
-        from .verse.crosspoll_store import CrosspollStore
-
-        # Double-checked locking: the verse bridge calls this from command
-        # threads, the addressed-dispatch SupyThread, and executor workers.
-        # Without the lock two first-callers could each construct a store
-        # (each opening its own SQLite connection) and one would be orphaned.
-        if self._crosspoll_store is None:
-            with self._crosspoll_store_lock:
-                if self._crosspoll_store is None:
-                    base = Path(conf.supybot.directories.data()) / "verse"
-                    self._crosspoll_store = CrosspollStore(base)
-        return self._crosspoll_store
 
     def verseopt(
         self,
@@ -6703,106 +6517,6 @@ class LLM(callbacks.Plugin):
             "channel",
         ],
     )
-
-
-class _PluginLoomBridge:
-    """Plugin-side adapter for Loom. One instance per active loom config."""
-
-    def __init__(self, plugin: LLM, network: str, channel: str) -> None:
-        self._plugin = plugin
-        self._network = network
-        self._channel = channel
-        self._verse_data_dir = Path(conf.supybot.directories.data()) / "verse"
-
-    def list_candidate_channels(self) -> list[str]:
-        """Channels with verseEnabled=True that have a DB on disk AND are
-        joined on the loom's network. Filtering on network avoids
-        cross-network channel-name collisions reaching the loom queue
-        (the SQLite store key is channel-name-only — see Open follow-ups)."""
-        from .verse.store import db_path_for_channel, list_active_verses
-
-        on_disk_paths = set(list_active_verses(self._verse_data_dir))
-        irc = world.getIrc(self._network)
-        if irc is None:
-            return []
-        joined = set(irc.state.channels.keys())
-        out: list[str] = []
-        for ch in self._plugin._verse_enabled_channels():
-            if ch not in joined:
-                continue
-            expected = db_path_for_channel(self._verse_data_dir, ch)
-            if expected in on_disk_paths:
-                out.append(ch)
-        return out
-
-    def candidate_weight(self, channel: str) -> int:
-        store = self._plugin._get_or_create_verse_store(channel)
-        active_avatars = len(store.list_entities_by_kind("avatar", status="active"))
-        recent = len(store.recent_events(limit=20))
-        return 2 * active_avatars + recent
-
-    def snapshot(self, channel: str):
-        from .verse.loom import VerseSnapshot
-
-        store = self._plugin._get_or_create_verse_store(channel)
-        avatars = store.list_entities_by_kind("avatar", status="active")[:5]
-        places = store.list_entities_by_kind("place")[:5]
-        events = store.recent_events(
-            limit=10, exclude_sources=("crosspoll",), require_active_entity=True
-        )
-        return VerseSnapshot(
-            channel=channel,
-            summary=f"{len(avatars)} active avatars, {len(places)} places",
-            top_entities=[(e.kind, e.name, e.id) for e in (*avatars, *places)],
-            recent_events=[e.summary for e in events],
-        )
-
-    def post_to_loom_channel(self, text: str) -> bool:
-        irc = world.getIrc(self._network)
-        if irc is None:
-            return False
-        # Model-authored scene text: collapse to one line and neutralize
-        # CR/LF/NUL before the raw-queue send (mirrors the scheduled-answer path).
-        safe_text = self._plugin._collapse_for_irc(text) or text
-        return self._plugin._safe_queue(irc, self._plugin._safe_privmsg(self._channel, safe_text))
-
-    def schedule_after(self, delay_s: float, fn, name: str) -> None:
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent(name)
-        schedule.addEvent(fn, time.time() + delay_s, name=name)
-
-    def submit(self, label: str, fn) -> None:
-        # _llm_executor is on the plugin (not on llm_service).
-        # LLMExecutor.submit signature is (label, fn, *args, **kwargs) ->
-        # Future. The future is intentionally discarded; the loom phase
-        # swallows its own exceptions.
-        self._plugin._llm_executor.submit(label, fn)
-
-    def now(self) -> float:
-        return time.time()
-
-    def store_for(self, channel: str):
-        return self._plugin._get_or_create_verse_store(channel)
-
-    def log_usage(self, *, channel: str, op: str, model: str, usage) -> None:
-        self._plugin.db.log_usage(
-            nick="loom",
-            channel=channel,
-            command=f"loom:{op}",
-            model=model,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            cost=usage.cost,
-        )
-
-    def crosspoll_store(self):
-        return self._plugin._get_or_create_crosspoll_store()
-
-    def verse_allow_send(self, channel: str) -> bool:
-        return bool(self._plugin.registryValue("verseCrosspollAllowSend", channel))
-
-    def verse_allow_receive(self, channel: str) -> bool:
-        return bool(self._plugin.registryValue("verseCrosspollAllowReceive", channel))
 
 
 Class = LLM
