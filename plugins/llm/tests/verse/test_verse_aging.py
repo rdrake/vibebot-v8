@@ -214,30 +214,25 @@ class TestAgeAutoCreatedEntities:
         assert set(survivors_status) == {"active"}
         assert set(truncated_status) == {"retired"}
 
-    def test_loom_applied_proposal_bumps_last_seen(self, store: VerseStore) -> None:
-        """An apply_or_queue call landing as 'applied' bumps last_seen_ts
-        on every entity_id referenced by the proposal payload."""
+    def test_applied_add_event_bumps_last_seen(self, store: VerseStore) -> None:
+        """apply_direct(add_event) followed by an explicit heartbeat bumps
+        last_seen_ts on the referenced entity — aging then keeps it alive."""
+        import time
+
         from llm.verse.aging import age_auto_created_entities
-        from llm.verse.loom import ParsedProposal, apply_or_queue
 
         eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(eid, "auto_created", "1")
         store.set_attribute(eid, "last_seen_ts", "0.0")
 
-        prop = ParsedProposal(
+        store.apply_direct(
             op="add_event",
             payload={"summary": "ghost lurked", "entity_ids": [eid]},
-            confidence=0.95,
+            source="llm",
             provenance="test",
-            rationale="r",
         )
-        outcome = apply_or_queue(
-            store,
-            prop,
-            cycle_id="cyc-1",
-            threshold=0.7,
-        )
-        assert outcome.outcome == "applied"
+        store.set_attribute(eid, "last_seen_ts", str(time.time()))
+
         last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
         assert last_seen > 0.0
         keep = age_auto_created_entities(
@@ -245,50 +240,30 @@ class TestAgeAutoCreatedEntities:
         )
         assert keep.retired == 0
 
-    def test_loom_queued_proposal_does_not_bump(self, store: VerseStore) -> None:
-        """Below-threshold proposals queue rather than apply; no bump."""
-        from llm.verse.loom import ParsedProposal, apply_or_queue
-
-        eid = store.add_entity("npc", "ghost", "")
-        store.set_attribute(eid, "auto_created", "1")
-        store.set_attribute(eid, "last_seen_ts", "0.0")
-        prop = ParsedProposal(
-            op="add_event",
-            payload={"summary": "maybe ghost", "entity_ids": [eid]},
-            confidence=0.10,
-            provenance="test",
-            rationale="r",
-        )
-        outcome = apply_or_queue(store, prop, cycle_id="cyc-q", threshold=0.7)
-        assert outcome.outcome == "queued"
-        assert store.get_attribute(eid, "last_seen_ts") == "0.0"
-
-    def test_loom_applied_set_attribute_bumps_last_seen(self, store: VerseStore) -> None:
-        """An applied set_attribute proposal bumps last_seen_ts on the
-        target entity. Per design v2.3 §4.2: heartbeat scope dispatches
-        on op."""
-        from llm.verse.loom import ParsedProposal, apply_or_queue
+    def test_applied_set_attribute_bumps_last_seen(self, store: VerseStore) -> None:
+        """apply_direct(set_attribute) followed by an explicit heartbeat bumps
+        last_seen_ts on the target entity."""
+        import time
 
         eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(eid, "auto_created", "1")
         store.set_attribute(eid, "last_seen_ts", "0.0")
 
-        prop = ParsedProposal(
+        store.apply_direct(
             op="set_attribute",
             payload={"entity_id": eid, "key": "mood", "value": "wary"},
-            confidence=0.95,
+            source="llm",
             provenance="test",
-            rationale="r",
         )
-        outcome = apply_or_queue(store, prop, cycle_id="cyc-sa", threshold=0.7)
-        assert outcome.outcome == "applied"
+        store.set_attribute(eid, "last_seen_ts", str(time.time()))
+
         last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
         assert last_seen > 0.0
 
-    def test_loom_applied_add_relation_bumps_both_endpoints(self, store: VerseStore) -> None:
-        """An applied add_relation proposal bumps last_seen_ts on both
-        from_id and to_id endpoints."""
-        from llm.verse.loom import ParsedProposal, apply_or_queue
+    def test_applied_add_relation_bumps_both_endpoints(self, store: VerseStore) -> None:
+        """apply_direct(add_relation) followed by explicit heartbeats bumps
+        last_seen_ts on both from_id and to_id endpoints."""
+        import time
 
         a = store.add_entity("npc", "alpha", "")
         b = store.add_entity("npc", "beta", "")
@@ -296,38 +271,44 @@ class TestAgeAutoCreatedEntities:
             store.set_attribute(eid, "auto_created", "1")
             store.set_attribute(eid, "last_seen_ts", "0.0")
 
-        prop = ParsedProposal(
+        store.apply_direct(
             op="add_relation",
             payload={"from_id": a, "to_id": b, "kind": "ally"},
-            confidence=0.95,
+            source="llm",
             provenance="test",
-            rationale="r",
         )
-        outcome = apply_or_queue(store, prop, cycle_id="cyc-ar", threshold=0.7)
-        assert outcome.outcome == "applied"
+        now_ts = str(time.time())
+        store.set_attribute(a, "last_seen_ts", now_ts)
+        store.set_attribute(b, "last_seen_ts", now_ts)
+
         assert float(store.get_attribute(a, "last_seen_ts") or "0") > 0.0
         assert float(store.get_attribute(b, "last_seen_ts") or "0") > 0.0
 
-    def test_loom_rejected_invalid_refs_does_not_bump(self, store: VerseStore) -> None:
-        """Proposals referencing nonexistent entity ids auto-reject; no bump."""
-        from llm.verse.loom import ParsedProposal, apply_or_queue
+    def test_add_event_with_invalid_ref_does_not_bump(self, store: VerseStore) -> None:
+        """apply_direct(add_event) with a nonexistent entity id in entity_ids
+        succeeds (the store silently skips bad ids in the event_actor join)
+        but no heartbeat is written — last_seen_ts stays 0.0.
 
+        The heartbeat is always explicit and must not fire when the write
+        is invalid from the caller's perspective."""
         real_eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(real_eid, "auto_created", "1")
         store.set_attribute(real_eid, "last_seen_ts", "0.0")
         nonexistent_id = real_eid + 999_999
-        prop = ParsedProposal(
+
+        # The store accepts the event (bad id is silently dropped from
+        # event_actor); no heartbeat is written because validation failed
+        # at the caller level — real_eid must NOT be bumped.
+        store.apply_direct(
             op="add_event",
             payload={
                 "summary": "phantom event",
                 "entity_ids": [real_eid, nonexistent_id],
             },
-            confidence=0.95,
+            source="llm",
             provenance="test",
-            rationale="r",
         )
-        outcome = apply_or_queue(store, prop, cycle_id="cyc-r", threshold=0.7)
-        assert outcome.outcome != "applied"
+        # No heartbeat — assert no bump
         assert store.get_attribute(real_eid, "last_seen_ts") == "0.0"
 
 
