@@ -19,9 +19,9 @@ _log = logging.getLogger(__name__)
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
-# Attribute keys that drive entity lifecycle/identity. Proposals (loom / model
+# Attribute keys that drive entity lifecycle/identity. Proposals (model
 # output) must never set these — they are maintained only by the engine's own
-# inline writers (bump_last_seen_ts, aging, compaction heartbeat, verse_move).
+# inline writers (aging, compaction heartbeat, verse_move).
 # Letting a model-proposed set_attribute write them would grant NPC immortality
 # (last_seen_ts), toggle aging enrollment (auto_created), or relocate/retype an
 # entity outside the guarded paths (location/status/kind).
@@ -562,29 +562,6 @@ class VerseStore:
         """Upsert an attribute key/value for the given entity."""
         with self.write_transaction() as conn:
             self._set_attribute_inline(conn, entity_id, key, value)
-
-    def bump_last_seen_ts(
-        self,
-        entity_ids: Sequence[int],
-        *,
-        ts: float,
-    ) -> None:
-        """Bump ``last_seen_ts`` on every id. Single ``write_transaction``.
-
-        Used by loom ``apply_or_queue`` (which runs outside any open tx).
-        Defensively skips ids that do not resolve to an ``entities`` row,
-        because callers may pass LLM-emitted ids that never got
-        validated. No-op for empty input.
-        """
-        if not entity_ids:
-            return
-        ts_str = str(ts)
-        with self.write_transaction() as conn:
-            for eid in entity_ids:
-                row = conn.execute("SELECT 1 FROM entities WHERE id=?", (int(eid),)).fetchone()
-                if row is None:
-                    continue
-                self._set_attribute_inline(conn, int(eid), "last_seen_ts", ts_str)
 
     def get_attribute(self, entity_id: int, key: str) -> str | None:
         """Return the attribute value for key, or None if not set."""
@@ -1240,58 +1217,6 @@ class VerseStore:
     # Proposals CRUD
     # ------------------------------------------------------------------
 
-    def add_proposal(
-        self,
-        *,
-        cycle_id: str,
-        op: str,
-        payload: dict[str, Any],
-        confidence: float,
-        provenance: str = "",
-        status: str = "pending",
-        reviewer: str | None = None,
-        proposal_id: str | None = None,
-    ) -> str:
-        """Insert a proposal and return its id.
-
-        When *proposal_id* is None (default) a fresh uuid is generated.
-        The crosspoll-receiver consume hook passes a caller-supplied id
-        so the consumption row written by ``CrosspollStore.claim_seed_for``
-        points at the same proposal record.
-
-        When *status* is 'approved' or 'rejected', *reviewer* must be
-        supplied and reviewed_at is set to now (this is how auto-apply
-        records its audit row inside the same write_transaction as the
-        mutation it just applied).
-        """
-        if status not in _VALID_PROPOSAL_STATUSES:
-            raise ValueError(f"invalid status: {status!r}")
-        if status != "pending" and not reviewer:
-            raise ValueError("reviewer required when status != pending")
-        pid = proposal_id if proposal_id is not None else uuid.uuid4().hex
-        now = time.time()
-        reviewed_at = now if status != "pending" else None
-        with self.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals "
-                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
-                " status, reviewer, reviewed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    pid,
-                    now,
-                    cycle_id,
-                    op,
-                    json.dumps(payload),
-                    confidence,
-                    provenance,
-                    status,
-                    reviewer,
-                    reviewed_at,
-                ),
-            )
-        return pid
-
     def _apply_op_inline(
         self,
         conn: sqlite3.Connection,
@@ -1442,45 +1367,6 @@ class VerseStore:
             return None
         raise ValueError(f"unknown op: {op!r}")
 
-    def apply_and_record_proposal(
-        self,
-        *,
-        cycle_id: str,
-        op: str,
-        payload: dict[str, Any],
-        confidence: float,
-        provenance: str,
-        reviewer: str,
-        source: str = "loom",
-    ) -> str:
-        """Atomically apply *op* and insert an approved proposal row.
-
-        Returns the new proposal id. Either both rows are written or
-        neither (the lock + write_transaction guarantee SQLite atomicity).
-        """
-        pid = uuid.uuid4().hex
-        now = time.time()
-        with self.write_transaction() as conn:
-            self._apply_op_inline(conn, op=op, payload=payload, source=source)
-            conn.execute(
-                "INSERT INTO proposals "
-                "(id, created_at, cycle_id, op, payload, confidence, provenance, "
-                " status, reviewer, reviewed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
-                (
-                    pid,
-                    now,
-                    cycle_id,
-                    op,
-                    json.dumps(payload),
-                    confidence,
-                    provenance,
-                    reviewer,
-                    now,
-                ),
-            )
-        return pid
-
     def apply_direct(
         self,
         *,
@@ -1492,8 +1378,8 @@ class VerseStore:
         """Apply *op* immediately and write an approved audit proposal row.
 
         For operator commands (source='operator') and the verse_edit tool
-        (source='llm'). Unlike apply_and_record_proposal this carries no loom
-        ceremony (cycle_id/confidence/reviewer are synthesized for audit only).
+        (source='llm'). This path carries no cycle tracking
+        (cycle_id/confidence/reviewer are synthesized for audit only).
         Returns the new row id for creating ops, else None.
         """
         pid = uuid.uuid4().hex
@@ -1508,39 +1394,6 @@ class VerseStore:
                 (pid, now, "direct", op, json.dumps(payload), 1.0, provenance, source, now),
             )
         return result
-
-    def apply_proposal_and_mark(
-        self,
-        proposal_id: str,
-        *,
-        reviewer: str,
-        event_source: str = "loom",
-    ) -> None:
-        """Atomically apply a pending proposal and flip its status to approved.
-
-        ``event_source`` is the value written into ``events.source`` (or any
-        other rows the op produces). Defaults to ``'loom'``; the crosspoll
-        receive path passes ``'crosspoll'``.
-
-        Raises ``LookupError`` if no such id, ``ValueError`` if already
-        terminal.
-        """
-        with self.write_transaction() as conn:
-            row = conn.execute(
-                "SELECT op, payload, status FROM proposals WHERE id=?",
-                (proposal_id,),
-            ).fetchone()
-            if row is None:
-                raise LookupError(f"no proposal: {proposal_id!r}")
-            op, payload_json, status = row
-            if status != "pending":
-                raise ValueError(f"proposal {proposal_id!r} already {status}; cannot apply")
-            payload = json.loads(payload_json)
-            self._apply_op_inline(conn, op=op, payload=payload, source=event_source)
-            conn.execute(
-                "UPDATE proposals SET status='approved', reviewer=?, reviewed_at=? WHERE id=?",
-                (reviewer, time.time(), proposal_id),
-            )
 
     def apply_proposal(
         self,

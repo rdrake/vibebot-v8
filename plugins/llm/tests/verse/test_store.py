@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -810,84 +809,31 @@ class TestOptInAvatar:
 
 
 class TestProposalsCRUD:
-    def test_add_proposal_pending_default(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "the bell rang", "entity_ids": []},
-            confidence=0.9,
-            provenance="line-3",
-        )
-        assert isinstance(pid, str) and len(pid) > 0
-        with store.read_connection() as conn:
-            row = conn.execute(
-                "SELECT id, op, status, confidence, reviewer, reviewed_at "
-                "FROM proposals WHERE id=?",
-                (pid,),
-            ).fetchone()
-            assert row[0] == pid
-            assert row[1] == "add_event"
-            assert row[2] == "pending"
-            assert row[3] == 0.9
-            assert row[4] is None
-            assert row[5] is None
-
-    def test_add_proposal_with_preset_status(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "auto", "entity_ids": []},
-            confidence=0.95,
-            provenance="line-1",
-            status="approved",
-            reviewer="loom",
-        )
-        with store.read_connection() as conn:
-            row = conn.execute(
-                "SELECT status, reviewer, reviewed_at FROM proposals WHERE id=?",
-                (pid,),
-            ).fetchone()
-            assert row[0] == "approved"
-            assert row[1] == "loom"
-            assert row[2] is not None and row[2] > 0
-
-    def test_add_proposal_rejects_invalid_status(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        with pytest.raises(ValueError):
-            store.add_proposal(
-                cycle_id="c-1",
-                op="add_event",
-                payload={"summary": "x", "entity_ids": []},
-                confidence=0.9,
-                provenance="x",
-                status="weird",
-            )
-
     def test_list_proposals_filters_and_decodes(self, verse_db_dir: Path) -> None:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
         from llm.verse.store import Proposal, VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
-        p1 = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "first"},
-            confidence=0.9,
-        )
-        time.sleep(0.005)
-        p2 = store.add_proposal(
-            cycle_id="c-2",
-            op="add_event",
-            payload={"summary": "second"},
-            confidence=0.5,
-        )
+        p1 = _uuid.uuid4().hex
+        t1 = _time.time()
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (p1, t1, "c-1", "add_event", _json.dumps({"summary": "first"}), 0.9, ""),
+            )
+        _time.sleep(0.005)
+        p2 = _uuid.uuid4().hex
+        t2 = _time.time()
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (p2, t2, "c-2", "add_event", _json.dumps({"summary": "second"}), 0.5, ""),
+            )
         rows = store.list_proposals()
         assert [r.id for r in rows] == [p2, p1]
         assert isinstance(rows[0], Proposal)
@@ -902,16 +848,28 @@ class TestProposalsCRUD:
         assert store.get_proposal("nope") is None
 
     def test_get_proposal_known_returns_proposal(self, verse_db_dir: Path) -> None:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
         from llm.verse.store import Proposal, VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": [1]},
-            confidence=0.4,
-            provenance="line-2",
-        )
+        pid = _uuid.uuid4().hex
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (
+                    pid,
+                    _time.time(),
+                    "c-1",
+                    "add_event",
+                    _json.dumps({"summary": "x", "entity_ids": [1]}),
+                    0.4,
+                    "line-2",
+                ),
+            )
         p = store.get_proposal(pid)
         assert isinstance(p, Proposal)
         assert p.id == pid
@@ -920,15 +878,20 @@ class TestProposalsCRUD:
         assert p.status == "pending"
 
     def test_update_proposal_status_records_reviewer(self, verse_db_dir: Path) -> None:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x"},
-            confidence=0.9,
-        )
+        pid = _uuid.uuid4().hex
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (pid, _time.time(), "c-1", "add_event", _json.dumps({"summary": "x"}), 0.9, ""),
+            )
         store.update_proposal_status(pid, status="approved", reviewer="alice")
         p = store.get_proposal(pid)
         assert p is not None
@@ -937,15 +900,20 @@ class TestProposalsCRUD:
         assert p.reviewed_at is not None and p.reviewed_at > 0
 
     def test_update_proposal_status_rejects_invalid(self, verse_db_dir: Path) -> None:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x"},
-            confidence=0.9,
-        )
+        pid = _uuid.uuid4().hex
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (pid, _time.time(), "c-1", "add_event", _json.dumps({"summary": "x"}), 0.9, ""),
+            )
         with pytest.raises(ValueError):
             store.update_proposal_status(pid, status="weird", reviewer="alice")
 
@@ -957,23 +925,35 @@ class TestProposalsCRUD:
             store.update_proposal_status("nope", status="approved", reviewer="alice")
 
     def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
-        store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "p"},
-            confidence=0.9,
-        )
-        approved = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "a"},
-            confidence=0.9,
-            status="approved",
-            reviewer="loom",
-        )
+        now = _time.time()
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
+                (
+                    _uuid.uuid4().hex,
+                    now,
+                    "c-1",
+                    "add_event",
+                    _json.dumps({"summary": "p"}),
+                    0.9,
+                    "",
+                ),
+            )
+        approved = _uuid.uuid4().hex
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
+                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'approved','loom',?)",
+                (approved, now, "c-1", "add_event", _json.dumps({"summary": "a"}), 0.9, "", now),
+            )
         rows = store.list_proposals(status="approved")
         assert [r.id for r in rows] == [approved]
 
@@ -1055,184 +1035,6 @@ class TestApplyProposal:
         store = VerseStore(verse_db_dir, "#afnet")
         with pytest.raises(KeyError):
             store.apply_proposal(op="add_event", payload={}, source="loom")
-
-
-class TestApplyAndRecordProposal:
-    def test_one_transaction_event_plus_audit(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("avatar", "Forest")
-        pid = store.apply_and_record_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": [eid]},
-            confidence=0.95,
-            provenance="line-1",
-            reviewer="loom",
-        )
-        assert isinstance(pid, str) and len(pid) > 0
-        events = store.recent_events()
-        assert len(events) == 1
-        assert events[0].summary == "x"
-        rows = store.list_proposals()
-        assert len(rows) == 1
-        assert rows[0].status == "approved"
-        assert rows[0].reviewer == "loom"
-
-    def test_failure_inside_op_rolls_back_audit(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        with pytest.raises(Exception):  # noqa: B017,PT011
-            store.apply_and_record_proposal(
-                cycle_id="c-1",
-                op="set_attribute",
-                payload={"entity_id": 9999, "key": "k", "value": "v"},
-                confidence=0.95,
-                provenance="x",
-                reviewer="loom",
-            )
-        assert store.list_proposals() == []
-
-    def test_set_attribute_on_retired_entity_raises_and_writes_nothing(
-        self, verse_db_dir: Path
-    ) -> None:
-        """A proposal must not mutate a retired entity (loom retired-entity guard)."""
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("npc", "Wraith", "A faded memory.")
-        store.set_status(eid, "retired")
-        with pytest.raises(LookupError, match="retired"):
-            store.apply_and_record_proposal(
-                cycle_id="c-1",
-                op="set_attribute",
-                payload={"entity_id": eid, "key": "mood", "value": "vengeful"},
-                confidence=0.95,
-                provenance="x",
-                reviewer="loom",
-            )
-        assert store.get_attribute(eid, "mood") is None
-        assert store.list_proposals() == []
-
-    def test_set_attribute_reserved_key_raises_and_writes_nothing(self, verse_db_dir: Path) -> None:
-        """A proposal must not set lifecycle-controlled keys (no last_seen_ts immortality)."""
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("npc", "Ghost", "Lingering.")
-        with pytest.raises(ValueError, match="reserved"):
-            store.apply_and_record_proposal(
-                cycle_id="c-1",
-                op="set_attribute",
-                payload={"entity_id": eid, "key": "last_seen_ts", "value": "99999999999"},
-                confidence=0.95,
-                provenance="x",
-                reviewer="loom",
-            )
-        assert store.get_attribute(eid, "last_seen_ts") is None
-        assert store.list_proposals() == []
-
-    def test_add_relation_with_retired_endpoint_raises_and_writes_nothing(
-        self, verse_db_dir: Path
-    ) -> None:
-        """A proposal must not relate a retired entity (sibling of the set_attribute guard).
-
-        The relations FK enforces existence but not status, so a retired
-        endpoint on either side must be rejected explicitly — covering
-        auto-apply of a since-retired proposal, and crosspoll.
-        """
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        active = store.add_entity("avatar", "Forest")
-        retired = store.add_entity("npc", "Wraith", "A faded memory.")
-        store.set_status(retired, "retired")
-
-        for payload in (
-            {"from_id": retired, "to_id": active, "kind": "allied_with", "note": ""},
-            {"from_id": active, "to_id": retired, "kind": "allied_with", "note": ""},
-        ):
-            with pytest.raises(LookupError, match="retired"):
-                store.apply_and_record_proposal(
-                    cycle_id="c-1",
-                    op="add_relation",
-                    payload=payload,
-                    confidence=0.95,
-                    provenance="x",
-                    reviewer="loom",
-                )
-        assert store.list_relations(from_id=active) == []
-        assert store.list_relations(from_id=retired) == []
-        assert store.list_proposals() == []
-
-
-class TestApplyProposalAndMark:
-    def test_pending_to_approved_atomically(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.5,
-            provenance="line-1",
-        )
-        store.apply_proposal_and_mark(pid, reviewer="alice")
-        events = store.recent_events()
-        assert len(events) == 1
-        p = store.get_proposal(pid)
-        assert p is not None
-        assert p.status == "approved"
-        assert p.reviewer == "alice"
-
-    def test_unknown_id_raises(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        with pytest.raises(LookupError):
-            store.apply_proposal_and_mark("nope", reviewer="alice")
-
-    def test_already_terminal_status_raises(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.5,
-            provenance="x",
-            status="approved",
-            reviewer="bob",
-        )
-        with pytest.raises(ValueError):
-            store.apply_proposal_and_mark(pid, reviewer="alice")
-
-    def test_apply_pending_set_attribute_on_since_retired_entity_raises(
-        self, verse_db_dir: Path
-    ) -> None:
-        """Approving a proposal whose entity retired after queueing must reject (TOCTOU)."""
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("npc", "Echo", "Still here.")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="set_attribute",
-            payload={"entity_id": eid, "key": "mood", "value": "calm"},
-            confidence=0.5,
-            provenance="x",
-        )
-        store.set_status(eid, "retired")  # retired between queue and approval
-        with pytest.raises(LookupError, match="retired"):
-            store.apply_proposal_and_mark(pid, reviewer="op")
-        assert store.get_attribute(eid, "mood") is None
-        # Apply rolled back: the proposal stays pending, not approved.
-        p = store.get_proposal(pid)
-        assert p is not None and p.status == "pending"
 
 
 class TestListActiveVerses:
@@ -1431,67 +1233,6 @@ class TestReplaceEventsWithLoreDigest:
         assert json.loads(row[0]) == [1, 2, 3]
 
 
-class TestAddProposalAcceptsId:
-    def test_default_generates_uuid_id(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.0,
-            provenance="t",
-        )
-        # 32-char lowercase hex (uuid4 .hex)
-        assert isinstance(pid, str) and len(pid) == 32
-        assert all(c in "0123456789abcdef" for c in pid)
-
-    def test_caller_supplied_id_is_used_verbatim(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid_in = "deadbeef" * 4  # 32 chars
-        pid_out = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.0,
-            provenance="t",
-            proposal_id=pid_in,
-        )
-        assert pid_out == pid_in
-        with store.read_connection() as conn:
-            row = conn.execute(
-                "SELECT id FROM proposals WHERE id=?",
-                (pid_in,),
-            ).fetchone()
-        assert row is not None and row[0] == pid_in
-
-    def test_caller_supplied_duplicate_id_raises(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = "abcd" * 8
-        store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.0,
-            provenance="t",
-            proposal_id=pid,
-        )
-        with pytest.raises(sqlite3.IntegrityError):
-            store.add_proposal(
-                cycle_id="c-1",
-                op="add_event",
-                payload={"summary": "y", "entity_ids": []},
-                confidence=0.0,
-                provenance="t",
-                proposal_id=pid,
-            )
-
-
 class TestInlineHelpers:
     def test_add_entity_inline_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
         """Caller opens its own write_transaction, calls _add_entity_inline,
@@ -1554,75 +1295,6 @@ class TestInlineHelpers:
         with store.read_connection() as conn:
             row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
         assert row[0] == "retired"
-
-
-class TestApplyProposalAndMarkEventSource:
-    def test_default_source_is_loom_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "x", "entity_ids": []},
-            confidence=0.0,
-            provenance="t",
-        )
-        store.apply_proposal_and_mark(pid, reviewer="op")
-        with store.read_connection() as conn:
-            ev_row = conn.execute("SELECT source FROM events WHERE summary='x'").fetchone()
-            pr_row = conn.execute(
-                "SELECT status, reviewer, reviewed_at FROM proposals WHERE id=?",
-                (pid,),
-            ).fetchone()
-        assert ev_row[0] == "loom"
-        # apply_proposal_and_mark contract: status flipped, reviewer
-        # recorded, reviewed_at populated.
-        assert pr_row[0] == "approved"
-        assert pr_row[1] == "op"
-        assert pr_row[2] is not None and pr_row[2] > 0
-
-    def test_event_source_crosspoll_and_proposal_marked_approved(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="crosspoll-recv",
-            op="add_event",
-            payload={"summary": "incoming", "entity_ids": []},
-            confidence=0.0,
-            provenance="crosspoll from #other",
-        )
-        store.apply_proposal_and_mark(pid, reviewer="op", event_source="crosspoll")
-        with store.read_connection() as conn:
-            ev_row = conn.execute("SELECT source FROM events WHERE summary='incoming'").fetchone()
-            pr_row = conn.execute(
-                "SELECT status, reviewer FROM proposals WHERE id=?",
-                (pid,),
-            ).fetchone()
-        assert ev_row[0] == "crosspoll"
-        assert pr_row[0] == "approved"
-        assert pr_row[1] == "op"
-
-    def test_already_approved_raises_and_does_not_double_apply(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = store.add_proposal(
-            cycle_id="c-1",
-            op="add_event",
-            payload={"summary": "once", "entity_ids": []},
-            confidence=0.0,
-            provenance="t",
-        )
-        store.apply_proposal_and_mark(pid, reviewer="op")
-        with pytest.raises(ValueError):
-            store.apply_proposal_and_mark(pid, reviewer="op", event_source="crosspoll")
-        # Only one event row; no double-apply. The 'crosspoll' source
-        # was rejected because the proposal was already terminal.
-        with store.read_connection() as conn:
-            count = conn.execute("SELECT COUNT(*) FROM events WHERE summary='once'").fetchone()[0]
-        assert count == 1
 
 
 class TestFindActiveEntityByName:
