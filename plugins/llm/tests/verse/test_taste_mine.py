@@ -159,3 +159,96 @@ def test_render_review_excludes_denial_from_trusted_json():
     assert "DENIAL?" in md  # denial flagged for the human
     trusted = json.loads(md.split("```json")[1].split("```")[0])
     assert trusted == ["the lads marched on"]  # denial + needs_review excluded
+
+
+# ---------------------------------------------------------------------------
+# Focused branch-coverage tests (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_iter_messages_skips_malformed_angle_bracket_no_close():
+    """Line 42: <-led line with no "> " separator → skipped."""
+    lines = [
+        "2026-06-22T00:01:00  <malformed no close bracket body here",
+        "2026-06-22T00:02:00  <fc42> normal",
+    ]
+    msgs = list(iter_messages(lines))
+    assert len(msgs) == 1
+    assert msgs[0] == Msg("fc42", "normal")
+
+
+def test_iter_messages_skips_action_with_no_body():
+    """Line 47: * nick line with only a nick token, no body → skipped."""
+    lines = [
+        "2026-06-22T00:01:00  * lonelynick",
+        "2026-06-22T00:02:00  * fc42 does something",
+    ]
+    msgs = list(iter_messages(lines))
+    assert len(msgs) == 1
+    assert msgs[0] == Msg("fc42", "does something")
+
+
+def test_repaste_capitalized_entity_is_autotrusted():
+    """Line 82: single-word entity name capitalized as whole word → needs_review False."""
+    store = FakeStore(["Ghost"])
+    # Text must be ≥120 chars and contain "Ghost" capitalized (not just lowercase)
+    text = (
+        "The Ghost appeared at the end of the long corridor and everyone present "
+        "felt a sudden chill as the candles flickered out one by one in sequence"
+    )
+    assert len(text) >= 120
+    c = classify_repaste(text, store)
+    assert c is not None
+    assert c.needs_review is False  # capitalized whole-word → auto-trusted
+
+
+def test_repaste_no_entity_returns_none():
+    """Line 94: long clean prose with no matching entities → None."""
+    store = FakeStore([])
+    text = (
+        "the weather was absolutely dreadful on saturday morning and nobody wanted "
+        "to leave the house or do anything productive at all really to be fair"
+    )
+    assert len(text) >= 120
+    assert classify_repaste(text, store) is None
+
+
+def test_praise_no_prev_line_no_inline_entity_returns_none():
+    """Line 134: praise word found but no inline entity AND empty prev_line → None."""
+    # No "when it said" inline, and prev_line is empty
+    result = classify_praise("amazing", FakeStore([]), prev_line="")
+    assert result is None
+
+
+def test_nearest_source_skips_url_and_addressed_lines():
+    """Lines 155, 157: _nearest_source skips URL/addressed lines; returns "" when none left."""
+    store = FakeStore(["stinky lads"])
+    # fc42 praises, but all prior non-fc42 lines are URL or bot-addressed → no valid source
+    lines = [
+        "2026-06-22T00:01:00  <rdrake> https://example.com/some/link",  # URL → skip
+        "2026-06-22T00:02:00  <rdrake> grok what do you think about this",  # addressed → skip
+        "2026-06-22T00:03:00  <fc42> amazing",  # fc42 praises; no valid source
+    ]
+    cands = extract_candidates(lines, store)
+    # praise with no valid source → candidate dropped (empty text → empty key → filtered)
+    assert not any(c.kind == "praise" for c in cands)
+
+
+def test_nearest_source_skips_url_returns_earlier_valid_line():
+    """Line 155: _nearest_source skips a URL line and finds an earlier valid one."""
+    store = FakeStore(["stinky lads"])
+    # Sequence: valid bot line, then URL-only, then fc42 praises
+    lines = [
+        "2026-06-22T00:01:00  <Larry> the stinky lads marched into the hall indeed mate",
+        "2026-06-22T00:02:00  <rdrake> https://example.com/foo",  # URL → skip
+        "2026-06-22T00:03:00  <fc42> amazing",
+    ]
+    cands = extract_candidates(lines, store)
+    praise = [c for c in cands if c.kind == "praise"]
+    assert len(praise) == 1
+    assert "stinky lads" in praise[0].text
+
+
+def test_extract_candidates_empty_input():
+    """No-op: empty lines → empty candidate list."""
+    assert extract_candidates([], FakeStore([])) == []
