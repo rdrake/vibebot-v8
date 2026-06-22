@@ -6,8 +6,9 @@ verse store or config. See docs/superpowers/specs/2026-06-21-fc42-taste-exemplar
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 _SEP = "  "  # ChannelLogger separates the timestamp from the body with two spaces
 
@@ -50,3 +51,44 @@ def iter_messages(lines: Iterable[str]) -> Iterator[Msg]:
         if not body:
             continue
         yield Msg(nick, body)
+
+
+_MIN_REPASTE_CHARS = 120
+_URL_RE = re.compile(r"https?://")
+_ADDRESSED_RE = re.compile(r"^(grok|vibebot)\b", re.IGNORECASE)  # only real bot triggers
+
+
+class Candidate(NamedTuple):
+    text: str
+    kind: str  # "repaste" | "praise"
+    source_line: str
+    needs_review: bool
+
+
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _strong_entity_match(text: str, ents: list[Any]) -> bool:
+    """Auto-trustable: a multiword entity name, or a capitalized whole-word
+    occurrence of the name in the ORIGINAL text."""
+    for e in ents:
+        name = e.name
+        if " " in name:
+            return True
+        cap = name[:1].upper() + name[1:]
+        if re.search(r"(?<!\w)" + re.escape(cap) + r"(?!\w)", text):
+            return True
+    return False
+
+
+def classify_repaste(body: str, store: Any, *, min_chars: int = _MIN_REPASTE_CHARS):
+    text = _norm_ws(body)
+    if len(text) < min_chars:
+        return None
+    if _URL_RE.search(text) or _ADDRESSED_RE.match(text):
+        return None
+    ents = store.match_entities_in_text(text)
+    if not ents:
+        return None
+    return Candidate(text, "repaste", body, not _strong_entity_match(text, ents))
