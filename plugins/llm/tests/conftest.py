@@ -484,6 +484,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Verse subsystem
         "verseEnabled": False,
         "verseCompactionModel": "gemini/gemini-flash-lite-latest",
+        "verseStyleExemplars": [],
     }
     if overrides:
         defaults.update(overrides)

@@ -360,3 +360,32 @@ class TestVerseAutoEntityKeys:
 
         conf.supybot.plugins.LLM.verseAutoEntityRetireDays.setValue(0)
         assert conf.supybot.plugins.LLM.verseAutoEntityRetireDays() == 0
+
+
+class TestVerseStyleExemplars:
+    """registry.Json channel key for fc42 taste exemplars."""
+
+    def test_verse_style_exemplars_default_empty_list(self) -> None:
+        """registry.Json round-trips the empty-list default cleanly."""
+        from supybot import registry
+
+        v = registry.Json([], "h")
+        assert v() == []
+
+    def test_verse_style_exemplars_json_roundtrips_quote_laden(self) -> None:
+        """Strings with quotes and dashes survive the bot.conf read path."""
+        from supybot import registry
+
+        v = registry.Json([], "h")
+        payload = ['"the lads marched," he said', "it's grim up north", "BRAAAP—ven"]
+        v.setValue(payload)
+        restored = registry.Json([], "h")
+        restored.set(str(v))  # str(v) == json.dumps(...) == the bot.conf read path
+        assert restored() == payload
+
+    def test_verse_style_exemplars_registered_default_empty_list(self) -> None:
+        """verseStyleExemplars per-channel default is []."""
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.verseStyleExemplars() == []

@@ -249,6 +249,20 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseStyleExemplars",
+    registry.Json(
+        [],
+        _("""Curated "taste" style exemplars — a JSON list of strings injected
+        into the verse system prompt to bias prose toward what the channel's
+        critics like. Default empty = verse prompt unchanged. Populated offline
+        by mining channel logs (plugins/llm/src/llm/verse/taste_mine.py) and
+        curated by hand; deploy by editing this value in bot.conf while the bot
+        is stopped (a JSON array survives the round-trip cleanly)."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "drawTimeout",
