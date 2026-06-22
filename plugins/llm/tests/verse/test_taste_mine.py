@@ -1,6 +1,6 @@
 import re as _re
 
-from llm.verse.taste_mine import Msg, classify_repaste, iter_messages
+from llm.verse.taste_mine import Msg, classify_praise, classify_repaste, iter_messages
 
 
 class _Ent:
@@ -73,3 +73,37 @@ def test_repaste_keeps_name_led_prose():
         "cloud that lingered for several minutes much to everyone's dismay yeah"
     )
     assert classify_repaste(text, store) is not None
+
+
+def test_praise_inline_keeps_leading_article_starts_at_entity():
+    store = FakeStore(["stinky lads"])
+    line = (
+        "i love it when it said earlier that the stinky lads will either rule "
+        "the country or set it on fire"
+    )
+    c = classify_praise(line, store, prev_line="(some bot line)")
+    assert c is not None and c.needs_review is True
+    assert c.text.startswith(
+        "the stinky lads will either rule"
+    )  # 'earlier that' stripped, 'the' kept
+    assert "earlier that" not in c.text
+
+
+def test_praise_bare_attaches_source_line():
+    store = FakeStore(["stinky lads"])
+    c = classify_praise(
+        "haha this is a good one", store, prev_line="the stinky lads stormed the chippy"
+    )
+    assert c is not None and c.needs_review is True
+    assert c.text == "the stinky lads stormed the chippy"
+
+
+def test_praise_wordlist_is_word_bounded():
+    store = FakeStore(["stinky lads"])
+    # "classroom" must NOT trigger the "class" praise word
+    assert classify_praise("the classroom was loud", store, prev_line="x") is None
+
+
+def test_non_praise_returns_none():
+    store = FakeStore(["stinky lads"])
+    assert classify_praise("what time is the match", store, prev_line="x") is None

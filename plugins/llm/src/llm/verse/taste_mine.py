@@ -92,3 +92,42 @@ def classify_repaste(body: str, store: Any, *, min_chars: int = _MIN_REPASTE_CHA
     if not ents:
         return None
     return Candidate(text, "repaste", body, not _strong_entity_match(text, ents))
+
+
+_PRAISE_WORDS = (
+    "good one",
+    "amazing",
+    "brilliant",
+    "genius",
+    "love it",
+    "so good",
+    "this is gold",
+    "lmao that",
+)
+_PRAISE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in _PRAISE_WORDS) + r")\b", re.IGNORECASE
+)
+_INLINE_RE = re.compile(r"when it said\s+(.*)$", re.IGNORECASE)
+_LEADING_STOPWORDS = {"earlier", "that", "it", "when", "said"}  # NOT articles
+
+
+def _strip_leading_stopwords(s: str) -> str:
+    toks = s.split()
+    i = 0
+    while i < len(toks) and toks[i].lower().strip(",.!?") in _LEADING_STOPWORDS:
+        i += 1
+    return " ".join(toks[i:])
+
+
+def classify_praise(body: str, store: Any, *, prev_line: str = ""):
+    if not _PRAISE_RE.search(body):
+        return None
+    inline = _INLINE_RE.search(body)
+    if inline:
+        span = _strip_leading_stopwords(_norm_ws(inline.group(1)))
+        if span and store.match_entities_in_text(span):
+            return Candidate(span, "praise", body, True)
+    prev = _norm_ws(prev_line)
+    if prev:
+        return Candidate(prev, "praise", body, True)
+    return None
