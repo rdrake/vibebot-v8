@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NamedTuple
@@ -20,6 +20,36 @@ _log = logging.getLogger(__name__)
 #: prompt. Everything before this marker is byte-stable across turns so the
 #: LLM prefix cache can hit it; everything after is message-/scene-derived.
 VERSE_SCENE_MARKER = "In play right now:"
+
+_MAX_EXEMPLARS = 5
+_MAX_EXEMPLAR_CHARS = 600
+_STYLE_HEADER = (
+    "The channel's sharpest critic singled these lines out as the good stuff — "
+    "match this voice and energy; never copy them verbatim:"
+)
+
+
+def _render_style_exemplars(exemplars: Sequence[str]) -> list[str]:
+    """Sanitize + cap curated exemplars into prompt lines. Returns [] when empty,
+    so a default-empty key leaves the prompt byte-identical."""
+    out: list[str] = []
+    total = 0
+    for ex in exemplars or ():
+        s = " ".join(str(ex).split())  # collapse ALL whitespace incl \n\r\t and U+2028/9
+        s = "".join(c for c in s if c.isprintable())  # drop zero-width/bidi/control chars
+        if not s:
+            continue
+        if VERSE_SCENE_MARKER in s or s.startswith("Scene:") or s.startswith("- "):
+            continue  # never let an exemplar forge prefix structure
+        if len(s) > _MAX_EXEMPLAR_CHARS:
+            continue  # skip a single oversized exemplar (keep the rest)
+        if total + len(s) > _MAX_EXEMPLAR_CHARS:
+            break
+        out.append(f"- {s}")
+        total += len(s)
+        if len(out) >= _MAX_EXEMPLARS:
+            break
+    return [_STYLE_HEADER, *out] if out else []
 
 
 @dataclass(frozen=True)
@@ -474,6 +504,8 @@ def build_verse_system_prompt(
     instruct_text: str,
     roster_max_chars: int = 4000,
     message_text: str = "",
+    *,
+    style_exemplars: Sequence[str] = (),
 ) -> str:
     """Build the verse-aware @ask system prompt, STABLE-FIRST for prefix caching.
 
@@ -514,6 +546,8 @@ def build_verse_system_prompt(
     if roster_lines:
         parts.append("Established characters in this world:")
         parts.extend(roster_lines)
+
+    parts.extend(_render_style_exemplars(style_exemplars))  # static, cacheable
 
     # ===== VOLATILE SCENE BLOCK (per-turn; not in the cached prefix) =====
     parts.append(VERSE_SCENE_MARKER)
