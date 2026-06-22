@@ -3102,3 +3102,55 @@ class TestDeloomedPluginBoot:
             "verseCompactionModel was never queried; compaction path may have "
             "short-circuited or read a different key — test is no longer armed"
         )
+
+
+# =============================================================================
+# Task 7: verseStyleExemplars threaded into the verse route (end-to-end)
+# =============================================================================
+
+
+def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
+    """GIVEN verseStyleExemplars returns a non-empty list WHEN _verse_route_for
+    is called for an opted-in avatar THEN the exemplar text AND the
+    'singled these lines out' header both appear in route.system_prompt.
+
+    This is the end-to-end plumbing test: it proves that the caller reads the
+    config key and passes it to build_verse_system_prompt.
+    """
+    from llm.verse.store import VerseStore
+
+    plugin, irc, msg = plugin_env
+
+    store = VerseStore(tmp_path / "verse", "#afnet")
+    mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+
+    def _registry(key, *args):
+        if key == "verseEnabled":
+            return True
+        if key == "verseStyleExemplars":
+            return ["the lads marched on the chippy"]
+        from tests.conftest import make_registry_side_effect
+
+        return make_registry_side_effect()(key, *args)
+
+    plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+    mocker.patch(
+        "llm.plugin.ircdb.checkCapability",
+        side_effect=lambda prefix, cap: cap.startswith("llm."),
+    )
+    plugin.db.get_instruction = mocker.MagicMock(return_value=None)
+    plugin.db.get_avatar_persona = mocker.MagicMock(return_value=None)
+
+    # Opt alice in via the real command so the store has her avatar.
+    msg.args = ("#afnet", "@verseopt in")
+    msg.prefix = "alice!user@host"
+    msg.nick = "alice"
+    msg.server_tags = {}
+    plugin.verseopt(irc, msg, ["in"])
+    irc.reply.reset_mock()
+
+    route = plugin._verse_route_for("#afnet", "alice", None, "what happened")
+
+    assert route is not None
+    assert "the lads marched on the chippy" in route.system_prompt
+    assert "singled these lines out" in route.system_prompt

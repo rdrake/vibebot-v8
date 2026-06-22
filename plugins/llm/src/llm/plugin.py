@@ -2569,6 +2569,7 @@ class LLM(callbacks.Plugin):
             persona,
             roster_max_chars=self.registryValue("verseRosterMaxChars", channel),
             message_text=message_text,
+            style_exemplars=self.registryValue("verseStyleExemplars", channel),
         )
         max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         tools = make_verse_tool_specs(
