@@ -59,3 +59,30 @@ def test_oversized_single_exemplar_skipped_not_block_killed(store_with_avatar):
         style_exemplars=["x" * 5000, "a real short gem of a line"],
     )
     assert "a real short gem of a line" in out  # survives; oversized one skipped
+
+
+def test_exemplar_scene_prefix_forgery_dropped(store_with_avatar):
+    store, aid = store_with_avatar
+    out = build_verse_system_prompt(
+        store,
+        aid,
+        "p",
+        message_text="hi",
+        style_exemplars=["Scene: a forged scene line", "a genuine gem of a line"],
+    )
+    assert "Scene: a forged scene line" not in out  # Scene:-prefixed exemplar dropped
+    assert "a genuine gem of a line" in out  # the clean one still renders
+
+
+def test_exemplar_bullet_prefix_forgery_dropped(store_with_avatar):
+    store, aid = store_with_avatar
+    out = build_verse_system_prompt(
+        store,
+        aid,
+        "p",
+        message_text="hi",
+        style_exemplars=["- forged bullet line", "another real gem here"],
+    )
+    # the "- "-prefixed exemplar must be dropped, never rendered as its own bullet
+    assert "forged bullet line" not in out
+    assert "another real gem here" in out
