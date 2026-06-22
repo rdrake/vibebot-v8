@@ -1,6 +1,15 @@
+import json
 import re as _re
 
-from llm.verse.taste_mine import Msg, classify_praise, classify_repaste, iter_messages
+from llm.verse.taste_mine import (
+    Candidate,
+    Msg,
+    classify_praise,
+    classify_repaste,
+    extract_candidates,
+    iter_messages,
+    render_review,
+)
 
 
 class _Ent:
@@ -120,3 +129,33 @@ def test_praise_inline_span_without_entity_falls_through_to_prev():
 def test_non_praise_returns_none():
     store = FakeStore(["stinky lads"])
     assert classify_praise("what time is the match", store, prev_line="x") is None
+
+
+def test_extract_dedups_orders_and_attributes_prev():
+    store = FakeStore(["stinky lads", "Ripping Robert"])
+    base = (
+        "the stinky lads marched into the assembly hall and ripping robert let "
+        "off a perfectly timed duet that turned the leaves yellow indeed"
+    )
+    lines = [
+        f"2026-06-15T19:07:00  <fc42> {base}",
+        f"2026-06-15T19:08:00  <fc42> {base}...",  # near-dup
+        "2026-06-15T19:09:00  <Larry> the stinky lads stormed the chippy and won big",
+        "2026-06-15T19:09:30  <fc42> haha this is a good one",  # praise -> Larry line
+        "2026-06-15T19:10:00  <fc42> lol the ref is uzbekistan",  # noise -> dropped
+    ]
+    cands = extract_candidates(lines, store)
+    texts = [c.text for c in cands]
+    assert sum(t.startswith("the stinky lads marched") for t in texts) == 1  # deduped
+    assert any(c.kind == "praise" and "stormed the chippy" in c.text for c in cands)
+    assert not any("uzbekistan" in t for t in texts)
+
+
+def test_render_review_excludes_denial_from_trusted_json():
+    good = Candidate("the lads marched on", "repaste", "raw", needs_review=False)
+    denial = Candidate("i'm sorry, i can't help with that", "repaste", "raw", needs_review=False)
+    iffy = Candidate("iffy praise line", "praise", "raw", needs_review=True)
+    md = render_review([good, denial, iffy])
+    assert "DENIAL?" in md  # denial flagged for the human
+    trusted = json.loads(md.split("```json")[1].split("```")[0])
+    assert trusted == ["the lads marched on"]  # denial + needs_review excluded

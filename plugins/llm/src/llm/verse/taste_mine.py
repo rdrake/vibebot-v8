@@ -6,6 +6,7 @@ verse store or config. See docs/superpowers/specs/2026-06-21-fc42-taste-exemplar
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Iterator
 from typing import Any, NamedTuple
@@ -131,3 +132,96 @@ def classify_praise(body: str, store: Any, *, prev_line: str = ""):
     if prev:
         return Candidate(prev, "praise", body, True)
     return None
+
+
+_DENIAL_RE = re.compile(
+    r"\b(i can'?t|i cannot|i'?m sorry|as an ai|i won'?t|unable to|cannot help)\b",
+    re.IGNORECASE,
+)
+
+
+def _dedup_key(text: str) -> str:
+    return re.sub(r"[^\w ]+", "", text.lower()).strip()
+
+
+def _nearest_source(msgs: list[Msg], i: int) -> str:
+    """Nearest prior non-fc42, non-URL, non-addressed line (spec attribution)."""
+    for j in range(i - 1, -1, -1):
+        m = msgs[j]
+        if _is_fc42(m.nick):
+            continue
+        b = _norm_ws(m.body)
+        if _URL_RE.search(b) or _ADDRESSED_RE.match(b):
+            continue
+        return m.body
+    return ""
+
+
+def extract_candidates(
+    lines: Iterable[str], store: Any, *, min_repaste_chars: int = _MIN_REPASTE_CHARS
+) -> list[Candidate]:
+    msgs = list(iter_messages(lines))
+    out: list[Candidate] = []
+    seen: set[str] = set()
+    for i, m in enumerate(msgs):
+        if not _is_fc42(m.nick):
+            continue
+        cand = classify_repaste(m.body, store, min_chars=min_repaste_chars) or classify_praise(
+            m.body, store, prev_line=_nearest_source(msgs, i)
+        )
+        if cand is None:
+            continue
+        key = _dedup_key(cand.text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+    out.sort(key=lambda c: (c.needs_review, -len(c.text)))
+    return out
+
+
+def render_review(cands: list[Candidate]) -> str:
+    trusted = [c.text for c in cands if not c.needs_review and not _DENIAL_RE.search(c.text)]
+    lines = ["# fc42 taste-mine candidates", ""]
+    for c in cands:
+        flags = []
+        if c.needs_review:
+            flags.append("REVIEW")
+        if _DENIAL_RE.search(c.text):
+            flags.append("DENIAL?")
+        tag = f" ({', '.join(flags)})" if flags else ""
+        lines.append(f"- [{c.kind}{tag}] {c.text}")
+        lines.append(f"  src: {c.source_line}")
+    lines += [
+        "",
+        "## Ready-to-paste (auto-trusted) JSON for verseStyleExemplars",
+        "```json",
+        json.dumps(trusted, ensure_ascii=False, indent=2),
+        "```",
+    ]
+    return "\n".join(lines)
+
+
+def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
+    import argparse
+    from pathlib import Path
+
+    from .store import VerseStore
+
+    ap = argparse.ArgumentParser(description="Mine fc42 taste exemplars from logs")
+    ap.add_argument("logs", nargs="+", help="ChannelLogger .log files")
+    ap.add_argument("--verse-dir", required=True, help="verse store base dir")
+    ap.add_argument("--channel", default="#afternet")
+    ap.add_argument("--out", default="taste_candidates.md")
+    args = ap.parse_args(argv)
+    store = VerseStore(Path(args.verse_dir), args.channel)
+    lines: list[str] = []
+    for p in args.logs:
+        lines += Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+    cands = extract_candidates(lines, store)  # real store.match_entities_in_text
+    Path(args.out).write_text(render_review(cands), encoding="utf-8")
+    print(f"{len(cands)} candidates -> {args.out}")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    _main()
