@@ -158,7 +158,17 @@ re-paste variants collapse; rank by (entity-count, length); cap candidate count.
 The miner is **strictly read-only**: reads log files + the verse store; writes
 only the review file.
 
-### Component 1a — new store accessor
+### Component 1a — entity matching (no new accessor)
+
+> **Plan-red-team update:** the miner REUSES `store.match_entities_in_text(text)`
+> (truthiness) for the entity gate. That method already scans the **full active
+> entity set** internally with the stoplist + capitalization precision rules, so a
+> separate `all_active_entity_names()` accessor is **not needed and not added** —
+> the roster-source concern below is moot. The `≤2-char skip` and `stoplist` quirks
+> are inherited (good for precision); a `_strong_entity_match` guard in the miner
+> requires a multiword name or a capitalized whole-word hit before auto-trusting,
+> so "Ghost" inside "ghost of a chance" is flagged `needs_review`, not auto-trusted.
+> The original (now-superseded) accessor design follows for reference only:
 
 Add to `plugins/llm/src/llm/verse/store.py` near the other `list_*` accessors:
 
@@ -199,7 +209,8 @@ boundary; miner candidates are advisory.)
 ## Component 3 — Injection into the verse prompt
 
 `build_verse_system_prompt` (`avatar.py:471`, called from `plugin.py:2566`) gains a
-**keyword-only** parameter `style_exemplars: list[str] = ()` (keyword-only so the
+**keyword-only** parameter `style_exemplars: Sequence[str] = ()` (`Sequence`, not
+`list`, so the `()` default is `ty`-clean; keyword-only so the
 ~existing call sites stay green; default `()` ⇒ render skipped ⇒ byte-identical
 output). The verse caller reads `verseStyleExemplars` for the channel and passes
 the list in.

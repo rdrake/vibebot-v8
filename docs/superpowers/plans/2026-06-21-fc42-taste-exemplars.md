@@ -17,103 +17,64 @@ marker). Default-empty key ⇒ verse prompt byte-identical to today.
 **Tech Stack:** Python 3.12, Limnoria/supybot `registry.Json`, SQLite verse store,
 pytest, `uv`. Spec: `docs/superpowers/specs/2026-06-21-fc42-taste-exemplars-design.md`.
 
-**Dependency order (each commit stays green, additive-only):** store accessor →
-config key → miner (parse → re-paste → praise → assemble/CLI) → injection → caller
-plumbing → regression.
+> **Plan red-team folded (2026-06-21):** 61 raised / 57 confirmed (3 BLOCKER, 18
+> HIGH). Material changes from the first draft: (1) the miner REUSES
+> `store.match_entities_in_text` (which already scans the full active set with the
+> stoplist/capitalization rules) for the entity gate — so the separate
+> `all_active_entity_names` accessor is **dropped**, and the CLI passes the real
+> store (no third matcher). (2) `style_exemplars: Sequence[str] = ()` (a `list[str]`
+> default of `()` fails `ty`). (3) `registry.Json([], "help")` needs the help arg;
+> round-trip via `set(str(v))`. (4) `_LEADING_STOPWORDS` no longer strips articles
+> (`the`/`a`/`an`). (5) lint-clean tests (no `def __init__(s,…)` N805, no mid-file
+> `import json` E402, no unused imports F401). (6) fc42 nick variants, bare-praise
+> source screening, oversized-exemplar `continue`-not-`break`, word-boundary praise
+> wordlist, addressed-filter narrowed to `grok|vibebot`, robust 2-space log split,
+> control-char sanitize, denial-flagging in the review file, concrete T7 caller test.
 
-**Conventions:** run tests with `uv run pytest <path> -v`; full gate `make test`,
-`make lint`, `make typecheck`. Commit after each task.
+**Dependency order (each commit stays green, additive-only):** config key → miner
+(parse → re-paste → praise → assemble/CLI) → injection → caller plumbing → regression.
 
----
-
-## Task 1: Store accessor `all_active_entity_names()`
-
-**Files:**
-- Modify: `plugins/llm/src/llm/verse/store.py` (add method after `list_canon_entities`, ~line 530)
-- Test: `plugins/llm/tests/verse/test_store.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# in test_store.py
-def test_all_active_entity_names_full_active_set_not_canon_only(tmp_path):
-    from llm.verse.store import VerseStore
-    store = VerseStore(tmp_path, "#chan")
-    store.add_entity("avatar", "Hero")
-    store.add_entity("npc", "diarrhoea dan")   # NOT pinned/author_locked
-    store.add_entity("npc", "Assgas Archie")
-    names = store.all_active_entity_names()
-    # canon-only (list_canon_entities) would return [] here — assert we get all 3
-    assert set(names) == {"Hero", "diarrhoea dan", "Assgas Archie"}
-    # deterministic case-insensitive order
-    assert names == sorted(names, key=str.lower)
-```
-
-- [ ] **Step 2: Run it — expect FAIL** (`AttributeError: ... all_active_entity_names`)
-
-Run: `uv run pytest plugins/llm/tests/verse/test_store.py::test_all_active_entity_names_full_active_set_not_canon_only -v`
-
-- [ ] **Step 3: Implement** (in `store.py`, near the other `list_*` accessors)
-
-```python
-def all_active_entity_names(self) -> list[str]:
-    """Every active entity's name (any kind) — the taste-miner's match roster.
-
-    Read-only, deterministic case-insensitive order. NOT canon-only: the miner
-    targets auto-created NPCs which are almost never pinned/author_locked, so
-    list_canon_entities() would return a near-empty roster on prod.
-    """
-    with self.read_connection() as conn:
-        return [
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM entities WHERE status='active' "
-                "ORDER BY name COLLATE NOCASE"
-            )
-        ]
-```
-
-- [ ] **Step 4: Run test — expect PASS**
-- [ ] **Step 5: Commit** — `feat(verse): add store.all_active_entity_names() for taste miner`
+**Conventions:** `uv run pytest <path> -v`; full gate `make test` / `make lint`
+(ruff incl. E/F/N rules) / `make typecheck` (`ty`) runs after each Edit. Commit per task.
 
 ---
 
-## Task 2: Config key `verseStyleExemplars` (registry.Json)
+## Task 1: Config key `verseStyleExemplars` (registry.Json)
 
 **Files:**
 - Modify: `plugins/llm/src/llm/config.py` (after the `verseModel` block, ~line 250)
 - Test: `plugins/llm/tests/test_config.py`
 
-- [ ] **Step 1: Confirm `registry` import.** `config.py` must have `registry` in scope
-  (it uses `registry.*` types elsewhere; verify `from supybot import ... registry`
-  is present — add to the import if missing).
+- [ ] **Step 1:** Confirm `registry` is already in scope in `config.py` (it is — the
+  existing keys use `registry.*`). No new import needed; if `ruff` flags anything,
+  follow the file's existing import style.
 
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 2: Write the failing tests** (note `registry.Json` REQUIRES a help arg;
+  round-trip is `set(str(v))`, NOT `set(serialize())`):
 
 ```python
-# in test_config.py — mirror how other channel keys are asserted in this file
+# in test_config.py
 def test_verse_style_exemplars_default_empty_list():
     from supybot import registry
-    v = registry.Json([])
+    v = registry.Json([], "h")
     assert v() == []
 
 def test_verse_style_exemplars_json_roundtrips_quote_laden():
     from supybot import registry
-    v = registry.Json([])
+    v = registry.Json([], "h")
     payload = ['"the lads marched," he said', "it's grim up north", "BRAAAP—ven"]
     v.setValue(payload)
-    # round-trip through the registry serialize/deserialize cycle
-    restored = registry.Json([])
-    restored.set(v.serialize())
+    restored = registry.Json([], "h")
+    restored.set(str(v))   # str(v) == json.dumps(...) == the bot.conf read path
     assert restored() == payload
 ```
 
-- [ ] **Step 3: Run — expect the registration test to FAIL** once added to the plugin
-  registration assertion (and adjust the round-trip test to the real `registry.Json`
-  API if `serialize`/`set` differ — the intent is: a quote/em-dash-laden list
-  survives a write/read cycle unchanged).
+- [ ] **Step 3: Run — expect FAIL** until the plugin key is registered (and confirm
+  the round-trip test passes against the real `registry.Json` API above).
 
-- [ ] **Step 4: Implement** (in `config.py`, after `verseModel`)
+Run: `uv run pytest plugins/llm/tests/test_config.py -k verse_style_exemplars -v`
+
+- [ ] **Step 4: Implement** (in `config.py`, after the `verseModel` block)
 
 ```python
 conf.registerChannelValue(
@@ -131,22 +92,25 @@ conf.registerChannelValue(
 )
 ```
 
-- [ ] **Step 5: Add a plugin-level default assertion** mirroring the existing
-  per-channel-key tests (e.g. `make_registry_side_effect` default for
-  `verseStyleExemplars` is `[]`, and `registryValue("verseStyleExemplars", "#x")`
-  returns a list).
+- [ ] **Step 5: Add a plugin-level default assertion** mirroring how other
+  per-channel keys are checked in `test_config.py` (e.g. via the conftest
+  `make_registry_side_effect`): `registryValue("verseStyleExemplars", "#x")`
+  returns `[]` by default. If `make_registry_side_effect` has an explicit defaults
+  table, add `verseStyleExemplars: []` to it.
 
-- [ ] **Step 6: Run tests — expect PASS. Commit** — `feat(config): add verseStyleExemplars registry.Json channel key`
+- [ ] **Step 6: Run tests — PASS. Commit** — `feat(config): add verseStyleExemplars registry.Json channel key`
 
 ---
 
-## Task 3: Miner — log-line parsing
+## Task 2: Miner — log-line parsing
 
 **Files:**
 - Create: `plugins/llm/src/llm/verse/taste_mine.py`
 - Test: `plugins/llm/tests/verse/test_taste_mine.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** (note: fake helper classes use `self` to
+  satisfy ruff N805; recognise privmsg `<nick>` + action `* nick`; robust to the
+  timestamp via a first-double-space split):
 
 ```python
 # test_taste_mine.py
@@ -155,24 +119,23 @@ from llm.verse.taste_mine import iter_messages, Msg
 def test_iter_messages_parses_privmsg_action_skips_rest():
     lines = [
         "2026-06-22T00:01:16  <fc42> a normal message",
-        "2026-06-22T00:02:00  * fc42 does a thing",          # CTCP ACTION / /me
+        "2026-06-22T00:02:00  * fc42 does a thing",            # CTCP ACTION / /me
         "2026-06-22T00:03:00  *** vibebot has joined #afternet",  # system -> skip
-        "2026-06-22T00:04:00  -ChanServ- a notice",          # notice -> skip
-        "2026-06-22T00:05:00  <fc42> ",                       # empty body -> skip
-        "garbage line no timestamp",                          # malformed -> skip
-        "2026-06-22T00:06:00  <rdrake> hi th�ere",       # garbled char -> kept
+        "2026-06-22T00:04:00  -ChanServ- a notice",            # notice -> skip
+        "2026-06-22T00:05:00  <fc42> ",                         # empty body -> skip
+        "garbage no double-space sep",                          # malformed -> skip
+        "2026-06-22T00:06:00  <rdrake> hi th�ere",         # garbled char -> kept
     ]
-    msgs = list(iter_messages(lines))
-    assert msgs == [
+    assert list(iter_messages(lines)) == [
         Msg("fc42", "a normal message"),
         Msg("fc42", "does a thing"),
         Msg("rdrake", "hi th�ere"),
     ]
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (module missing)
+- [ ] **Step 2: Run — FAIL** (module missing).
 
-- [ ] **Step 3: Implement parsing**
+- [ ] **Step 3: Implement** (ALL module-level imports at the top — no mid-file imports):
 
 ```python
 """Offline taste-miner: extract fc42's liked verse lines from ChannelLogger logs.
@@ -182,12 +145,12 @@ verse store or config. See docs/superpowers/specs/2026-06-21-fc42-taste-exemplar
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Iterator
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-_PRIVMSG_RE = re.compile(r"^\S+\s+<(?P<nick>[^>]+)>\s(?P<body>.*)$")
-_ACTION_RE = re.compile(r"^\S+\s+\*\s(?P<nick>\S+)\s(?P<body>.*)$")
+_SEP = "  "  # ChannelLogger separates the timestamp from the body with two spaces
 
 
 class Msg(NamedTuple):
@@ -195,90 +158,132 @@ class Msg(NamedTuple):
     body: str
 
 
+def _is_fc42(nick: str) -> bool:
+    """Match fc42 and his connection variants (fc42_, fc42|away, Fc42)."""
+    return nick.lower().startswith("fc42")
+
+
 def iter_messages(lines: Iterable[str]) -> Iterator[Msg]:
     """Yield (nick, body) for privmsg `<nick> …` and action `* nick …` lines.
 
-    Skips system (`*** …`), notice (`-x- …`), blank-body, and malformed lines.
-    Caller is responsible for opening files with errors='replace'.
+    Splits the timestamp off at the first double-space (robust to any ts format),
+    then parses the body. Skips system (`*** …`), notice (`-x- …`), empty-body, and
+    malformed lines. Caller opens files with errors='replace'.
     """
-    for line in lines:
-        line = line.rstrip("\r\n")
-        m = _PRIVMSG_RE.match(line) or _ACTION_RE.match(line)
-        if not m:
+    for raw in lines:
+        line = raw.rstrip("\r\n")
+        ts, sep, rest = line.partition(_SEP)
+        if not sep:
             continue
-        body = m.group("body").strip()
+        if rest.startswith("<"):
+            end = rest.find("> ")
+            if end < 1:
+                continue
+            nick, body = rest[1:end], rest[end + 2:]
+        elif rest.startswith("* "):
+            parts = rest[2:].split(" ", 1)
+            if len(parts) != 2:
+                continue
+            nick, body = parts[0], parts[1]
+        else:
+            continue
+        body = body.strip()
         if not body:
             continue
-        yield Msg(m.group("nick"), body)
+        yield Msg(nick, body)
 ```
 
-- [ ] **Step 4: Run — expect PASS. Commit** — `feat(verse): taste_mine log-line parsing`
+- [ ] **Step 4: Run — PASS. Commit** — `feat(verse): taste_mine log-line parsing`
 
 ---
 
-## Task 4: Miner — re-paste detector
+## Task 3: Miner — re-paste detector
 
 **Files:** Modify `taste_mine.py`; Test `test_taste_mine.py`.
 
-The entity gate REUSES `store.match_entities_in_text(text)` (truthiness only —
-parity with prod retrieval). Auto-trust (`needs_review=False`) only on a *strong*
-match (a multiword entity name, OR a capitalized whole-word occurrence in the
-line); a lone lowercase short-name match (e.g. "Ghost" inside "ghost of a chance")
-→ `needs_review=True`, not dropped.
+Entity gate = `store.match_entities_in_text(text)` truthiness (already scans the
+full active set with stoplist/capitalization rules — single source of truth).
+Auto-trust (`needs_review=False`) only on a *strong* match (multiword name OR a
+capitalized whole-word occurrence in the line); a lone lowercase short-name match
+(e.g. "Ghost" inside "ghost of a chance") → `needs_review=True`, not dropped.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests** (fake store uses `self`, no unused imports):
 
 ```python
-from llm.verse.taste_mine import Candidate, classify_repaste, _norm_ws
+import re as _re
+from llm.verse.taste_mine import classify_repaste
+
+
+class _Ent:
+    def __init__(self, name):
+        self.name = name
+
 
 class FakeStore:
-    def __init__(self, names): self._names = names
+    def __init__(self, names):
+        self._names = names
+
     def match_entities_in_text(self, text, limit=12):
-        import re
-        class E:
-            def __init__(s, name): s.name = name
         low = text.lower()
-        return [E(n) for n in self._names
-                if re.search(r"(?<!\w)" + re.escape(n.lower()) + r"(?!\w)", low)]
+        return [
+            _Ent(n) for n in self._names
+            if _re.search(r"(?<!\w)" + _re.escape(n.lower()) + r"(?!\w)", low)
+        ][:limit]
+
 
 def test_repaste_long_prose_naming_entity_is_autotrusted():
     store = FakeStore(["stinky lads", "Ripping Robert"])
-    text = ("the stinky lads marched into the assembly hall and ripping robert "
-            "let off a perfectly timed duet that turned the leaves yellow, " * 1)
+    text = ("the stinky lads marched into the assembly hall and ripping robert let "
+            "off a perfectly timed duet that turned the leaves yellow indeed")
     c = classify_repaste(text, store)
-    assert c is not None and c.kind == "repaste"
-    assert c.needs_review is False            # multiword "stinky lads" => strong
+    assert c is not None and c.kind == "repaste" and c.needs_review is False  # multiword
+
 
 def test_repaste_short_lowercase_only_match_flags_review():
     store = FakeStore(["Ghost"])
-    text = "i didn't have a ghost of a chance against that team in the second half " * 2
+    text = "i didn't have a ghost of a chance against that lot in the second half today mate"
     c = classify_repaste(text, store)
-    assert c is not None and c.needs_review is True   # lowercase short single match
+    assert c is not None and c.needs_review is True
 
-def test_repaste_rejects_short_url_and_addressed_command():
+
+def test_repaste_rejects_short_url_and_addressed():
     store = FakeStore(["stinky lads"])
-    assert classify_repaste("stinky lads", store) is None                  # < 120
+    assert classify_repaste("stinky lads", store) is None                       # < 120
     assert classify_repaste("grok " + "the stinky lads are great " * 6, store) is None  # addressed
-    assert classify_repaste("see https://x.com/" + "a"*120, store) is None  # URL
+    assert classify_repaste("look https://x.com/" + "a" * 120, store) is None    # URL
+
+
+def test_repaste_keeps_name_led_prose():
+    # addressed filter is narrowed to grok|vibebot, so name-led prose survives
+    store = FakeStore(["stinky lads", "Larry"])
+    text = "Larry marched into the assembly hall with the stinky lads and let off a guff cloud yeah"
+    assert classify_repaste(text, store) is not None
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run — FAIL.**
 
 - [ ] **Step 3: Implement**
 
 ```python
 _MIN_REPASTE_CHARS = 120
 _URL_RE = re.compile(r"https?://")
-_ADDRESSED_RE = re.compile(r"^(grok|larry|larrybot|vibebot|node|ender)\b", re.IGNORECASE)
+_ADDRESSED_RE = re.compile(r"^(grok|vibebot)\b", re.IGNORECASE)  # only real bot triggers
+
+
+class Candidate(NamedTuple):
+    text: str
+    kind: str          # "repaste" | "praise"
+    source_line: str
+    needs_review: bool
 
 
 def _norm_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _strong_entity_match(text: str, ents) -> bool:
-    """A match strong enough to auto-trust: a multiword name, or a capitalized
-    whole-word occurrence of the name in the ORIGINAL text."""
+def _strong_entity_match(text: str, ents: list[Any]) -> bool:
+    """Auto-trustable: a multiword entity name, or a capitalized whole-word
+    occurrence of the name in the ORIGINAL text."""
     for e in ents:
         name = e.name
         if " " in name:
@@ -289,7 +294,7 @@ def _strong_entity_match(text: str, ents) -> bool:
     return False
 
 
-def classify_repaste(body: str, store, *, min_chars: int = _MIN_REPASTE_CHARS):
+def classify_repaste(body: str, store: Any, *, min_chars: int = _MIN_REPASTE_CHARS):
     text = _norm_ws(body)
     if len(text) < min_chars:
         return None
@@ -298,151 +303,161 @@ def classify_repaste(body: str, store, *, min_chars: int = _MIN_REPASTE_CHARS):
     ents = store.match_entities_in_text(text)
     if not ents:
         return None
-    return Candidate(
-        text=text, kind="repaste", source_date="", source_line=body,
-        needs_review=not _strong_entity_match(text, ents),
-    )
+    return Candidate(text, "repaste", body, not _strong_entity_match(text, ents))
 ```
 
-Add `Candidate`:
-
-```python
-class Candidate(NamedTuple):
-    text: str
-    kind: str          # "repaste" | "praise"
-    source_date: str
-    source_line: str
-    needs_review: bool
-```
-
-- [ ] **Step 4: Run — expect PASS. Commit** — `feat(verse): taste_mine re-paste detector`
+- [ ] **Step 4: Run — PASS. Commit** — `feat(verse): taste_mine re-paste detector`
 
 ---
 
-## Task 5: Miner — praise detector
+## Task 4: Miner — praise detector
 
 **Files:** Modify `taste_mine.py`; Test `test_taste_mine.py`.
 
-Every praise-derived candidate is `needs_review=True` (the wordlist also fires on
-football). Inline form locates `<X>`, strips a leading stopword run, and keeps it
-only if it still names a roster entity; otherwise bare form attaches the preceding
-line.
+Every praise candidate is `needs_review=True`. Inline form locates `<X>` after
+"when it said", strips a leading run of NON-article stopwords (keeps `the`/`a`/`an`
+so the span starts at "the stinky lads"), and keeps it only if it still names an
+entity. Wordlist is word-bounded (no `class`→`classroom`).
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
 from llm.verse.taste_mine import classify_praise
 
-def test_praise_inline_strips_filler_and_starts_at_entity():
+def test_praise_inline_keeps_leading_article_starts_at_entity():
     store = FakeStore(["stinky lads"])
     line = ("i love it when it said earlier that the stinky lads will either rule "
             "the country or set it on fire")
     c = classify_praise(line, store, prev_line="(some bot line)")
     assert c is not None and c.needs_review is True
-    assert c.text.startswith("the stinky lads will either rule")
+    assert c.text.startswith("the stinky lads will either rule")   # 'earlier that' stripped, 'the' kept
     assert "earlier that" not in c.text
 
-def test_praise_bare_attaches_previous_line():
+def test_praise_bare_attaches_source_line():
     store = FakeStore(["stinky lads"])
     c = classify_praise("haha this is a good one", store,
                         prev_line="the stinky lads stormed the chippy")
     assert c is not None and c.needs_review is True
     assert c.text == "the stinky lads stormed the chippy"
 
+def test_praise_wordlist_is_word_bounded():
+    store = FakeStore(["stinky lads"])
+    # "classroom" must NOT trigger the "class" praise word
+    assert classify_praise("the classroom was loud", store, prev_line="x") is None
+
 def test_non_praise_returns_none():
     store = FakeStore(["stinky lads"])
     assert classify_praise("what time is the match", store, prev_line="x") is None
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run — FAIL.**
 
 - [ ] **Step 3: Implement**
 
 ```python
 _PRAISE_WORDS = (
     "good one", "amazing", "brilliant", "genius", "love it", "so good",
-    "this is gold", "class", "quality", "incredible", "perfect", "lmao that",
+    "this is gold", "lmao that",
 )
-_PRAISE_RE = re.compile("|".join(re.escape(w) for w in _PRAISE_WORDS), re.IGNORECASE)
+_PRAISE_RE = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in _PRAISE_WORDS) + r")\b", re.IGNORECASE)
 _INLINE_RE = re.compile(r"when it said\s+(.*)$", re.IGNORECASE)
-_LEADING_STOPWORDS = {"earlier", "that", "it", "the", "when", "said", "a", "an"}
+_LEADING_STOPWORDS = {"earlier", "that", "it", "when", "said"}  # NOT articles
 
 
 def _strip_leading_stopwords(s: str) -> str:
     toks = s.split()
     i = 0
-    while i < len(toks) and toks[i].lower().strip(",.!") in _LEADING_STOPWORDS:
+    while i < len(toks) and toks[i].lower().strip(",.!?") in _LEADING_STOPWORDS:
         i += 1
     return " ".join(toks[i:])
 
 
-def classify_praise(body: str, store, *, prev_line: str = ""):
+def classify_praise(body: str, store: Any, *, prev_line: str = ""):
     if not _PRAISE_RE.search(body):
         return None
     inline = _INLINE_RE.search(body)
     if inline:
         span = _strip_leading_stopwords(_norm_ws(inline.group(1)))
         if span and store.match_entities_in_text(span):
-            return Candidate(text=span, kind="praise", source_date="",
-                             source_line=body, needs_review=True)
+            return Candidate(span, "praise", body, True)
     prev = _norm_ws(prev_line)
     if prev:
-        return Candidate(text=prev, kind="praise", source_date="",
-                         source_line=body, needs_review=True)
+        return Candidate(prev, "praise", body, True)
     return None
 ```
 
-- [ ] **Step 4: Run — expect PASS. Commit** — `feat(verse): taste_mine praise detector`
+- [ ] **Step 4: Run — PASS. Commit** — `feat(verse): taste_mine praise detector`
 
 ---
 
-## Task 6: Miner — assemble (`extract_candidates`) + dedup + review file + CLI
+## Task 5: Miner — assemble (`extract_candidates`) + dedup + review + CLI
 
 **Files:** Modify `taste_mine.py`; Test `test_taste_mine.py`.
+
+Bare-praise attribution walks back to the nearest **non-fc42, non-URL,
+non-addressed** prior line. The review file flags denial-shaped candidates and
+excludes them from the auto-trusted JSON. CLI passes the REAL store (its
+`match_entities_in_text`) — no second matcher.
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-from llm.verse.taste_mine import extract_candidates, render_review
+from llm.verse.taste_mine import extract_candidates, render_review, Candidate
 
-def test_extract_dedups_and_orders(tmp_path):
+def test_extract_dedups_orders_and_attributes_prev():
     store = FakeStore(["stinky lads", "Ripping Robert"])
     base = ("the stinky lads marched into the assembly hall and ripping robert let "
-            "off a perfectly timed duet that turned the leaves yellow")
+            "off a perfectly timed duet that turned the leaves yellow indeed")
     lines = [
         f"2026-06-15T19:07:00  <fc42> {base}",
-        f"2026-06-15T19:08:00  <fc42> {base}...",   # near-dup (trailing punctuation)
-        "2026-06-15T19:09:00  <Larry> the stinky lads stormed the chippy and won",
-        "2026-06-15T19:09:30  <fc42> haha this is a good one",  # praise -> prev Larry line
-        "2026-06-15T19:10:00  <fc42> lol the ref is uzbekistan",  # noise -> dropped
+        f"2026-06-15T19:08:00  <fc42> {base}...",                  # near-dup
+        "2026-06-15T19:09:00  <Larry> the stinky lads stormed the chippy and won big",
+        "2026-06-15T19:09:30  <fc42> haha this is a good one",     # praise -> Larry line
+        "2026-06-15T19:10:00  <fc42> lol the ref is uzbekistan",   # noise -> dropped
     ]
     cands = extract_candidates(lines, store)
     texts = [c.text for c in cands]
-    assert sum(t.startswith("the stinky lads marched") for t in texts) == 1  # deduped
+    assert sum(t.startswith("the stinky lads marched") for t in texts) == 1   # deduped
     assert any(c.kind == "praise" and "stormed the chippy" in c.text for c in cands)
-    assert not any("uzbekistan" in c.text for c in cands)
+    assert not any("uzbekistan" in t for t in texts)
 
-def test_render_review_emits_json_block_of_autotrusted():
-    c1 = Candidate("solid line", "repaste", "2026-06-15", "raw", needs_review=False)
-    c2 = Candidate("iffy line", "praise", "2026-06-15", "raw", needs_review=True)
-    md = render_review([c1, c2])
-    assert "solid line" in md and "iffy line" in md
+def test_render_review_excludes_denial_from_trusted_json():
     import json
-    # the JSON array contains only the auto-trusted (non-needs_review) text
-    assert '"solid line"' in md and json.loads(
-        md.split("```json")[1].split("```")[0]) == ["solid line"]
+    good = Candidate("the lads marched on", "repaste", "raw", needs_review=False)
+    denial = Candidate("i'm sorry, i can't help with that", "repaste", "raw", needs_review=False)
+    iffy = Candidate("iffy praise line", "praise", "raw", needs_review=True)
+    md = render_review([good, denial, iffy])
+    assert "DENIAL?" in md                                  # denial flagged for the human
+    trusted = json.loads(md.split("```json")[1].split("```")[0])
+    assert trusted == ["the lads marched on"]               # denial + needs_review excluded
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run — FAIL.**
 
-- [ ] **Step 3: Implement assembly + review render + CLI**
+- [ ] **Step 3: Implement**
 
 ```python
-import json
+_DENIAL_RE = re.compile(
+    r"\b(i can'?t|i cannot|i'?m sorry|as an ai|i won'?t|unable to|cannot help)\b",
+    re.IGNORECASE,
+)
 
 
 def _dedup_key(text: str) -> str:
     return re.sub(r"[^\w ]+", "", text.lower()).strip()
+
+
+def _nearest_source(msgs: list[Msg], i: int) -> str:
+    """Nearest prior non-fc42, non-URL, non-addressed line (spec attribution)."""
+    for j in range(i - 1, -1, -1):
+        m = msgs[j]
+        if _is_fc42(m.nick):
+            continue
+        b = _norm_ws(m.body)
+        if _URL_RE.search(b) or _ADDRESSED_RE.match(b):
+            continue
+        return m.body
+    return ""
 
 
 def extract_candidates(lines, store, *, min_repaste_chars: int = _MIN_REPASTE_CHARS):
@@ -450,11 +465,10 @@ def extract_candidates(lines, store, *, min_repaste_chars: int = _MIN_REPASTE_CH
     out: list[Candidate] = []
     seen: set[str] = set()
     for i, m in enumerate(msgs):
-        prev = msgs[i - 1].body if i > 0 else ""
-        cand = None
-        if m.nick == "fc42":
-            cand = classify_repaste(m.body, store, min_chars=min_repaste_chars) \
-                or classify_praise(m.body, store, prev_line=prev)
+        if not _is_fc42(m.nick):
+            continue
+        cand = classify_repaste(m.body, store, min_chars=min_repaste_chars) or \
+            classify_praise(m.body, store, prev_line=_nearest_source(msgs, i))
         if cand is None:
             continue
         key = _dedup_key(cand.text)
@@ -462,27 +476,34 @@ def extract_candidates(lines, store, *, min_repaste_chars: int = _MIN_REPASTE_CH
             continue
         seen.add(key)
         out.append(cand)
-    # rank: auto-trusted first, then by length desc
     out.sort(key=lambda c: (c.needs_review, -len(c.text)))
     return out
 
 
 def render_review(cands) -> str:
-    trusted = [c.text for c in cands if not c.needs_review]
+    trusted = [c.text for c in cands
+               if not c.needs_review and not _DENIAL_RE.search(c.text)]
     lines = ["# fc42 taste-mine candidates", ""]
     for c in cands:
-        flag = " (REVIEW)" if c.needs_review else ""
-        lines.append(f"- [{c.kind}{flag}] {c.text}")
-        lines.append(f"  ↳ src: {c.source_line}")
+        flags = []
+        if c.needs_review:
+            flags.append("REVIEW")
+        if _DENIAL_RE.search(c.text):
+            flags.append("DENIAL?")
+        tag = f" ({', '.join(flags)})" if flags else ""
+        lines.append(f"- [{c.kind}{tag}] {c.text}")
+        lines.append(f"  src: {c.source_line}")
     lines += ["", "## Ready-to-paste (auto-trusted) JSON for verseStyleExemplars",
               "```json", json.dumps(trusted, ensure_ascii=False, indent=2), "```"]
     return "\n".join(lines)
 
 
-def _main(argv=None):  # pragma: no cover - thin CLI wiring
+def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
     import argparse
     from pathlib import Path
+
     from .store import VerseStore
+
     ap = argparse.ArgumentParser(description="Mine fc42 taste exemplars from logs")
     ap.add_argument("logs", nargs="+", help="ChannelLogger .log files")
     ap.add_argument("--verse-dir", required=True, help="verse store base dir")
@@ -490,21 +511,10 @@ def _main(argv=None):  # pragma: no cover - thin CLI wiring
     ap.add_argument("--out", default="taste_candidates.md")
     args = ap.parse_args(argv)
     store = VerseStore(Path(args.verse_dir), args.channel)
-    roster = store.all_active_entity_names()
-
-    class _RosterStore:  # adapt: match against the offline roster snapshot
-        def match_entities_in_text(self, text, limit=12):
-            import re as _re
-            low = text.lower()
-            class _E:
-                def __init__(s, n): s.name = n
-            return [_E(n) for n in roster
-                    if _re.search(r"(?<!\w)" + _re.escape(n.lower()) + r"(?!\w)", low)][:limit]
-
     lines: list[str] = []
     for p in args.logs:
         lines += Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
-    cands = extract_candidates(lines, _RosterStore())
+    cands = extract_candidates(lines, store)  # real store.match_entities_in_text
     Path(args.out).write_text(render_review(cands), encoding="utf-8")
     print(f"{len(cands)} candidates -> {args.out}")
 
@@ -513,24 +523,24 @@ if __name__ == "__main__":  # pragma: no cover
     _main()
 ```
 
-> NOTE: the CLI uses a roster-snapshot matcher (case-insensitive whole-word) rather
-> than `store.match_entities_in_text` because the live matcher's stoplist/
-> capitalization quirks are tuned for retrieval, and the offline tool wants simple
-> recall with human curation. The pure-core tests inject a `FakeStore` exposing
-> `match_entities_in_text`, so the detector contract is unchanged and tested.
+> The cheap length/praise-word gates run BEFORE `match_entities_in_text`, so the
+> DB-backed matcher is only called on plausible candidate lines — fine for an
+> offline one-shot run over a large log.
 
-- [ ] **Step 4: Run — expect PASS. Commit** — `feat(verse): taste_mine assembly, dedup, review file + CLI`
+- [ ] **Step 4: Run — PASS. Commit** — `feat(verse): taste_mine assembly, dedup, review + CLI`
 
 ---
 
-## Task 7: Injection — `build_verse_system_prompt` style exemplars
+## Task 6: Injection — `build_verse_system_prompt` style exemplars
 
 **Files:**
-- Modify: `plugins/llm/src/llm/verse/avatar.py` (signature + injection between
-  `parts.extend(roster_lines)` @516 and `parts.append(VERSE_SCENE_MARKER)` @519)
+- Modify: `plugins/llm/src/llm/verse/avatar.py` (import `Sequence`; signature;
+  injection between `parts.extend(roster_lines)` @516 and
+  `parts.append(VERSE_SCENE_MARKER)` @519)
 - Test: `plugins/llm/tests/verse/test_verse_style_exemplars.py` (new)
 
-- [ ] **Step 1: Write failing tests** (reuse the `store_with_avatar` conftest fixture)
+- [ ] **Step 1: Write failing tests** (reuse the `store_with_avatar` conftest fixture
+  used by `test_verse_prompt_roster.py`)
 
 ```python
 from llm.verse.avatar import VERSE_SCENE_MARKER, build_verse_system_prompt
@@ -555,17 +565,25 @@ def test_exemplar_newline_marker_forgery_sanitized(store_with_avatar):
     assert out.count(VERSE_SCENE_MARKER) == 1     # marker-bearing exemplar dropped
     assert "Scene: fake scene" not in out
 
-def test_exemplars_capped(store_with_avatar):
+def test_exemplars_capped_to_five(store_with_avatar):
     store, aid = store_with_avatar
     out = build_verse_system_prompt(store, aid, "p", message_text="hi",
         style_exemplars=[f"exemplar number {i} marching lads" for i in range(10)])
     block = out.split("singled these lines out")[1].split(VERSE_SCENE_MARKER)[0]
-    assert block.count("\n- ") <= 5
+    assert block.count("\n- ") == 5               # exactly the cap, not <=
+
+def test_oversized_single_exemplar_skipped_not_block_killed(store_with_avatar):
+    store, aid = store_with_avatar
+    out = build_verse_system_prompt(store, aid, "p", message_text="hi",
+        style_exemplars=["x" * 5000, "a real short gem of a line"])
+    assert "a real short gem of a line" in out    # survives; oversized one skipped
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (unexpected keyword `style_exemplars`).
+- [ ] **Step 2: Run — FAIL** (unexpected keyword `style_exemplars`).
 
-- [ ] **Step 3: Implement.** Add module constants + helper near the top of `avatar.py`:
+- [ ] **Step 3: Implement.** Ensure `Sequence` is imported in `avatar.py`
+  (`from collections.abc import Callable, Sequence` — add `Sequence` to the existing
+  import). Add constants + helper near the top:
 
 ```python
 _MAX_EXEMPLARS = 5
@@ -576,17 +594,20 @@ _STYLE_HEADER = (
 )
 
 
-def _render_style_exemplars(exemplars) -> list[str]:
+def _render_style_exemplars(exemplars: Sequence[str]) -> list[str]:
     """Sanitize + cap curated exemplars into prompt lines. Returns [] when empty,
     so a default-empty key leaves the prompt byte-identical."""
     out: list[str] = []
     total = 0
     for ex in exemplars or ():
-        s = " ".join(str(ex).split())  # collapse ALL interior whitespace (\n\r\t…)
+        s = " ".join(str(ex).split())          # collapse ALL whitespace incl \n\r\t and U+2028/9
+        s = "".join(c for c in s if c.isprintable())  # drop zero-width/bidi/control chars
         if not s:
             continue
         if VERSE_SCENE_MARKER in s or s.startswith("Scene:") or s.startswith("- "):
-            continue  # never let an exemplar forge prefix structure
+            continue                            # never let an exemplar forge prefix structure
+        if len(s) > _MAX_EXEMPLAR_CHARS:
+            continue                            # skip a single oversized exemplar (keep the rest)
         if total + len(s) > _MAX_EXEMPLAR_CHARS:
             break
         out.append(f"- {s}")
@@ -596,7 +617,7 @@ def _render_style_exemplars(exemplars) -> list[str]:
     return [_STYLE_HEADER, *out] if out else []
 ```
 
-Change the signature (keyword-only param so existing positional callers are safe):
+Change the signature (keyword-only; `Sequence[str]` so `()` default is `ty`-clean):
 
 ```python
 def build_verse_system_prompt(
@@ -606,11 +627,11 @@ def build_verse_system_prompt(
     roster_max_chars: int = 4000,
     message_text: str = "",
     *,
-    style_exemplars: list[str] = (),
+    style_exemplars: Sequence[str] = (),
 ) -> str:
 ```
 
-Inject after the roster block, before the marker (between current lines 516 and 519):
+Inject after the roster block, before the marker (between current lines 516/519):
 
 ```python
     if roster_lines:
@@ -623,24 +644,52 @@ Inject after the roster block, before the marker (between current lines 516 and 
     parts.append(VERSE_SCENE_MARKER)
 ```
 
-- [ ] **Step 4: Run — expect PASS.** Also run `test_verse_prompt_roster.py` to confirm
-  no regression. **Commit** — `feat(verse): inject sanitized capped style exemplars into verse prompt`
+- [ ] **Step 4: Run new tests + `test_verse_prompt_roster.py` — PASS. Commit** —
+  `feat(verse): inject sanitized capped style exemplars into verse prompt`
 
 ---
 
-## Task 8: Plumb the caller (read key → pass param)
+## Task 7: Plumb the caller (read key → pass param) + end-to-end test
 
 **Files:**
-- Modify: `plugins/llm/src/llm/plugin.py` (the `build_verse_system_prompt(...)` call @2566)
+- Modify: `plugins/llm/src/llm/plugin.py` — the `build_verse_system_prompt(...)` call
+  in `_verse_route_for` (@2566)
 - Test: `plugins/llm/tests/test_plugin_verse.py`
 
-- [ ] **Step 1: Write a failing test** asserting the verse route threads the key into
-  the prompt. Use the existing plugin/verse test harness (mirror how other verse
-  route tests construct the plugin + registry). Set `verseStyleExemplars` to
-  `["the lads marched on the chippy"]` for the channel and assert the produced verse
-  `system_prompt` contains `"the lads marched on the chippy"` and the header.
+- [ ] **Step 1: Write the failing end-to-end test.** Scaffold the plugin + a real
+  `VerseStore` with an opted-in avatar for nick `Hero` exactly as the existing verse
+  route tests do (mirror the `TestLookCommand.verse_env` fixture +
+  avatar-opt-in/link call already used in this file — grep the store for the avatar
+  link/opt-in API that makes `find_avatar_by_nick("Hero")` resolve). Then:
 
-- [ ] **Step 2: Run — expect FAIL.**
+```python
+def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
+    from llm.verse.store import VerseStore
+    plugin, irc, msg = plugin_env
+    store = VerseStore(tmp_path / "verse", "#afnet")
+    avatar_id = store.add_entity("avatar", "Hero")
+    # link nick "Hero" -> avatar_id using the same opt-in/link call the existing
+    # verse tests use, so _verse_route_for finds the avatar.
+    store.<avatar opt-in/link API>("Hero", avatar_id)  # mirror existing verse tests
+    mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+    mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+
+    def _registry(key, *a):
+        if key == "verseEnabled":
+            return True
+        if key == "verseStyleExemplars":
+            return ["the lads marched on the chippy"]
+        from tests.conftest import make_registry_side_effect
+        return make_registry_side_effect()(key, *a)
+
+    plugin.registryValue = mocker.MagicMock(side_effect=_registry)
+    route = plugin._verse_route_for("#afnet", "Hero", None, "what happened")
+    assert route is not None
+    assert "the lads marched on the chippy" in route.system_prompt
+    assert "singled these lines out" in route.system_prompt
+```
+
+- [ ] **Step 2: Run — FAIL** (caller doesn't pass the key yet; exemplar absent).
 
 - [ ] **Step 3: Implement.** At `plugin.py:2566`, add the keyword arg:
 
@@ -655,36 +704,39 @@ Inject after the roster block, before the marker (between current lines 516 and 
         )
 ```
 
-(`registryValue` for a `registry.Json` returns the list directly.)
+(`registryValue` for a `registry.Json` returns the list; a `list` satisfies
+`Sequence[str]`.)
 
-- [ ] **Step 4: Run — expect PASS. Commit** — `feat(verse): plumb verseStyleExemplars into the verse route`
+- [ ] **Step 4: Run — PASS. Commit** — `feat(verse): plumb verseStyleExemplars into the verse route`
 
 ---
 
-## Task 9: Regression sweep + coverage
+## Task 8: Regression sweep + coverage
 
-- [ ] **Step 1:** `make test` — expect all pass, coverage ≥ 93% (the
-  `taste_mine` core + injection are well-covered; the CLI `_main` is `# pragma: no
-  cover`). If coverage dips, add a focused test for any uncovered detector branch.
-- [ ] **Step 2:** `make lint && make typecheck` — expect clean.
-- [ ] **Step 3:** Quick manual sanity: `uv run python -m llm.verse.taste_mine --help`
-  prints usage (import-time wiring OK).
-- [ ] **Step 4: Commit** any test/coverage additions — `test(verse): taste-exemplars regression + coverage`
+- [ ] **Step 1:** `make test` — all pass, coverage ≥ 93% (`taste_mine` core + injection
+  well-covered; CLI `_main` is `# pragma: no cover`). If coverage dips, add a focused
+  test for any uncovered detector branch (e.g. an empty-roster/empty-logs no-op:
+  `extract_candidates([], FakeStore([])) == []`).
+- [ ] **Step 2:** `make lint && make typecheck` — clean (watch N805/E402/F401 in tests;
+  `ty` on the `Sequence[str]` default).
+- [ ] **Step 3:** Sanity: `uv run python -m llm.verse.taste_mine --help` prints usage.
+- [ ] **Step 4: Commit** any additions — `test(verse): taste-exemplars regression + coverage`
 
 ---
 
 ## Out of scope (do NOT build)
 
-Live capture, approval command, auto-injection, a verse-store table, scheduling,
-pastebin cross-matching, chat-path tuning. The miner is offline; curation is manual;
-the live bot only reads the default-empty key.
+Live capture, approval command, auto-injection, a verse-store table, a separate
+roster accessor (reuse `match_entities_in_text`), scheduling, pastebin
+cross-matching, chat-path tuning.
 
 ## Rollout (post-merge, operator)
 
 1. Ships inert (key default `[]` ⇒ byte-identical verse).
-2. Run the miner against prod logs (read-only), review `taste_candidates.md`, drop
-   any denial-shaped line, hand a curated set to fc42/rdrake.
-3. Stop bot → paste curated JSON array into
+2. Run the miner against prod logs (read-only): `uv run python -m llm.verse.taste_mine
+   <logs…> --verse-dir <dir> --channel '#afternet'`; review `taste_candidates.md`;
+   drop anything flagged `DENIAL?`; hand a curated set to fc42/rdrake.
+3. Stop bot → paste the curated JSON array into
    `supybot.plugins.LLM.verseStyleExemplars.#afternet` in `bot.conf` → start →
    watch a few verse turns.
 4. Re-run + re-curate periodically.
