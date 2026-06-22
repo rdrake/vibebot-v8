@@ -100,8 +100,21 @@ def test_praise_bare_attaches_source_line():
 
 def test_praise_wordlist_is_word_bounded():
     store = FakeStore(["stinky lads"])
-    # "classroom" must NOT trigger the "class" praise word
-    assert classify_praise("the classroom was loud", store, prev_line="x") is None
+    # praise words as a prefix of a longer token must NOT match (\b boundaries)
+    assert classify_praise("so goodnight friends", store, prev_line="x") is None
+    assert classify_praise("amazingly done", store, prev_line="x") is None
+
+
+def test_praise_inline_span_without_entity_falls_through_to_prev():
+    store = FakeStore(["stinky lads"])
+    # inline span ("a cracking goal") names no roster entity -> fall through to prev_line
+    c = classify_praise(
+        "amazing when it said a cracking goal",
+        store,
+        prev_line="the stinky lads stormed the chippy",
+    )
+    assert c is not None and c.needs_review is True
+    assert c.text == "the stinky lads stormed the chippy"
 
 
 def test_non_praise_returns_none():
