@@ -439,6 +439,17 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "verseReactionCaptureEnabled",
+    registry.Boolean(
+        True,
+        _("""Capture inbound IRCv3 emoji reactions (+draft/react) to the bot's
+        verse lines as an offline approval signal (reactions.jsonl). Recency-
+        attributed; measurement only — no behaviour change. Kill-switch."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "verseStorybookMaxImages",
     registry.NonNegativeInteger(
         5,
