@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3, Limnoria (`callbacks.Plugin`, IRCv3 `message-tags`), pytest + pytest-mock. Spec: `docs/superpowers/specs/2026-06-27-verse-reaction-signal-design.md`.
 
+**Known limitations (red-team 2026-06-27, accepted for a measurement-only signal):** verse delivered via timeout-recovery (`_deliver_pending_result`, plugin.py:~995/1000) bypasses the send-hook, so a timed-out-then-recovered verse line is not attributable; `@story`/`verse_storybook` async link posts are out of scope (not verse prose). Both are rare and acceptable — the report's caveats already note silence ≠ dislike.
+
 ---
 
 ## File Structure
@@ -751,7 +753,7 @@ In `assistant_completion`, immediately after the function's opening (where `rout
         was_verse = route_profile == PROFILE_VERSE
 ```
 
-Then add `was_verse=was_verse` to the **content-success** return(s) only — the primary sanitized-content return near line 4114, and the URL/teaser success returns near 4281 and 4301 if they carry assistant text. Leave the error/empty returns (3780, 4103, 4242, 4344, 4345, 4352) at the default `False`. Example for the primary return:
+Then add `was_verse=was_verse` to the **content-bearing verse returns only** — red-team verified these to be the primary sanitized-content return near **4114** and the step-cap fallback near **4301**. Do NOT tag 4281 (`generate_image` short-circuit — not reachable for verse, which advertises `verse_storybook`, not the bare image tool). Leave 4242 (`verse_storybook` short-circuit) and the error/empty returns (3780, 4103, 4344, 4345, 4352) at the default `False`: 4242 returns empty content that the plugin suppresses at plugin.py:2477-2482 before any store, so it carries no signal. (`route_profile` is a never-reassigned parameter, and the denial/degraded/echo retries `continue` rather than `return`, so 4114/4301 are the only verse-reachable content returns.) Example for the primary return:
 
 ```python
         return AssistantResult(
@@ -861,6 +863,19 @@ class TestVerseReactionSendHook:
             irc, msg, result, nick="fc42", channel="#test", response="just chatting",
         )
         assert ("testnet", "#test") not in plugin._last_bot_line
+
+    def test_verse_action_reply_also_records(self, plugin_env):
+        # Red-team: a verse line emitted as a /me action returns via the action
+        # branch (before the long-reply send) and must still be recorded.
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        result = AssistantResult(content="/me summons Methane Max", was_verse=True)
+        plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="fc42", channel="#test",
+            response="/me summons Methane Max",
+        )
+        last = plugin._last_bot_line.get(("testnet", "#test"))
+        assert last is not None and "Methane Max" in last["text"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -879,19 +894,40 @@ In `plugin.py` `__init__`, after the `self._irc_send_lock = threading.Lock()` li
         self._reaction_log_lock = threading.Lock()
 ```
 
-In `_dispatch_assistant_reply`, at the send site (~:2500), insert between the `_send_long_reply` call and `return response, True`:
+Add a small helper to the `LLM` class (records only verse turns; exception-isolated):
+
+```python
+    def _record_last_verse_line(
+        self, irc: callbacks.Irc, channel: str, text: str, result
+    ) -> None:
+        """Remember the bot's last VERSE line per (network, channel) for reaction
+        attribution. No-op for non-verse turns. Never disturbs the reply path."""
+        if not getattr(result, "was_verse", False):
+            return
+        try:
+            with self._irc_send_lock:
+                self._last_bot_line[(irc.network, channel)] = {
+                    "text": text,
+                    "ts": time.time(),
+                }
+        except Exception:
+            self.log.exception("last_bot_line store failed")
+```
+
+Call it at **BOTH** points verse output leaves `_dispatch_assistant_reply` — red-team finding: the `/me` action branch returns *before* the long-reply send, so a single hook at :2500 would silently miss verse lines emitted as actions.
+
+- In the **action branch**, immediately before `return f"* {irc.nick} {action_text}", True` (~:2496):
+
+```python
+        self._record_last_verse_line(irc, channel, action_text, result)
+        return f"* {irc.nick} {action_text}", True
+```
+
+- In the **long-reply branch**, immediately after the `_send_long_reply` call (~:2500):
 
 ```python
         self._send_long_reply(irc, msg, display_response, prefixNick=False)
-        if getattr(result, "was_verse", False):
-            try:
-                with self._irc_send_lock:
-                    self._last_bot_line[(irc.network, channel)] = {
-                        "text": display_response,
-                        "ts": time.time(),
-                    }
-            except Exception:  # never let signal capture disturb the reply path
-                self.log.exception("last_bot_line store failed")
+        self._record_last_verse_line(irc, channel, display_response, result)
         return response, True
 ```
 
@@ -1011,6 +1047,8 @@ Add these methods to the `LLM` class (near `doPrivmsg`, ~:1101):
             server_tags = getattr(msg, "server_tags", None) or {}
             react_emoji = server_tags.get("+draft/react")
             if not react_emoji:
+                return
+            if msg.nick == irc.nick:  # never count the bot's own reactions (defensive)
                 return
             channel = msg.channel or (msg.args[0] if msg.args else "")
             if not channel or not channel.startswith(("#", "&")):
