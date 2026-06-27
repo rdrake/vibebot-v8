@@ -17,8 +17,8 @@ reacts positively to verse — over time, with a pre/post-exemplar split, reusin
 already shipped in `taste_mine`.
 
 **Non-goals (this slice):** in-bot command, scheduled job, storybook image cap, any
-authoring/engagement change, and any bot-runtime behavior change — except the optional,
-separately-gated usage-label fix in §7.
+authoring/engagement change, and any bot-runtime behavior change. This slice is **fully
+offline** — a read-only CLI over logs and the verse store.
 
 ## 2. The signal
 
@@ -33,11 +33,13 @@ live exemplars (113 clean candidates across 69 logs), so the numerator is alread
 
 ### 2.2 Denominator — fc42 activity
 
-Telemetry cannot help: verse completions are recorded with `command="ask"` in the usage table
-(`service.py:4324`), indistinguishable from normal @ask. The verse `events` table is
-compaction-lossy (originals are pruned/digested after `verseEventRetentionDays`), so it has no
-durable history. The only historically-complete, verse-consistent, log-derivable denominator is
-**fc42's own message volume**.
+Telemetry cannot help: verse replies are logged to the usage table with a hardcoded
+`command="ask"` (the shared @ask/verse reply path, `plugin.py:3846` → `db.log_usage`),
+indistinguishable from normal @ask. (An earlier draft mis-cited `service.py:4324`; that
+`task_type_map` governs only timed-out-task stashing, not the usage label — see §7.) The verse
+`events` table is compaction-lossy (originals are pruned/digested after `verseEventRetentionDays`),
+so it has no durable history. The only historically-complete, verse-consistent, log-derivable
+denominator is **fc42's own message volume**.
 
 Primary normalized metric: **reactions as a share of fc42's messages** (and per active day).
 Interpretation: "of everything fc42 says, what share is him reacting to verse." Confounder, noted
@@ -106,23 +108,30 @@ tool; avoids refactoring `taste_mine`.
 - **Distinct-wins dedup is global** (separate from per-bucket counting) so the eyeball list is not
   flooded by a repeated favorite.
 
-## 7. Optional add-on (separately gated) — usage-label forward-proofing
+## 7. Deferred — per-turn usage denominator (NOT a one-liner)
 
-`service.py:4324` maps `PROFILE_VERSE → "ask"` in `task_type_map`. Changing it to `"verse"` makes
-verse turns countable in the usage table **from now on** — a true per-turn denominator for future
-measurement. **Included only if** a red-team confirms nothing branches on the literal `"ask"` for
-verse turns (cost/usage aggregation, reporting, tests). If risky, it is dropped — the log-based
-tool is self-sufficient. This is the only bot-runtime change in the slice, is independently
-revertable, and is inert until verse turns occur.
+An earlier draft proposed making verse turns countable in the usage table by relabeling
+`task_type_map[PROFILE_VERSE]` from `"ask"` to `"verse"` (`service.py:4324`). A red-team killed it:
+that map lives inside the `litellm.Timeout` handler and only labels *stashed, timed-out* tasks for
+the retry queue (`pending_tasks.task_type`) — it never touches the usage row. The usage `command`
+is a hardcoded `"ask"` on the shared reply path (`plugin.py:3846`). Worse, relabeling the map to
+`"verse"` would route verse timeout-recovery into the "unknown task type" branch
+(`service.py:2381`/`2392`).
+
+Making verse turns countable in usage is therefore a *larger* change — a route-aware relabel at the
+`log_usage` call site plus a newly-recognized task_type — and is **deferred**. Slice 1 needs none
+of it: the log-derived fc42-activity denominator (§2.2) is self-sufficient. Recorded here so the
+wrong one-liner is not re-attempted.
 
 ## 8. Testing
 
 `plugins/llm/tests/verse/test_taste_report.py`, BDD docstrings, the `FakeStore` pattern from
 `test_taste_mine.py`. Cover: month bucketing; pre/post split at the rollout boundary (`date <`
 vs `>=`); denominator counting; rate computation + divide-by-zero; win dedup + recency cap; render
-contains the headline + caveats; empty input. Maintain the **93%** coverage floor; `_main` is
-`# pragma: no cover` (matching `taste_mine`). If the §7 usage-label change lands, update its tests
-in the service/usage test module.
+contains the headline + caveats; empty input. **Branch coverage is on** (`pyproject.toml`
+`branch = true`), so cover both sides of the win-replacement branch (`prev is None or
+date > prev.date`) and the thin-sample annotation. Maintain the **93%** coverage floor; `_main` is
+`# pragma: no cover` (matching `taste_mine`).
 
 ## 9. Honest expectations
 
@@ -133,6 +142,5 @@ ruler now and accruing forward signal. Re-runnable anytime via the container rec
 ## 10. Rollout
 
 Offline, operator-run in the prod container (the same recipe as `taste_mine`; the
-`__main__.__file__` shim is already present). No deploy, restart, schema, or config change —
-unless the §7 usage-label fix is included, which deploys via normal CI but stays inert until a
-verse turn is recorded.
+`__main__.__file__` shim is already present). **No deploy, restart, schema, or config change** —
+the slice adds only a new offline module and its tests.
