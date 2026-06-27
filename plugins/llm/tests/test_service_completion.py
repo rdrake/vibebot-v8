@@ -1705,3 +1705,11 @@ class TestResponsesApiTextAndUsage:
         assert completion_tokens == 12
         assert cached_tokens == 180
         assert cost == pytest.approx(0.01)
+
+
+def test_assistant_result_was_verse_defaults_false():
+    assert AssistantResult(content="x").was_verse is False
+
+
+def test_assistant_result_was_verse_settable():
+    assert AssistantResult(content="x", was_verse=True).was_verse is True

@@ -546,6 +546,7 @@ class AssistantResult(NamedTuple):
     error: str | None = None
     last_successful_tool: str | None = None
     final_text_after_tools: str = ""
+    was_verse: bool = False
 
 
 @dataclass(frozen=True)
@@ -3763,6 +3764,10 @@ Examples (echo → action_prompt: ""):
         total_cost = 0.0
         stop_typing = self._begin_typing(irc, msg) if manage_typing else lambda: None
 
+        # Tag verse turns once (route_profile is a never-reassigned parameter) so
+        # the content-bearing returns can mark AssistantResult.was_verse — read by
+        # the plugin's reaction send-hook (see verse/reactions.py).
+        was_verse = route_profile == PROFILE_VERSE
         try:
             # PROFILES.get fallback preserves pre-refactor behavior: unknown
             # route_profile values silently fall through to the chat profile. The
@@ -4120,6 +4125,7 @@ Examples (echo → action_prompt: ""):
                         grounding_used=executor.grounding_used,
                         last_successful_tool=last_successful_tool,
                         final_text_after_tools=content,
+                        was_verse=was_verse,
                     )
 
                 # Append assistant message with tool_calls to history
@@ -4287,6 +4293,7 @@ Examples (echo → action_prompt: ""):
                             grounding_used=executor.grounding_used,
                             last_successful_tool="generate_image",
                             final_text_after_tools=url,
+                            was_verse=was_verse,
                         )
 
             # Step cap reached — fold in leaf tool costs
@@ -4308,6 +4315,7 @@ Examples (echo → action_prompt: ""):
                 error="Assistant exceeded maximum tool-call steps.",
                 last_successful_tool=last_successful_tool,
                 final_text_after_tools=last_assistant_text,
+                was_verse=was_verse,
             )
 
         except litellm.Timeout as e:
