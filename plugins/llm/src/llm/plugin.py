@@ -689,6 +689,11 @@ class LLM(callbacks.Plugin):
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
 
+        # Recency-attributed verse reaction signal (see verse/reactions.py).
+        # Last verse line the bot said per (network, channel); read by doTagmsg.
+        self._last_bot_line: dict[tuple[str, str], dict] = {}
+        self._reaction_log_lock = threading.Lock()
+
         # Per-channel VerseStore cache (keyed by channel name).
         self._verse_stores: dict[str, VerseStore] = {}
         self._verse_stores_lock = threading.Lock()
@@ -2435,6 +2440,20 @@ class LLM(callbacks.Plugin):
         teaser = self._trim_long_reply_teaser(teaser, max_chars)
         self._safe_reply(irc, f"{teaser}{suffix}", prefixNick=prefixNick)
 
+    def _record_last_verse_line(self, irc: callbacks.Irc, channel: str, text: str, result) -> None:
+        """Remember the bot's last VERSE line per (network, channel) for reaction
+        attribution. No-op for non-verse turns. Never disturbs the reply path."""
+        if not getattr(result, "was_verse", False):
+            return
+        try:
+            with self._irc_send_lock:
+                self._last_bot_line[(irc.network, channel)] = {
+                    "text": text,
+                    "ts": time.time(),
+                }
+        except Exception:
+            self.log.exception("last_bot_line store failed")
+
     def _dispatch_assistant_reply(
         self,
         irc: callbacks.Irc,
@@ -2493,11 +2512,13 @@ class LLM(callbacks.Plugin):
             target = channel if ircutils.isChannel(channel) else nick
             if not self._safe_queue(irc, ircmsgs.action(target, action_text)):
                 return response, False
+            self._record_last_verse_line(irc, channel, action_text, result)
             return f"* {irc.nick} {action_text}", True
 
         display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
         self.log.info("replying to %s/%s", channel, nick)
         self._send_long_reply(irc, msg, display_response, prefixNick=False)
+        self._record_last_verse_line(irc, channel, display_response, result)
         return response, True
 
     def _build_request_context(

@@ -3154,3 +3154,53 @@ def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
     assert route is not None
     assert "the lads marched on the chippy" in route.system_prompt
     assert "singled these lines out" in route.system_prompt
+
+
+class TestVerseReactionSendHook:
+    def test_verse_reply_records_last_bot_line(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        result = AssistantResult(content="A tale of Methane Max", was_verse=True)
+        plugin._dispatch_assistant_reply(
+            irc,
+            msg,
+            result,
+            nick="fc42",
+            channel="#test",
+            response="A tale of Methane Max",
+        )
+        last = plugin._last_bot_line.get(("testnet", "#test"))
+        assert last is not None
+        assert last["text"].endswith("Methane Max")
+        assert isinstance(last["ts"], float)
+
+    def test_non_verse_reply_does_not_record(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        result = AssistantResult(content="just chatting", was_verse=False)
+        plugin._dispatch_assistant_reply(
+            irc,
+            msg,
+            result,
+            nick="fc42",
+            channel="#test",
+            response="just chatting",
+        )
+        assert ("testnet", "#test") not in plugin._last_bot_line
+
+    def test_verse_action_reply_also_records(self, plugin_env):
+        # Red-team: a verse line emitted as a /me action returns via the action
+        # branch (before the long-reply send) and must still be recorded.
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        result = AssistantResult(content="/me summons Methane Max", was_verse=True)
+        plugin._dispatch_assistant_reply(
+            irc,
+            msg,
+            result,
+            nick="fc42",
+            channel="#test",
+            response="/me summons Methane Max",
+        )
+        last = plugin._last_bot_line.get(("testnet", "#test"))
+        assert last is not None and "Methane Max" in last["text"]
