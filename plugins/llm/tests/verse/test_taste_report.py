@@ -2,6 +2,8 @@ import re as _re
 
 from llm.verse.taste_report import (
     BucketStats,
+    Report,
+    Win,
     _month,
     _stat_rows,
     build_report,
@@ -221,8 +223,41 @@ def test_render_flags_thin_sample():
 
 
 def test_stat_rows_thin_and_not_thin_branches():
-    """_stat_rows annotates small buckets and leaves large buckets unflagged."""
+    """_stat_rows flags small buckets; the OR also flags low-reaction busy months."""
     big = "\n".join(_stat_rows([("big", BucketStats("big", 55, 5, 1))]))
     small = "\n".join(_stat_rows([("small", BucketStats("small", 1, 1, 1))]))
+    # busy month, few reactions: caught by the `reactions < N` arm of the OR, not by msgs
+    busy = "\n".join(_stat_rows([("busy", BucketStats("busy", 200, 2, 30))]))
     assert "thin sample" not in big  # 55 msgs and 5 reactions -> not thin
     assert "thin sample" in small
+    assert "thin sample" in busy  # pins the OR: an `and` mutation would drop this
+
+
+def test_render_win_truncation_boundary():
+    """Win text exactly at the cap renders whole; one char over is truncated (pins <=)."""
+    at_cap = "x" * 160
+    over_cap = "y" * 161
+    rep = Report(
+        buckets=[],
+        pre=BucketStats("pre", 0, 0, 0),
+        post=BucketStats("post", 0, 0, 0),
+        wins=[Win("2026-06-22", "repaste", at_cap), Win("2026-06-21", "repaste", over_cap)],
+        rollout="2026-06-22",
+    )
+    md = render_report(rep)
+    assert at_cap in md  # 160 chars -> not truncated
+    assert "y" * 157 + "..." in md  # 161 chars -> truncated to 157 + ellipsis
+    assert over_cap not in md
+
+
+def test_active_days_counts_distinct_dates_not_files():
+    """Two files sharing a date in a month collapse to one active day."""
+    store = FakeStore([])
+    logs = [
+        ("2026-06-15", ["2026-06-15T10:00:00  <fc42> morning chatter from the one file"]),
+        ("2026-06-15", ["2026-06-15T18:00:00  <fc42> evening chatter from the other file"]),
+    ]
+    r = build_report(logs, store)
+    june = next(b for b in r.buckets if b.label == "2026-06")
+    assert june.fc42_msgs == 2  # both files' messages counted
+    assert june.active_days == 1  # same date -> one active day, not two
