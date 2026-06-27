@@ -3280,3 +3280,53 @@ class TestDoTagmsgReactionCapture:
         msg.channel = "#test"
         plugin.doTagmsg(irc, msg)
         assert not self._path(tmp_path).exists()
+
+    def test_thumbs_down_recorded_as_disapprove(self, reaction_env):
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._last_bot_line[("testnet", "#test")] = {
+            "text": "Methane Max hacked the tannoy",
+            "ts": time.time(),
+        }
+        msg.server_tags = {"+draft/react": "\U0001f44e"}  # thumbs down
+        msg.channel = "#test"
+        msg.nick = "fc42"
+        plugin.doTagmsg(irc, msg)
+        ev = json.loads(self._path(tmp_path).read_text(encoding="utf-8").strip())
+        assert ev["sentiment"] == "disapprove"
+
+    def test_self_reaction_skipped(self, reaction_env):
+        # The bot's own reaction (matched case-insensitively) must not be counted.
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._last_bot_line[("testnet", "#test")] = {"text": "x", "ts": time.time()}
+        msg.server_tags = {"+draft/react": "\U0001f44d"}
+        msg.channel = "#test"
+        msg.nick = irc.nick.upper()  # different case, still the bot
+        plugin.doTagmsg(irc, msg)
+        assert not self._path(tmp_path).exists()
+
+    def test_non_channel_tagmsg_ignored(self, reaction_env):
+        # A reaction whose target is a nick (private message) is ignored.
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._last_bot_line[("testnet", "#test")] = {"text": "x", "ts": time.time()}
+        msg.server_tags = {"+draft/react": "\U0001f44d"}
+        msg.channel = ""
+        msg.args = ("testbot", "")
+        msg.nick = "fc42"
+        plugin.doTagmsg(irc, msg)
+        assert not self._path(tmp_path).exists()
+
+    def test_channel_key_case_insensitive(self, reaction_env):
+        # A verse line recorded for "#Test" must be matched by a reaction on "#test".
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._record_last_verse_line(
+            irc,
+            "#Test",
+            "Methane Max hacked the tannoy",
+            AssistantResult(content="x", was_verse=True),
+        )
+        msg.server_tags = {"+draft/react": "\U0001f44d"}
+        msg.channel = "#test"
+        msg.nick = "fc42"
+        plugin.doTagmsg(irc, msg)
+        ev = json.loads(self._path(tmp_path).read_text(encoding="utf-8").strip())
+        assert ev["sentiment"] == "approve"

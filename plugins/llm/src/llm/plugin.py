@@ -1200,7 +1200,7 @@ class LLM(callbacks.Plugin):
             react_emoji = server_tags.get("+draft/react")
             if not react_emoji:
                 return
-            if msg.nick == irc.nick:  # never count the bot's own reactions (defensive)
+            if ircutils.strEqual(msg.nick, irc.nick):  # never count the bot's own reactions
                 return
             channel = msg.channel or (msg.args[0] if msg.args else "")
             if not channel or not channel.startswith(("#", "&")):
@@ -1208,7 +1208,7 @@ class LLM(callbacks.Plugin):
             if not self.registryValue("verseReactionCaptureEnabled", channel):
                 return
             with self._irc_send_lock:
-                last = self._last_bot_line.get((irc.network, channel))
+                last = self._last_bot_line.get((irc.network, ircutils.toLower(channel)))
             event = reactions.process_reaction(
                 react_emoji=react_emoji,
                 reactor=msg.nick,
@@ -2492,7 +2492,7 @@ class LLM(callbacks.Plugin):
             return
         try:
             with self._irc_send_lock:
-                self._last_bot_line[(irc.network, channel)] = {
+                self._last_bot_line[(irc.network, ircutils.toLower(channel))] = {
                     "text": text,
                     "ts": time.time(),
                 }
