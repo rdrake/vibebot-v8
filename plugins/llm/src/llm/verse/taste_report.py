@@ -180,7 +180,7 @@ def render_report(report: Report) -> str:
     return "\n".join(lines)
 
 
-def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
+def _main(argv=None):
     import argparse
     import re
     from pathlib import Path
@@ -193,6 +193,11 @@ def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
     ap.add_argument("--channel", default="#afternet")
     ap.add_argument("--rollout", default=DEFAULT_ROLLOUT, help="pre/post boundary date YYYY-MM-DD")
     ap.add_argument("--out", default="verse_landing_report.md")
+    ap.add_argument(
+        "--reactions",
+        default=None,
+        help="optional reactions.jsonl; appends an explicit 👍/👎 section",
+    )
     args = ap.parse_args(argv)
 
     store = VerseStore(Path(args.verse_dir), args.channel)
@@ -207,7 +212,20 @@ def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
         dated.append((m.group(1), text.splitlines()))
 
     report = build_report(dated, store, rollout=args.rollout)
-    Path(args.out).write_text(render_report(report), encoding="utf-8")
+    out_text = render_report(report)
+    if args.reactions:
+        from .reactions import (
+            build_reaction_report,
+            parse_reaction_lines,
+            render_reaction_section,
+        )
+
+        rlines = Path(args.reactions).read_text(encoding="utf-8", errors="replace").splitlines()
+        rreport = build_reaction_report(
+            parse_reaction_lines(rlines), rollout=args.rollout, channel=args.channel
+        )
+        out_text += "\n\n" + render_reaction_section(rreport)
+    Path(args.out).write_text(out_text, encoding="utf-8")
     print(
         f"pre={report.pre.reactions}/{report.pre.fc42_msgs} "
         f"post={report.post.reactions}/{report.post.fc42_msgs} "

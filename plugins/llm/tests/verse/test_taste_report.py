@@ -1,9 +1,11 @@
 import re as _re
+from pathlib import Path
 
 from llm.verse.taste_report import (
     BucketStats,
     Report,
     Win,
+    _main,
     _month,
     _stat_rows,
     build_report,
@@ -261,3 +263,47 @@ def test_active_days_counts_distinct_dates_not_files():
     june = next(b for b in r.buckets if b.label == "2026-06")
     assert june.fc42_msgs == 2  # both files' messages counted
     assert june.active_days == 1  # same date -> one active day, not two
+
+
+# --------------------------------------------------------------------------- #
+# Task 6 — _main CLI wiring (--reactions flag)
+# --------------------------------------------------------------------------- #
+
+
+def test_main_appends_reaction_section(tmp_path: Path):
+    # one empty log file named with a date (no entities -> 0 landing reactions)
+    log = tmp_path / "#afnet.2026-06-23.log"
+    log.write_text("2026-06-23T10:00:00  <fc42> hello\n", encoding="utf-8")
+    reactions = tmp_path / "reactions.jsonl"
+    reactions.write_text(
+        '{"ts": "2026-06-23T10:01:00Z", "sentiment": "approve", "reactor": "fc42",'
+        ' "channel": "#afnet", "verse_excerpt": "Methane Max"}\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.md"
+    _main(
+        [
+            str(log),
+            "--verse-dir",
+            str(tmp_path),
+            "--channel",
+            "#afnet",
+            "--rollout",
+            "2026-06-22",
+            "--reactions",
+            str(reactions),
+            "--out",
+            str(out),
+        ]
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "# Verse landing-rate report" in text  # landing report still present
+    assert "## Explicit 👍/👎 reactions" in text  # reaction section appended
+
+
+def test_main_without_reactions_has_no_reaction_section(tmp_path: Path):
+    log = tmp_path / "#afnet.2026-06-23.log"
+    log.write_text("2026-06-23T10:00:00  <fc42> hello\n", encoding="utf-8")
+    out = tmp_path / "report.md"
+    _main([str(log), "--verse-dir", str(tmp_path), "--channel", "#afnet", "--out", str(out)])
+    assert "## Explicit" not in out.read_text(encoding="utf-8")
