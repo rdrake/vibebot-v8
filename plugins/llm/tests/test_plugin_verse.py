@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import TYPE_CHECKING
 
 import pytest
 from llm.service import AssistantResult
+
+from .conftest import make_registry_side_effect
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -3204,3 +3208,75 @@ class TestVerseReactionSendHook:
         )
         last = plugin._last_bot_line.get(("testnet", "#test"))
         assert last is not None and "Methane Max" in last["text"]
+
+
+class TestDoTagmsgReactionCapture:
+    @pytest.fixture
+    def reaction_env(self, plugin_env, tmp_path):
+        # supybot.conf.supybot.directories.data is a slotted registry Directory
+        # node (no __dict__), so mocker.patch can't replace it; set the value via
+        # the registry's own setValue and restore on teardown. _append_reaction_event
+        # reads conf.supybot.directories.data() -> writes <data>/verse/reactions.jsonl.
+        import supybot.conf as conf
+
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        _orig_data = conf.supybot.directories.data()
+        conf.supybot.directories.data.setValue(str(tmp_path))
+        base = make_registry_side_effect()
+
+        def _reg(key, *a):
+            if key == "verseReactionCaptureEnabled":
+                return True
+            return base(key, *a)
+
+        plugin.registryValue.side_effect = _reg
+        try:
+            yield plugin, irc, msg, tmp_path
+        finally:
+            conf.supybot.directories.data.setValue(_orig_data)
+
+    def _path(self, tmp_path):
+        return tmp_path / "verse" / "reactions.jsonl"
+
+    def test_thumbs_up_on_recent_verse_line_logged(self, reaction_env):
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._last_bot_line[("testnet", "#test")] = {
+            "text": "Methane Max hacked the tannoy",
+            "ts": time.time(),
+        }
+        msg.server_tags = {"+draft/react": "\U0001f44d", "+draft/reply": "abc"}
+        msg.channel = "#test"
+        msg.nick = "fc42"
+        plugin.doTagmsg(irc, msg)
+        lines = self._path(tmp_path).read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        ev = json.loads(lines[0])
+        assert ev["sentiment"] == "approve"
+        assert ev["reactor"] == "fc42"
+        assert ev["was_verse"] is True
+
+    def test_non_react_tagmsg_ignored(self, reaction_env):
+        plugin, irc, msg, tmp_path = reaction_env
+        msg.server_tags = {"+typing": "active"}
+        plugin.doTagmsg(irc, msg)
+        assert not self._path(tmp_path).exists()
+
+    def test_capture_disabled_skips(self, reaction_env):
+        plugin, irc, msg, tmp_path = reaction_env
+        base = make_registry_side_effect()
+        plugin.registryValue.side_effect = lambda key, *a: (
+            False if key == "verseReactionCaptureEnabled" else base(key, *a)
+        )
+        plugin._last_bot_line[("testnet", "#test")] = {"text": "x", "ts": time.time()}
+        msg.server_tags = {"+draft/react": "\U0001f44d"}
+        msg.channel = "#test"
+        plugin.doTagmsg(irc, msg)
+        assert not self._path(tmp_path).exists()
+
+    def test_no_recent_verse_line_skips(self, reaction_env):
+        plugin, irc, msg, tmp_path = reaction_env
+        msg.server_tags = {"+draft/react": "\U0001f44d"}
+        msg.channel = "#test"
+        plugin.doTagmsg(irc, msg)
+        assert not self._path(tmp_path).exists()

@@ -54,6 +54,7 @@ from .service import (
     truncate_to_word_boundary,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
+from .verse import reactions
 from .verse.aging import AgingOutcome
 from .verse.avatar import (
     _VerseToolResult,
@@ -1187,6 +1188,50 @@ class LLM(callbacks.Plugin):
         if not irc_has_caps(irc, "account-tag", "extended-join"):
             return False
         return bool(self.registryValue("skipAutoWhoOnJoin"))
+
+    def doTagmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """Capture inbound IRCv3 emoji reactions (+draft/react) to verse lines.
+
+        Recency-attributed, measurement only (no reply). Fully exception-isolated
+        so a capture bug can never disturb the IRC event loop. See verse/reactions.py.
+        """
+        try:
+            server_tags = getattr(msg, "server_tags", None) or {}
+            react_emoji = server_tags.get("+draft/react")
+            if not react_emoji:
+                return
+            if msg.nick == irc.nick:  # never count the bot's own reactions (defensive)
+                return
+            channel = msg.channel or (msg.args[0] if msg.args else "")
+            if not channel or not channel.startswith(("#", "&")):
+                return
+            if not self.registryValue("verseReactionCaptureEnabled", channel):
+                return
+            with self._irc_send_lock:
+                last = self._last_bot_line.get((irc.network, channel))
+            event = reactions.process_reaction(
+                react_emoji=react_emoji,
+                reactor=msg.nick,
+                channel=channel,
+                network=irc.network,
+                target_msgid=server_tags.get("+draft/reply"),
+                last_bot_line=last,
+                now=time.time(),
+                capture_enabled=True,
+            )
+            if event is not None:
+                self._append_reaction_event(event)
+        except Exception:
+            self.log.exception("doTagmsg reaction capture failed")
+
+    def _append_reaction_event(self, event: dict) -> None:
+        """Append one reaction event to <data>/verse/reactions.jsonl (thread-safe)."""
+        base = Path(conf.supybot.directories.data()) / "verse"
+        path = base / "reactions.jsonl"
+        with self._reaction_log_lock:
+            base.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(reactions.event_to_jsonl(event) + "\n")
 
     def doJoin(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Track channels the bot is joining for startup notification.
