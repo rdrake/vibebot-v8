@@ -2594,6 +2594,35 @@ class LLM(callbacks.Plugin):
             capabilities=capabilities,
         )
 
+    def _verse_triggered(
+        self,
+        channel: str,
+        store: VerseStore,
+        avatar_id: int,
+        message_text: str,
+    ) -> bool:
+        """True when ``message_text`` should drop into verse mode.
+
+        Two signals, either sufficient:
+        1. The message names a known active in-universe entity (character,
+           place, or item) other than the speaker's own avatar. Reuses
+           ``store.match_entities_in_text`` (whole-word, alias-aware,
+           capitalized-stoplist rules).
+        2. The channel's ``verseTriggerRegex`` (case-insensitive ``re.search``)
+           matches. Empty regex disables this signal; a malformed regex is
+           ignored rather than raised into the message path.
+        """
+        if any(e.id != avatar_id for e in store.match_entities_in_text(message_text)):
+            return True
+        pattern = self.registryValue("verseTriggerRegex", channel)
+        if pattern:
+            try:
+                if re.search(pattern, message_text, re.IGNORECASE):
+                    return True
+            except re.error:
+                pass
+        return False
+
     def _verse_route_for(
         self,
         channel: str,
@@ -2628,6 +2657,12 @@ class LLM(callbacks.Plugin):
         ) or store.find_avatar_by_nick(nick)
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
+        # Trigger gate: don't route every avatar-user message into verse. Only
+        # route when the message carries a verse signal — a configured keyword
+        # or a reference to a known in-universe entity (not the speaker's own
+        # avatar). Otherwise fall through to the normal chat path.
+        if not self._verse_triggered(channel, store, avatar_id, message_text):
+            return None
         persona = self.db.get_avatar_persona(nick) or ""
         system_prompt = build_verse_system_prompt(
             store,

@@ -362,6 +362,21 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "verseTriggerRegex",
+    registry.String(
+        r"\bverse\b",
+        _("""Regex (case-insensitive, re.search) that force-routes a message
+        into verse mode when it matches. This is in ADDITION to the always-on
+        signal that a message naming a known in-universe entity (character,
+        place, or item, other than the speaker's own avatar) triggers verse.
+        Empty string disables the keyword trigger, leaving only entity
+        references. A malformed regex is ignored (treated as no match).
+        Non-triggering messages fall through to the normal chat path."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "verseEventRetentionDays",
     registry.Integer(
         30,

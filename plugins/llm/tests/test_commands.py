@@ -3214,8 +3214,9 @@ class TestVerseStorybook:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.is_ooc", return_value=False)
 
-        # Flag off → no storybook spec.
-        base = make_registry_side_effect({"verseEnabled": True})
+        # Flag off → no storybook spec. Permissive trigger regex so the
+        # _verse_triggered gate passes (this test is about tool specs).
+        base = make_registry_side_effect({"verseEnabled": True, "verseTriggerRegex": "."})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         route = plugin._verse_route_for("#test", "testnick", None, "hi")
         assert route is not None

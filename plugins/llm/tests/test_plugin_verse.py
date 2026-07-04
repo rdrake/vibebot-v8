@@ -1705,6 +1705,10 @@ class TestVerseRouteForC7c:
         def _registry(key, *args):
             if key == "verseEnabled":
                 return True
+            # Permissive trigger so any non-empty message routes: these tests
+            # exercise route construction, not the _verse_triggered gate.
+            if key == "verseTriggerRegex":
+                return "."
             from tests.conftest import make_registry_side_effect
 
             return make_registry_side_effect()(key, *args)
@@ -1825,6 +1829,10 @@ class TestAskWithVerseRoute:
                 return True
             if key == "assistantSystemPrompt":
                 return self.SENTINEL
+            # Permissive trigger: these tests exercise the verse @ask path, not
+            # the _verse_triggered gate.
+            if key == "verseTriggerRegex":
+                return "."
             from tests.conftest import make_registry_side_effect
 
             return make_registry_side_effect()(key, *args)
@@ -3133,6 +3141,9 @@ def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
             return True
         if key == "verseStyleExemplars":
             return ["the lads marched on the chippy"]
+        # Permissive trigger: this test exercises exemplar plumbing, not the gate.
+        if key == "verseTriggerRegex":
+            return "."
         from tests.conftest import make_registry_side_effect
 
         return make_registry_side_effect()(key, *args)
@@ -3330,3 +3341,75 @@ class TestDoTagmsgReactionCapture:
         plugin.doTagmsg(irc, msg)
         ev = json.loads(self._path(tmp_path).read_text(encoding="utf-8").strip())
         assert ev["sentiment"] == "approve"
+
+
+# =============================================================================
+# TestVerseTriggerGate
+# =============================================================================
+
+
+class TestVerseTriggerGate:
+    """Tests for the _verse_triggered gate.
+
+    The gate stops every avatar-user message from dropping into verse. A
+    message routes to verse only when it names a known in-universe entity
+    (other than the speaker's own avatar) OR matches the channel's
+    ``verseTriggerRegex``. Everything else falls through to chat.
+    """
+
+    @pytest.fixture
+    def gate_env(self, plugin_env, tmp_path, mocker):
+        """Real VerseStore with an ``alice`` avatar and a ``The Clearing`` place."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg = plugin_env
+        store = VerseStore(tmp_path / "verse", "#afnet")
+        store.opt_in_avatar("alice", None, "")
+        avatar_id = store.find_avatar_by_nick("alice")
+        store.add_entity("place", "The Clearing", "A quiet glade.")
+        return plugin, store, avatar_id
+
+    def _set_regex(self, plugin, mocker, value: str) -> None:
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: value if key == "verseTriggerRegex" else "",
+        )
+
+    def test_entity_reference_triggers(self, gate_env, mocker) -> None:
+        """A message naming a canon place triggers verse even with no keyword."""
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, "")
+        assert plugin._verse_triggered("#afnet", store, avatar_id, "I wander into The Clearing")
+
+    def test_keyword_regex_triggers(self, gate_env, mocker) -> None:
+        """A configured keyword triggers verse with no entity reference."""
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, r"\bverse\b")
+        assert plugin._verse_triggered("#afnet", store, avatar_id, "let's do some verse now")
+
+    def test_keyword_regex_is_case_insensitive(self, gate_env, mocker) -> None:
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, r"stinky lads")
+        assert plugin._verse_triggered("#afnet", store, avatar_id, "the STINKY LADS arrive")
+
+    def test_no_signal_does_not_trigger(self, gate_env, mocker) -> None:
+        """No entity, no keyword match → chat path."""
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, r"\bverse\b")
+        assert not plugin._verse_triggered("#afnet", store, avatar_id, "hi all how are you")
+
+    def test_own_avatar_name_alone_does_not_trigger(self, gate_env, mocker) -> None:
+        """Naming only your own avatar is not a signal."""
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, "")
+        assert not plugin._verse_triggered("#afnet", store, avatar_id, "alice waves hello")
+
+    def test_empty_regex_disables_keyword(self, gate_env, mocker) -> None:
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, "")
+        assert not plugin._verse_triggered("#afnet", store, avatar_id, "let's do some verse now")
+
+    def test_malformed_regex_is_ignored(self, gate_env, mocker) -> None:
+        """A bad regex must not raise into the message path — treated as no match."""
+        plugin, store, avatar_id = gate_env
+        self._set_regex(plugin, mocker, r"[unclosed(")
+        assert not plugin._verse_triggered("#afnet", store, avatar_id, "hello there")
