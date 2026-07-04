@@ -3826,7 +3826,9 @@ Examples (echo → action_prompt: ""):
                         "If the personality above caps reply length (for "
                         "example 'one line' or 'never exceed three lines'), "
                         "that cap does NOT apply in verse — write the scene "
-                        "at the length it deserves."
+                        "at the length it deserves. Tell a FULL multi-paragraph "
+                        "story on every verse turn, even a short or aside-shaped "
+                        "prompt; never answer with a one-line status update."
                     )
                 else:
                     overlay_footer = (
