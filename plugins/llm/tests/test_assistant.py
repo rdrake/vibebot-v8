@@ -1118,14 +1118,18 @@ class TestMetaCompletion:
         # The fix: unsupported params are dropped, not fatal.
         assert captured_kwargs.get("drop_params") is True
 
-    def test_assistant_completion_depoisons_channel_history_for_verse(
+    def test_assistant_completion_drops_channel_history_for_verse(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """The bot's own past frame-refusals leak into the channel summary
-        ("Bot: That never happened...") and re-seed refusals every verse turn.
-        Verse must de-poison channel_history (not just personal history),
-        dropping the bot's assistant-role denials while keeping other
-        participants' lines.
+        """Verse drops the shared channel window entirely.
+
+        A verse turn is a scene between the user and their avatar; the live
+        channel group chatter is not part of the story. Feeding it in bleeds
+        unrelated regular messages into the scene AND is the dominant source of
+        short-one-liner imitation that collapses verse length. Cross-scene
+        continuity is carried by the verse_record canon in the system prompt,
+        so channel_history is excluded for verse — neither the bot's own past
+        lines NOR other participants' channel chatter reach the model.
         """
         from llm.service import PROFILE_VERSE
 
@@ -1161,14 +1165,11 @@ class TestMetaCompletion:
         )
 
         blob = "\n".join(str(m.get("content", "")) for m in captured_messages)
-        # The bot's frame-refusal is stripped from the channel summary.
-        # ("never happened" is avoided as a probe — the verse framework's own
-        # anti-denial instruction uses that phrase; "pure fiction" / "not in
-        # the canon" appear only in the bot's refusal here.)
+        # The bot's frame-refusal is gone (channel window dropped for verse)...
         assert "pure fiction" not in blob
         assert "not in the canon" not in blob
-        # ...but the human participant's premise line is kept.
-        assert "stinky lads" in blob
+        # ...and so is the other participant's channel line — no bleed.
+        assert "stinky lads" not in blob
 
     def test_assistant_completion_keeps_channel_history_denials_for_chat(
         self, service: LLMService, mocker: MockerFixture

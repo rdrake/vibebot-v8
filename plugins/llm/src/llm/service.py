@@ -3860,7 +3860,15 @@ Examples (echo → action_prompt: ""):
             # tighter window, so chat keeps its normal context depth.
             if route_profile == PROFILE_VERSE:
                 history = _depoison_verse_history(history)
-                channel_history = _depoison_verse_history(channel_history)
+                # A verse turn is a scene between the user and their avatar;
+                # the shared channel group chatter is NOT part of the story.
+                # Feeding it in (a) bleeds unrelated regular messages into the
+                # scene and (b) is the dominant source of short-one-liner
+                # imitation that collapses verse length — grok anchors on the
+                # terse lines around it. Cross-scene continuity is carried by
+                # the verse_record canon injected into the system prompt, so
+                # drop the channel window entirely for verse.
+                channel_history = None
             else:
                 history = _strip_degraded(history)
                 channel_history = _strip_degraded(channel_history)
