@@ -1234,6 +1234,32 @@ class TestBuildSpeakerMessage:
         assert "Speaking with: user" in result["content"]
         assert "Channel role" not in result["content"]
 
+    def test_includes_current_time_minute_granular(self) -> None:
+        """Speaker message carries a minute-granular UTC clock.
+
+        Time lives here — post-prefix — not in _build_context_message,
+        because per-minute bytes in the cacheable prefix bust xAI's
+        automatic prompt cache. Minute granularity only: seconds would
+        be stale by pipeline latency before the reply lands.
+        """
+        from datetime import UTC, datetime
+
+        mock_irc = self.mocker.Mock()
+        mock_irc.state.channels = {}
+
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("botname",)
+        mock_msg.prefix = "user!user@host"
+
+        mock_dt = self.mocker.patch("llm.service.datetime")
+        mock_dt.now.return_value = datetime(2026, 7, 9, 10, 22, 26, tzinfo=UTC)
+
+        result = self.service._build_speaker_message(mock_irc, mock_msg)
+
+        assert result is not None
+        assert "Time: 10:22 UTC" in result["content"]
+        mock_dt.now.assert_called_once_with(UTC)
+
 
 class TestRoleDetection:
     """Tests for _get_bot_role() and _get_channel_role() methods."""

@@ -1182,6 +1182,14 @@ class LLMService:
         nick = ircutils.nickFromHostmask(msg.prefix)
         lines = [f"Speaking with: {nick}"]
 
+        # Current time rides here — post-prefix — NOT in the context
+        # message: per-minute bytes in the cacheable prefix bust xAI's
+        # automatic prompt cache (see _build_context_message). A fresh
+        # clock each turn also stops the model anchoring on stale times
+        # in conversation history. Minute granularity only — seconds
+        # would be stale by pipeline latency before the reply lands.
+        lines.append(f"Time: {datetime.now(UTC).strftime('%H:%M')} UTC")
+
         bot_role = self._get_bot_role(msg.prefix)
         if bot_role:
             lines.append(f"Bot role: {bot_role}")
