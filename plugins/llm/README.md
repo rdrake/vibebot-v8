@@ -1,98 +1,76 @@
-# LLM Plugin for Limnoria
+# LLM plugin for Limnoria
 
-AI-powered IRC commands using LiteLLM.
+The main AI plugin for VibeBot v8: multi-provider chat, code and image generation, memory, reminders, scheduled tasks, and the verse fiction layer, all through LiteLLM.
 
-## Features
+This README covers plugin internals for developers. User and operator documentation lives in the [published guide](https://rdrake.github.io/vibebot-v8/).
 
-- Multi-provider support (OpenAI, Anthropic, Google, etc.)
-- Vision support with automatic image URL detection
-- Volatile memory (conversation context between messages)
-- Abuse controls with tiered rate limiting
-- Thread-safe API key handling
-- Comprehensive error handling
+## Module layout
 
-## Installation
-
-This plugin is part of the VibeBot v8 workspace. Install dependencies:
-
-```bash
-cd ../..
-make install
 ```
+src/llm/
+├── plugin.py           # IRC protocol layer: command wrappers, routing, doPrivmsg/doTagmsg
+├── service.py          # LiteLLM calls, sanitization, output shaping, storybook generation
+├── assistant.py        # Tool-using chat profile and tool specs
+├── executor.py         # LLMExecutor: bounded concurrency for all blocking LLM calls
+├── persistence.py      # SQLite store: memories, reminders, scheduled tasks, usage
+├── limnoria_bridge.py  # Allowlisted Limnoria-as-tool surface
+├── config.py           # Registry configuration (supybot.plugins.LLM.*)
+├── context.py          # Volatile conversation history, thread-safe
+├── tracing.py          # Structured trace severity helpers
+└── verse/              # Verse subsystem
+    ├── store.py        # SQLite world store (entities, events, relations, aliases)
+    ├── avatar.py       # Verse prompt assembly, tool specs, verse_edit dispatch
+    ├── aging.py        # Auto-created entity retirement sweep
+    ├── compaction.py   # Daily retention job: old events become a lore digest
+    ├── reactions.py    # IRCv3 reaction capture and reporting
+    ├── taste_mine.py   # Offline CLI: mine style exemplar candidates from logs
+    ├── taste_report.py # Offline CLI: verse landing-rate report
+    ├── validation.py   # Payload validation for verse mutations
+    └── purge.py        # Two-step verse wipe
+```
+
+Boundaries to respect:
+
+- IRC parsing and reply flow stay in `plugin.py`; provider calls and output shaping stay in `service.py`.
+- Every blocking LLM call goes through `LLMExecutor` (`permit()` or `submit()`); never call `litellm.*` from the IRC main thread.
+- Shared state must stay thread-safe: `Plugin.threaded = True`.
+
+## Commands, capabilities, and gates
+
+| Command | Capability | Notes |
+|---------|------------|-------|
+| `@ask` | `llm.ask` | Context, vision, tool loop |
+| `@code` | `llm.code` | Output posted as an HTTP link |
+| `@draw` | `llm.draw` | Requires an authenticated account |
+| `@story` | `llm.draw` | Illustrated story or explainer page; counts against the draw limits |
+| `@forget`, `@memories`, `@instruct`, `@remind`, `@usage`, `@avatar` | none | Owner-only subcommands enforced in-body |
+| `@verseopt`, `@verse`, `@look`, `@who` | `llm.verse` | Verse participation |
+| `@canon`, `@versedit` | `llm.verse.edit` | Canon editing |
+| `@versedump`, `@versepurge`, `@versecompact` | `llm.verse.gm` | GM operations; `versedump`/`versepurge` check the capability in-body |
+
+Rate limiting covers four command families (`ask`, `code`, `draw`, `story`), each with registered, trusted, and unregistered tiers. The [operator guide](https://rdrake.github.io/vibebot-v8/operator/rate-limiting-security/) documents the matrix and defaults.
+
+## Security patterns
+
+1. **Thread-safe API keys**: keys pass directly to `litellm.completion()`; the plugin never mutates environment variables, which prevents races between threads.
+2. **API key sanitization**: `_sanitize()` strips keys from every error message before logging.
+3. **URL validation**: `validate_image_url()` blocks non-HTTP schemes (`javascript:`, `data:`, `file:`, `ftp:`), path traversal, and non-image extensions.
+4. **Private configuration**: every API key registry value is `private=True`.
+5. **Output defences**: generated output is sanitized against IRC command injection, and rendered HTML passes through nh3.
 
 ## Testing
 
 ```bash
-make test
+make test      # from the repo root; skips slow tests, enforces 93% coverage
+make test-all  # includes slow tests
 ```
 
-## Security
+Tests live in `plugins/llm/tests/`. Property-based tests (Hypothesis) sit alongside example tests as `test_*_properties.py`; extend a property test when the invariant generalizes.
 
-### Critical Patterns
+## Adding a command
 
-1. **Thread-safe API keys**: API keys are passed directly to `litellm.completion()`, never mutating environment variables. This prevents race conditions in multi-threaded environments.
+1. Add the command method to `plugin.py`:
 
-2. **API key sanitization**: All error messages are sanitized using `_sanitize()` method to remove API keys before logging.
-
-3. **Malicious URL blocking**: `validate_image_url()` blocks:
-   - Non-HTTP schemes (javascript:, data:, file:, ftp:)
-   - Path traversal attempts (../)
-   - Invalid image extensions
-
-4. **Private configuration**: All API key config values marked `private=True` in Limnoria.
-
-## API Reference
-
-### LLMService
-
-Main service class for AI interactions.
-
-#### Methods
-
-- `completion(prompt, command, images, history)` - Generate text completion
-- `image_generation(prompt)` - Generate image
-- `save_code_to_http(code, language)` - Save code to HTTP server
-- `validate_image_url(url)` - Validate image URL for security
-### ConversationContext
-
-Thread-safe conversation history manager.
-
-#### Methods
-
-- `add_message(nick, channel, role, content)` - Add message to history
-- `get_messages(nick, channel)` - Get conversation history
-- `clear(nick, channel)` - Clear specific user's context
-- `clear_all()` - Clear all contexts
-- `get_stats()` - Get context statistics
-
-## Configuration
-
-See main README for full configuration options.
-
-### Command Protection Matrix
-
-| Command | Capability | NickServ Required | Rate Limited |
-|---------|------------|-------------------|--------------|
-| `%ask` | `llm.ask` | No | No |
-| `%code` | `llm.code` | No | No |
-| `%draw` | `llm.draw` | Yes | Yes (optional) |
-
-### Rate Limiting
-
-- Optional per-command rate limiter controlled by:
-  - `enforceRateLimits`
-  - `drawRateLimitCount`, `drawRateLimitWindow`
-
-### Staging Smoke Test
-
-1. Set `enforceRateLimits=False`, exceed draw limits, confirm requests still run and logs emit `rate_limit_shadow`.
-2. Set `enforceRateLimits=True`, exceed limits again, confirm requests are blocked and usage status is `rate_limited`.
-
-## Development
-
-### Adding New Commands
-
-1. Add command method to `plugin.py`:
 ```python
 def mycommand(self, irc, msg, args, text):
     """<args>
@@ -109,17 +87,15 @@ def mycommand(self, irc, msg, args, text):
 mycommand = wrap(mycommand, ["text"])
 ```
 
-2. Add configuration to `config.py` if needed
+2. Register any new settings in `config.py`.
+3. Guard expensive commands with a capability (`checkCapability` in the `wrap` spec) and consider a rate-limit family.
+4. Add tests in `tests/`, then run `make preflight`.
 
-3. Add tests to `tests/`
+## Code style
 
-### Code Style
+- Ruff for linting and formatting; ty for type checking
+- Type hints on all functions; docstrings on all public methods
 
-- Use Ruff for linting and formatting
-- Use ty for type checking
-- All functions must have type hints
-- All public methods must have docstrings
+## Licence
 
-## License
-
-See LICENSE file for details.
+See the LICENSE file in the repository root.

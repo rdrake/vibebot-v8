@@ -44,25 +44,25 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - User Guide:
-    - Getting Started: user/getting-started.md
-    - AI Commands: user/ai-commands.md
-    - Memory & Instructions: user/memory.md
-    - Reminders & Usage: user/reminders-usage.md
-    - Scheduled Tasks: user/scheduled-tasks.md
+  - User guide:
+    - Getting started: user/getting-started.md
+    - AI commands: user/ai-commands.md
+    - Memory and instructions: user/memory.md
+    - Reminders: user/reminders-usage.md
+    - Scheduled tasks: user/scheduled-tasks.md
   - Plugins:
     - Overview: plugins/index.md
     - LLM: plugins/llm.md
     - NickInMiddle: plugins/nickinmiddle.md
-  - Operator Guide:
-    - Installation & Deployment: operator/installation.md
-    - Operations & Auto-Updates: operator/operations.md
+  - Operator guide:
+    - Installation and deployment: operator/installation.md
+    - Operations and auto-updates: operator/operations.md
     - Configuration: operator/configuration.md
-    - Forest-Verse: operator/forest-verse.md
-    - Memory Promotion: operator/memory-promotion.md
-    - Rate Limiting & Security: operator/rate-limiting-security.md
-    - Tuning & Monitoring: operator/tuning-monitoring.md
-    - Branch Protection: operator/branch-protection.md
+    - The verse: operator/forest-verse.md
+    - Memory promotion: operator/memory-promotion.md
+    - Rate limiting and security: operator/rate-limiting-security.md
+    - Tuning and monitoring: operator/tuning-monitoring.md
+    - Branch protection: operator/branch-protection.md
   - Reference:
-    - Command Reference: reference/commands.md
-    - Bridge Tools: reference/bridge-tools.md
+    - Command reference: reference/commands.md
+    - Bridge tools: reference/bridge-tools.md

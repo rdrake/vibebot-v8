@@ -1,97 +1,101 @@
 # VibeBot v8
 
-Modern IRC bot with AI capabilities powered by LiteLLM.
+An AI-powered IRC bot for AfterNet, built on [Limnoria](https://github.com/ProgVal/Limnoria) with multi-provider model support through [LiteLLM](https://github.com/BerriAI/litellm).
+
+The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io/vibebot-v8/)**: a user guide, an operator guide, and a command reference.
 
 ## Features
 
-- **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, xAI Grok, and more via LiteLLM
-- **Volatile memory**: Conversation context for natural follow-up questions (expires after timeout)
-- **Vision support**: Automatically detects image URLs in prompts
-- **Code generation**: Smart HTTP link generation for long code
-- **Image generation**: Text-to-image via Vertex AI Imagen and xAI grok-imagine
-- **Non-volatile memory**: Automatically extracts and remembers facts about users across conversations
-- **Reminders & scheduled tasks**: Natural-language reminders plus recurring `schedule_llm_task` agentic flows
-- **Abuse controls**: Capability checks, account gating, tiered rate limiting, bounded LLM concurrency
-- **NickInMiddle plugin**: Companion plugin that injects the speaker's nick into the middle of bot replies for AfterNet readability
-- **Modern Python**: Python 3.12–3.14 with full type hints
-- **Quality tools**: Ruff for linting/formatting, ty for type checking, Hypothesis property tests, prek pre-commit hooks
+- **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and xAI Grok behind one LiteLLM interface, with per-channel model overrides
+- **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
+- **Code generation**: `@code` writes code and posts it as an HTTP link
+- **Image generation**: `@draw` renders images with Vertex AI Imagen or xAI grok-imagine
+- **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
+- **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts that save only after they recur
+- **Reminders and scheduled tasks**: natural-language reminders with recurrence, plus model-created scheduled tasks
+- **Verse mode**: an opt-in persistent fiction layer with avatars, a world store, and canon editing
+- **Abuse controls**: capability checks, account gating, tiered rate limits, and bounded LLM concurrency
+- **NickInMiddle**: a companion plugin that recognises the bot's nick mid-sentence, so "can you, vibebot, help?" works like addressed speech
 
-## Quick Start
+## Quick start
 
 ```bash
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-make install
-make run
+make install        # uv sync
+make install-hooks  # prek git hooks
+make run            # start Limnoria with bot.conf
 ```
 
-Configure API keys via bot commands:
+Set API keys from IRC (values stay private):
+
 ```
 @config plugins.LLM.assistantApiKey YOUR_KEY
 ```
 
-## Docker
+## Commands
 
-Build and run locally:
+| Command | Description |
+|---------|-------------|
+| `@ask <question>` | Ask the assistant; supports context, vision, and tools |
+| `@code <request>` | Generate code, delivered as an HTTP link |
+| `@draw <prompt>` | Generate an image (authenticated account required) |
+| `@story <brief>` | Generate an illustrated story or explainer page |
+| `@forget [channel]` | Clear your conversation context |
+| `@memories [subcommand]` | List, edit, or delete your stored facts |
+| `@instruct [text \| clear]` | Set a persistent instruction for `@ask` |
+| `@remind [text \| list \| del \| clear]` | Set and manage reminders |
+| `@usage [nick \| #channel]` | View API usage statistics |
 
-```bash
-make docker-build
-make docker-run
+Verse channels add more: `@verseopt`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot-v8/reference/commands/) covers the full list.
+
+## Configuration
+
+Models, keys, and behaviour all live in the Limnoria registry under `supybot.plugins.LLM.*`. Most keys support per-channel overrides.
+
+```
+supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest
+supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
+supybot.plugins.LLM.imageModel: vertex_ai/imagen-4.0-generate-001
 ```
 
-Or pull from GHCR:
+See the [LiteLLM provider list](https://docs.litellm.ai/docs/providers) for supported models and the [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.
+
+## Production deployment
+
+Production runs the Docker image `ghcr.io/rdrake/vibebot-v8:latest` as a systemd user service named `vibebot`. The service mounts `~/.config/vibebot` at `/config` for `bot.conf`, the env file, and runtime data.
 
 ```bash
-docker pull ghcr.io/rdrake/vibebot-v8:latest
+make install-service   # scaffold the unit, config dir, and env file
 ```
 
-## Production Deployment
+Follow the printed instructions to copy `bot.conf` into place and enable the service. `ExecStartPre` pulls the latest image, so every restart also updates.
 
-Install as a systemd user service:
+### Updates
+
+New code reaches production two ways:
+
+1. **CI auto-deploy**: after a push to `main` passes CI and the Docker image publishes, the deploy step connects over SSH and restarts the service.
+2. **Updater timer**: `make install-timer` installs `vibebot-updater.timer`, which polls GHCR every 15 minutes and restarts the service when the image digest changes.
 
 ```bash
-make install-service
+systemctl --user status vibebot-updater.timer      # check timer status
+journalctl --user -u vibebot-updater.service -f    # view update logs
+make uninstall-timer                               # disable auto-updates
 ```
 
-Then follow the printed instructions to copy your `bot.conf` and enable the service.
+## Static assets (reverse proxy)
 
-### Auto-Updates
-
-Install the auto-update timer to automatically pull new images from GHCR:
-
-```bash
-make install-timer
-```
-
-This checks for updates every 15 minutes and restarts the bot if a new version is found.
-
-```bash
-# Check timer status
-systemctl --user status vibebot-updater.timer
-
-# View update logs
-journalctl --user -u vibebot-updater.service -f
-
-# Disable auto-updates
-make uninstall-timer
-```
-
-## Static Assets (Reverse Proxy)
-
-When serving generated code snippets and images via Nginx or Apache, set the
-public URL the bot should advertise:
+Generated code and images serve over HTTP. Set the public URL the bot should advertise:
 
 ```
 @config supybot.servers.http.publicUrl https://example.com
 ```
 
-The bot will generate URLs like `https://example.com/llm/filename.py`.
+The bot then generates URLs such as `https://example.com/llm/filename.py`.
 
-### Nginx example
-
-If you let Limnoria's built-in HTTP server handle requests, proxy `/llm`
-through Nginx so users hit a clean public hostname:
+With Limnoria's built-in HTTP server, proxy `/llm` through Nginx:
 
 ```nginx
 location /llm/ {
@@ -105,8 +109,7 @@ location /llm/ {
 }
 ```
 
-If you instead point `httpRoot` at a directory served directly by Nginx,
-serve the directory and skip the proxy:
+If `httpRoot` points at a directory the web server owns, serve it directly:
 
 ```nginx
 location /llm/ {
@@ -116,7 +119,7 @@ location /llm/ {
 }
 ```
 
-### Caddy example
+The same with Caddy:
 
 ```caddyfile
 example.com {
@@ -127,229 +130,50 @@ example.com {
 }
 ```
 
-## Commands
-
-### User Commands
-
-| Command | Description |
-|---------|-------------|
-| `@ask <question>` | Ask with context, vision, and optional instructions |
-| `@code <request>` | Generate code with HTTP link output |
-| `@draw <prompt>` | Generate image (account required) |
-| `@forget [channel]` | Clear volatile memory (conversation context) |
-| `@memories [subcommand]` | Manage non-volatile memory (stored facts) |
-| `@instruct [text \| clear]` | Set persistent instructions for ask |
-| `@remind [text \| list \| del \| clear]` | Set and manage reminders |
-| `@usage [nick \| #channel]` | View API usage statistics |
-
-## Configuration
-
-### Models
-
-Configure models in `bot.conf`:
-
-```
-# Free tier (Gemini Flash)
-supybot.plugins.LLM.assistantModel: gemini/gemini-1.5-flash
-supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
-
-# Paid tier (Vertex Imagen)
-supybot.plugins.LLM.imageModel: vertex_ai/imagen-4.0-generate-001
-```
-
-See [LiteLLM docs](https://docs.litellm.ai/docs/providers) for supported models.
-
-### Volatile Memory (Conversation Context)
-
-```
-supybot.plugins.LLM.contextEnabled: True
-supybot.plugins.LLM.contextMaxMessages: 20
-supybot.plugins.LLM.contextTimeoutMinutes: 5
-```
-
-Volatile memory is per-user per-channel. Cleared by `@forget`, after the configured idle timeout (default 5 minutes), or when max messages exceeded.
-
-### Non-volatile Memory (Stored Facts)
-
-```
-supybot.plugins.LLM.memoryEnabled: True
-supybot.plugins.LLM.memoryMaxPerUser: 50
-```
-
-Memory extraction and cleanup share the configured `assistantModel` / `assistantApiKey`.
-
-Facts are automatically extracted from `@ask` and `@code` conversations. Users manage non-volatile memory with `@memories`.
-
-### Abuse Controls
-
-The plugin layers several protections:
-
-- Capability checks on command wrappers
-- Authenticated-account requirement for expensive commands (`draw`)
-- Tiered per-account rate limiting (registered, trusted, unregistered) for all commands
-
-Protection matrix:
-
-| Command | Capability | Authenticated Required | Rate Limited |
-|---------|------------|-------------------|--------------|
-| `@ask` | `llm.ask` | No | Yes (optional) |
-| `@code` | `llm.code` | No | Yes (optional) |
-| `@draw` | `llm.draw` | Yes | Yes (optional) |
-
-Rate-limit config (per-command, per-tier):
-
-```
-supybot.plugins.LLM.enforceRateLimits: True
-# ask (count/window per tier)
-supybot.plugins.LLM.askRateLimitCount: 15
-supybot.plugins.LLM.askRateLimitWindow: 60
-supybot.plugins.LLM.askTrustedRateLimitCount: 15
-supybot.plugins.LLM.askUnregRateLimitCount: 15
-# code
-supybot.plugins.LLM.codeRateLimitCount: 10
-supybot.plugins.LLM.codeRateLimitWindow: 60
-supybot.plugins.LLM.codeTrustedRateLimitCount: 0   # unlimited
-supybot.plugins.LLM.codeUnregRateLimitCount: 2
-# draw
-supybot.plugins.LLM.drawRateLimitCount: 2
-supybot.plugins.LLM.drawRateLimitWindow: 300
-supybot.plugins.LLM.drawTrustedRateLimitCount: 5
-supybot.plugins.LLM.drawTrustedRateLimitWindow: 60
-supybot.plugins.LLM.drawUnregRateLimitCount: 0
-```
-
-See `docs/guide/operator/rate-limiting-security.md` for the full per-tier matrix and authoritative defaults.
-
-### IRC Staging Smoke Checklist
-
-Run this sequence on a staging bot connected to IRC:
-
-1. Monitor mode (`enforceRateLimits=False`):
-   - Send `draw` prompts above configured threshold.
-   - Verify requests still execute (not blocked).
-   - Verify logs include `rate_limit_shadow` entries.
-2. Enforced mode (`enforceRateLimits=True`):
-   - Repeat prompts above threshold.
-   - Verify bot replies with rate-limit error and provider call is not executed.
-   - Verify usage rows include `status=rate_limited`.
-
-### HTTP Output
-
-```
-supybot.plugins.LLM.httpRoot: /var/www/llm
-supybot.plugins.LLM.httpUrlBase: https://example.com/llm
-```
-
-If `httpRoot` is empty (default), uses Limnoria's built-in HTTP server at `data/web/llm/`.
-
 ## Development
 
-### Run Tests
-
 ```bash
-make test
+make test         # pytest with a 93% coverage floor (skips slow tests)
+make test-all     # full suite, including slow tests
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # ty
+make syntax-check # Python 3.12 to 3.14 compatibility
+make check        # lint + format-check + typecheck + syntax-check + test
+make preflight    # format, then check: run before calling work done
+make docs         # build the MkDocs guide
 ```
 
-### Lint and Format
+The toolchain: [uv](https://github.com/astral-sh/uv) for packaging, Ruff for lint and format, ty for types, pytest with Hypothesis property tests, prek pre-commit hooks with gitleaks secret scanning, Vale for the docs, and Dependabot for weekly dependency updates.
 
-```bash
-make lint        # Check code
-make format      # Format code
-make typecheck   # Check types
-make check       # Run all checks
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
-### Code Quality
-
-This project uses:
-- **uv**: Fast Python package manager
-- **prek**: Fast Rust-based pre-commit hooks
-- **Ruff**: Fast Python linter and formatter
-- **deptry**: Dependency issue detection
-- **ty**: Astral's static type checker
-- **pytest**: Testing framework with 93% coverage floor
-- **Hypothesis**: Property-based tests for invariants (`test_*_properties.py`)
-- **Dependabot**: Automated dependency updates (weekly)
-
-All code must pass linting, formatting, type checking, and tests with ≥93% coverage.
-
-## Architecture
+## Repository layout
 
 ```
 vibebot-v8/
-├── plugins/llm/             # Main AI plugin (LiteLLM + assistant tooling)
-│   ├── src/llm/
-│   │   ├── plugin.py        # IRC command handlers
-│   │   ├── service.py       # LiteLLM business logic
-│   │   ├── assistant.py     # Tool-using chat profile
-│   │   ├── executor.py      # Bounded LLM concurrency executor
-│   │   ├── persistence.py   # SQLite store (memories, reminders, schedules)
-│   │   ├── limnoria_bridge.py  # Allowlisted Limnoria-as-tool surface
-│   │   ├── tracing.py       # Structured trace severity helpers
-│   │   ├── config.py        # Registry options
-│   │   └── context.py       # Conversation history
-│   └── tests/               # Unit + Hypothesis property tests
-├── plugins/nickinmiddle/    # Inserts speaker's nick mid-reply (AfterNet UX)
-├── bot.conf                 # Bot configuration
-└── pyproject.toml           # Workspace + dependencies
+├── plugins/llm/             # Main AI plugin
+│   ├── src/llm/             # plugin.py, service.py, assistant.py, config.py,
+│   │   └── verse/           # verse world store, avatars, compaction, tooling
+│   └── tests/               # unit + Hypothesis property tests
+├── plugins/nickinmiddle/    # Mid-sentence nick addressing (inFilter)
+├── go/                      # v9 Go rewrite (in progress)
+├── docs/guide/              # MkDocs source for the published guide
+├── docs/plans/              # Design and implementation plans
+├── scripts/                 # Maintenance and compatibility scripts
+├── styles/                  # Vale prose-lint styles for the docs
+├── bot.conf                 # Development bot configuration
+└── pyproject.toml           # Workspace and tool configuration
 ```
 
-### Design Principles
+`plugins/llm/README.md` describes the plugin internals for developers.
 
-1. **Security First**
-   - API keys never logged (sanitized in all error paths)
-   - Malicious URLs blocked (javascript:, data:, file:, path traversal)
-   - Thread-safe API key handling (passed directly, never env vars)
+## Licence
 
-2. **Separation of Concerns**
-   - `plugin.py`: IRC protocol and command routing
-   - `service.py`: AI API calls and business logic
-   - `context.py`: Conversation history management
-
-3. **Modern Python**
-   - Python 3.12+ type hints throughout
-   - Type checking with ty
-   - Modern patterns (dataclasses, context managers)
-
-## Troubleshooting
-
-### API Key Not Working
-
-Check configuration via `@config`:
-```
-@config plugins.LLM.assistantApiKey
-```
-
-Should show the key is set (value is private and not displayed in full).
-
-### Volatile Memory Not Working
-
-Clear and retry:
-```
-@forget
-@ask Your new question here
-```
-
-### Code Not Saving to HTTP
-
-1. Check directory exists and is writable:
-   ```bash
-   ls -la /var/www/llm
-   ```
-
-2. Check web server is serving the directory
-
-3. Check logs:
-   ```bash
-   tail -f logs/messages.log
-   ```
-
-## License
-
-See LICENSE file for details.
+See the LICENSE file for details.
 
 ## Credits
 
 - Built with [Limnoria](https://github.com/ProgVal/Limnoria)
 - Powered by [LiteLLM](https://github.com/BerriAI/litellm)
-- Developed for AfterNET IRC (irc.afternet.org)
+- Developed for AfterNet IRC (irc.afternet.org)

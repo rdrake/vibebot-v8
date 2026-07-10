@@ -6,66 +6,97 @@ own conventional-commit history (`type(scope): summary`).
 
 ## Unreleased
 
-### Breaking
-
-- Removed `plugins/rpg/` and all its registry keys. Existing rpg state is
-  **discarded, not migrated**. See `docs/guide/operator/forest-verse.md`.
-- Removed Forest mode (`plugins.LLM.forestNicks`). Existing rosters are
-  discarded; users opt in fresh via `@verseopt in` in a channel where
-  `verseEnabled=True`.
-- Removed Spontaneous mode (`plugins.LLM.spontaneousEnabled` and friends).
-  Replacement is the upcoming loom orchestrator (PR 2 of the forest-verse
-  rollout); per-channel chatty-bot behaviour is no longer available in the
-  interim.
-
-### Added
-
-- `verse_record` assistant tool: opted-in verse members can narrate events
-  involving entities other than themselves; unknown actors auto-create as
-  `kind=npc`.
-- `verseAutoEntityRetireDays` (default 14, per-channel): soft-retire
-  auto-created NPCs after this many days without a heartbeat.
-- `verseAutoEntityMaxNamesPerCall` (default 8, per-channel): hard cap on
-  the `actors` array length advertised by the tool spec and enforced by
-  dispatch.
-- Forest-verse: per-channel SQLite entity graph + avatar shim. New commands
-  `@verseopt`, `@verse`, `@look`, `@who`, plus owner commands `@versedump`,
-  `@versepurge`. New capabilities `llm.verse` and `llm.verse.gm`.
-- **Loom orchestrator (PR 2 of forest-verse).** Multi-turn cycles in the
-  configured `loomChannel` on `loomNetwork` riff with other bots and digest
-  the transcript into proposals. High-confidence non-entity proposals
-  auto-apply with an audit row; the rest queue for `@verseapprove` /
-  `@versereject`. New registry: `loomNetwork`, `loomChannel`, `loomModel`,
-  `loomCycleInterval`, `loomVerseCooldown`, `loomBeatWindow`,
-  `loomTranscriptMaxLines`, `loomTranscriptMaxChars`, `loomBotNicks`,
-  `verseAutoApplyThreshold`. New commands: `@verseproposals`,
-  `@verseapprove`, `@versereject`. Loom calls visible in `@usage` tagged
-  `loom:seed` / `loom:beat` / `loom:digest`. Defaults are empty / disabled
-  — upgrades are zero-effect until an operator points the loom at a
-  channel.
-- Forest-verse: cross-pollination between verses (`verseCrosspollAllowSend`,
-  `verseCrosspollAllowReceive`, `verseCrosspollPerCycleLimit`); seeds queue
-  in a shared `_crosspoll.db` and arrive in receivers as pending proposals.
-- Forest-verse: daily retention compaction summarises events older than
-  `verseEventRetentionDays` into a single lore-digest event
-  (`verseCompactionDailyAt`, `verseCompactionMinKeepEvents`). New owner
-  command `@versecompact #channel` runs it on demand.
-- Forest-verse: loom prompt now grounds entity ids inline so the digest
-  model stops inventing them.
-
-### Changed
-
-- `compact_verse` returns a `CompactionOutcome` NamedTuple instead of a
-  string. Operator-visible compaction messages now include aging counts.
-- `dispatch_verse_tool_call` returns a structured `VerseDispatchResult`
-  so verse tools can surface error and payload data to the model. The
-  four legacy tools' observable JSON is unchanged.
-- `find_active_entity_by_name(name)` resolves names with the documented
-  `avatar > npc > item > place` precedence and skips retired entities.
-  The legacy `find_entity_by_name(name, kind=...)` is unchanged.
-
 ### Bug Fixes
 
+- Inject minute-granular UTC time into speaker message (`assistant`)
+- Drop shared channel window from verse turns (`verse`)
+- Case-insensitive reaction matching + close test gaps (`verse`)
+- Make llm package importable for the offline taste_mine CLI (`verse`)
+- Never strand avatars at a retired place (`verse`)
+- Register @canon in COMMAND_REGISTRY (help-sync) (`verse`)
+- Record a canon event on storybook turns (tool + @story) (`verse`)
+- Populate event_actor from all 3 event-insert sites (single writer) (`verse`)
+- Drop provider-unsupported sampling params instead of crashing (`verse`)
+- Guard against quality-collapse via self-imitation (`verse`)
+- Reactivate aged-out NPCs by name + filter dead-lore events (`verse`)
+- Exempt pinned entities from auto-retirement aging (`verse`)
+- Register versedit in COMMAND_REGISTRY (`verse`)
+- Force verse_storybook tool_choice on explicit illustration asks (`storybook`)
+- Suppress interim beat + draw illustrations concurrently (`storybook`)
+- Route illustrated-story asks to verse_storybook (`verse`)
+- Stop the bot announcing a pending link (`storybook`)
+- Always illustrate + eager tool trigger + debug logging (`storybook`)
+- Re-check resolved IP before image download (DNS rebinding) (`service`)
+- Hold _verse_stores_lock across versepurge unlink (`verse`)
+- Preserve avatar location on re-opt-in instead of teleporting (`verse/store`)
+- Skip non-dict tool args + collapse channel-history line breaks (`service`)
+- Make migration ALTERs idempotent so a mid-block crash can't wedge startup (`persistence`)
+- Deny SSRF-shaped Web sibling reads alongside web.fetch (`bridge`)
+- Roll back _queued gauge when submit races shutdown (`executor`)
+- Neutralize IRC command injection on raw-queue send paths (`llm`)
+- Lock bare irc.error sends + active_only on verse scene prompt (`llm`)
+- Live-clock deferral + lock typing/reaction IRC sends (`llm`)
+- Reject retired entities in add_relation proposals (`verse/store`)
+- Strip leaked control tokens from chime-in line (`verse/loom`)
+- Stop traceback spam on every image generation (`llm`)
+- Strip leaked model control tokens from output (`llm`)
+- Index opt-in nick fallback to avoid full table scan under lock (`verse`)
+- Anchor pending-task retry backoff to post-work clock (`service`)
+- Run aging before compaction so the heartbeat can't resurrect NPCs (`verse`)
+- Opt_in survives cross-account nick collision instead of crashing (`verse`)
+- Guard proposal set_attribute against retired entities and reserved keys (`verse`)
+- Verse_move guards retired avatars and skips retired places (`verse`)
+- Skip nested command leaves instead of crashing enumeration (`bridge`)
+- Stash DB-write failure must not escape the timeout handler (`service`)
+- Ack delivered pending tasks even when shutdown races the send (`plugin`)
+- Reap pending tasks past expires_at in any delivery state (`persistence`)
+- Coerce None grounded-content to empty string for xAI (`llm`)
+- Lock the three remaining check-then-act sites on shared state (`concurrency`)
+- Offload daily compaction off the driver thread; harden shutdown (`verse,persistence`)
+- Offload addressed-message dispatch off the IRC driver thread (`typing`)
+- Exclude retired entities from verse_act target resolution (#26) (`verse`)
+- Generic plugin errors, preserve partial output, db path guard (#21,#22,#23) (`bridge,config`)
+- Pending-task lease race, first-retry backoff, + cleanups (#5,#6,#18,#20,#32) (`service`)
+- Stop silent data loss in verse record/recall/crosspoll (#13,#14,#15,#27) (`verse`)
+- Make context DB ops best-effort and atomic (#8,#9,#12,#17,#28-31) (`persistence`)
+- Fence memories + relocate user instruction as data (#1,#16,#19) (`security`)
+- Neutralize line-break injection via channel topic (#24) (`security`)
+- Stop leaking secrets into logs and the channel (`security`)
+- Serialize worker-thread IRC sends through the send lock (`plugin`)
+- Strip the model's past refusals from history each turn (`verse`)
+- Retry when a poisoned thread makes the model refuse the premise (`verse`)
+- Yes-and improv stance and a hard length floor (`verse`)
+- Retry when the model echoes the prompt verbatim (`assistant`)
+- Never paginate — single line or pastebin teaser (`replies`)
+- Steer model away from verse_record on recall queries (`llm/verse`)
+- Fire typing indicator before DB work in ask/code/draw (`llm`)
+- Keep typing alive until reply ships, drop hardcoded 60s timeout (`llm`)
+- Strip framework to essentials, trust the channel overlay (`verse`)
+- One long reply, not beats split across turns (`verse`)
+- Default long, recall canon, take multiple turns (`verse`)
+- Name time-anchored prompts as scene invitations, not lists (`verse`)
+- Preserve channel assistantSystemPrompt overlay in verse mode (`verse`)
+- Drop "length cap" from overlay footer in verse profile (`verse`)
+- Dedicated framework — paragraphs per beat, mandatory canon (`verse`)
+- VERSE MODE block in shared chat framework, slim overlay (`verse`)
+- Unblock long-form replies in personality overlay (`verse`)
+- Route addressed text through verse dispatch (not just @ask) (`plugin`)
+- Verse_record HARD RULE in framework, lift chat 600→2000 (`verse,chat`)
+- Apply_or_queue heartbeat dispatches per op payload schema (`verse/loom`)
+- Drop server-prefixed PRIVMSGs at doPrivmsg (`plugin`)
+- Guard _account_from_msg, pastebin @versedump
+- Reject non-channel loomChannel values (`verse/loom`)
+- Isolate crosspoll-store failure to crosspoll proposals (`verse/loom`)
+- Release crosspoll claim + isolate bridge failures (`verse/loom`)
+- Honour zero values for retention/min-keep registry keys (`verse`)
+- Stamp lore digest at now() to avoid re-summarisation (`verse/compaction`)
+- Only delete events the LLM actually saw (`verse/compaction`)
+- Cap @verseproposals output and add explicit limit arg (`plugin`)
+- Clamp implausibly-high completion_cost to 0 (`verse/loom`)
+- Use f-strings for completion_timing log; drop diagnostics (`verse/loom`)
+- Thread assistantApiKey into LiteLLMLoomClient (`verse/loom`)
+- Re-wire loom on live registry change (`verse`)
+- Relocate tests to plugins/llm/tests/verse for pytest discovery (`verse`)
 - Route nick-addressed text through assistant, not Limnoria dispatch (`llm`)
 - Make tests deterministic with sync LLMExecutor stub (`llm`)
 - Add _spontaneous_events_lock for worker-thread safety (`llm`)
@@ -249,6 +280,11 @@ own conventional-commit history (`type(scope): summary`).
 
 ### CI
 
+- Bump actions/checkout v6 -> v7 (`deps`)
+- Skip CI (and the downstream Docker build + prod restart) on docs-only pushes
+- Bump gitleaks/gitleaks-action (#72)
+- Auto-deploy to prod after image push (`docker`)
+- Bump the actions group with 2 updates (#62)
 - Ignore local uv workspace members (`dependabot`)
 - Drop arm64 docker build, group dependabot updates
 - Split lint from matrix tests, add docs path filter
@@ -258,6 +294,19 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Consolidate uv lock bumps (aiohttp, litellm, hypothesis, pytest, ruff, ty) (`deps`)
+- Log event id on corrupt-blob skip in purge; docstring/constant polish (`verse`)
+- Remove 14 loom-family registry keys (`config`)
+- Drop stale loom docstrings + remove now-dead apply_proposal helper (`verse`)
+- Scrub stale loom/crosspoll references in test_plugin_verse.py (`verse`)
+- Delete loom.py, crosspoll files, and their tests (`verse`)
+- Correct stale versedump proposals comment after moderation removal (`verse`)
+- Scrub stale loom references in plugin.py comments after wiring removal (`verse`)
+- Make @reload a true deep reload of submodules (`llm`)
+- Rename answer paste title (`llm`)
+- Rename answer paste title (`llm`)
+- Remove plugins/rpg/ (superseded by forest-verse)
+- Changelog/release pipeline + pre-push fast check + maintenance scripts
 - Add deploy target — push, wait, restart (`make`)
 - Add push-and-wait target (`make`)
 - Add hypothesis as workspace dev dependency
@@ -288,6 +337,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Dependencies
 
+- Consolidate Dependabot bumps into one re-lock (#67-#71)
+- Bump the dev-tools group with 2 updates (#63)
 - Add python-dateutil as direct runtime dep (`llm`)
 - Bump ruff from 0.15.11 to 0.15.12 in the dev-tools group (#57)
 - Bump ty from 0.0.29 to 0.0.33 (#56)
@@ -303,6 +354,75 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Codex red-team fix — tag was_verse on 4281 (generate_image) (`verse`)
+- Apply red-team corrections to reaction-signal plan (`verse`)
+- Implementation plan for reaction-signal instrument (`verse`)
+- Spec for offline reaction-signal instrument (Slice 2-adjacent) (`verse`)
+- Handoff for landing-rate instrument (Slice 1) (`verse`)
+- Landing-instrument plan + red-team corrections (drop usage-label change) (`verse`)
+- Spec for offline landing-rate instrument (Slice 1) (`verse`)
+- Handoff prompt for fc42 taste-exemplars implementation (`verse`)
+- Fold plan red-team fixes (57 confirmed) — fc42 taste exemplars (`verse`)
+- Implementation plan — fc42 taste-tuned verse exemplars (`verse`)
+- Fold spec red-team fixes (34 confirmed) — fc42 taste exemplars (`verse`)
+- Brainstorm spec — fc42 taste-tuned verse exemplars (`verse`)
+- Add operator cautions to purge rollout runbook (`verse`)
+- Fold 11 red-team findings into slice-1 plan (blocker: Protocol isinstance; test-class deletions; purge invocation) (`verse`)
+- V2 slice-1 loom-removal implementation plan (`verse`)
+- Revise v2 Slice-1 spec post red-team — decouple compaction, protect source=loom digests, fix deletion surface (`verse`)
+- V2 Slice-1 design — remove the loom (+crosspoll) and purge its data (`verse`)
+- Revise retention-fix plan post plan-red-team (verified signatures; defer auto-promotion) (`verse`)
+- Implementation plan for retention fix (TDD, in-place) (`verse`)
+- Retention-first v1 design (post red-team re-scope) (`verse`)
+- Document @versedit verbs + leading-#channel DM targeting (`verse`)
+- Clarify llm.verse.edit is a global cap, not channel-scoped (`verse`)
+- Phased implementation plan for universe editing (`verse`)
+- V2 universe-editing spec — red-team fixes + llm.verse.edit gate (`verse`)
+- Design spec for operator+LLM universe editing (`verse`)
+- Verse storybook tool implementation plan (`plan`)
+- Lock execution model to fire-and-return (`spec`)
+- Verse storybook tool v2 (post red-team) (`spec`)
+- Verse storybook tool design (`spec`)
+- Loom help text reflects reactive trigger (`config`)
+- Fold red-team findings into reactive-loom plan (`loom`)
+- Implementation plan for reactive loom trigger (`loom`)
+- Spec for reactive (event-driven) loom trigger (`loom`)
+- Note Go rewrite v9 sub-project E
+- Fix off-by-one in Canonical buf.Grow estimate (`rewrite`)
+- Make Complete inline-prefix contract explicit (`rewrite`)
+- Fix Complete signature gap + plan nits (`rewrite`)
+- Revise routing/intent plan after codex + reviewer pass (`rewrite`)
+- Implementation plan for routing/intent layer (sub-project E) (`rewrite`)
+- Revise routing/intent spec after codex + code-reviewer pass (`rewrite`)
+- Routing/intent layer design for Go rewrite sub-project E (`rewrite`)
+- Revise profile abstraction spec+plan after adversarial review
+- Profile abstraction implementation plan (`plan`)
+- Profile abstraction design (`spec`)
+- Plan prompts consolidation into single prompts.py module (`llm`)
+- V2.4 — verse system prompt tool nudge (`verse-record`)
+- Fix compaction floor key name (verseCompactionMinKeepEvents) (`operator`)
+- Clarify verse_record race test scope (lock-held, not SQLite-level) (`test`)
+- V2.3 — heartbeat payload-key dispatch + race-test scope (`verse-record`)
+- V2.2 — implementation-time clarifications (`verse-record`)
+- Verse_record + auto-NPC aging + new compaction outcomes (`operator`)
+- TDD implementation plan for PR1 (`verse-record`)
+- V2.1 line-citation corrections (`verse-record`)
+- V2 — integrate code-review + 2nd Codex pass (`verse-record`)
+- Design for verse_record + auto-entity aging
+- Note timer-rearm failure mode (`verse`)
+- CHANGELOG entries for forest-verse PR 3
+- Command reference for @versecompact
+- Crosspoll, compaction, @versecompact in operator guide (`verse`)
+- Forest-verse PR 3 implementation plan (`plans`)
+- Changelog for forest-verse PR 1
+- Forest-verse operator guide; drop forest-mode and spontaneous docs
+- Forest-verse PR 1 v2 — address dual-review punch list (`plan`)
+- PR 1 implementation plan — verse store + avatar shim + rpg removal (`plan`)
+- Forest-verse design v3 — clean break, no migration (`plan`)
+- Forest-verse redesign — collapse forest+spontaneous into avatars+loom (`plan`)
+- Drop pressure_scenarios.md from limnoria-bot skill (`skill`)
+- Add in-repo limnoria-bot skill
+- Reorganize guide layout and refresh content
 - Document maxConcurrentLLMCalls and watch-reschedule change (`llm`)
 - Revise async LLM impl plan after codex review pass (`plans`)
 - Revise async LLM impl plan after third review pass (`plans`)
@@ -366,6 +486,147 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Full scene on every verse turn, drop aside carve-out (`verse`)
+- Gate verse triggering on entity refs or keyword regex (`verse`)
+- DoTagmsg inbound reaction capture -> reactions.jsonl (`verse`)
+- Record last verse line per channel for reaction attribution (`verse`)
+- Add verseReactionCaptureEnabled flag (default on) (`verse`)
+- Tag AssistantResult.was_verse on verse completions (`verse`)
+- Taste_report --reactions appends explicit signal section (`verse`)
+- Recency-attributed reaction event builder (`verse`)
+- Emoji classification for reaction signal (`verse`)
+- Offline landing-rate report (taste_report) reusing taste_mine (`verse`)
+- Plumb verseStyleExemplars into the verse route (`verse`)
+- Inject sanitized capped style exemplars into verse prompt (`verse`)
+- Taste_mine assembly, dedup, review + CLI (`verse`)
+- Taste_mine praise detector (`verse`)
+- Taste_mine re-paste detector (`verse`)
+- Taste_mine log-line parsing (`verse`)
+- Add verseStyleExemplars registry.Json channel key (`config`)
+- Add tested one-time purge_loom_data (Part B) (`verse`)
+- Stamp compaction lore-digests source='llm' (disambiguate from loom) (`verse`)
+- Add verseCompactionModel config key (split from loomModel) (`verse`)
+- Warn-once-per-channel when verseModel empty and falls back (`verse`)
+- @canon lock/unlock/forget (author-gated, channel resolved in-body) (`verse`)
+- Stable-first verse prompt with scene cast + relations + active-only events (`verse`)
+- Scene retrieval (word-boundary match, 1-hop relations, active-only events) (`verse`)
+- Entity aliases (NOCASE) + name-or-alias resolution (`verse`)
+- Aging exempts author_locked; reserved-key blocks loom forging it (`verse`)
+- Author_locked canon flag + list_canon_entities (`verse`)
+- Entity_alias + event_actor (schema v3), element-wise tolerant backfill (`verse`)
+- @versedit honours a leading #channel (DM-friendly) (`verse`)
+- Verse_edit tool — schema, executor, per-user llm.verse.edit gate (`verse`)
+- Dispatch_verse_edit pure handler (constructive ops, gated) (`verse`)
+- @versedit operator command (full verb set) (`verse`)
+- Resolve_ref (#id-or-name) + llm.verse.edit capability (`verse`)
+- Pinned-roster block in verse prompt (consumption layer) (`verse`)
+- List_pinned_entities + active_name_exists helpers (`verse`)
+- Apply_direct — immediate apply + approved audit row (`verse`)
+- New core ops + validated-source privilege; single dispatcher (`verse`)
+- Versioned schema migration v1->v2 (rebuild events/proposals) (`verse`)
+- Widen events.source and proposals.op CHECKs for new ops (`verse`)
+- @story command — illustrated tales AND concept explainers (`story`)
+- Loosen trigger + illustrate generously, cap 5 images (`storybook`)
+- Verse_storybook handler — gated, fire-and-return (`verse`)
+- Verse_storybook tool spec (`verse`)
+- Generate_storybook orchestration (no-laundering, sequential, capped) (`service`)
+- Storybook story generation with robust parse (`service`)
+- Robust illustration marker embedding (`service`)
+- Brace-matching JSON object extractor (`service`)
+- Storybook illustration CSS (`service`)
+- Allow same-host <img> in pastebin pages, drop external/unsafe (`service`)
+- Expose saved URL on ImageResult (`service`)
+- Verse storybook registry keys (`config`)
+- Give pastebin pages a useful, reused title (`service`)
+- Restyle pastebin pages as a stylized storybook (`service`)
+- Light reading-friendly pastebin theme (`service`)
+- Ergonomic // OOC opt-out + close evaluation gaps (`verse`)
+- Reactive trigger replaces timer-driven seed/beat (`verse/loom`)
+- Add build_chimein_tail prompt builder (`verse/loom`)
+- Strip the OOC wrapper before the chat model sees it (`verse`)
+- Add routerdemo wiring sample (`go`)
+- Add exec.Executor.Run with overlay/cache/loop/deliver/persist (`go`)
+- Add exec.runLoop tool-call loop (`go`)
+- Add exec.chunkAt (`go`)
+- Add exec.BuildCachedPrefix backed by llmcore.Canonical (`go`)
+- Add exec.ResolveSchemas to pre-resolve tools (`go`)
+- Add exec typed errors with distinctness test (`go`)
+- Add router.Route() pure decision function (`go`)
+- Add router OverlayHash and CacheScope builder (`go`)
+- Add router addressed() with unicode-aware tokenization (`go`)
+- Add router data types (`go`)
+- Add v9 builtin profile definitions (`go`)
+- Add router/profile registry with defensive-copy Get (`go`)
+- Add ircout fake sender for tests (`go`)
+- Add persist fake store (`go`)
+- Add overlay fake resolver for tests (`go`)
+- Add tooling fake dispatcher with PanicOnDispatch (`go`)
+- Add llmcore fake client for tests (`go`)
+- Define ircout.Sender interface (`go`)
+- Define persist.Store interface (`go`)
+- Define overlay.Resolver interface (Scope has no hash) (`go`)
+- Define tooling.Dispatcher interface (`go`)
+- Define llmcore.Client interface with Canonical serializer (`go`)
+- Initialize v9 Go module skeleton (`go`)
+- Per-channel verseModel override (`verse`)
+- Long-form output format, build on user offers (`verse`)
+- System prompt names verse_record vs verse_act (`verse/avatar`)
+- Plumb verseAutoEntityMaxNamesPerCall into dispatch closure (`plugin`)
+- Dispatch verse_record to record_user_event (`verse/avatar`)
+- Make_verse_tool_specs(*, max_actors) gains verse_record (`verse/avatar`)
+- Friendlier compaction outcome message with aging counts (`plugin`)
+- Compact_verse returns CompactionOutcome NamedTuple (`verse/compaction`)
+- _run_compaction_pass calls age_auto_created_entities per channel (`plugin`)
+- VerseAutoEntityRetireDays + verseAutoEntityMaxNamesPerCall (`config`)
+- Apply_or_queue bumps last_seen_ts on applied/crosspoll_emitted (`verse/loom`)
+- Digest insert bumps last_seen_ts on entity_ids (`verse/store`)
+- Age_auto_created_entities skeleton + zero-disable (`verse/aging`)
+- Record_user_event happy path (`verse/store`)
+- List_entities_with_attribute query (`verse/store`)
+- Find_active_entity_by_name with avatar>npc>item>place precedence (`verse/store`)
+- Split avatar persona from @instruct (`verse`)
+- @verseapprove infers event_source from cycle_id (`verse`)
+- Apply_proposal_and_mark accepts event_source kwarg (`verse`)
+- Production bridge wires crosspoll + per-cycle limit (`verse`)
+- Five PR 3 registry keys (`verse`)
+- @versecompact owner command (`verse`)
+- Plugin wires daily compaction timer (`verse`)
+- Compact_verse helper + daily-timer driver (`verse`)
+- Tick consumes one crosspoll seed for receivers (`verse/loom`)
+- Add_proposal accepts caller-supplied proposal_id (`verse`)
+- Digest phase routes crosspoll seeds with per-cycle cap (`verse/loom`)
+- LoomConfig + bridge gain crosspoll plumbing (`verse/loom`)
+- Apply_or_queue routes crosspoll_seed to shared queue (`verse/loom`)
+- Validate crosspoll_seed entity refs against source (`verse/loom`)
+- Parse_digest accepts crosspoll_seed op (`verse/loom`)
+- Document entity-id reuse in static prefix (`verse/loom`)
+- Ground entity ids in verse-stable block (`verse/loom`)
+- Scaffold CrosspollStore + crosspoll_schema (`verse`)
+- Replace_events_with_lore_digest atomic helper (`verse`)
+- Events_older_than helper for retention compaction (`verse`)
+- LoomCaptureTranscript flag + auto-reject orphan refs (`verse/loom`)
+- Forest-verse PR 2 — loom orchestrator + proposal queue (#64)
+- Post-reply tool-call dispatch with failure handling (C7d) (`verse`)
+- _verse_route_for system prompt + tools (`verse`)
+- _verse_route_for gating logic (`verse`)
+- @instruct double-writes avatar summary (`verse`)
+- Owner commands versedump/versepurge with token spec (`verse`)
+- @verse / @look / @who commands (`verse`)
+- @verseopt in/out command (`verse`)
+- Register llm.verse and llm.verse.gm capabilities (`verse`)
+- Add verseEnabled and verseEventRetentionDays registry (`verse`)
+- System prompt + OOC escape (`verse`)
+- Verse_move / verse_look / verse_recall (`verse`)
+- Verse_act handler with failure paths (`verse`)
+- Verb whitelist (`verse`)
+- Opt-in starter scene (`verse`)
+- Avatar_link CRUD (`verse`)
+- Events append + retrieval (`verse`)
+- Attributes + relations (`verse`)
+- Entity CRUD (`verse`)
+- Store init with schema + WAL + thread-local conn (`verse`)
+- Db_path_for_channel sanitizer (`verse`)
+- Scaffold package skeleton (`verse`)
 - Surface executor running/queued/max in %usage output (`llm`)
 - Bound command path with LLMExecutor.permit() (`llm`)
 - Add _safe_queue for thread-safe worker IRC sends (`llm`)
@@ -579,6 +840,10 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Performance
 
+- Split xAI cache lanes per op to stop self-eviction (`llm`)
+- Stabilize cacheable prefix across users and turns (`llm`)
+- Hide scheduling/usage/instruction tools from verse mode (`llm/verse`)
+- Keep prefix cache stable across users in same channel (`llm`)
 - Cap output tokens on chat / remind_action profiles (`llm`)
 - Short-circuit imagine step_2 + place memories after channel history (`llm`)
 - Move per-user memories out of system prompt to keep cache prefix stable (`llm`)
@@ -587,6 +852,31 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Delete dead store proposal helpers + bump_last_seen_ts (`verse`)
+- Remove loom-moderation commands (verseproposals/verseapprove/versereject) (`verse`)
+- Remove loom lifecycle wiring, _PluginLoomBridge, crosspoll plumbing from plugin (`verse`)
+- Relocate completion client into compaction.py (Task 3) (`verse`)
+- Relocate validate_payload to verse/validation.py (`verse`)
+- Extract validate_payload; share loom/tool validation (`verse`)
+- Retire loom periodic timer; reactive trigger only (`plugin`)
+- Switch holdout consumers to llm.profile imports (`llm`)
+- Migrate overlay reads to PROFILES[profile].overlay_setting (`llm`)
+- Migrate service.assistant_completion to PROFILES registry (`llm`)
+- Add profile.py as single source of truth (no consumers yet) (`llm`)
+- Drop assistant.py prompt re-export shim; update stale refs (`llm`)
+- Import CODE_SYSTEM_PROMPT from prompts.py in plugin.py (`llm`)
+- Migrate service.py and tests to prompts.PROMPTS registry (`llm`)
+- Re-export prompt constants from prompts.py via assistant shim (`llm`)
+- Add prompts.py as single source of truth (no consumers yet) (`llm`)
+- Extract _set_status_inline helper (`verse/store`)
+- Extract _add_event_inline helper (`verse/store`)
+- Extract _set_attribute_inline helper (`verse/store`)
+- Extract _add_entity_inline helper (`verse/store`)
+- Handlers surface VerseDispatchResult to model (`verse/avatar`)
+- Dispatch_verse_tool_call returns VerseDispatchResult (`verse/avatar`)
+- Remove spontaneous mode and orphaned registry keys (`llm`)
+- Drop _is_forest_nick and PROFILE_FOREST plumbing (`llm`)
+- Hook _verse_route_for stub into @ask dispatch (`llm`)
 - Submit safety-poll via LLMExecutor with in-flight guard (`llm`)
 - Submit scheduled LLM task fires via LLMExecutor (`llm`)
 - Submit watch-mode reminder fires via LLMExecutor (`llm`)
@@ -653,12 +943,66 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Reverts
 
+- Drop dedicated framework, restore chat-prefix cache stability (`verse`)
 - Drop xai_conv_id diagnostic log
 - Restore chunks-based gate on pastebin trigger
 - Remove thinking disable to test if system prompt was the issue
 
 ### Tests
 
+- Pin thin-sample OR, win-truncation boundary, distinct-date active_days (`verse`)
+- Cover taste_mine detector branches (`verse`)
+- Cover Scene:/bullet-prefix exemplar forgery drops (`verse`)
+- Strengthen praise word-boundary + inline-fallthrough coverage (`verse`)
+- Make de-loomed-boot test a real guard (raise on any removed loom key read) (`verse`)
+- Add de-loomed-boot smoke test + regression gate sweep (`verse`)
+- Assert a distinctive compaction model reaches the client (prove config read, not fallback) (`verse`)
+- Repoint compaction-model mocks from loomModel to verseCompactionModel (`verse`)
+- Make applied-write aging tests assert the causal chain (no auto-bump, then heartbeat keeps alive) (`verse`)
+- Strengthen invalid-ref aging test to assert retirement without heartbeat (`verse`)
+- De-loom test_verse_aging.py (Task 7) (`verse`)
+- End-to-end retrieval integration (roster + alias + relation + event + dead-lore) (`verse`)
+- Characterize denial-retry re-seed before any future change (`verse`)
+- Shared store/store_with_avatar fixtures; event_actor in insert_event_at (`verse`)
+- Cover @versedit/verse_edit branches to satisfy coverage gate (`verse`)
+- Relocate migration test to plugins/llm/tests/verse (`verse`)
+- Close 5 mutation-confirmed gaps from effectiveness audit (`llm`)
+- Split monolithic test_plugin/test_service into thematic files (`llm`)
+- Migrate hand-rolled litellm mocks onto conftest builders (`llm`)
+- Collapse 10 inline loom FakeBridge classes onto shared fake (`verse`)
+- Dedup — parametrize tier cases, drop redundant history tests (`llm`)
+- Batch 2 — coverage gaps, reason-specific asserts, deterministic waits (`llm`)
+- Remove tautological/dead tests, harden real-path coverage (`llm`)
+- Integration drives reactive chime-in flow (`verse/loom`)
+- Guard MUTATING_COMMANDS against silent drift (`bridge`)
+- Update etiquette test for topic split (`llm`)
+- Actors filter-then-slice, mixed types, truncation (`verse_record`)
+- Too-long summary returns error, no truncation (`verse_record`)
+- Empty summary returns error and writes nothing (`verse_record`)
+- Migrate 8 string-equality sites to CompactionOutcome.state (`verse/compaction`)
+- Aging failure in one channel does not abort others (`plugin`)
+- Aging reads verseAutoEntityRetireDays per-channel (`plugin`)
+- Queued/rejected proposals do not bump last_seen_ts (`verse/loom`)
+- Digest-truncated entities correctly retire (`verse/aging`)
+- Defensively skip kind='avatar' (`verse/aging`)
+- Skip non-auto_created entities (`verse/aging`)
+- Keep recent entries inside the window (`verse/aging`)
+- Retire past cutoff (`verse/aging`)
+- Retired actor_id raises and rolls back (`verse_record`)
+- Opt-out → record → re-opt-in three-row state (`verse_record`)
+- Actor name matching is case-insensitive (`verse_record`)
+- Retired entity not rehydrated by new mention (`verse_record`)
+- Race resolved inside one write_transaction (`verse_record`)
+- Repeated calls keep one row, latest ts wins (`verse_record`)
+- Existing npc reused and heartbeat updated (`verse_record`)
+- Avatar actor not tagged or heartbeat-bumped (`verse_record`)
+- Cover registry-raises fallback in _run_compaction_pass (`verse`)
+- End-to-end crosspoll emit→consume→approve (`verse`)
+- _next_local_time boundary cases (`verse/compaction`)
+- Cover next_unconsumed_for diagnostic + write_transaction rollback (`verse`)
+- CrosspollStore concurrent-writer guarantee (`verse`)
+- Crosspoll enqueue + atomic claim_seed_for coverage (`verse`)
+- Write-lock concurrency (`verse`)
 - Add _spontaneous_events_lock to TestDoPrivmsg fixture (`llm`)
 - Stress + reload regression tests for LLM executor (`llm`)
 - Add _next_rrule_fire property tests (`llm`)
@@ -702,9 +1046,17 @@ own conventional-commit history (`type(scope): summary`).
 - Add integration and concurrency tests for persistence
 - Add comprehensive tests for coverage improvement
 
+### Changelog
+
+- Verse_record + auto-NPC aging
+
 ### Config
 
 - Reduce context timeout default from 30 to 5 minutes
+
+### Diag
+
+- Log capture/skip in doPrivmsg + case-insensitive match (`verse/loom`)
 
 ### Ops
 

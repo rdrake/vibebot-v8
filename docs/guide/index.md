@@ -1,6 +1,6 @@
 # VibeBot v8
 
-AI on IRC. Ask questions, generate code, create images, and hold conversations with large language models -- all without leaving your IRC client.
+AI on IRC. Ask questions, generate code, create images, and hold conversations with large language models without leaving your IRC client.
 
 ```
 <rdrake> @ask What causes the northern lights?
@@ -12,31 +12,32 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 <rdrake> @ask How far south can you see them?
 <VibeBot> During strong solar storms, auroras have been visible as far south
           as Texas and Florida (around 30°N). Typically you need to be above
-          50°N for regular sightings -- places like northern Canada, Iceland,
-          Scandinavia, and Alaska.
+          50°N for regular sightings: northern Canada, Iceland, Scandinavia,
+          and Alaska.
 ```
 
 ## Features
 
-- **Natural language interaction** -- Just mention the bot by name or send it a PM. No commands needed -- ask questions, manage reminders, check usage, and more through plain conversation.
-- **Conversation memory** -- Follow up on previous questions. The bot tracks context per user and channel.
-- **Vision** -- Drop an image URL into `@ask` and the bot will describe or reason about it.
-- **Code generation** -- `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
-- **Image generation** -- `@draw` creates images from text descriptions via Vertex AI Imagen.
-- **[Scheduled tasks](user/scheduled-tasks.md)** -- Recurring or one-shot LLM runs with full tool access at run time, distinct from plain reminders.
-- **Stored facts** -- Save things about yourself with `@memories` that persist across sessions, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't become memories.
-- **[Forest-Verse](operator/forest-verse.md)** -- Per-channel structured world model with user-driven roleplay, avatars, and a persistent entity graph.
-- **[Limnoria bridge](reference/bridge-tools.md)** -- The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, DDG, and so on) as tools, with read-only by default and mutations gated.
-- **Custom instructions** -- Shape how the bot responds to you with `@instruct`.
-- **Multi-provider AI** -- Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).
+- **Natural-language interaction.** Mention the bot by name or send it a PM. Ask questions, manage reminders, and check usage through plain conversation.
+- **Conversation memory.** Follow up on earlier questions. The bot tracks context per user and channel.
+- **Vision.** Drop an image URL into `@ask` and the bot describes or reasons about it.
+- **Code generation.** `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
+- **Image generation.** `@draw` creates images from text descriptions.
+- **Illustrated stories.** `@story` builds an illustrated story or explainer page and posts the link.
+- **[Reminders](user/reminders-usage.md) and [scheduled tasks](user/scheduled-tasks.md).** Natural-language reminders, plus recurring LLM runs with full tool access.
+- **Stored facts.** Save things about yourself with `@memories`. Facts persist across sessions, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't become memories.
+- **[The verse](operator/forest-verse.md).** A per-channel world model with avatars, user-driven roleplay, and a persistent entity graph.
+- **[Limnoria bridge](reference/bridge-tools.md).** The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, and so on) as tools: read-only by default, mutations gated.
+- **Custom instructions.** Shape how the bot responds to you with `@instruct`.
+- **Multi-provider AI.** Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).
 
 ## Documentation
 
-**[User Guide](user/getting-started.md)** -- Start here. Learn the commands and how to get the most out of the bot.
+**[User guide](user/getting-started.md)**: start here. Learn the commands and how to get the most out of the bot.
 
-**[Operator Guide](operator/installation.md)** -- Deploy and configure VibeBot for your network.
+**[Operator guide](operator/installation.md)**: deploy and configure VibeBot for your network.
 
-**[Command Reference](reference/commands.md)** -- Every command, its syntax, and examples.
+**[Command reference](reference/commands.md)**: every command, its syntax, and its permissions.
 
 ## Links
 

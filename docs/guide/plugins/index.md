@@ -1,13 +1,23 @@
 # Plugins
 
 VibeBot v8 is a [Limnoria](https://docs.limnoria.net/) workspace that
-ships two first-party plugins. Each is independently loadable via
-`@load <name>` from IRC.
+ships two first-party plugins. Load either one from IRC with
+`@load <name>`.
 
 | Plugin | What it does |
 |--------|--------------|
-| [LLM](llm.md) | The main AI surface: `@ask`, `@code`, `@draw`, memory, reminders, scheduled tasks, the assistant tool surface, and the Limnoria-as-tool bridge. |
-| [NickInMiddle](nickinmiddle.md) | Tiny `inFilter` plugin that recognises the bot's nick when it appears mid-sentence so Limnoria's normal addressing logic fires. |
+| [LLM](llm.md) | The main AI surface: `@ask`, `@code`, `@draw`, `@story`, memory, reminders, scheduled tasks, the verse roleplay engine, and the Limnoria-as-tools bridge. |
+| [NickInMiddle](nickinmiddle.md) | A small `inFilter` plugin that recognizes the bot's nick mid-sentence, so Limnoria's normal addressing logic fires. |
 
-Both live in the same uv workspace (`plugins/<name>/`). They share
-linting, type-checking, and the 93% test coverage floor.
+Both plugins live in the same uv workspace (`plugins/<name>/`) and share
+linting, type checking, and the 93% test coverage floor.
+
+## Stock plugins first
+
+The project follows one guiding principle: defer to stock Limnoria
+plugins wherever possible. The LLM plugin acts as a natural-language
+shim over them rather than reimplementing their features. When a user
+asks "have you seen alice?" or "what time is it in Tokyo?", the
+assistant calls the stock `Seen` or `Time` plugin through the
+[tool bridge](../reference/bridge-tools.md) instead of answering from
+the model alone. Operators select the plugins the bridge exposes.

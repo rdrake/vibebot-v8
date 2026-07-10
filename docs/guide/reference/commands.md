@@ -1,10 +1,12 @@
-# Command Reference
+# Command reference
 
-Quick reference for all VibeBot commands. For detailed usage and examples, see the [User Guide](../user/getting-started.md).
+Quick reference for every VibeBot command. For walkthroughs and
+examples, see the [user guide](../user/getting-started.md).
 
 ## Natural language
 
-Most bot features are available through natural language. Mention the bot by name in a channel or send it a PM:
+Most bot features work through plain language. Mention the bot by name
+in a channel, or send it a PM:
 
 ```
 VibeBot, what's the weather like on Mars?
@@ -14,38 +16,25 @@ VibeBot, how much have I used this month?
 VibeBot, set my instruction to respond in haiku
 ```
 
-The bot uses tools internally to handle your request -- managing memories, setting reminders, checking usage, and more. Natural language is especially useful for combining multiple actions in a single message.
+The bot uses tools internally to handle your request: managing
+memories, setting reminders, checking usage, and more. Natural language
+works especially well for combining actions in one message.
 
-Use the following commands when you want direct, predictable behavior.
+Use the commands below when you want direct, predictable behaviour.
 
-## Commands at a glance
+## Core AI commands
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@ask` | `<question>` | Ask the AI a question |
-| `@code` | `<request>` | Generate code |
-| `@draw` | `<prompt>` | Generate an image |
-| `@forget` | `[channel]` | Clear conversation context |
-| `@memories` | `[del <id> \| edit <id> <text> \| clear \| cleanup]` | Manage stored facts |
-| `@instruct` | `[<instruction> \| clear]` | Set persistent instructions |
-| `@remind` | `[<text> \| list \| del <id> \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Set and manage reminders (admin subcommand is owner-only) |
-| `@usage` | `[nick \| #channel]` | Show API usage stats |
-| `@verseopt` | `in \| out` | Opt in or out of the forest-verse for this channel (requires `llm.verse`) |
-| `@verse` | | One-line scene summary for this channel's verse (requires `llm.verse`) |
-| `@look` | `[target]` | Describe an entity or current location in the verse (requires `llm.verse`) |
-| `@who` | | List active avatars in this channel's verse (requires `llm.verse`) |
-| `@versedump` | `#chan` | Dump verse state as JSON (requires `llm.verse.gm`) |
-| `@versepurge` | `#chan [token]` | Irreversibly purge verse state; two-step token confirmation (requires `llm.verse.gm`) |
-| `@versecompact` | `#chan` | Manually run retention compaction for the channel (requires `llm.verse.gm`) |
-| `@verseproposals` | `[#chan] [pending\|approved\|rejected] [<limit>]` | List loom proposals (default channel = current; default status = `pending`; default limit 3, max 50) (requires `llm.verse.gm`) |
-| `@verseapprove` | `<id> [#chan]` | Apply a pending loom proposal and mark it approved; accepts unique-prefix ids (requires `llm.verse.gm`) |
-| `@versereject` | `<id> [#chan]` | Reject a pending loom proposal without applying its mutation; accepts unique-prefix ids (requires `llm.verse.gm`) |
-
-## Command details
+| `@ask` | `<question>` | Ask the AI a question. Supports follow-ups and image URLs. Requires `llm.ask`. |
+| `@code` | `<request>` | Generate code, served as an HTTP link with syntax highlighting. Requires `llm.code`. |
+| `@draw` | `<prompt>` | Generate an image from text. Requires `llm.draw` and an authenticated account. |
+| `@story` | `<brief>` | Generate an illustrated page (tale or explainer) and post a link when ready. Same gate as `@draw`. |
 
 ### ask
 
-Ask the AI a question. Supports conversation context (follow-up questions) and vision (include image URLs).
+Ask the AI a question. Supports conversation context for follow-up
+questions and vision for image URLs.
 
 ```
 @ask What is the capital of France?
@@ -53,87 +42,89 @@ Ask the AI a question. Supports conversation context (follow-up questions) and v
 @ask And what about Germany?
 ```
 
-See [AI Commands -- ask](../user/ai-commands.md#ask) for full details.
+See [AI commands](../user/ai-commands.md) for full details.
 
 ### code
 
-Generate code based on your request. Code is saved to an HTTP link with syntax highlighting.
+Generate code from your request. The bot saves the code to an HTTP link
+with syntax highlighting and keeps context, so you can iterate.
 
 ```
 @code Python function to calculate fibonacci numbers
 @code Now add memoization to that
 ```
 
-See [AI Commands -- code](../user/ai-commands.md#code) for full details.
-
 ### draw
 
-Generate an image from a text description. Requires an authenticated account.
+Generate an image from a text description. Requires an authenticated
+account.
 
 ```
 @draw A sunset over mountains in watercolor style
 @draw A cyberpunk cityscape at night
 ```
 
-See [AI Commands -- draw](../user/ai-commands.md#draw) for full details.
+### story
 
-### forget
-
-Clear your volatile memory (conversation context) for the current or specified channel.
+Generate an illustrated page from your brief and post a link when the
+page is ready. The bot picks one of two modes from your wording: an
+in-character illustrated tale, or a concept explainer with labelled
+diagrams. No verse mode required. A per-account cooldown applies,
+shared with the verse storybook tool.
 
 ```
-@forget
-@forget #channel
+@story an illustrated tale of the crew winning the pub quiz
+@story explain how photosynthesis works, with diagrams
 ```
 
-See [Memory -- Volatile context](../user/memory.md#volatile-context) for full details.
+## Memory commands
 
-### memories
-
-Manage your non-volatile memory (stored facts the bot remembers about you across conversations).
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@forget` | `[<channel>]` | Clear your volatile conversation context. |
+| `@memories` | `[<nick> \| del <id> \| edit <id> <text> \| clear \| cleanup]` | Manage stored facts. Viewing another user's memories is owner-only. |
+| `@instruct` | `[<instruction> \| clear]` | Set persistent instructions for `@ask`. Empty shows the current one. |
 
 ```
 @memories
-@memories delete 3
+@memories del 3
 @memories edit 5 corrected fact
 @memories clear
-```
-
-See [Memory -- Non-volatile memory](../user/memory.md#non-volatile-memory) for full details.
-
-### instruct
-
-Set persistent instructions that shape how `@ask` responds to you. Your instruction is prepended to the system prompt.
-
-```
-@instruct You are Captain Picard. Respond in character.
 @instruct Respond only in haiku
 @instruct clear
-@instruct
 ```
 
-See [Memory -- Custom instructions](../user/memory.md#custom-instructions) for full details.
+See [memory and instructions](../user/memory.md) for full details.
 
-### remind
+## Reminders
 
-Set and manage reminders using natural language. Reminders that ask the bot to *do* something (look up, check, fetch, summarize) run as an LLM query at fire time and are marked `[auto]` in `list`. Recurring action work — "every weekday at 9 a.m. …" — becomes a scheduled task; ask the bot in plain language to set, list, or cancel scheduled tasks.
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@remind` | `[<text> \| list \| del <id> \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders. The `admin` subcommands are owner-only. |
+
+Reminders that ask the bot to *do* something (look up, check, fetch,
+summarize) run as an LLM query at fire time and appear as `[auto]` in
+`list`. Recurring action work, such as "every weekday at 9 a.m. check
+the build", becomes a scheduled task; ask the bot in plain language to
+set, list, or cancel scheduled tasks.
 
 ```
 @remind in 30 minutes check the build
 @remind in 2 hours check status of CVE-2026-31431 in Debian
 @remind list
-@remind delete abc1
-@remind clear
+@remind del abc1
 @remind admin list someone        # owner only
-@remind admin del someone abc1    # owner only
-@remind admin clear someone       # owner only
 ```
 
-See [Reminders & Usage -- remind](../user/reminders-usage.md#remind) for full details, including caveats (counts against `@ask` rate limit, no elevated capabilities at fire time, recurring chains capped at 50 fires).
+See [reminders and usage](../user/reminders-usage.md) for caveats:
+reminders count against the `@ask` rate limit, run with no elevated
+capabilities at fire time, and recurring chains cap at 50 fires.
 
-### usage
+## Accounting
 
-Show API usage statistics for yourself, another user, or a channel.
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@usage` | `[<nick> \| #channel]` | Show API usage statistics. The global overview by PM is admin-only. |
 
 ```
 @usage
@@ -141,26 +132,69 @@ Show API usage statistics for yourself, another user, or a channel.
 @usage #channel
 ```
 
-See [Reminders & Usage -- usage](../user/reminders-usage.md#usage) for full details.
+## Verse commands (user)
 
-### versecompact
+All verse commands require the channel to have `verseEnabled` set and
+the caller to hold the `llm.verse` capability, except `@avatar`.
 
-Manually run retention compaction for the named channel.
-Requires capability `llm.verse.gm`.
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@verseopt` | `<in \| out>` | Opt your avatar in or out of this channel's verse. |
+| `@verse` | | Show your current scene in one line. |
+| `@look` | `[<target>]` | Describe your scene or a named entity. |
+| `@who` | | List active avatars and their locations. |
+| `@avatar` | `[<persona> \| clear]` | Set the persona that shapes your verse avatar. Independent of `@instruct`. |
+
+## Verse commands (editor)
+
+These require the `llm.verse.edit` capability, granted globally.
+
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@canon` | `<lock \| unlock \| forget> <name>` | Mark a character as durable canon, or release it. |
+| `@versedit` | `[#channel] <verb> <args>` | Edit the verse universe directly. |
+
+`@versedit` verbs: `add`, `pin`, `unpin`, `set`, `name`, `desc`,
+`retire`, `restore`, `relate`, `unrelate`, `event`, `editevent`,
+`delevent`, and `show`. Entity kinds are `avatar`, `npc`, `place`,
+`faction`, and `item`. Refer to entities by `#id` or name.
 
 ```
-@versecompact #channel
+@versedit add npc Headmaster Pringle :: stern keeper of the academy
+@versedit pin #12
+@versedit set #12 mood=grumpy
+@versedit show #12
 ```
 
-See [Forest-Verse -- Retention compaction](../operator/forest-verse.md#retention-compaction)
-for what compaction does.
+## Verse commands (GM)
 
-## Features
+These require the `llm.verse.gm` capability.
 
-- **Natural language interaction** -- Mention the bot by name or send a PM to ask questions, manage memories, set reminders, and more without commands.
-- **Volatile memory** -- The bot remembers your recent conversation for follow-up questions. Context is per-user, per-channel, and expires after a period of inactivity.
-- **Non-volatile memory** -- Store facts about yourself that persist across conversations and sessions.
-- **Vision** -- Include image URLs in your `@ask` messages and the bot will describe or reason about them.
-- **Syntax-highlighted code** -- `@code` responses are served as HTTP links with syntax highlighting, keeping IRC clean.
-- **[Forest-Verse](../operator/forest-verse.md)** -- Per-channel structured world model with user-driven roleplay, avatars, and a persistent entity graph. Users opt in with `@verseopt in`.
-- **Multi-provider AI** -- Powered by LiteLLM, supporting OpenAI, Anthropic, Google Gemini, and Vertex AI models behind a unified interface.
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@versedump` | `[#channel] [--format=json]` | Dump the full verse state as JSON. |
+| `@versepurge` | `[#channel] [<token>]` | Irreversibly wipe a channel's verse. Two-step token confirmation. |
+| `@versecompact` | `<channel>` | Run retention compaction for the channel now. |
+
+See [verse operations](../operator/forest-verse.md) for what compaction
+does and how to operate the verse.
+
+## Features at a glance
+
+- **Natural language interaction**: mention the bot by name or send a
+  PM to ask questions, manage memories, and set reminders without
+  commands.
+- **Volatile memory**: the bot remembers your recent conversation for
+  follow-up questions. Context is per-user and per-channel, and expires
+  after inactivity.
+- **Non-volatile memory**: durable facts about you that persist across
+  conversations.
+- **Vision**: include image URLs in `@ask` messages and the bot
+  describes or reasons about them.
+- **Syntax-highlighted code**: `@code` responses arrive as HTTP links,
+  keeping IRC clean.
+- **[The verse](../operator/forest-verse.md)**: a per-channel world
+  model with user-driven roleplay, avatars, and a persistent entity
+  graph. Opt in with `@verseopt in`.
+- **Multi-provider AI**: LiteLLM routes to OpenAI, Anthropic, Google
+  Gemini, xAI, and Vertex AI models behind one interface.
