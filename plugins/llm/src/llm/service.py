@@ -319,6 +319,78 @@ def _strip_degraded(
     return _strip_assistant_turns(history, _is_degraded_reply)
 
 
+# Cross-turn self-repetition guard. Distinct from the quality-collapse guard
+# above, which needs a 150+ word passage: the failure here is a SHORT reply
+# the model converges on and then parrots across turns — and, because
+# per-user conversation history persists in the DB, across days and restarts
+# ("Riding a flaming cheese comet through exploding retro game galaxies…"
+# greeted rdrake near-verbatim on Jul 8 and twice on Jul 11). Each stored
+# repeat is re-injected as history the next turn, so the schtick becomes the
+# in-context exemplar and locks in. Two near-duplicate replies are compared
+# on their normalized unique-word overlap relative to the smaller reply —
+# tolerant of the verb/ending swaps the stuck record actually shows, while a
+# merely thematic reply (sharing a couple of words) stays under the
+# threshold. Replies with fewer than ``_REPEAT_MIN_WORDS`` distinct words are
+# never judged: short functional answers ("Done.") legitimately recur.
+_REPEAT_MIN_WORDS = 5
+_REPEAT_OVERLAP_THRESHOLD = 0.6
+_MAX_REPEAT_RETRIES = 1
+_REPEAT_RETRY_NUDGE = (
+    "Stop — that reply recycles one of your own earlier replies almost "
+    "word for word. Say something genuinely new: fresh imagery, fresh "
+    "phrasing, no reuse of your previous lines."
+)
+
+
+def _reply_word_set(content: str) -> set[str]:
+    """Normalized unique words of a reply (casefolded, edge-punctuation
+    stripped), the unit the repetition overlap is computed over."""
+    return {s for w in (content or "").split() if (s := w.strip(_DEGRADED_WORD_TRIM).casefold())}
+
+
+def _replies_repetitive(a: str, b: str) -> bool:
+    """Return True iff two replies are near-duplicates of each other.
+
+    Overlap is ``|A∩B| / min(|A|,|B|)`` over normalized unique words, so a
+    shorter paraphrase of a longer reply still trips the guard. Replies
+    under the word floor are never judged.
+    """
+    words_a, words_b = _reply_word_set(a), _reply_word_set(b)
+    if len(words_a) < _REPEAT_MIN_WORDS or len(words_b) < _REPEAT_MIN_WORDS:
+        return False
+    overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
+    return overlap >= _REPEAT_OVERLAP_THRESHOLD
+
+
+def _strip_repeated_replies(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop every assistant turn that near-duplicates another one.
+
+    Unlike the other strips this removes the WHOLE duplicate cluster, not
+    just the later copies — any surviving instance would be re-imitated
+    next turn and the record would stay stuck. User turns and distinct
+    assistant turns are kept. History windows are small, so the pairwise
+    comparison is cheap.
+    """
+    if not history:
+        return history
+    replies = [
+        (i, str(m.get("content", "")))
+        for i, m in enumerate(history)
+        if m.get("role") == Role.ASSISTANT
+    ]
+    doomed: set[int] = set()
+    for x in range(len(replies)):
+        for y in range(x + 1, len(replies)):
+            if _replies_repetitive(replies[x][1], replies[y][1]):
+                doomed.add(replies[x][0])
+                doomed.add(replies[y][0])
+    if not doomed:
+        return history
+    return [m for i, m in enumerate(history) if i not in doomed]
+
+
 # Verse history is trimmed to this many of the most recent messages before
 # the model sees it — tighter than the 20-deep personal context window. A
 # non-reasoning model anchors on its own recent prose, so a shorter window
@@ -348,13 +420,15 @@ def _depoison_verse_history(
 ) -> list[dict[str, str]] | None:
     """De-poison and window one verse history list before the model sees it.
 
-    Strips the bot's own frame-breaking refusals and collapsed (run-on /
-    looping) turns, then caps the result at the tighter verse window. Safe
-    on the personal thread and the shared channel summary alike — the strips
-    key on the assistant role, so other participants' channel lines are kept.
+    Strips the bot's own frame-breaking refusals, collapsed (run-on /
+    looping) turns, and stuck-record repeats, then caps the result at the
+    tighter verse window. Safe on the personal thread and the shared channel
+    summary alike — the strips key on the assistant role, so other
+    participants' channel lines are kept.
     """
     history = _strip_verse_denials(history)
     history = _strip_degraded(history)
+    history = _strip_repeated_replies(history)
     return _trim_history_window(history, _VERSE_HISTORY_MAX_MESSAGES)
 
 
@@ -4025,15 +4099,17 @@ Examples (echo → action_prompt: ""):
 
             # De-poison history before the model sees it. Both the personal
             # thread AND the shared channel summary carry the bot's own lines;
-            # a refusal or collapsed turn left in either is re-injected every
-            # turn, seeding the next reply via self-imitation.
+            # a refusal, collapsed turn, or stuck-record repeat left in either
+            # is re-injected every turn, seeding the next reply via
+            # self-imitation.
             #
             # Verse runs the full pass (strip denials → strip degraded →
-            # tight window). Every other route — notably @ask, which falls
-            # back to the chat profile and produces long answers that can
-            # collapse the same way — strips only the bot's collapsed turns:
-            # no denial strip (premise-refusal is a verse concept) and no
-            # tighter window, so chat keeps its normal context depth.
+            # strip repeats → tight window). Every other route — notably
+            # @ask, which falls back to the chat profile and produces long
+            # answers that can collapse the same way — strips the bot's
+            # collapsed turns and stuck-record repeats: no denial strip
+            # (premise-refusal is a verse concept) and no tighter window, so
+            # chat keeps its normal context depth.
             if route_profile == PROFILE_VERSE:
                 history = _depoison_verse_history(history)
                 # A verse turn is a scene between the user and their avatar;
@@ -4046,8 +4122,18 @@ Examples (echo → action_prompt: ""):
                 # drop the channel window entirely for verse.
                 channel_history = None
             else:
-                history = _strip_degraded(history)
-                channel_history = _strip_degraded(channel_history)
+                history = _strip_repeated_replies(_strip_degraded(history))
+                channel_history = _strip_repeated_replies(_strip_degraded(channel_history))
+
+            # The bot's own surviving past replies, used by the in-loop
+            # repetition guard: a fresh reply that near-duplicates any of
+            # these is the stuck record trying to play again. Captured after
+            # the strips so a de-poisoned turn can't anchor the comparison.
+            prior_replies = [
+                str(m.get("content", ""))
+                for m in [*(history or []), *(channel_history or [])]
+                if m.get("role") == Role.ASSISTANT
+            ]
 
             messages = self._build_messages(
                 prompt,
@@ -4152,6 +4238,9 @@ Examples (echo → action_prompt: ""):
             # Count of quality-collapse retries spent this invocation (see
             # _is_degraded_reply / _MAX_DEGRADED_RETRIES). All routes.
             degraded_retries = 0
+            # Count of self-repetition retries spent this invocation (see
+            # _replies_repetitive / _MAX_REPEAT_RETRIES). All routes.
+            repeat_retries = 0
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %d: model=%s messages=%d",
@@ -4272,6 +4361,34 @@ Examples (echo → action_prompt: ""):
                         )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": _DEGRADED_RETRY_NUDGE})
+                        continue
+
+                    # Self-repetition guard (all routes): a reply that
+                    # near-duplicates one of the bot's own surviving past
+                    # replies is the stuck record playing again — persisted
+                    # history re-seeds it every turn until the greeting is
+                    # the same cheese-comet line for days. Nudge (asking for
+                    # genuinely fresh phrasing) and retry once; the fresh
+                    # reply is delivered AND stored. After the budget, fall
+                    # through and deliver the best effort — the every-turn
+                    # _strip_repeated_replies pass evicts the pair from
+                    # future history regardless.
+                    if repeat_retries < _MAX_REPEAT_RETRIES and any(
+                        _replies_repetitive(content, prior) for prior in prior_replies
+                    ):
+                        repeat_retries += 1
+                        self.log.warning(
+                            "assistant_completion: reply near-duplicates a "
+                            "past reply, nudging and retrying (%d/%d) "
+                            "model=%s channel=%s route=%s",
+                            repeat_retries,
+                            _MAX_REPEAT_RETRIES,
+                            model,
+                            channel,
+                            route_profile,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _REPEAT_RETRY_NUDGE})
                         continue
 
                     # Fold in any costs accumulated by leaf tool calls

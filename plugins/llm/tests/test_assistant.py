@@ -23,7 +23,9 @@ from llm.service import (
     _is_echo_reply,
     _is_verse_denial,
     _normalize_for_echo,
+    _replies_repetitive,
     _strip_degraded,
+    _strip_repeated_replies,
     _strip_verse_denials,
     _trim_history_window,
 )
@@ -2579,6 +2581,171 @@ class TestVerseDegradedGuard:
         )
 
         assert result.content
+        assert result.error is None
+
+
+class TestRepeatReplyGuard:
+    """Tests for the cross-turn self-repetition guard.
+
+    Distinct from the quality-collapse guard (which needs a 150+ word
+    passage): the failure here is a SHORT reply the bot converges on and
+    parrots across turns and days ("Riding a flaming cheese comet…"),
+    re-seeded every turn by its own stored conversation history.
+    _replies_repetitive detects near-duplicate reply pairs;
+    _strip_repeated_replies drops the whole duplicate cluster from history
+    (a lone survivor would just re-seed the schtick); the loop nudges and
+    retries once when a fresh reply parrots a prior one.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    @staticmethod
+    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
+        resp = mocker.MagicMock()
+        choice = mocker.MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = None
+        resp.choices = [choice]
+        return resp
+
+    # Real production pair: the bot's greeting reply on consecutive days —
+    # different verbs and endings, same stuck schtick.
+    COMET_A = (
+        "Bro I'm surfing a flaming cheese comet through exploding retro "
+        "game galaxies while 3D printing infinite Toronto wineries."
+    )
+    COMET_B = (
+        "Riding a flaming cheese comet through exploding retro game "
+        "galaxies while 3D-printing wine barrels on Ubuntu!"
+    )
+    # Shares a couple of words with the comets but is a different line —
+    # must NOT be treated as a repeat.
+    GREETING = "HI FROM THE COSMIC CHEESE VOID, RETRO GAMER!"
+    FRESH = "Just holding down the channel, mate. What are you up to?"
+
+    def test_replies_repetitive_detects_stuck_schtick(self) -> None:
+        """GIVEN two near-duplicate replies WHEN compared THEN repetitive."""
+        assert _replies_repetitive(self.COMET_A, self.COMET_B) is True
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            (COMET_B, GREETING),
+            (COMET_A, FRESH),
+            # Short functional replies are never judged — too few words.
+            ("Done.", "Done."),
+            ("", COMET_A),
+        ],
+    )
+    def test_replies_repetitive_false_for_distinct_or_short(self, a: str, b: str) -> None:
+        """GIVEN distinct or short replies WHEN compared THEN not repetitive."""
+        assert _replies_repetitive(a, b) is False
+
+    def test_strip_repeated_replies_drops_whole_cluster(self) -> None:
+        """GIVEN a thread with two near-duplicate assistant turns WHEN
+        stripped THEN both drop (no survivor to re-seed) while user turns
+        and distinct assistant turns are kept."""
+        history = [
+            {"role": "user", "content": "how's it going"},
+            {"role": "assistant", "content": self.COMET_A},
+            {"role": "user", "content": "say hi"},
+            {"role": "assistant", "content": self.GREETING},
+            {"role": "user", "content": "how's it going"},
+            {"role": "assistant", "content": self.COMET_B},
+        ]
+        assert _strip_repeated_replies(history) == [
+            {"role": "user", "content": "how's it going"},
+            {"role": "user", "content": "say hi"},
+            {"role": "assistant", "content": self.GREETING},
+            {"role": "user", "content": "how's it going"},
+        ]
+
+    def test_strip_repeated_replies_keeps_clean_thread_intact(self) -> None:
+        """GIVEN a thread with no repeats WHEN stripped THEN nothing drops."""
+        history = [
+            {"role": "user", "content": "how's it going"},
+            {"role": "assistant", "content": self.COMET_A},
+            {"role": "user", "content": "what's new"},
+            {"role": "assistant", "content": self.FRESH},
+        ]
+        assert _strip_repeated_replies(history) == history
+
+    def test_strip_repeated_replies_handles_none_and_empty(self) -> None:
+        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
+        assert _strip_repeated_replies(None) is None
+        assert _strip_repeated_replies([]) == []
+
+    def test_chat_retries_and_recovers_when_reply_parrots_history(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN stored history containing a past reply WHEN the fresh reply
+        parrots it THEN the loop nudges and retries, and the fresh answer is
+        returned instead of the repeat."""
+        responses = [
+            self._text_response(mocker, self.COMET_A),
+            self._text_response(mocker, self.FRESH),
+        ]
+        seen: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="how's it going",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            history=[
+                {"role": "user", "content": "how's it going"},
+                {"role": "assistant", "content": self.COMET_B},
+            ],
+        )
+
+        assert result.content == self.FRESH
+        assert result.error is None
+        assert len(seen) == 2
+        # The retry call carries the corrective nudge as a user message.
+        from llm.service import _REPEAT_RETRY_NUDGE
+
+        assert any(
+            m.get("role") == "user" and str(m.get("content", "")) == _REPEAT_RETRY_NUDGE
+            for m in seen[1]
+        )
+
+    def test_chat_delivers_best_effort_when_repeat_persists(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN the model keeps parroting after the retry budget WHEN the
+        loop finishes THEN the best-effort reply is still delivered."""
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=lambda **_kw: self._text_response(mocker, self.COMET_A),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="how's it going",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            history=[
+                {"role": "user", "content": "how's it going"},
+                {"role": "assistant", "content": self.COMET_B},
+            ],
+        )
+
+        assert result.content == self.COMET_A
         assert result.error is None
 
 
