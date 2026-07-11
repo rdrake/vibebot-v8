@@ -118,15 +118,15 @@ class TestRecordUserEvent:
 
         alice_id = _opt_in(store)
 
-        real_find = store._find_active_entity_by_name_inline
+        real_find = store.find_active_entity_by_name
         barrier = threading.Barrier(2)
 
-        def slow_find(conn, name):  # noqa: ANN001
-            result = real_find(conn, name)
+        def slow_find(name, *, conn=None):  # noqa: ANN001
+            result = real_find(name, conn=conn)
             time.sleep(0.01)
             return result
 
-        monkeypatch.setattr(store, "_find_active_entity_by_name_inline", slow_find)
+        monkeypatch.setattr(store, "find_active_entity_by_name", slow_find)
 
         results: list[int] = []
 

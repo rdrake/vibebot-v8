@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any, NamedTuple
 
 _SEP = "  "  # ChannelLogger separates the timestamp from the body with two spaces
@@ -56,7 +56,18 @@ def iter_messages(lines: Iterable[str]) -> Iterator[Msg]:
 
 _MIN_REPASTE_CHARS = 120
 _URL_RE = re.compile(r"https?://")
-_ADDRESSED_RE = re.compile(r"^(grok|vibebot)\b", re.IGNORECASE)  # only real bot triggers
+#: Default bot nicks whose addressed lines are real bot triggers, not taste.
+#: Override with extract_candidates(..., bot_nicks=...) / the --bot-nicks CLI
+#: flag when the live supybot.nick config diverges from this.
+_DEFAULT_BOT_NICKS: tuple[str, ...] = ("grok", "vibebot")
+
+
+def _addressed_re(bot_nicks: Sequence[str]) -> re.Pattern[str]:
+    """Compile the '^<botnick> …' addressed-line matcher for the given nicks."""
+    return re.compile(r"^(?:" + "|".join(re.escape(n) for n in bot_nicks) + r")\b", re.IGNORECASE)
+
+
+_ADDRESSED_RE = _addressed_re(_DEFAULT_BOT_NICKS)  # only real bot triggers
 
 
 class Candidate(NamedTuple):
@@ -83,11 +94,17 @@ def _strong_entity_match(text: str, ents: list[Any]) -> bool:
     return False
 
 
-def classify_repaste(body: str, store: Any, *, min_chars: int = _MIN_REPASTE_CHARS):
+def classify_repaste(
+    body: str,
+    store: Any,
+    *,
+    min_chars: int = _MIN_REPASTE_CHARS,
+    addressed_re: re.Pattern[str] = _ADDRESSED_RE,
+):
     text = _norm_ws(body)
     if len(text) < min_chars:
         return None
-    if _URL_RE.search(text) or _ADDRESSED_RE.match(text):
+    if _URL_RE.search(text) or addressed_re.match(text):
         return None
     ents = store.match_entities_in_text(text)
     if not ents:
@@ -144,30 +161,39 @@ def _dedup_key(text: str) -> str:
     return re.sub(r"[^\w ]+", "", text.lower()).strip()
 
 
-def _nearest_source(msgs: list[Msg], i: int) -> str:
+def _nearest_source(
+    msgs: list[Msg], i: int, *, addressed_re: re.Pattern[str] = _ADDRESSED_RE
+) -> str:
     """Nearest prior non-fc42, non-URL, non-addressed line (spec attribution)."""
     for j in range(i - 1, -1, -1):
         m = msgs[j]
         if _is_fc42(m.nick):
             continue
         b = _norm_ws(m.body)
-        if _URL_RE.search(b) or _ADDRESSED_RE.match(b):
+        if _URL_RE.search(b) or addressed_re.match(b):
             continue
         return m.body
     return ""
 
 
 def extract_candidates(
-    lines: Iterable[str], store: Any, *, min_repaste_chars: int = _MIN_REPASTE_CHARS
+    lines: Iterable[str],
+    store: Any,
+    *,
+    min_repaste_chars: int = _MIN_REPASTE_CHARS,
+    bot_nicks: Sequence[str] = _DEFAULT_BOT_NICKS,
 ) -> list[Candidate]:
+    addressed_re = _addressed_re(bot_nicks)
     msgs = list(iter_messages(lines))
     out: list[Candidate] = []
     seen: set[str] = set()
     for i, m in enumerate(msgs):
         if not _is_fc42(m.nick):
             continue
-        cand = classify_repaste(m.body, store, min_chars=min_repaste_chars) or classify_praise(
-            m.body, store, prev_line=_nearest_source(msgs, i)
+        cand = classify_repaste(
+            m.body, store, min_chars=min_repaste_chars, addressed_re=addressed_re
+        ) or classify_praise(
+            m.body, store, prev_line=_nearest_source(msgs, i, addressed_re=addressed_re)
         )
         if cand is None:
             continue
@@ -213,12 +239,20 @@ def _main(argv=None):  # pragma: no cover - thin CLI wiring over tested core
     ap.add_argument("--verse-dir", required=True, help="verse store base dir")
     ap.add_argument("--channel", default="#afternet")
     ap.add_argument("--out", default="taste_candidates.md")
+    ap.add_argument(
+        "--bot-nicks",
+        default=",".join(_DEFAULT_BOT_NICKS),
+        help="comma-separated bot nicks whose addressed lines are excluded "
+        "(keep in sync with the live bot's nick config)",
+    )
     args = ap.parse_args(argv)
     store = VerseStore(Path(args.verse_dir), args.channel)
+    bot_nicks = [n.strip() for n in args.bot_nicks.split(",") if n.strip()]
     lines: list[str] = []
     for p in args.logs:
         lines += Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
-    cands = extract_candidates(lines, store)  # real store.match_entities_in_text
+    # real store.match_entities_in_text
+    cands = extract_candidates(lines, store, bot_nicks=bot_nicks or _DEFAULT_BOT_NICKS)
     Path(args.out).write_text(render_review(cands), encoding="utf-8")
     print(f"{len(cands)} candidates -> {args.out}")
 

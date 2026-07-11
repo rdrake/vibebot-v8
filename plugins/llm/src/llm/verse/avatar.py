@@ -56,11 +56,12 @@ def _render_style_exemplars(exemplars: Sequence[str]) -> list[str]:
 class VerseDispatchResult:
     """Structured result of a verse tool dispatch.
 
-    The four legacy tools (verse_act / verse_move / verse_look / verse_recall)
-    return ok=True with payload={'status': 'ok'}, preserving the wrapper's
-    historical observable JSON. New branches (verse_record) populate
-    payload with tool-specific data on success or error with a model-
-    facing string on failure.
+    The mutation tools (verse_act / verse_move) return ok=True with
+    payload={'status': 'ok'}. The read tools (verse_look / verse_recall)
+    additionally carry their data ('description' / 'events') so the model
+    can use what it asked for. verse_record populates payload with
+    tool-specific data on success or error with a model-facing string on
+    failure.
     """
 
     ok: bool
@@ -289,6 +290,11 @@ class ActResult(NamedTuple):
     scene_shift_text: str
 
 
+def _third_person(verb: str) -> str:
+    """Naive third-person-singular: 'move' -> 'moves', 'search' -> 'searches'."""
+    return verb + ("es" if verb.endswith(("s", "sh", "ch", "x", "z")) else "s")
+
+
 def verse_act(
     store: VerseStore,
     avatar_id: int,
@@ -330,7 +336,7 @@ def verse_act(
         if place is not None:
             store.set_attribute(avatar_id, "location", place.name)
             event_id = store.add_event(
-                summary=f"{avatar.name} {verb}s to {place.name}",
+                summary=f"{avatar.name} {_third_person(verb)} to {place.name}",
                 entity_ids=[avatar_id, place.id],
                 source="avatar",
             )
@@ -353,7 +359,7 @@ def verse_act(
 
         if item is not None:
             event_id = store.add_event(
-                summary=f"{avatar.name} {verb}s {item.name}",
+                summary=f"{avatar.name} {_third_person(verb)} {item.name}",
                 entity_ids=[avatar_id, item.id],
                 source="avatar",
             )
@@ -368,7 +374,7 @@ def verse_act(
 
     # 5. EVENT_ONLY
     if effect is VerbEffect.EVENT_ONLY:
-        summary = f"{avatar.name} {verb}s" + (f" {target}" if target else "")
+        summary = f"{avatar.name} {_third_person(verb)}" + (f" {target}" if target else "")
         event_id = store.add_event(
             summary=summary,
             entity_ids=[avatar_id],
@@ -378,7 +384,7 @@ def verse_act(
         return ActResult(event_id, scene)
 
     # 6. Off-list verb
-    summary = f"{avatar.name} {verb}s" + (f" {target}" if target else "")
+    summary = f"{avatar.name} {_third_person(verb)}" + (f" {target}" if target else "")
     event_id = store.add_event(
         summary=summary,
         entity_ids=[avatar_id],
@@ -422,15 +428,19 @@ def verse_look(
     (None if avatar has no location set or the named place doesn't exist).
     When target is given: return that entity's summary (case-insensitive
     name match across all kinds), or None if not found.
+
+    Both lookups are active-only (parity with verse_move/verse_act): a
+    retired entity is not part of the scene, so verse_look must not
+    describe it while the system prompt says the avatar is "nowhere".
     """
     if target is None:
         location = store.get_attribute(avatar_id, "location")
         if location is None:
             return None
-        place = store.find_entity_by_name(location, kind="place")
+        place = store.find_entity_by_name(location, kind="place", active_only=True)
         return place.summary if place is not None else None
     else:
-        entity = store.find_entity_by_name(target)
+        entity = store.find_entity_by_name(target, active_only=True)
         return entity.summary if entity is not None else None
 
 
@@ -683,11 +693,14 @@ def dispatch_verse_tool_call(
     - Exception-level failures (retired avatar, DB gone) are caught here
       and logged at WARNING; no event row is written.
 
-    Returns a :class:`VerseDispatchResult`. The four legacy tools always
-    return ``ok=True`` with ``payload={'status': 'ok'}`` — preserving today's
-    swallow-and-skip semantics so the wrapper's observable JSON does not
-    change. Future branches (e.g. ``verse_record``) may return ``ok=False``
-    with a model-facing ``error`` string.
+    Returns a :class:`VerseDispatchResult`. The mutation tools (verse_act /
+    verse_move) return ``ok=True`` with ``payload={'status': 'ok'}``, and
+    their failures keep the historical swallow-and-skip semantics (logged,
+    ``ok=True``). The read tools now return their data to the model —
+    verse_look carries ``description`` and verse_recall carries ``events``
+    (≤5, summary + ts) — instead of computing it and dropping it.
+    ``verse_record`` may return ``ok=False`` with a model-facing ``error``
+    string.
     """
     log = logger or _log
     _ok = VerseDispatchResult(ok=True, payload={"status": "ok"})
@@ -707,15 +720,23 @@ def dispatch_verse_tool_call(
             verse_move(store, avatar_id, place)
             return _ok
         elif name == "verse_look":
-            verse_look(store, avatar_id, args.get("target"))
-            return _ok
+            description = verse_look(store, avatar_id, args.get("target"))
+            return VerseDispatchResult(
+                ok=True, payload={"status": "ok", "description": description}
+            )
         elif name == "verse_recall":
             q = args.get("query")
             if q is None:
                 log.warning("verse_recall missing 'query' arg (avatar=%s)", avatar_id)
                 return _ok
-            verse_recall(store, q)
-            return _ok
+            events = verse_recall(store, q)
+            return VerseDispatchResult(
+                ok=True,
+                payload={
+                    "status": "ok",
+                    "events": [{"summary": ev.summary, "ts": ev.ts} for ev in events],
+                },
+            )
         elif name == "verse_record":
             return _dispatch_verse_record(store, avatar_id, args, log=log)
         else:

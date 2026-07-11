@@ -1155,16 +1155,17 @@ class TestReplaceEventsWithLoreDigest:
 
 
 class TestInlineHelpers:
-    def test_add_entity_inline_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
-        """Caller opens its own write_transaction, calls _add_entity_inline,
+    """The former _*_inline pairs are now single methods taking conn=...;
+    these tests prove they compose into a caller's open transaction."""
+
+    def test_add_entity_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
+        """Caller opens its own write_transaction, calls add_entity(conn=...),
         and a sibling INSERT in the same tx — all without lock reentry."""
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#inline")
         with store.write_transaction() as conn:
-            eid = store._add_entity_inline(  # type: ignore[attr-defined]
-                conn, "npc", "ghost", "a wisp of vapour"
-            )
+            eid = store.add_entity("npc", "ghost", "a wisp of vapour", conn=conn)
             # Sibling INSERT in the same tx proves we hold the same conn.
             conn.execute(
                 "INSERT INTO attributes (entity_id, key, value) VALUES (?, 'inline_marker', '1')",
@@ -1173,44 +1174,33 @@ class TestInlineHelpers:
         assert store.find_entity_by_name("ghost", kind="npc") is not None
         assert store.get_attribute(eid, "inline_marker") == "1"
 
-    def test_set_attribute_inline_upserts_on_caller_conn(self, verse_db_dir: Path) -> None:
+    def test_set_attribute_upserts_on_caller_conn(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#inline")
         eid = store.add_entity("npc", "moss", "")
         with store.write_transaction() as conn:
-            store._set_attribute_inline(  # type: ignore[attr-defined]
-                conn, eid, "k", "v1"
-            )
-            store._set_attribute_inline(  # type: ignore[attr-defined]
-                conn, eid, "k", "v2"
-            )
+            store.set_attribute(eid, "k", "v1", conn=conn)
+            store.set_attribute(eid, "k", "v2", conn=conn)
         assert store.get_attribute(eid, "k") == "v2"
 
-    def test_add_event_inline_writes_on_caller_conn(self, verse_db_dir: Path) -> None:
+    def test_add_event_writes_on_caller_conn(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#inline")
         eid = store.add_entity("avatar", "alice", "")
         with store.write_transaction() as conn:
-            ev_id = store._add_event_inline(  # type: ignore[attr-defined]
-                conn,
-                summary="alice waved",
-                entity_ids=[eid],
-                source="avatar",
-            )
+            ev_id = store.add_event("alice waved", [eid], "avatar", conn=conn)
         events = store.recent_events(limit=10)
         assert any(e.id == ev_id and e.summary == "alice waved" for e in events)
 
-    def test_set_status_inline_updates_on_caller_conn(self, verse_db_dir: Path) -> None:
+    def test_set_status_updates_on_caller_conn(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#inline")
         eid = store.add_entity("npc", "ghost", "")
         with store.write_transaction() as conn:
-            store._set_status_inline(  # type: ignore[attr-defined]
-                conn, eid, "retired"
-            )
+            store.set_status(eid, "retired", conn=conn)
         # status reads via raw SQL since find_entity_by_name's exact filtering
         # is documented per design §2 to ship in Phase 1, not here.
         with store.read_connection() as conn:
@@ -1253,15 +1243,13 @@ class TestFindActiveEntityByName:
         store = VerseStore(verse_db_dir, "#prec")
         assert store.find_active_entity_by_name("nobody") is None
 
-    def test_inline_variant_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
+    def test_conn_variant_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#prec")
         store.add_entity("npc", "moss", "")
         with store.read_connection() as conn:
-            result = store._find_active_entity_by_name_inline(  # type: ignore[attr-defined]
-                conn, "moss"
-            )
+            result = store.find_active_entity_by_name("moss", conn=conn)
         assert result is not None and result.kind == "npc"
 
     def test_npc_beats_item(self, verse_db_dir: Path) -> None:

@@ -74,6 +74,18 @@ def test_repaste_rejects_short_url_and_addressed():
     assert classify_repaste("look https://x.com/" + "a" * 120, store) is None  # URL
 
 
+def test_extract_candidates_honours_custom_bot_nicks():
+    """bot_nicks parameterizes the addressed-line filter: a rename of the live
+    bot must be mineable without editing the miner (--bot-nicks CLI flag)."""
+    store = FakeStore(["stinky lads"])
+    body = "newbot " + "the stinky lads are great " * 6
+    lines = [f"2026-06-22T00:01:16  <fc42> {body}"]
+    # Default nicks (grok|vibebot): "newbot ..." is NOT addressed -> mined.
+    assert len(extract_candidates(lines, store)) == 1
+    # Custom nicks: the same line is a real bot trigger -> excluded.
+    assert extract_candidates(lines, store, bot_nicks=("newbot",)) == []
+
+
 def test_repaste_keeps_name_led_prose():
     # addressed filter is narrowed to grok|vibebot, so name-led prose survives
     store = FakeStore(["stinky lads", "Larry"])

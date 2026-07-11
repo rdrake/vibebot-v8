@@ -1,14 +1,17 @@
 from llm.verse.store import VerseStore
 
 
-def test_list_pinned_returns_only_active_pinned(tmp_path):
+def test_list_canon_returns_only_active_pinned(tmp_path):
+    """Pinned filtering (formerly list_pinned_entities, now folded into
+    list_canon_entities): unpinned entities are excluded, and retiring a
+    pinned entity drops it from the roster."""
     store = VerseStore(tmp_path, "#chan")
     a = store.add_entity("npc", "Archie", "stinky")
     store.add_entity("npc", "Bob", "plain")
     store.apply_direct(
         op="set_pinned", payload={"entity_id": a, "pinned": True}, source="operator", provenance="t"
     )
-    pinned = store.list_pinned_entities()
+    pinned = store.list_canon_entities()
     assert [e.name for e in pinned] == ["Archie"]
     store.apply_direct(
         op="set_status",
@@ -16,7 +19,7 @@ def test_list_pinned_returns_only_active_pinned(tmp_path):
         source="operator",
         provenance="t",
     )
-    assert store.list_pinned_entities() == []
+    assert store.list_canon_entities() == []
 
 
 def test_active_name_exists(tmp_path):
