@@ -2845,7 +2845,9 @@ class TestCodeForAssistant:
 
         data = json.loads(result.content)
         assert data["url"] == "https://example.com/code/abc123"
-        plugin.llm_service.save_code_to_http.assert_called_once_with("print('hello')")
+        plugin.llm_service.save_code_to_http.assert_called_once_with(
+            "print('hello')", title="write hello world"
+        )
 
     def test_code_for_assistant_includes_code_in_result(self, plugin) -> None:
         """_code_for_assistant includes code content for context."""

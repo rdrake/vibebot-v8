@@ -370,3 +370,52 @@ class TestMarkdownRendering:
 
         assert "<blockquote>" in content
         assert "This is a quote" in content
+
+
+class TestPageThemes:
+    """The storybook theme is reserved for story pages; answers and code
+    pastes get the plain theme, and KaTeX only ships on answer pages."""
+
+    @pytest.fixture
+    def service(self, tmp_path, make_service) -> LLMService:
+        service, _ = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="http://localhost/llm",
+            fileCleanupAge=24,
+            fileCleanupMax=1000,
+        )
+        return service
+
+    def _page(self, tmp_path, url: str) -> str:
+        return (tmp_path / url.split("/")[-1]).read_text()
+
+    def test_story_page_gets_storybook_theme_and_prefix(self, service, tmp_path):
+        url = service.save_markdown_to_http("# A Tale\n\nOnce upon a time.", style="story")
+        assert url.split("/")[-1].startswith("story_")
+        content = self._page(tmp_path, url)
+        assert "Cinzel" in content
+        assert "--parchment" in content
+        assert "katex" not in content
+
+    def test_code_page_gets_plain_theme(self, service, tmp_path):
+        url = service.save_code_to_http("```python\nprint('hi')\n```")
+        assert url.split("/")[-1].startswith("code_")
+        content = self._page(tmp_path, url)
+        assert "Cinzel" not in content
+        assert "fonts.googleapis.com" not in content
+        assert "parchment" not in content
+        assert "katex" not in content
+        assert "img {" in content
+
+    def test_answer_page_gets_plain_theme_with_katex(self, service, tmp_path):
+        url = service.save_markdown_to_http("# Answer\n\nSome math: $x$")
+        assert url.split("/")[-1].startswith("answer_")
+        content = self._page(tmp_path, url)
+        assert "Cinzel" not in content
+        assert "parchment" not in content
+        assert "katex" in content
+
+    def test_code_page_title_from_caller(self, service, tmp_path):
+        url = service.save_code_to_http("print('hi')", title="fizzbuzz in python")
+        content = self._page(tmp_path, url)
+        assert "<title>fizzbuzz in python</title>" in content

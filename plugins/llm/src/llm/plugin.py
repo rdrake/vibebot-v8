@@ -967,8 +967,9 @@ class LLM(callbacks.Plugin):
         elif r.status == "completed":
             content = self.llm_service.sanitize_output(r.content)
             if r.task_type == "code":
-                # Try to save code to HTTP URL
-                url = self.llm_service.save_code_to_http(r.content)
+                # Try to save code to HTTP URL; the prompt makes a better page
+                # <title> than the constant "Code" for URL-title bots.
+                url = self.llm_service.save_code_to_http(r.content, title=prompt_preview)
                 if url:
                     text = f'{nick}: your code is ready! "{prompt_preview}" \u2192 {url}'
                 else:
@@ -2948,7 +2949,7 @@ class LLM(callbacks.Plugin):
             )
             if result.error:
                 return ToolResult(content=json.dumps({"error": result.error}))
-            url = self.llm_service.save_code_to_http(result.content)
+            url = self.llm_service.save_code_to_http(result.content, title=prompt)
             return ToolResult(
                 content=json.dumps({"url": url or "", "code": result.content}),
                 prompt_tokens=result.prompt_tokens,

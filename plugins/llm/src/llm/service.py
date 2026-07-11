@@ -429,6 +429,147 @@ _FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 # eyes while keeping good token contrast on an off-white code block.
 _PYGMENTS_CSS: str = HtmlFormatter(style="friendly").get_style_defs(".highlight")
 
+# Head/CSS blocks for generated HTML pages. Two themes: the storybook parchment
+# for @story pages and a plain readable default for answers and code pastes.
+# Saved pages are baked static files — a theme change only affects future pages.
+
+_STORYBOOK_FONTS_HEAD: str = """\
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700;900&family=Playfair+Display:ital,wght@0,600;0,800;1,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&display=swap">"""
+
+_STORYBOOK_CSS: str = r"""
+:root {
+  --ink: #3a2c1c; --ink-soft: #5c4a35; --accent: #8a2b2b; --gold: #9a7b3f;
+  --parchment: #f4e8cf; --parchment-deep: #ecdcb8; --desk: #271d15;
+}
+* { box-sizing: border-box; }
+html {
+  background: var(--desk);
+  background-image:
+    radial-gradient(ellipse at 50% 18%, rgba(120,90,55,0.45), transparent 60%),
+    radial-gradient(ellipse at 50% 120%, rgba(0,0,0,0.55), transparent 70%);
+  min-height: 100%;
+}
+body {
+  max-width: 720px; margin: 44px auto; padding: 60px 64px;
+  background-color: var(--parchment);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(255,250,235,0.55), transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  color: var(--ink);
+  font-family: 'EB Garamond', Georgia, 'Times New Roman', serif;
+  font-size: 1.24rem; line-height: 1.78; text-align: justify; hyphens: auto;
+  text-rendering: optimizeLegibility; font-feature-settings: "liga", "kern";
+  border: 1px solid rgba(122,45,45,0.35);
+  box-shadow:
+    0 0 0 7px var(--parchment), 0 0 0 9px rgba(154,123,63,0.55),
+    0 26px 60px rgba(0,0,0,0.55), inset 0 0 130px rgba(120,80,40,0.18);
+  animation: pageIn 0.8s ease both;
+}
+@keyframes pageIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+::selection { background: rgba(154,123,63,0.32); }
+p { margin: 1em 0; }
+body > p:first-of-type::first-letter {
+  font-family: 'Cinzel Decorative', serif; font-weight: 700;
+  font-size: 4.4rem; line-height: 0.74; float: left;
+  margin: 0.06em 0.1em -0.04em 0; color: var(--accent);
+  text-shadow: 1px 1px 0 rgba(154,123,63,0.45);
+}
+strong { color: var(--accent); font-weight: 600; }
+em { font-style: italic; }
+a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(154,123,63,0.6); text-underline-offset: 2px; }
+h1, h2, h3, h4 { color: var(--ink); line-height: 1.25; margin-top: 1.6em; }
+h1 {
+  font-family: 'Cinzel Decorative', serif; font-weight: 900;
+  font-size: 2.5rem; text-align: center; letter-spacing: 0.5px;
+  margin: 0.1em 0 0.2em;
+}
+h1::after { content: "\2766"; display: block; text-align: center; color: var(--gold); font-size: 1.1rem; margin-top: 0.35em; }
+h2, h3, h4 { font-family: 'Playfair Display', Georgia, serif; }
+h2 { font-size: 1.7rem; font-weight: 800; border-bottom: 1px solid rgba(154,123,63,0.4); padding-bottom: 0.18em; }
+h3 { font-size: 1.4rem; }
+hr { border: 0; margin: 2.4em 0; text-align: center; }
+hr::before { content: "\2766 \2059 \2766"; color: var(--gold); letter-spacing: 0.45em; font-size: 1rem; }
+blockquote {
+  margin: 1.3em 0; padding: 0.2em 1.2em; font-style: italic;
+  color: var(--ink-soft); border-left: 3px solid var(--gold);
+  background: rgba(154,123,63,0.08);
+}
+ul, ol { margin: 1em 0; padding-left: 2em; }
+li { margin: 0.3em 0; }
+li::marker { color: var(--gold); }
+img { display: block; max-width: 100%; height: auto; margin: 1.6em auto; border: 1px solid rgba(154,123,63,0.55); border-radius: 4px; box-shadow: 0 6px 22px rgba(0,0,0,0.30); }
+img + em { display: block; text-align: center; color: var(--ink-soft); font-size: 0.95rem; margin-top: -0.8em; }
+pre {
+  padding: 18px 20px; overflow-x: auto; margin: 1.4em 0;
+  background: var(--parchment-deep); border: 1px solid rgba(154,123,63,0.5);
+  border-radius: 3px; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2);
+  text-align: left; hyphens: none;
+}
+code { font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 0.92em; }
+p > code, li > code { background: rgba(154,123,63,0.16); border: 1px solid rgba(154,123,63,0.3); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
+.highlight { border-radius: 3px; padding: 0; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2); }
+.highlight pre { margin: 0; padding: 18px 20px; background: transparent; border: 0; box-shadow: none; }
+/* Storybook overrides: warm code panels instead of the Pygments default gray.
+   !important so this wins over the generated Pygments rules appended later. */
+pre, .highlight { background: var(--parchment-deep) !important; }
+"""
+
+_PLAIN_CSS: str = r"""
+:root {
+  --ink: #1f2328; --ink-soft: #59636e; --accent: #0a5bb5;
+  --paper: #ffffff; --panel: #f6f8fa; --line: #d1d9e0;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 860px; margin: 40px auto; padding: 0 24px 48px;
+  background: var(--paper); color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 1rem; line-height: 1.6;
+}
+p { margin: 1em 0; }
+a { color: var(--accent); }
+h1, h2, h3, h4 { line-height: 1.25; margin-top: 1.6em; }
+h1 { font-size: 1.7rem; border-bottom: 1px solid var(--line); padding-bottom: 0.3em; }
+h2 { font-size: 1.4rem; border-bottom: 1px solid var(--line); padding-bottom: 0.25em; }
+h3 { font-size: 1.15rem; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+blockquote { margin: 1.3em 0; padding: 0.2em 1.2em; color: var(--ink-soft); border-left: 4px solid var(--line); }
+ul, ol { margin: 1em 0; padding-left: 2em; }
+li { margin: 0.3em 0; }
+table { border-collapse: collapse; margin: 1.2em 0; }
+th, td { border: 1px solid var(--line); padding: 6px 13px; }
+img { display: block; max-width: 100%; height: auto; margin: 1.6em auto; border-radius: 6px; }
+pre {
+  padding: 16px; overflow-x: auto; margin: 1.4em 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+}
+code { font-family: ui-monospace, 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 0.9em; }
+p > code, li > code { background: var(--panel); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
+.highlight { border: 1px solid var(--line); border-radius: 6px; margin: 1.4em 0; }
+.highlight pre { margin: 0; border: 0; }
+"""
+
+# KaTeX math rendering — answer pages only; code pastes and story pages don't
+# need it and skip the three CDN fetches.
+_KATEX_HEAD: str = """\
+<!-- KaTeX CSS -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" integrity="sha384-zh0CIslj+VczCZtlzBcjt5ppRcsAmDnRem7ESsYwWwg3m/OaJ2l4x7YBZl9Kxxib" crossorigin="anonymous">"""
+
+_KATEX_BODY: str = r"""
+<!-- KaTeX JS + auto-render -->
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js" integrity="sha384-Rma6DA2IPUwhNxmrB/7S3Tno0YY7sFu9WSYMCuulLhIqYSGZ2gKCJWIqhBWqMQfh" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"
+    onload="renderMathInElement(document.body, {
+        delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '\\[', right: '\\]', display: true},
+            {left: '$', right: '$', display: false},
+            {left: '\\(', right: '\\)', display: false}
+        ]
+    });"></script>"""
+
 # JSON schema for structured output from memory extraction
 _EXTRACTION_SCHEMA: dict = {
     "type": "object",
@@ -3464,7 +3605,7 @@ Examples (echo → action_prompt: ""):
         embedded, used = self._embed_illustrations(body, drawn)
         title = story["title"] or "An Untitled Tale"
         markdown_doc = f"# {title}\n\n{embedded}\n"
-        url = self.save_markdown_to_http(markdown_doc, title=title)
+        url = self.save_markdown_to_http(markdown_doc, title=title, style="story")
         if not url:
             return None
         return StorybookResult(url=url, title=title, image_count=len(used), dropped=dropped)
@@ -4648,16 +4789,21 @@ Examples (echo → action_prompt: ""):
                 return line[:120]
         return fallback
 
-    def save_markdown_to_http(self, content: str | None, *, title: str | None = None) -> str | None:
+    def save_markdown_to_http(
+        self, content: str | None, *, title: str | None = None, style: str = "answer"
+    ) -> str | None:
         """Save Markdown answer content to HTTP server as HTML and return URL.
 
         ``title`` becomes the page ``<title>`` (echoed by URL-title bots). When
         omitted it is derived from the content; pass an LLM summary to reuse it.
+        ``style`` picks the page theme: ``"answer"`` (plain, with KaTeX) or
+        ``"story"`` (storybook parchment), and the matching filename prefix.
         """
         return self._save_markdown_to_http(
             content,
             title=title or self._title_from_markdown(content),
-            filename_prefix="answer",
+            filename_prefix="story" if style == "story" else "answer",
+            style=style,
         )
 
     def save_code_to_http(self, content: str | None, *, title: str | None = None) -> str | None:
@@ -4677,10 +4823,11 @@ Examples (echo → action_prompt: ""):
             content,
             title=title or "Code",
             filename_prefix="code",
+            style="code",
         )
 
     def _save_markdown_to_http(
-        self, content: str | None, *, title: str, filename_prefix: str
+        self, content: str | None, *, title: str, filename_prefix: str, style: str = "answer"
     ) -> str | None:
         """Render Markdown content to an HTML file and return its public URL."""
         if not content:
@@ -4707,7 +4854,9 @@ Examples (echo → action_prompt: ""):
         protected = protected.replace("\\(", "\x00INLINE_OPEN\x00")
         protected = protected.replace("\\)", "\x00INLINE_CLOSE\x00")
 
-        # Convert markdown to HTML with syntax highlighting
+        # Convert markdown to HTML with syntax highlighting. guess_lang off:
+        # fenced blocks still highlight via their language tag, but plain text
+        # and unfenced blocks no longer get speculatively (mis)colourized.
         md = markdown.Markdown(
             extensions=[
                 "fenced_code",
@@ -4716,7 +4865,7 @@ Examples (echo → action_prompt: ""):
             extension_configs={
                 "codehilite": {
                     "css_class": "highlight",
-                    "guess_lang": True,
+                    "guess_lang": False,
                     "use_pygments": True,
                 }
             },
@@ -4733,7 +4882,17 @@ Examples (echo → action_prompt: ""):
         rendered = self._sanitize_html(rendered)
         rendered = self._restrict_img_srcs(rendered, url_base)
 
-        pygments_css = _PYGMENTS_CSS
+        # Theme selection: storybook parchment for @story pages, plain readable
+        # theme elsewhere. KaTeX only on answer pages (math never appears in
+        # code pastes or stories); Google Fonts only on story pages.
+        if style == "story":
+            fonts_head = "\n<!-- Storybook typography -->\n" + _STORYBOOK_FONTS_HEAD
+            page_css = _STORYBOOK_CSS
+        else:
+            fonts_head = ""
+            page_css = _PLAIN_CSS
+        katex_head = "\n" + _KATEX_HEAD if style == "answer" else ""
+        katex_body = _KATEX_BODY if style == "answer" else ""
 
         # Pastebin-style HTML with syntax highlighting
         html_doc = f"""<!DOCTYPE html>
@@ -4741,104 +4900,14 @@ Examples (echo → action_prompt: ""):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{safe_title}</title>
-<!-- Storybook typography -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700;900&family=Playfair+Display:ital,wght@0,600;0,800;1,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&display=swap">
+<title>{safe_title}</title>{fonts_head}
 <style>
-:root {{
-  --ink: #3a2c1c; --ink-soft: #5c4a35; --accent: #8a2b2b; --gold: #9a7b3f;
-  --parchment: #f4e8cf; --parchment-deep: #ecdcb8; --desk: #271d15;
-}}
-* {{ box-sizing: border-box; }}
-html {{
-  background: var(--desk);
-  background-image:
-    radial-gradient(ellipse at 50% 18%, rgba(120,90,55,0.45), transparent 60%),
-    radial-gradient(ellipse at 50% 120%, rgba(0,0,0,0.55), transparent 70%);
-  min-height: 100%;
-}}
-body {{
-  max-width: 720px; margin: 44px auto; padding: 60px 64px;
-  background-color: var(--parchment);
-  background-image:
-    radial-gradient(ellipse at 50% 0%, rgba(255,250,235,0.55), transparent 55%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
-  color: var(--ink);
-  font-family: 'EB Garamond', Georgia, 'Times New Roman', serif;
-  font-size: 1.24rem; line-height: 1.78; text-align: justify; hyphens: auto;
-  text-rendering: optimizeLegibility; font-feature-settings: "liga", "kern";
-  border: 1px solid rgba(122,45,45,0.35);
-  box-shadow:
-    0 0 0 7px var(--parchment), 0 0 0 9px rgba(154,123,63,0.55),
-    0 26px 60px rgba(0,0,0,0.55), inset 0 0 130px rgba(120,80,40,0.18);
-  animation: pageIn 0.8s ease both;
-}}
-@keyframes pageIn {{ from {{ opacity: 0; transform: translateY(14px); }} to {{ opacity: 1; transform: none; }} }}
-::selection {{ background: rgba(154,123,63,0.32); }}
-p {{ margin: 1em 0; }}
-body > p:first-of-type::first-letter {{
-  font-family: 'Cinzel Decorative', serif; font-weight: 700;
-  font-size: 4.4rem; line-height: 0.74; float: left;
-  margin: 0.06em 0.1em -0.04em 0; color: var(--accent);
-  text-shadow: 1px 1px 0 rgba(154,123,63,0.45);
-}}
-strong {{ color: var(--accent); font-weight: 600; }}
-em {{ font-style: italic; }}
-a {{ color: var(--accent); text-decoration: underline; text-decoration-color: rgba(154,123,63,0.6); text-underline-offset: 2px; }}
-h1, h2, h3, h4 {{ color: var(--ink); line-height: 1.25; margin-top: 1.6em; }}
-h1 {{
-  font-family: 'Cinzel Decorative', serif; font-weight: 900;
-  font-size: 2.5rem; text-align: center; letter-spacing: 0.5px;
-  margin: 0.1em 0 0.2em;
-}}
-h1::after {{ content: "\\2766"; display: block; text-align: center; color: var(--gold); font-size: 1.1rem; margin-top: 0.35em; }}
-h2, h3, h4 {{ font-family: 'Playfair Display', Georgia, serif; }}
-h2 {{ font-size: 1.7rem; font-weight: 800; border-bottom: 1px solid rgba(154,123,63,0.4); padding-bottom: 0.18em; }}
-h3 {{ font-size: 1.4rem; }}
-hr {{ border: 0; margin: 2.4em 0; text-align: center; }}
-hr::before {{ content: "\\2766 \\2059 \\2766"; color: var(--gold); letter-spacing: 0.45em; font-size: 1rem; }}
-blockquote {{
-  margin: 1.3em 0; padding: 0.2em 1.2em; font-style: italic;
-  color: var(--ink-soft); border-left: 3px solid var(--gold);
-  background: rgba(154,123,63,0.08);
-}}
-ul, ol {{ margin: 1em 0; padding-left: 2em; }}
-li {{ margin: 0.3em 0; }}
-li::marker {{ color: var(--gold); }}
-img {{ display: block; max-width: 100%; height: auto; margin: 1.6em auto; border: 1px solid rgba(154,123,63,0.55); border-radius: 4px; box-shadow: 0 6px 22px rgba(0,0,0,0.30); }}
-img + em {{ display: block; text-align: center; color: var(--ink-soft); font-size: 0.95rem; margin-top: -0.8em; }}
-pre {{
-  padding: 18px 20px; overflow-x: auto; margin: 1.4em 0;
-  background: var(--parchment-deep); border: 1px solid rgba(154,123,63,0.5);
-  border-radius: 3px; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2);
-  text-align: left; hyphens: none;
-}}
-code {{ font-family: 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', monospace; font-size: 0.92em; }}
-p > code, li > code {{ background: rgba(154,123,63,0.16); border: 1px solid rgba(154,123,63,0.3); color: var(--accent); padding: 1px 5px; border-radius: 4px; }}
-.highlight {{ border-radius: 3px; padding: 0; box-shadow: inset 0 1px 5px rgba(90,60,30,0.2); }}
-.highlight pre {{ margin: 0; padding: 18px 20px; background: transparent; border: 0; box-shadow: none; }}
-{pygments_css}
-/* Storybook overrides: warm code panels instead of the Pygments default gray */
-pre, .highlight {{ background: var(--parchment-deep) !important; }}
-</style>
-<!-- KaTeX CSS -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" integrity="sha384-zh0CIslj+VczCZtlzBcjt5ppRcsAmDnRem7ESsYwWwg3m/OaJ2l4x7YBZl9Kxxib" crossorigin="anonymous">
+{page_css}
+{_PYGMENTS_CSS}
+</style>{katex_head}
 </head>
 <body>
-{rendered}
-<!-- KaTeX JS + auto-render -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js" integrity="sha384-Rma6DA2IPUwhNxmrB/7S3Tno0YY7sFu9WSYMCuulLhIqYSGZ2gKCJWIqhBWqMQfh" crossorigin="anonymous"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"
-    onload="renderMathInElement(document.body, {{
-        delimiters: [
-            {{left: '$$', right: '$$', display: true}},
-            {{left: '\\\\[', right: '\\\\]', display: true}},
-            {{left: '$', right: '$', display: false}},
-            {{left: '\\\\(', right: '\\\\)', display: false}}
-        ]
-    }});"></script>
+{rendered}{katex_body}
 </body>
 </html>"""
 
