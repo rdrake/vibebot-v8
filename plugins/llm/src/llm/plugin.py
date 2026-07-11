@@ -1402,6 +1402,141 @@ class LLM(callbacks.Plugin):
             self._reminders.pop(event_name, None)
         self.db.delete_reminder(event_name)
 
+    def _unattended_ask_rate_limited(self, *, account: str | None, nick: str, now: float) -> bool:
+        """Silent daily-ask limit peek for fires that bypass command preflight.
+
+        ``silent=True`` suppresses the user-facing error and the
+        ``rate_limited`` usage row — callers deliver their own skip notice.
+        Shared by reminder action fires and scheduled LLM tasks.
+        """
+        rl_account = account if account else nick
+        rl_tier = "registered" if account else "unregistered"
+        return self._check_rate_limit(
+            None,
+            "ask",
+            rl_account,
+            "",
+            "",
+            "",
+            tier=rl_tier,
+            silent=True,
+            now=now,
+        )
+
+    def _run_unattended_assistant(
+        self,
+        *,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        prompt: str,
+        nick: str,
+        account: str | None,
+        channel: str,
+        bot_nick: str,
+        entry_route: str,
+        exclude_tools: frozenset[str] = frozenset(),
+        fold_instruction_into_prompt: bool = False,
+    ) -> AssistantResult:
+        """Fire an LLM action outside the normal command preflight.
+
+        Shared plumbing for reminder action fires (``_fire_reminder_action``)
+        and scheduled LLM tasks (``service._dispatch_scheduled_task``): both
+        dispatch ``assistant_request`` from a worker thread with no live
+        command context, so the synthetic request context, the
+        history/memory/instruction gathering, and the standard tool-callback
+        wiring live here. Callers keep their own rate-limit/capability
+        policy, delivery, usage logging, and reschedule logic.
+
+        ``fold_instruction_into_prompt`` preserves the scheduled-task
+        variant, which folds the user's @instruct into the system prompt
+        (and passes no channel overlay when there is no instruction). The
+        reminder path instead rides the @instruct as user-role data (see
+        assistant_request ``user_instruction``) and always passes the overlay.
+        """
+        request_context = AssistantRequestContext(
+            entry_route=entry_route,
+            profile=PROFILE_REMIND_ACTION,
+            nick=nick,
+            raw_nick=nick,
+            account=account,
+            channel=channel,
+            is_private=not ircutils.isChannel(channel),
+            is_owner=False,
+            # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
+            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
+        )
+        history, channel_history = self._gather_history(nick, channel)
+        memories = self._get_user_memories(nick)
+        user_instruction = self.db.get_instruction(nick)
+        ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
+        if fold_instruction_into_prompt:
+            system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
+            user_instruction = None
+        else:
+            system_prompt = ask_prompt
+        caller = Identity(raw_nick=nick, account=account)
+        return self.llm_service.assistant_request(
+            prompt=prompt,
+            request_context=request_context,
+            db=self.db,
+            context=self.context,
+            bot_nick=bot_nick,
+            history=history,
+            channel_history=channel_history,
+            irc=irc,
+            msg=msg,
+            memories=memories,
+            user_instruction=user_instruction,
+            system_prompt=system_prompt,
+            search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
+            fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
+            code_fn=lambda p: self._code_for_assistant(p, channel),
+            draw_fn=lambda p, _irc=irc, _msg=msg: self._draw_for_assistant(_irc, _msg, p),
+            cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
+            exclude_tools=exclude_tools,
+            **self._pending_task_fns(
+                caller=caller,
+                irc=irc,
+                msg=msg,
+                channel=channel,
+                pass_irc_msg_to_callbacks=False,
+            ),
+        )
+
+    def _log_unattended_usage(
+        self,
+        *,
+        nick: str,
+        account: str | None,
+        channel: str,
+        command: str,
+        prompt: str,
+        result: AssistantResult,
+        silent: bool,
+        log_context: str,
+    ) -> None:
+        """Best-effort usage logging for fires that bypass command preflight.
+
+        Attributes the fire's LLM cost to the chain owner (account, falling
+        back to nick). Never raises — a logging failure must not break
+        delivery or rescheduling.
+        """
+        try:
+            self.db.log_usage(
+                account or nick,
+                channel,
+                command,
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+                prompt=prompt,
+                status=("silent" if silent else "success"),
+                error_detail=(result.error or "")[:200],
+            )
+        except Exception:
+            self.log.exception("%s usage log failed: %s", command, log_context)
+
     def _fire_reminder_action(
         self,
         *,
@@ -1457,60 +1592,18 @@ class LLM(callbacks.Plugin):
                 msg_kwargs["server_tags"] = {"account": account}
             synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
 
-            request_context = AssistantRequestContext(
-                entry_route=PROFILE_REMIND_ACTION,
-                profile=PROFILE_REMIND_ACTION,
-                nick=nick,
-                raw_nick=nick,
-                account=account,
-                channel=channel,
-                is_private=not ircutils.isChannel(channel),
-                is_owner=False,
-                # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
-                capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
-            )
-
-            history, channel_history = self._gather_history(nick, channel)
-            memories = self._get_user_memories(nick)
-            user_instruction = self.db.get_instruction(nick)
-            ask_prompt = self.registryValue(
-                PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel
-            )
             # The user's @instruct rides as user-role data (see assistant_request
             # user_instruction), not prepended to the system overlay.
-            effective_prompt = ask_prompt
-
-            caller = Identity(raw_nick=nick, account=account)
-            exclude_tools = frozenset({"set_reminder"}) if is_structured else frozenset()
-
-            result = self.llm_service.assistant_request(
-                prompt=action_prompt,
-                request_context=request_context,
-                db=self.db,
-                context=self.context,
-                bot_nick=bot_nick,
-                history=history,
-                channel_history=channel_history,
+            result = self._run_unattended_assistant(
                 irc=active_irc,
                 msg=synthetic_msg,
-                memories=memories,
-                user_instruction=user_instruction,
-                system_prompt=effective_prompt,
-                search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                code_fn=lambda p: self._code_for_assistant(p, channel),
-                draw_fn=lambda p, _irc=active_irc, _msg=synthetic_msg: self._draw_for_assistant(
-                    _irc, _msg, p
-                ),
-                cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                exclude_tools=exclude_tools,
-                **self._pending_task_fns(
-                    caller=caller,
-                    irc=active_irc,
-                    msg=synthetic_msg,
-                    channel=channel,
-                    pass_irc_msg_to_callbacks=False,
-                ),
+                prompt=action_prompt,
+                nick=nick,
+                account=account,
+                channel=channel,
+                bot_nick=bot_nick,
+                entry_route=PROFILE_REMIND_ACTION,
+                exclude_tools=(frozenset({"set_reminder"}) if is_structured else frozenset()),
             )
             response = result.content.strip() if result.content else ""
             is_silent = response == "[silent]"
@@ -1530,22 +1623,16 @@ class LLM(callbacks.Plugin):
             else:
                 self._send_reminder_text(active_irc, target, nick, f"Reminder: {response}")
             # Attribute the action fire's LLM cost to the chain owner.
-            try:
-                owner_key = account or nick
-                self.db.log_usage(
-                    owner_key,
-                    channel,
-                    "remind_action",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                    prompt=action_prompt,
-                    status=("silent" if is_silent else "success"),
-                    error_detail=(result.error or "")[:200],
-                )
-            except Exception:
-                self.log.exception("reminder_action_usage_log_failed event=%s", event_name)
+            self._log_unattended_usage(
+                nick=nick,
+                account=account,
+                channel=channel,
+                command="remind_action",
+                prompt=action_prompt,
+                result=result,
+                silent=is_silent,
+                log_context=f"event={event_name}",
+            )
         except Exception:
             self.log.exception(
                 "reminder_action_delivery_failed nick=%s channel=%s event=%s",
@@ -1663,19 +1750,7 @@ class LLM(callbacks.Plugin):
                     self._send_reminder_text(active_irc, target, nick, f"Reminder: {message}")
                     return
 
-                rl_account = account if account else nick
-                rl_tier = "registered" if account else "unregistered"
-                if self._check_rate_limit(
-                    None,
-                    "ask",
-                    rl_account,
-                    "",
-                    "",
-                    "",
-                    tier=rl_tier,
-                    silent=True,
-                    now=now,
-                ):
+                if self._unattended_ask_rate_limited(account=account, nick=nick, now=now):
                     self._send_reminder_text(
                         active_irc,
                         target,
@@ -2316,12 +2391,61 @@ class LLM(callbacks.Plugin):
         teaser = teaser.lstrip("-* ").strip()
         return LLM._trim_long_reply_teaser(teaser, max_chars)
 
+    def _finish_irc_line(
+        self,
+        content: str,
+        *,
+        inline: str | None,
+        allowed: int,
+        teaser_fn: Callable[[str, int], str],
+        save_fn: Callable[[str], str | None],
+        nick_prefix: str = "",
+        teaser_cap: int | None = None,
+        save_failed_fallback: str | None = None,
+    ) -> str:
+        """Finish ``content`` as exactly one IRC wire-line string.
+
+        The single inline-vs-pastebin policy shared by the live reply path
+        (``_send_long_reply``) and the pending-recovery path
+        (``_format_pending_completed_reply``): if ``inline`` fits one
+        wire-line it is returned as-is; otherwise ``content`` is saved via
+        ``save_fn`` and replaced with ``nick_prefix`` + teaser + URL suffix.
+        Callers keep their own send mechanism and teaser strategy.
+
+        Args:
+            content: Full body to pastebin on overflow.
+            inline: One-line inline candidate, or None when the content may
+                never go inline (multi-line live replies pastebin
+                unconditionally rather than collapsing).
+            allowed: Wire-line budget (``supybot.reply.mores.length``).
+            teaser_fn: ``(content, max_chars) -> str`` producing the final,
+                already-trimmed teaser for the link line.
+            save_fn: ``(content) -> url | None`` pastebin hook.
+            nick_prefix: Optional ``"nick: "`` prefix, reserved out of the
+                teaser budget and prepended to the link line.
+            teaser_cap: Optional hard cap on teaser length
+                (``longReplyTeaserMaxChars``).
+            save_failed_fallback: Line to return when the save fails; None
+                sends the teaser alone rather than risking an oversized body.
+        """
+        if inline is not None and len(ircutils.wrap(inline, allowed) or [inline]) <= 1:
+            return inline
+        url = save_fn(content)
+        if not url and save_failed_fallback is not None:
+            return save_failed_fallback
+        suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
+        max_chars = max(0, allowed - len(suffix) - len(nick_prefix))
+        if teaser_cap is not None:
+            max_chars = min(teaser_cap, max_chars)
+        if max_chars <= 0 and url:
+            return f"{nick_prefix}{_FULL_ANSWER_LABEL}: {url}"
+        teaser = teaser_fn(content, max_chars)
+        return f"{nick_prefix}{teaser}{suffix}"
+
     def _format_pending_completed_reply(self, nick: str, content: str) -> str:
         """One-line delivery text for a completed ask/fallback pending result.
 
-        Mirrors ``_send_long_reply``: content that collapses to a single IRC
-        wire-line is sent inline; content that would overflow one wire-line is
-        saved to the HTTP server and replaced with a teaser + URL. Pending
+        Shares ``_finish_irc_line`` with ``_send_long_reply``. Pending
         delivery runs on the poll thread with no ``irc``/``msg`` and is already
         a deferred-recovery fallback, so a deterministic (non-LLM) teaser is
         used. Falls back to the inline/collapsed line when the save fails, so we
@@ -2332,15 +2456,15 @@ class LLM(callbacks.Plugin):
         inline = f"{nick}: {content}"
         collapsed = self._collapse_for_irc(inline) or inline
         allowed = conf.supybot.reply.mores.length() or 400
-        if len(ircutils.wrap(collapsed, allowed) or [collapsed]) <= 1:
-            return collapsed
-        url = self.llm_service.save_markdown_to_http(content)
-        if not url:
-            return collapsed
-        suffix = f" - {_FULL_ANSWER_LABEL}: {url}"
-        max_chars = max(0, allowed - len(suffix) - len(nick) - 2)
-        teaser = self._fallback_long_reply_teaser(content, max_chars)
-        return f"{nick}: {teaser}{suffix}"
+        return self._finish_irc_line(
+            content,
+            inline=collapsed,
+            allowed=allowed,
+            teaser_fn=self._fallback_long_reply_teaser,
+            save_fn=self.llm_service.save_markdown_to_http,
+            nick_prefix=f"{nick}: ",
+            save_failed_fallback=collapsed,
+        )
 
     def _safe_queue(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
         """Thread-safe wrapper around irc.queueMsg for worker-thread sends.
@@ -2452,39 +2576,37 @@ class LLM(callbacks.Plugin):
             conf.get(conf.supybot.reply.mores.length, channel=target, network=irc.network) or 400
         )
 
-        # Count rendered wire-lines: respect explicit \n, then byte-wrap each
-        # line to allowed. Blank lines are noise on IRC and never count.
-        raw_lines = text.split("\n") if "\n" in text else [text]
-        logical_lines = [line for line in raw_lines if line.strip()]
-        wire_line_count = 0
-        single_line: str | None = logical_lines[0] if len(logical_lines) == 1 else None
-        for line in logical_lines:
-            wrapped = ircutils.wrap(line, allowed) or [line]
-            wire_line_count += len(wrapped)
-            if wire_line_count > 1:
-                single_line = None
-                break
-
-        if single_line is not None:
-            self._safe_reply(irc, single_line, prefixNick=prefixNick)
-            return
+        # Multi-line answers pastebin unconditionally (never collapsed into
+        # one line); only a sole non-blank logical line may go inline, and
+        # _finish_irc_line still byte-wraps it against the wire budget.
+        logical_lines = [line for line in text.split("\n") if line.strip()]
+        inline = logical_lines[0] if len(logical_lines) == 1 else None
 
         # One summary serves double duty: the page <title> (echoed by URL-title
-        # bots in-channel) and the inline IRC teaser. Generated once, before the
-        # save, so the title costs nothing extra over the teaser we already make.
+        # bots in-channel) and the inline IRC teaser. Computed lazily so the
+        # inline path never pays for the LLM call, and memoized so the title
+        # costs nothing extra over the teaser we already make.
         configured_max_chars = int(self.registryValue("longReplyTeaserMaxChars", target) or 220)
-        summary = self.llm_service.summarize_for_irc(
-            text, channel=target, max_chars=configured_max_chars
+        summary_cache: list[str | None] = [None]
+
+        def _summary() -> str:
+            if summary_cache[0] is None:
+                summary_cache[0] = self.llm_service.summarize_for_irc(
+                    text, channel=target, max_chars=configured_max_chars
+                )
+            return summary_cache[0] or ""
+
+        line = self._finish_irc_line(
+            text,
+            inline=inline,
+            allowed=allowed,
+            teaser_fn=lambda t, mc: self._trim_long_reply_teaser(
+                _summary() or self._fallback_long_reply_teaser(t, mc), mc
+            ),
+            save_fn=lambda t: self.llm_service.save_markdown_to_http(t, title=_summary()),
+            teaser_cap=configured_max_chars,
         )
-        url = self.llm_service.save_markdown_to_http(text, title=summary)
-        suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
-        max_chars = min(configured_max_chars, max(0, allowed - len(suffix)))
-        if max_chars <= 0 and url:
-            self._safe_reply(irc, f"{_FULL_ANSWER_LABEL}: {url}", prefixNick=prefixNick)
-            return
-        teaser = summary or self._fallback_long_reply_teaser(text, max_chars)
-        teaser = self._trim_long_reply_teaser(teaser, max_chars)
-        self._safe_reply(irc, f"{teaser}{suffix}", prefixNick=prefixNick)
+        self._safe_reply(irc, line, prefixNick=prefixNick)
 
     def _record_last_verse_line(self, irc: callbacks.Irc, channel: str, text: str, result) -> None:
         """Remember the bot's last VERSE line per (network, channel) for reaction

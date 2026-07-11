@@ -4283,12 +4283,18 @@ class TestOverlayReadsViaProfiles:
 
         plugin.registryValue.side_effect = spy
 
-        # Stub plugin internals the dispatch path touches.
+        # Stub plugin internals the dispatch path touches. The fire plumbing
+        # lives in plugin._run_unattended_assistant (shared with reminder
+        # action fires); bind the real helpers to the mock plugin so the
+        # dispatch path exercises the real overlay read.
         plugin._check_rate_limit.return_value = False
         plugin._gather_history.return_value = ([], [])
         plugin._get_user_memories.return_value = []
         plugin.db.get_instruction.return_value = ""
         plugin._pending_task_fns.return_value = {}
+        plugin.llm_service = service
+        plugin._unattended_ask_rate_limited = LLM._unattended_ask_rate_limited.__get__(plugin)
+        plugin._run_unattended_assistant = LLM._run_unattended_assistant.__get__(plugin)
         mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
         mocker.patch.object(
             service,
