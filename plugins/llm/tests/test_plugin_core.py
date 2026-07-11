@@ -292,6 +292,7 @@ class TestPluginHelperMethods:
         plugin.db = mocker.MagicMock()
         plugin.db.migrate_nick.return_value = 0
         plugin.db.migrate_conversations.return_value = 0
+        plugin.db.migrate_user_data.return_value = 0
         plugin.context = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         result = plugin._resolve_identity(mock_irc, mock_msg)
