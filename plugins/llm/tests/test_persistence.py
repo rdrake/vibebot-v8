@@ -1362,13 +1362,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_16(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 16."""
+    def test_schema_version_is_17(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 17."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 16
+            assert row[0] == 17
         finally:
             conn.close()
 
@@ -2521,3 +2521,70 @@ def test_write_txn_commits_on_success(tmp_path: Path) -> None:
             ("alice", "fact-x", "#c", 0.0),
         )
     assert any(r.fact == "fact-x" for r in db.get_memories("alice"))
+
+
+class TestNickCasingUnification:
+    """Instruction/persona accessors lowercase nick like the memories family."""
+
+    def test_instruction_case_insensitive_roundtrip(self, test_db: LLMDatabase) -> None:
+        test_db.save_instruction("Bob", "be terse")
+        assert test_db.get_instruction("BOB") == "be terse"
+        assert test_db.delete_instruction("bob") is True
+
+    def test_persona_case_insensitive_roundtrip(self, test_db: LLMDatabase) -> None:
+        test_db.save_avatar_persona("Bob", "a tree spirit")
+        assert test_db.get_avatar_persona("BOB") == "a tree spirit"
+        assert test_db.delete_avatar_persona("bob") is True
+
+    def test_v17_migration_dedupes_and_lowercases(self, tmp_path: Path) -> None:
+        """Pre-v17 case-forked rows collapse to the newest, lowercased."""
+        db = LLMDatabase(str(tmp_path / "m.db"))
+        with db._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO user_instructions (nick, instruction, updated_at) VALUES "
+                "('Bob', 'old', 1.0), ('BOB', 'new', 2.0)"
+            )
+            conn.execute("PRAGMA user_version = 16")
+        db.close()
+
+        db2 = LLMDatabase(str(tmp_path / "m.db"))
+        assert db2.get_instruction("bob") == "new"
+        conn = db2._connect()
+        rows = conn.execute("SELECT nick FROM user_instructions").fetchall()
+        assert [r[0] for r in rows] == ["bob"]
+
+
+class TestMigrateUserData:
+    """Identify-time migration covers the memory family, not just usage/convos."""
+
+    def test_moves_memories_and_candidates(self, test_db: LLMDatabase) -> None:
+        test_db.save_memory("tempnick", "likes tea", "#c")
+        test_db.add_memory_candidate("tempnick", "maybe likes coffee", "#c")
+
+        moved = test_db.migrate_user_data("tempnick", "account")
+
+        assert moved >= 2
+        assert any("tea" in m.fact for m in test_db.get_memories("account"))
+        assert test_db.get_memories("tempnick") == []
+        assert any("coffee" in c.fact for c in test_db.get_memory_candidates("account"))
+
+    def test_destination_instruction_wins(self, test_db: LLMDatabase) -> None:
+        test_db.save_instruction("tempnick", "from before identify")
+        test_db.save_instruction("account", "canonical")
+
+        test_db.migrate_user_data("tempnick", "account")
+
+        assert test_db.get_instruction("account") == "canonical"
+        assert test_db.get_instruction("tempnick") is None
+
+    def test_instruction_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
+        test_db.save_avatar_persona("tempnick", "a fox")
+
+        test_db.migrate_user_data("tempnick", "account")
+
+        assert test_db.get_avatar_persona("account") == "a fox"
+
+    def test_same_identity_is_noop(self, test_db: LLMDatabase) -> None:
+        test_db.save_instruction("bob", "x")
+        assert test_db.migrate_user_data("Bob", "bob") == 0
+        assert test_db.get_instruction("bob") == "x"

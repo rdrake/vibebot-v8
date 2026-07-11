@@ -2023,8 +2023,9 @@ class LLM(callbacks.Plugin):
     def _maybe_migrate_nick(self, old_nick: str, account: str) -> None:
         """Migrate old nick-based rows to the account, once per session.
 
-        Covers both ``usage`` and ``conversations`` tables so historical
-        cost data and persisted conversation history follow the user
+        Covers ``usage``, ``conversations``, and the memory family
+        (memories, candidates, instruction, persona) so historical cost
+        data, conversation history, and stored facts all follow the user
         once they identify.  In-memory ``ConversationContext`` is also
         rekeyed so the next turn resumes the same thread.
 
@@ -2056,6 +2057,16 @@ class LLM(callbacks.Plugin):
             self.log.info(
                 "Migrated %d conversation row(s) from %s to %s",
                 convo_count,
+                old_nick,
+                account,
+            )
+        # Memories, candidates, instruction, and persona follow the identity
+        # too — otherwise facts saved while unidentified go dark on identify.
+        data_count = self.db.migrate_user_data(old_nick, account)
+        if data_count > 0:
+            self.log.info(
+                "Migrated %d memory/instruction row(s) from %s to %s",
+                data_count,
                 old_nick,
                 account,
             )

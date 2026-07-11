@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -552,6 +552,35 @@ class LLMDatabase:
                     updated_at REAL NOT NULL
                 );
             """)
+            conn.commit()
+
+        if current_version < 17:
+            # Nick-casing repair: the memories family always lowercased nick at
+            # the DB layer, but user_instructions / user_avatar_personas
+            # matched exact-case — an account whose services-reported
+            # capitalization varied silently forked its rows. Dedupe keeping
+            # the newest updated_at per casefolded nick, then lowercase, and
+            # the accessors now lowercase on every call. Also drop
+            # idx_usage_nick_status: usage.status is audit-only (write-only in
+            # production queries), so the index was pure per-insert overhead.
+            for table in ("user_instructions", "user_avatar_personas"):
+                # Guard on existence: hand-rolled legacy DBs (and tests) may
+                # carry a user_version past the CREATE-gate without the table.
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                if row is None:
+                    continue
+                conn.execute(
+                    f"DELETE FROM {table} WHERE rowid NOT IN ("  # noqa: S608
+                    f"  SELECT rowid FROM ("
+                    f"    SELECT rowid, MAX(updated_at) FROM {table} GROUP BY lower(nick)"
+                    f"  )"
+                    f")"
+                )
+                conn.execute(f"UPDATE {table} SET nick = lower(nick)")  # noqa: S608
+            conn.execute("DROP INDEX IF EXISTS idx_usage_nick_status")
             conn.commit()
 
         # Stamp the schema version so future opens skip completed migrations.
@@ -1400,6 +1429,48 @@ class LLMDatabase:
             )
             return cursor.rowcount
 
+    def migrate_user_data(self, old_nick: str, new_nick: str) -> int:
+        """Re-attribute memories, candidates, instruction, and persona rows.
+
+        Companion to :meth:`migrate_nick` / :meth:`migrate_conversations` —
+        without it, facts and personas accumulated while unidentified became
+        permanently invisible the moment the user identified.
+
+        ``memories`` / ``memory_candidates`` rows are plain per-fact rows and
+        are simply renamed. ``user_instructions`` / ``user_avatar_personas``
+        are keyed on nick: when the destination already has a row it wins
+        (the identified-user copy is canonical) and the source row is
+        dropped, mirroring ``migrate_conversations``.
+
+        Returns:
+            Number of rows renamed across all four tables.
+        """
+        old = old_nick.lower()
+        new = new_nick.lower()
+        if old == new:
+            return 0
+        moved = 0
+        with self._write_txn() as conn:
+            for table in ("memories", "memory_candidates"):
+                cursor = conn.execute(
+                    f"UPDATE {table} SET nick = ? WHERE nick = ?",  # noqa: S608
+                    (new, old),
+                )
+                moved += cursor.rowcount
+            for table in ("user_instructions", "user_avatar_personas"):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE nick = ? AND EXISTS ("  # noqa: S608
+                    f"  SELECT 1 FROM {table} WHERE nick = ?"
+                    f")",
+                    (old, new),
+                )
+                cursor = conn.execute(
+                    f"UPDATE {table} SET nick = ? WHERE nick = ?",  # noqa: S608
+                    (new, old),
+                )
+                moved += cursor.rowcount
+        return moved
+
     # ------------------------------------------------------------------
     # Usage operations
     # ------------------------------------------------------------------
@@ -1975,7 +2046,7 @@ class LLMDatabase:
         conn = self._connect()
         row = conn.execute(
             "SELECT instruction FROM user_instructions WHERE nick = ?",
-            (nick,),
+            (nick.lower(),),
         ).fetchone()
         return row[0] if row else None
 
@@ -1987,7 +2058,7 @@ class LLMDatabase:
                 "VALUES (?, ?, ?) "
                 "ON CONFLICT(nick) DO UPDATE SET instruction = excluded.instruction, "
                 "updated_at = excluded.updated_at",
-                (nick, instruction, time.time()),
+                (nick.lower(), instruction, time.time()),
             )
 
     def delete_instruction(self, nick: str) -> bool:
@@ -1995,7 +2066,7 @@ class LLMDatabase:
         with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM user_instructions WHERE nick = ?",
-                (nick,),
+                (nick.lower(),),
             )
             return cursor.rowcount > 0
 
@@ -2008,7 +2079,7 @@ class LLMDatabase:
         conn = self._connect()
         row = conn.execute(
             "SELECT persona FROM user_avatar_personas WHERE nick = ?",
-            (nick,),
+            (nick.lower(),),
         ).fetchone()
         return row[0] if row else None
 
@@ -2020,7 +2091,7 @@ class LLMDatabase:
                 "VALUES (?, ?, ?) "
                 "ON CONFLICT(nick) DO UPDATE SET persona = excluded.persona, "
                 "updated_at = excluded.updated_at",
-                (nick, persona, time.time()),
+                (nick.lower(), persona, time.time()),
             )
 
     def delete_avatar_persona(self, nick: str) -> bool:
@@ -2028,6 +2099,6 @@ class LLMDatabase:
         with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM user_avatar_personas WHERE nick = ?",
-                (nick,),
+                (nick.lower(),),
             )
             return cursor.rowcount > 0
