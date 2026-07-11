@@ -5864,6 +5864,7 @@ Examples (echo → action_prompt: ""):
             "",
             tier=rl_tier,
             silent=True,
+            record=False,
             now=now,
         ):
             self.plugin._safe_queue(

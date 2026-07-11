@@ -1079,7 +1079,7 @@ class TestVersepurgeCommand:
         plugin, irc, msg = plugin_env
 
         mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
+            "supybot.commands.ircdb.checkCapability",
             return_value=False,
         )
 
@@ -1087,7 +1087,7 @@ class TestVersepurgeCommand:
         msg.args = ("#afnet", "@versepurge #afnet")
         plugin.versepurge(irc, msg, ["#afnet"])
 
-        irc.error.assert_called_once()
+        irc.errorNoCapability.assert_called_once()
         assert "#afnet" not in plugin._versepurge_tokens
 
     # ------------------------------------------------------------------
@@ -1098,9 +1098,9 @@ class TestVersepurgeCommand:
         """GIVEN user has llm.verse but NOT llm.verse.gm WHEN @versepurge THEN denied."""
         plugin, irc, msg = plugin_env
 
-        # Only grant llm.verse (not llm.verse.gm).
+        # Only grant llm.verse (not llm.verse.gm) — at the wrap layer.
         mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
+            "supybot.commands.ircdb.checkCapability",
             side_effect=lambda prefix, cap: cap == "llm.verse",
         )
 
@@ -1108,7 +1108,7 @@ class TestVersepurgeCommand:
         msg.args = ("#afnet", "@versepurge #afnet")
         plugin.versepurge(irc, msg, ["#afnet"])
 
-        irc.error.assert_called_once()
+        irc.errorNoCapability.assert_called_once()
         assert "#afnet" not in plugin._versepurge_tokens
 
 
@@ -1223,7 +1223,7 @@ class TestVersedumpCommand:
         irc.reply.assert_called_once()
         reply_text = irc.reply.call_args[0][0]
         data = _json.loads(reply_text)  # Raises if not valid JSON.
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["channel"] == "#afnet"
 
     # ------------------------------------------------------------------
@@ -1436,7 +1436,7 @@ class TestAvatarVerseSync:
             def get_entity(self, *a, **kw):
                 return store.get_entity(*a, **kw)
 
-            def write_transaction(self):
+            def apply_direct(self, **kw):
                 raise RuntimeError("disk full")
 
         mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=_BrokenStore())

@@ -283,6 +283,6 @@ class TestVerseditCommand:
         original = type(plugin).versedit.__closure__[0].cell_contents
         mocker.patch("llm.plugin.ircutils.isChannel", return_value=False)
         msg.args = ("alice", "")  # PM, not a channel
-        original(plugin, irc, msg, [], "show Archie", None)
+        original(plugin, irc, msg, [], "show Archie")
         errors = [c.args[0] for c in irc.error.call_args_list]
         assert any("Specify a channel" in e for e in errors)

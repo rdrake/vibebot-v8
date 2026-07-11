@@ -304,18 +304,18 @@ class LiteLLMVerseClient:
         # catches up or once we add explicit pricing tables.
         if cost > 1.0:
             self._log.warning(
-                f"loom completion_cost returned implausible value {cost!r} "
+                f"compaction completion_cost returned implausible value {cost!r} "
                 f"for model={model}; clamping to 0.0 (likely missing "
                 "pricing data in litellm)"
             )
             cost = 0.0
-        # The "loom:" op-prefix is kept verbatim on purpose: it is the @usage accounting key,
-        # and renaming it would silently re-key historical usage records.
+        # "compaction:" replaced the deleted loom subsystem's "loom:" op-prefix;
+        # historical usage rows were re-keyed in the same deploy.
         # Match service.py:_log_completion_timing's f-string convention.
         # %-args formatting was partially failing under the bot's runtime
         # logger setup (some args substituted, %d ones not) — see #66.
         self._log.warning(
-            f"completion_timing op=loom:{op} model={model} "
+            f"completion_timing op=compaction:{op} model={model} "
             f"elapsed_ms={elapsed_ms:.0f} "
             f"prompt_tokens={pt} completion_tokens={ct} cost={cost:.6f}"
         )

@@ -3405,3 +3405,26 @@ class TestStoryCommand:
         assert plugin._storybook_cooldown_active("other", 300) is False
         assert plugin._storybook_cooldown_active("acct", 0) is False
         assert plugin._storybook_cooldown_active(None, 300) is False
+
+
+class TestRateLimitPeek:
+    """Scheduled fires peek the bucket instead of consuming interactive slots."""
+
+    def test_record_false_does_not_consume_bucket(self, plugin_env):
+        plugin, _irc, _msg = plugin_env
+
+        blocked = plugin._check_rate_limit(
+            None, "ask", "acct", "", "", "", tier="registered", silent=True, record=False
+        )
+
+        assert blocked is False
+        with plugin._rate_buckets_lock:
+            assert len(plugin._rate_buckets.get("ask:acct", ())) == 0
+
+    def test_record_true_still_consumes(self, plugin_env):
+        plugin, _irc, _msg = plugin_env
+
+        plugin._check_rate_limit(None, "ask", "acct", "", "", "", tier="registered", silent=True)
+
+        with plugin._rate_buckets_lock:
+            assert len(plugin._rate_buckets.get("ask:acct", ())) == 1

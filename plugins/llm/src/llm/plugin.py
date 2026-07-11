@@ -967,8 +967,10 @@ class LLM(callbacks.Plugin):
         elif r.status == "completed":
             content = self.llm_service.sanitize_output(r.content)
             if r.task_type == "code":
-                # Try to save code to HTTP URL; the prompt makes a better page
-                # <title> than the constant "Code" for URL-title bots.
+                # Deliberately pastes the RAW body: the HTML path runs its own
+                # sanitizer, and IRC-sanitizing code would mangle it. The
+                # sanitized ``content`` above is only the inline fallback. The
+                # prompt makes a better page <title> than the constant "Code".
                 url = self.llm_service.save_code_to_http(r.content, title=prompt_preview)
                 if url:
                     text = f'{nick}: your code is ready! "{prompt_preview}" \u2192 {url}'
@@ -983,7 +985,7 @@ class LLM(callbacks.Plugin):
                 # mirroring the live _send_long_reply path; without this a
                 # multi-paragraph scene becomes one oversized PRIVMSG the server
                 # silently truncates. Short content stays inline (collapsed below).
-                text = self._format_pending_completed_reply(nick, content)
+                text = self._format_pending_completed_reply(nick, content, target)
         else:
             return
 
@@ -1674,6 +1676,7 @@ class LLM(callbacks.Plugin):
                     "",
                     tier=rl_tier,
                     silent=True,
+                    record=False,
                     now=now,
                 ):
                     self._send_reminder_text(
@@ -2327,7 +2330,9 @@ class LLM(callbacks.Plugin):
         teaser = teaser.lstrip("-* ").strip()
         return LLM._trim_long_reply_teaser(teaser, max_chars)
 
-    def _format_pending_completed_reply(self, nick: str, content: str) -> str:
+    def _format_pending_completed_reply(
+        self, nick: str, content: str, target: str | None = None
+    ) -> str:
         """One-line delivery text for a completed ask/fallback pending result.
 
         Mirrors ``_send_long_reply``: content that collapses to a single IRC
@@ -2342,7 +2347,17 @@ class LLM(callbacks.Plugin):
         """
         inline = f"{nick}: {content}"
         collapsed = self._collapse_for_irc(inline) or inline
-        allowed = conf.supybot.reply.mores.length() or 400
+        # Channel-scoped like _send_long_reply (no irc handle here, so no
+        # network scope) — the global read gave channels with a custom mores
+        # length inconsistent inline-vs-pastebin decisions on recovery.
+        try:
+            allowed = (
+                conf.get(conf.supybot.reply.mores.length, channel=target)
+                if target and ircutils.isChannel(target)
+                else conf.supybot.reply.mores.length()
+            ) or 400
+        except Exception:
+            allowed = conf.supybot.reply.mores.length() or 400
         if len(ircutils.wrap(collapsed, allowed) or [collapsed]) <= 1:
             return collapsed
         url = self.llm_service.save_markdown_to_http(content)
@@ -2635,12 +2650,20 @@ class LLM(callbacks.Plugin):
                 pass
         return False
 
+    @staticmethod
+    def _find_caller_avatar(store, account: str | None, nick: str) -> int | None:
+        """Resolve a caller's avatar entity id: account link wins, then nick."""
+        return (
+            store.find_avatar_by_account(account) if account else None
+        ) or store.find_avatar_by_nick(nick)
+
     def _verse_route_for(
         self,
         channel: str,
         nick: str,
         account: str | None,
         message_text: str,
+        prefix: str | None = None,
     ) -> VerseRoute | None:
         """Return a VerseRoute when the message should be handled by the verse
         engine, or None to fall through to the normal chat path.
@@ -2655,18 +2678,17 @@ class LLM(callbacks.Plugin):
         """
         if not self.registryValue("verseEnabled", channel):
             return None
-        # Build a synthetic hostmask for ircdb; nick!*@* is sufficient
-        # because the test harness patches checkCapability on the prefix string.
-        hostmask = f"{nick}!*@*"
+        # Prefer the real msg.prefix: hostmask-authed accounts can resolve to
+        # a different user than a synthetic nick!*@* pattern would. The
+        # synthetic fallback remains for direct calls (test harness).
+        hostmask = prefix or f"{nick}!*@*"
         if not ircdb.checkCapability(hostmask, "llm.verse"):
             return None  # capability fallthrough — quiet
         if is_ooc(message_text):
             return None
         # Avatar lookup: account takes priority, then nick.
         store = self._get_or_create_verse_store(channel)
-        avatar_id = (
-            store.find_avatar_by_account(account) if account else None
-        ) or store.find_avatar_by_nick(nick)
+        avatar_id = self._find_caller_avatar(store, account, nick)
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
         # Trigger gate: don't route every avatar-user message into verse. Only
@@ -2767,9 +2789,7 @@ class LLM(callbacks.Plugin):
         try:
             if ircutils.isChannel(channel) and self.registryValue("verseEnabled", channel):
                 store = self._get_or_create_verse_store(channel)
-                avatar_id = (
-                    store.find_avatar_by_account(account) if account else None
-                ) or store.find_avatar_by_nick(nick)
+                avatar_id = self._find_caller_avatar(store, account, nick)
                 if avatar_id is not None:
                     store.record_user_event(
                         actor_id=avatar_id,
@@ -3162,9 +3182,16 @@ class LLM(callbacks.Plugin):
         *,
         tier: str,
         silent: bool = False,
+        record: bool = True,
         now: float | None = None,
     ) -> bool:
         """Check rate limit; optionally suppress user-facing error and usage row.
+
+        When ``record=False`` the check only PEEKS at the bucket: scheduled
+        fires (reminder actions, scheduled tasks) are skipped when the user
+        has already maxed their own interactive use, but the fire itself must
+        not consume interactive slots — a busy watch chain was rate-limiting
+        its owner's live @ask.
 
         When ``silent=True``:
           - ``irc.error(...)`` is NOT called on overage.
@@ -3195,8 +3222,9 @@ class LLM(callbacks.Plugin):
             now = time.time()
         over_limit = self._is_rate_limited(command, account, now, tier=tier)
 
-        # Always record the hit (so the window tracks correctly)
-        self._record_rate_limit_hit(command, account, now)
+        # Record the hit so the window tracks correctly (unless peeking).
+        if record:
+            self._record_rate_limit_hit(command, account, now)
 
         if not over_limit:
             return False
@@ -3723,7 +3751,7 @@ class LLM(callbacks.Plugin):
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             route = self._verse_route_for(
-                preflight.channel, preflight.nick, preflight.account, text
+                preflight.channel, preflight.nick, preflight.account, text, msg.prefix
             )
             if route is None:
                 verse_enabled = self.registryValue("verseEnabled", preflight.channel)
@@ -4332,7 +4360,7 @@ class LLM(callbacks.Plugin):
                 target = parts[1]
             else:
                 target = caller.key
-            channel = msg.channel or msg.args[0] if msg.args else "#unknown"
+            channel = (msg.channel or msg.args[0]) if msg.args else "#unknown"
             summary = self._run_memory_cleanup(target, channel)
             irc.reply(summary.message, prefixNick=False)
 
@@ -4437,17 +4465,18 @@ class LLM(callbacks.Plugin):
         # the verse system prompt.
         if channel and self.registryValue("verseEnabled", channel):
             store = self._get_or_create_verse_store(channel)
-            avatar_id = (
-                store.find_avatar_by_account(caller.account) if caller.account else None
-            ) or store.find_avatar_by_nick(caller.raw_nick)
+            avatar_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
             if avatar_id is not None:
                 entity = store.get_entity(avatar_id)
                 if entity is not None and entity.status == "active":
-                    with store.write_transaction() as conn:
-                        conn.execute(
-                            "UPDATE entities SET summary = ?, updated_at = ? WHERE id = ?",
-                            (new_summary, time.time(), avatar_id),
-                        )
+                    # Through apply_direct like every other verse mutation so
+                    # the change lands in the proposals audit trail.
+                    store.apply_direct(
+                        op="update_entity",
+                        payload={"entity_id": avatar_id, "summary": new_summary},
+                        source="avatar",
+                        provenance="@avatar",
+                    )
 
         if is_clear:
             if self.db.delete_avatar_persona(caller.key):
@@ -5527,23 +5556,18 @@ class LLM(callbacks.Plugin):
         finally:
             self._register_compaction_timer()
 
-    def _run_compaction_pass(self) -> None:
-        """Walk every verse-enabled channel and compact it.
+    def _compaction_settings(self):
+        """Shared config reads for the daily pass and @versecompact.
 
-        Per-channel failures are logged and swallowed so one bad verse
-        doesn't abort the rest of the pass.
+        Returns (min_keep, model, client). NB: explicit ``int(value)`` rather
+        than ``int(value or 20)`` — 0 is a legitimate registry value
+        (NonNegativeInteger accepts it) and ``or`` would coerce it to 20.
         """
         from llm.verse import compaction as _compaction
-        from llm.verse.aging import age_auto_created_entities
 
-        retention_days_default = 30
-        # NB: explicit ``int(value)`` rather than ``int(value or 20)``
-        # — 0 is a legitimate registry value (NonNegativeInteger
-        # accepts it) and the ``or`` form would coerce it to 20.
         try:
             _raw_min_keep = self.registryValue("verseCompactionMinKeepEvents")
         except Exception:
-            # Registry key not yet defined (F1 adds it) or load error.
             _raw_min_keep = 20
         try:
             min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
@@ -5552,49 +5576,52 @@ class LLM(callbacks.Plugin):
         model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
         api_key = self.registryValue("assistantApiKey") or None
         client = _compaction.LiteLLMVerseClient(api_key=api_key)
+        return min_keep, model, client
 
-        def _log_usage(*, op: str, model: str, usage, channel: str) -> None:
-            # The loom subsystem is gone, but "loom"/"loom:" stays as the
-            # accounting identity on purpose — renaming would silently re-key
-            # historical usage rows (see compaction.LiteLLMVerseClient).
-            self.db.log_usage(
-                nick="loom",
-                channel=channel,
-                command=f"loom:{op}",
-                model=model,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                cost=usage.cost,
-            )
+    def _channel_retention_days(self, channel: str, default: int = 30) -> int:
+        """Per-channel verseEventRetentionDays, honouring zero (=disabled)."""
+        try:
+            raw = self.registryValue("verseEventRetentionDays", channel)
+        except Exception:
+            raw = default
+        try:
+            return int(raw) if raw is not None else default
+        except (TypeError, ValueError):
+            return default
 
-        for channel in self._verse_enabled_channels():
-            # Defensive re-check — _verse_enabled_channels already filters,
-            # but the registry could flip mid-pass.
-            try:
-                if not self.registryValue("verseEnabled", channel):
-                    continue
-            except Exception:
-                continue
-            store = self._get_or_create_verse_store(channel)
-            # Honour zero — operators set retention=0 to disable.
-            try:
-                _raw_retention = self.registryValue("verseEventRetentionDays", channel)
-            except Exception:
-                _raw_retention = retention_days_default
-            try:
-                retention_days = (
-                    int(_raw_retention) if _raw_retention is not None else retention_days_default
-                )
-            except (TypeError, ValueError):
-                retention_days = retention_days_default
+    def _log_compaction_usage(self, *, op: str, model: str, usage, channel: str) -> None:
+        # Renamed from the deleted loom subsystem's "loom"/"loom:" identity;
+        # historical rows were re-keyed in the same deploy so @usage stays
+        # coherent (UPDATE usage SET nick, command WHERE nick='loom').
+        self.db.log_usage(
+            nick="verse_compaction",
+            channel=channel,
+            command=f"compaction:{op}",
+            model=model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cost=usage.cost,
+        )
+
+    def _compact_channel(
+        self, channel: str, *, min_keep: int, model: str, client, run_aging: bool
+    ) -> tuple[CompactionOutcome, AgingOutcome | None]:
+        """Aging (optional) + retention compaction for ONE channel.
+
+        Aging failures are logged and swallowed (independent of compaction);
+        compact_verse exceptions propagate for the caller to handle.
+        """
+        from llm.verse import compaction as _compaction
+        from llm.verse.aging import age_auto_created_entities
+
+        store = self._get_or_create_verse_store(channel)
+        retention_days = self._channel_retention_days(channel)
+        aging_outcome: AgingOutcome | None = None
+        if run_aging:
             # Aging runs BEFORE compaction. compact_verse's digest heartbeat
             # bumps last_seen_ts=now() on every entity in the new digest, so
             # running it first would refresh long-silent NPCs and defeat
-            # verseAutoEntityRetireDays. Aging-first reads the true last_seen_ts
-            # before the heartbeat can resurrect a stale NPC. Independent of the
-            # compaction outcome and wrapped in its own try/except so one
-            # channel's failure doesn't abort the rest of the pass.
-            aging_outcome: AgingOutcome | None = None
+            # verseAutoEntityRetireDays.
             try:
                 retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
                 aging_outcome = age_auto_created_entities(
@@ -5603,34 +5630,44 @@ class LLM(callbacks.Plugin):
                     now=time.time,
                 )
             except Exception:
-                self.log.exception(
-                    "verse aging failed for %s; continuing with next channel",
-                    channel,
-                )
+                self.log.exception("verse aging failed for %s; continuing", channel)
+        outcome = _compaction.compact_verse(
+            store,
+            retention_days=retention_days,
+            min_keep_events=min_keep,
+            model=model,
+            client=client,
+            log_usage=lambda *, op, model, usage: self._log_compaction_usage(
+                op=op, model=model, usage=usage, channel=channel
+            ),
+            now=time.time,
+        )
+        return outcome, aging_outcome
 
-            outcome: CompactionOutcome | None = None
+    def _run_compaction_pass(self) -> None:
+        """Walk every verse-enabled channel and compact it.
+
+        Per-channel failures are logged and swallowed so one bad verse
+        doesn't abort the rest of the pass.
+        """
+        min_keep, model, client = self._compaction_settings()
+        for channel in self._verse_enabled_channels():
+            # Defensive re-check — _verse_enabled_channels already filters,
+            # but the registry could flip mid-pass.
             try:
-                outcome = _compaction.compact_verse(
-                    store,
-                    retention_days=retention_days,
-                    min_keep_events=min_keep,
-                    model=model,
-                    client=client,
-                    # Default-arg captures the loop variable.
-                    log_usage=lambda *, op, model, usage, channel=channel: _log_usage(
-                        op=op, model=model, usage=usage, channel=channel
-                    ),
-                    now=time.time,
+                if not self.registryValue("verseEnabled", channel):
+                    continue
+            except Exception:
+                continue
+            try:
+                outcome, aging_outcome = self._compact_channel(
+                    channel, min_keep=min_keep, model=model, client=client, run_aging=True
                 )
             except Exception:
                 self.log.exception("verse compaction failed for %s; continuing", channel)
-
-            # Render the per-channel summary as one line, but only if
-            # compaction itself succeeded — a raised compact_verse already
-            # got its own .exception log above.
-            if outcome is not None:
-                msg = _format_compaction_outcome(outcome, aging_outcome, min_keep_events=min_keep)
-                self.log.info("compaction outcome for %s: %s", channel, msg)
+                continue
+            msg = _format_compaction_outcome(outcome, aging_outcome, min_keep_events=min_keep)
+            self.log.info("compaction outcome for %s: %s", channel, msg)
 
     def _get_or_create_verse_store(self, channel: str) -> VerseStore:
         """Return the VerseStore for *channel*, creating it lazily on first access.
@@ -5668,10 +5705,7 @@ class LLM(callbacks.Plugin):
             return
 
         if not self.registryValue("verseEnabled", channel):
-            irc.reply(
-                "This channel doesn't have a verse. Ask the operator to set verseEnabled.",
-                prefixNick=False,
-            )
+            irc.reply(self._NO_VERSE_REPLY, prefixNick=False)
             return
 
         caller = self._resolve_identity(irc, msg)
@@ -5689,9 +5723,7 @@ class LLM(callbacks.Plugin):
 
         else:  # mode == "out"
             store = self._get_or_create_verse_store(channel)
-            entity_id = store.find_avatar_by_account(account) if account else None
-            if entity_id is None:
-                entity_id = store.find_avatar_by_nick(nick)
+            entity_id = self._find_caller_avatar(store, account, nick)
             if entity_id is None:
                 irc.reply("You don't have an avatar in this channel.", prefixNick=False)
                 return
@@ -5758,10 +5790,7 @@ class LLM(callbacks.Plugin):
 
         caller = self._resolve_identity(irc, msg)
         store = self._get_or_create_verse_store(channel)
-        account = caller.account
-        entity_id = store.find_avatar_by_account(account) if account else None
-        if entity_id is None:
-            entity_id = store.find_avatar_by_nick(caller.raw_nick)
+        entity_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
         if entity_id is None:
             irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
             return
@@ -5799,10 +5828,7 @@ class LLM(callbacks.Plugin):
         if target is None:
             # No target: show caller's scene (avatar required).
             caller = self._resolve_identity(irc, msg)
-            account = caller.account
-            entity_id = store.find_avatar_by_account(account) if account else None
-            if entity_id is None:
-                entity_id = store.find_avatar_by_nick(caller.raw_nick)
+            entity_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
             if entity_id is None:
                 irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
                 return
@@ -5927,10 +5953,6 @@ class LLM(callbacks.Plugin):
         YAML is not supported (pyyaml is not a project dependency).
         Requires the llm.verse.gm capability.
         """
-        if not ircdb.checkCapability(msg.prefix, "llm.verse.gm"):
-            irc.error("You don't have the llm.verse.gm capability.", prefixNick=False)
-            return
-
         # Parse channel and optional --format from the free-text args.
         raw = (text or "").split()
         channel: str | None = None
@@ -5967,6 +5989,9 @@ class LLM(callbacks.Plugin):
             ).fetchall()
             avatar_link_rows = conn.execute(
                 "SELECT entity_id, nick, account FROM avatar_link ORDER BY entity_id ASC"
+            ).fetchall()
+            alias_rows = conn.execute(
+                "SELECT entity_id, alias FROM entity_alias ORDER BY entity_id ASC, alias ASC"
             ).fetchall()
 
         entities_out = []
@@ -6008,17 +6033,31 @@ class LLM(callbacks.Plugin):
         avatar_links_out = [
             {"entity_id": row[0], "nick": row[1], "account": row[2]} for row in avatar_link_rows
         ]
+        aliases_out = [{"entity_id": row[0], "alias": row[1]} for row in alias_rows]
 
-        # Proposals (the @versedit audit trail) are not included in the dump;
-        # versedump focuses on entities, relations, events, and avatar links.
+        # Proposals are apply_direct's audit trail — export them so the dump
+        # is a faithful backup instead of a hardcoded empty list.
+        proposals_out = [
+            {
+                "id": pr.id,
+                "created_at": pr.created_at,
+                "op": pr.op,
+                "payload": pr.payload,
+                "provenance": pr.provenance,
+                "status": pr.status,
+            }
+            for pr in store.list_proposals(limit=1000)
+        ]
+
         dump = {
-            "schema_version": 1,
+            "schema_version": 2,
             "channel": channel,
             "entities": entities_out,
             "relations": relations_out,
             "events": events_out,
             "avatar_links": avatar_links_out,
-            "proposals": [],
+            "aliases": aliases_out,
+            "proposals": proposals_out,
         }
 
         # The dump is a single fat JSON line — for an active verse it can
@@ -6036,7 +6075,7 @@ class LLM(callbacks.Plugin):
         else:
             irc.reply(json.dumps(dump, separators=(",", ":")), prefixNick=False)
 
-    versedump = wrap(versedump, [optional("text")])
+    versedump = wrap(versedump, [("checkCapability", "llm.verse.gm"), optional("text")])
 
     # ------------------------------------------------------------------
     # @versedit <verb> <args...> [#channel]  — operator universe editing
@@ -6048,7 +6087,6 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         args: list,
         rest: str,
-        channel_arg: str | None = None,
     ) -> None:
         """[#channel] <verb> <args...>
 
@@ -6062,6 +6100,7 @@ class LLM(callbacks.Plugin):
         # private message — where msg carries no channel of its own (msg.channel
         # is None and msg.args[0] is the bot's nick) — so a batch of edits can be
         # pasted into a DM without flooding the channel. Explicit beats implicit.
+        channel_arg: str | None = None
         parts = rest.split(None, 1)
         if parts and ircutils.isChannel(parts[0]):
             channel_arg = parts[0]
@@ -6091,8 +6130,10 @@ class LLM(callbacks.Plugin):
             # fail closed (deny), never escalate. Do not assume per-channel
             # enforcement exists here.
             ("checkCapability", "llm.verse.edit"),
+            # "text" is greedy, so a trailing optional("channel") converter
+            # could never fire — the leading-#channel token is parsed out of
+            # the text in the body instead.
             "text",
-            optional("channel"),
         ],
     )
 
@@ -6291,19 +6332,17 @@ class LLM(callbacks.Plugin):
         reload or bot restart. All times are approximate (IRC scheduler thread).
         Requires the llm.verse.gm capability.
         """
-        if not ircdb.checkCapability(msg.prefix, "llm.verse.gm"):
-            irc.error("You don't have the llm.verse.gm capability.", prefixNick=False)
-            return
-
         # Parse channel and optional token from free-text args.
         raw = (text or "").split()
         channel: str | None = None
         token_presented: str | None = None
 
+        # Order-independent: "@versepurge abc123 #chan" and
+        # "@versepurge #chan abc123" both work.
         for token in raw:
-            if ircutils.isChannel(token):
+            if ircutils.isChannel(token) and channel is None:
                 channel = token
-            elif channel is not None and token_presented is None:
+            elif token_presented is None:
                 token_presented = token
 
         if channel is None:
@@ -6367,7 +6406,7 @@ class LLM(callbacks.Plugin):
                     prefixNick=False,
                 )
 
-    versepurge = wrap(versepurge, [optional("text")])
+    versepurge = wrap(versepurge, [("checkCapability", "llm.verse.gm"), optional("text")])
 
     # ------------------------------------------------------------------
     # @versecompact — manual retention compaction (E4)
@@ -6393,54 +6432,14 @@ class LLM(callbacks.Plugin):
             )
             return
 
-        from llm.verse import compaction as _compaction
-
-        store = self._get_or_create_verse_store(channel)
-        # Honour zero — see ``_run_compaction_pass`` note.
+        min_keep, model, client = self._compaction_settings()
         try:
-            _raw_retention = self.registryValue("verseEventRetentionDays", channel)
-        except Exception:
-            _raw_retention = 30
-        try:
-            retention_days = int(_raw_retention) if _raw_retention is not None else 30
-        except (TypeError, ValueError):
-            retention_days = 30
-        try:
-            _raw_min_keep = self.registryValue("verseCompactionMinKeepEvents")
-        except Exception:
-            # Registry key not yet defined (F1 adds it).
-            _raw_min_keep = 20
-        try:
-            min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
-        except (TypeError, ValueError):
-            min_keep = 20
-        model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
-        api_key = self.registryValue("assistantApiKey") or None
-        client = _compaction.LiteLLMVerseClient(api_key=api_key)
-
-        def _log_usage(*, op: str, model: str, usage, channel: str = channel) -> None:
-            # "loom"/"loom:" kept as the accounting identity on purpose —
-            # see the daily-pass twin above.
-            self.db.log_usage(
-                nick="loom",
-                channel=channel,
-                command=f"loom:{op}",
-                model=model,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                cost=usage.cost,
-            )
-
-        try:
-            outcome = _compaction.compact_verse(
-                store,
-                retention_days=retention_days,
-                min_keep_events=min_keep,
-                model=model,
-                client=client,
-                log_usage=_log_usage,
-                now=time.time,
-            )
+            # Inside the executor cap like every other blocking LLM call —
+            # this used to be the only one that bypassed it.
+            with self._allow_concurrent(), self._llm_executor.permit():
+                outcome, _ = self._compact_channel(
+                    channel, min_keep=min_keep, model=model, client=client, run_aging=False
+                )
         except Exception as exc:
             self.log.exception("@versecompact failed for %s", channel)
             irc.error(
