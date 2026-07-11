@@ -914,6 +914,25 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "pendingTasksEnabled",
+    registry.Boolean(
+        False,
+        _("""When True, chat completions in this channel advertise the
+        reminder/scheduled-task tools (set_reminder, schedule_llm_task,
+        list_pending_tasks, cancel_pending_task, cancel_all_pending_tasks)
+        and their operating rules, so natural-language scheduling via @ask
+        works ('remind me in 10 minutes', 'every hour post X').
+
+        Off by default: the five tool schemas plus the prompt rules cost
+        roughly 1,100 prompt tokens on EVERY completion, whether or not
+        anyone schedules anything. The @remind command and the firing of
+        already-created reminders/tasks work regardless of this setting —
+        it only gates whether the model can create/list/cancel them."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "bridgeScheduledTaskLimit",
     registry.NonNegativeInteger(
         5,

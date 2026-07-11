@@ -592,6 +592,21 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+# The reminder/scheduled-task tool surface, gated per-channel by
+# ``pendingTasksEnabled`` (default off): the five schemas plus their
+# operating rules cost ~1,100 prompt tokens on every completion, so
+# channels that don't use NL scheduling shouldn't pay for it. The
+# @remind command and already-scheduled fires bypass this gate.
+PENDING_TASK_TOOLS: frozenset[str] = frozenset(
+    {
+        "cancel_all_pending_tasks",
+        "cancel_pending_task",
+        "list_pending_tasks",
+        "schedule_llm_task",
+        "set_reminder",
+    }
+)
+
 # Verse mode hides tools with no in-character use to keep the
 # advertised tool surface small. xai/grok-4-1-fast-reasoning starts
 # emitting empty completions once the surface climbs past ~25 tools (4

@@ -172,3 +172,25 @@ class TestBridgeGuidanceSplit:
     def test_chat_prompt_does_not_mention_bridge_tools(self):
         assert "run_limnoria_command" not in prompts.CHAT_SYSTEM_PROMPT
         assert "run_limnoria_command" in prompts.BRIDGE_TOOLS_GUIDANCE
+
+
+class TestPendingTasksGuidanceSplit:
+    """Reminder/scheduling rules ride only with the pending-task tools."""
+
+    def test_chat_prompt_does_not_mention_pending_task_tools(self):
+        for tool in (
+            "set_reminder",
+            "schedule_llm_task",
+            "list_pending_tasks",
+            "cancel_pending_task",
+            "cancel_all_pending_tasks",
+        ):
+            assert tool not in prompts.CHAT_SYSTEM_PROMPT
+            assert tool in prompts.PENDING_TASKS_GUIDANCE
+
+    def test_guidance_keeps_the_battle_tested_rules(self):
+        """The four scheduling bullets moved verbatim; spot-check anchors."""
+        assert "LATER or REPEATEDLY" in prompts.PENDING_TASKS_GUIDANCE
+        assert "both pending future work" in prompts.PENDING_TASKS_GUIDANCE
+        assert "ONCE — do not list and then cancel" in prompts.PENDING_TASKS_GUIDANCE
+        assert "emoji reaction" in prompts.PENDING_TASKS_GUIDANCE

@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.assistant import PENDING_TASK_TOOLS
 from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
 from llm.service import AssistantResult, CompletionResult, ReminderParseResult
@@ -586,6 +587,37 @@ class TestCodeCommand:
 # ---------------------------------------------------------------------------
 
 
+class TestPendingTaskGate:
+    """``pendingTasksEnabled`` gates the reminder/scheduled tool surface."""
+
+    def test_disabled_excludes_pending_task_tools(self, plugin_env):
+        plugin, _mock_irc, _mock_msg = plugin_env
+        assert plugin._pending_task_excludes("#test") == PENDING_TASK_TOOLS
+
+    def test_enabled_excludes_nothing(self, plugin_env, mocker: MockerFixture):
+        plugin, _mock_irc, _mock_msg = plugin_env
+        registry = make_registry_side_effect({"pendingTasksEnabled": True})
+        plugin.registryValue = mocker.MagicMock(side_effect=registry)
+        assert plugin._pending_task_excludes("#test") == frozenset()
+
+    def test_ask_passes_exclusion_to_assistant_request(self, plugin_env):
+        """The chat entry route threads the gate into assistant_request."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="ok",
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost=0.0,
+            model="m",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["exclude_tools"] == PENDING_TASK_TOOLS
+
+
 class TestSendLongReply:
     """Tests for _send_long_reply — single-line-or-pastebin-teaser helper.
 
@@ -634,10 +666,23 @@ class TestSendLongReply:
         plugin.llm_service.save_markdown_to_http.assert_called_once_with(
             "line one\nline two\nline three",
             title="Three short lines about A, B, and C.",
+            style="answer",
         )
         mock_irc.reply.assert_called_once_with(
             "Three short lines about A, B, and C. - Full answer: https://example.com/llm/full.html",
             prefixNick=False,
+        )
+
+    def test_story_style_threads_through_to_save(self, plugin_env):
+        """Verse overflow pastes render with the storybook theme."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/s.html"
+        plugin.llm_service.summarize_for_irc.return_value = "A tale."
+
+        plugin._send_long_reply(mock_irc, mock_msg, "beat one\nbeat two", style="story")
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(
+            "beat one\nbeat two", title="A tale.", style="story"
         )
 
     def test_blank_lines_do_not_force_pastebin(self, plugin_env):
@@ -662,7 +707,7 @@ class TestSendLongReply:
         plugin._send_long_reply(mock_irc, mock_msg, long_line)
 
         plugin.llm_service.save_markdown_to_http.assert_called_once_with(
-            long_line, title="Long line."
+            long_line, title="Long line.", style="answer"
         )
         mock_irc.reply.assert_called_once_with(
             "Long line. - Full answer: https://e.co/x.html",

@@ -32,6 +32,7 @@ from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import limnoria_bridge
+from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
 from .persistence import LLMDatabase, ReminderRow
@@ -2589,6 +2590,7 @@ class LLM(callbacks.Plugin):
         text: str,
         *,
         prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
+        style: str = "answer",
     ) -> None:
         """Reply with ``text`` as one IRC line, pastebinning anything longer.
 
@@ -2631,7 +2633,9 @@ class LLM(callbacks.Plugin):
             teaser_fn=lambda t, mc: self._trim_long_reply_teaser(
                 _summary() or self._fallback_long_reply_teaser(t, mc), mc
             ),
-            save_fn=lambda t: self.llm_service.save_markdown_to_http(t, title=_summary()),
+            save_fn=lambda t: self.llm_service.save_markdown_to_http(
+                t, title=_summary(), style=style
+            ),
             teaser_cap=configured_max_chars,
         )
         self._safe_reply(irc, line, prefixNick=prefixNick)
@@ -2713,7 +2717,15 @@ class LLM(callbacks.Plugin):
 
         display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
         self.log.info("replying to %s/%s", channel, nick)
-        self._send_long_reply(irc, msg, display_response, prefixNick=False)
+        # Verse scenes that overflow to a paste render with the storybook
+        # parchment theme — they're stories, not Q&A answers.
+        self._send_long_reply(
+            irc,
+            msg,
+            display_response,
+            prefixNick=False,
+            style="story" if getattr(result, "was_verse", False) else "answer",
+        )
         self._record_last_verse_line(irc, channel, display_response, result)
         return response, True
 
@@ -4122,6 +4134,7 @@ class LLM(callbacks.Plugin):
                     extra_tools=extra_tools,
                     extra_handlers=combined_handlers,
                     manage_typing=False,
+                    exclude_tools=self._pending_task_excludes(channel),
                     **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                 )
 
@@ -4778,6 +4791,20 @@ class LLM(callbacks.Plugin):
         irc.reply(chan_part, prefixNick=False)
 
     # Reminder helper methods (testable without Limnoria wrap decorator)
+
+    def _pending_task_excludes(self, channel: str | None) -> frozenset[str]:
+        """Tool names to drop from a user-facing request for ``channel``.
+
+        When ``pendingTasksEnabled`` is off (the default) the five
+        reminder/scheduled-task schemas and their prompt rules stay out of
+        the request — they cost ~1,100 prompt tokens per completion. Only
+        the chat entry route is gated: verse already excludes these tools,
+        code/draw never see them, and reminder/scheduled fires must keep
+        them so chains can list/cancel/reschedule.
+        """
+        if self.registryValue("pendingTasksEnabled", channel):
+            return frozenset()
+        return PENDING_TASK_TOOLS
 
     def _pending_task_fns(
         self,

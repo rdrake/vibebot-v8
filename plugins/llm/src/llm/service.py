@@ -44,6 +44,7 @@ from .prompts import (
     BRIDGE_TOOLS_GUIDANCE,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
+    PENDING_TASKS_GUIDANCE,
     PROMPTS,
 )
 from .tracing import TraceFilter, extract_server_headers, request_id
@@ -3970,6 +3971,14 @@ Examples (echo → action_prompt: ""):
                 for t in (extra_tools or [])
             ):
                 framework += "\n" + BRIDGE_TOOLS_GUIDANCE
+            # Pending-task operating rules ride only when the reminder/
+            # scheduled-task tools are in the request (chat profile with
+            # pendingTasksEnabled on for the channel — the plugin passes
+            # PENDING_TASK_TOOLS via exclude_tools when it's off). Fires
+            # use the remind_action framework and never carry this block.
+            # Stable per channel, so prefix caching is unaffected.
+            if route_profile == PROFILE_CHAT and "set_reminder" not in exclude_tools:
+                framework += "\n" + PENDING_TASKS_GUIDANCE
             if system_prompt:
                 # ``str.replace`` rather than ``.format`` so user-supplied text
                 # containing literal '{...}' (e.g. JSON examples) doesn't blow

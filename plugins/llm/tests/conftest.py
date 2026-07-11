@@ -342,6 +342,7 @@ def plugin_env(mocker: MockerFixture):
         extra_handlers=None,
         model_override=None,
         manage_typing=True,
+        exclude_tools=frozenset(),
     ):
         from llm.service import AssistantResult as _AssistantResult
 
@@ -476,6 +477,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "metaMaxSteps": 7,
         # IRCv3 join optimization
         "skipAutoWhoOnJoin": True,
+        # Pending-task tool gate (default off, mirrors config.py)
+        "pendingTasksEnabled": False,
         # Limnoria bridge
         "bridgeEnabled": False,
         "bridgeAllowedPlugins": [],

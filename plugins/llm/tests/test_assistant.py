@@ -8,13 +8,14 @@ import pytest
 from llm.assistant import (
     ASSISTANT_TOOL_SPECS,
     ASSISTANT_TOOLS,
+    PENDING_TASK_TOOLS,
     AssistantToolExecutor,
     ToolCallbackResult,
     ToolResult,
     get_tools_for_profile,
 )
 from llm.plugin import LLM, Identity
-from llm.prompts import CHAT_SYSTEM_PROMPT
+from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
     LLMService,
     _depoison_verse_history,
@@ -1351,7 +1352,42 @@ class TestMetaCompletion:
         )
 
         assert captured_messages[0]["role"] == "system"
-        assert captured_messages[0]["content"] == CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot")
+        # Default exclude_tools is empty → the pending-task tools are in the
+        # request, so their operating rules ride along with the framework.
+        assert captured_messages[0]["content"] == (
+            CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot") + "\n" + PENDING_TASKS_GUIDANCE
+        )
+
+    def test_assistant_completion_excluding_pending_tools_drops_guidance(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Gated-off channels get neither the schemas nor the prompt rules."""
+        mock_response = make_completion_response("Done.")
+
+        captured: dict = {}
+
+        def capture_completion(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            exclude_tools=PENDING_TASK_TOOLS,
+        )
+
+        system = captured["messages"][0]["content"]
+        assert system == CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot")
+        assert "set_reminder" not in system
+        tool_names = {t["function"]["name"] for t in captured["tools"]}
+        assert tool_names.isdisjoint(PENDING_TASK_TOOLS)
 
     def test_assistant_completion_passes_search_fn_to_executor(
         self, service: LLMService, mocker: MockerFixture

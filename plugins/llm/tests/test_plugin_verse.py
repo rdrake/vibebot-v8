@@ -3171,6 +3171,38 @@ def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
     assert "singled these lines out" in route.system_prompt
 
 
+class TestVersePasteStyle:
+    """Verse scenes that overflow to a paste use the storybook theme."""
+
+    def test_verse_overflow_paste_uses_story_theme(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/s.html"
+        plugin.llm_service.summarize_for_irc.return_value = "A tale."
+        scene = "beat one\nbeat two"
+        result = AssistantResult(content=scene, was_verse=True)
+
+        plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="fc42", channel="#test", response=scene
+        )
+
+        assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "story"
+
+    def test_chat_overflow_paste_uses_answer_theme(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        irc.network = "testnet"
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/a.html"
+        plugin.llm_service.summarize_for_irc.return_value = "An answer."
+        answer = "line one\nline two"
+        result = AssistantResult(content=answer, was_verse=False)
+
+        plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="alice", channel="#test", response=answer
+        )
+
+        assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "answer"
+
+
 class TestVerseReactionSendHook:
     def test_verse_reply_records_last_bot_line(self, plugin_env):
         plugin, irc, msg = plugin_env
