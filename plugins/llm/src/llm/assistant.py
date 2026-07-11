@@ -33,26 +33,10 @@ _log = logging.getLogger("supybot.plugins.LLM.assistant")
 # Tool definitions in OpenAI function-calling format.
 # LiteLLM passes these through to any provider that supports tool calling.
 ASSISTANT_TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_instruction",
-            "description": (
-                "Get a user's current persistent instruction. "
-                "Omit nick for the caller. Another user requires owner privileges."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "nick": {
-                        "type": "string",
-                        "description": "IRC nick (optional, default: caller).",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
+    # NOTE: there is deliberately no get_instruction tool — the caller's
+    # standing instruction is already injected into every request as a
+    # user-role data block, so a read tool only duplicated prompt budget.
+    # (Cost: owners can no longer read OTHER users' instructions via NL.)
     {
         "type": "function",
         "function": {
@@ -622,7 +606,6 @@ _VERSE_EXCLUDED_TOOLS: frozenset[str] = frozenset(
         "clear_memories",
         "forget_context",
         "get_channel_usage",
-        "get_instruction",
         "get_usage",
         "list_pending_tasks",
         "schedule_llm_task",
@@ -828,15 +811,6 @@ class AssistantToolExecutor:
     @staticmethod
     def _deny_access() -> str:
         return AssistantToolExecutor._err("Only bot owners can access other users' data.")
-
-    def _tool_get_instruction(self, args: dict[str, Any]) -> str:
-        target = self._resolve_target_nick(args)
-        if target is None:
-            return self._deny_access()
-        instruction = self.db.get_instruction(target)
-        if instruction:
-            return json.dumps({"instruction": instruction, "nick": target})
-        return json.dumps({"instruction": None, "message": f"No instruction set for {target}."})
 
     def _tool_set_instruction(self, args: dict[str, Any]) -> str:
         target = self._resolve_target_nick(args)

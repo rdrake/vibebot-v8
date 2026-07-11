@@ -47,7 +47,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 21
+        assert len(ASSISTANT_TOOLS) == 20
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -161,10 +161,10 @@ class TestAssistantToolExecutor:
             cancel_all_pending_tasks_fn=mock_cancel_all_pending_tasks_fn,
         )
 
-    def test_get_instruction(self, executor: AssistantToolExecutor) -> None:
-        """GIVEN get_instruction tool WHEN called THEN returns current instruction."""
+    def test_get_instruction_tool_is_gone(self, executor: AssistantToolExecutor) -> None:
+        """The read tool was removed — the instruction is injected as data."""
         result = executor.execute("get_instruction", {})
-        assert "respond in haiku" in result.content
+        assert "Unknown tool" in result.content
 
     def test_set_instruction(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
         """GIVEN set_instruction tool WHEN called THEN saves instruction."""
@@ -531,9 +531,9 @@ class TestAssistantToolExecutor:
 
     def test_execute_returns_tool_result(self, executor: AssistantToolExecutor) -> None:
         """execute() returns ToolResult for existing tools."""
-        result = executor.execute("get_instruction", {})
+        result = executor.execute("set_instruction", {"text": "be brief"})
         assert isinstance(result, ToolResult)
-        assert "respond in haiku" in result.content
+        assert "be brief" in result.content
 
     def test_execute_denied_returns_tool_result(
         self, mock_db: MagicMock, mock_context: MagicMock
@@ -3440,7 +3440,6 @@ class TestToolSpecVisibility:
             "cleanup_memories",
             "clear_memories",
             "clear_instruction",
-            "get_instruction",
             "set_instruction",
         ):
             assert tool not in names, f"{tool} should not be visible in verse profile"
@@ -3737,7 +3736,6 @@ class TestExecutorCoverageGaps:
     @pytest.mark.parametrize(
         "tool_name,args",
         [
-            ("get_instruction", {"nick": "someone"}),
             ("set_instruction", {"nick": "someone", "text": "x"}),
             ("clear_instruction", {"nick": "someone"}),
             ("save_memory", {"nick": "someone", "text": "x"}),
