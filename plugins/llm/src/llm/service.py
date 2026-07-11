@@ -37,7 +37,6 @@ from .context import Role
 from .persistence import ScheduledLlmTaskRow
 from .profile import (
     PROFILE_CHAT,
-    PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
     PROFILES,
 )
@@ -5814,15 +5813,13 @@ Examples (echo → action_prompt: ""):
     ) -> None:
         """Run the fired prompt through ``assistant_request`` directly.
 
-        Mirrors the reminder action-fire path in ``plugin.py``: the manual
-        rate-limit check, synthetic AssistantRequestContext, the direct service
-        call, output sanitization, and usage logging are all needed because the
-        scheduler thread bypasses the normal command-wrapper preflight.
+        Shares ``plugin._run_unattended_assistant`` with the reminder
+        action-fire path: the scheduler thread bypasses the normal
+        command-wrapper preflight, so the manual rate-limit check, the
+        capability recheck, output sanitization, and delivery happen here.
         """
         plugin = self.plugin
         now = time.time()
-        rl_account = row.account if row.account else row.creator_nick
-        rl_tier = "registered" if row.account else "unregistered"
         if row.reply_target:
             target = row.reply_target
         else:
@@ -5855,18 +5852,7 @@ Examples (echo → action_prompt: ""):
             self.plugin.db.delete_scheduled_llm_task(row.event_name)
             return
 
-        if plugin._check_rate_limit(
-            None,
-            "ask",
-            rl_account,
-            "",
-            "",
-            "",
-            tier=rl_tier,
-            silent=True,
-            record=False,
-            now=now,
-        ):
+        if plugin._unattended_ask_rate_limited(account=row.account, nick=row.creator_nick, now=now):
             self.plugin._safe_queue(
                 irc,
                 ircmsgs.privmsg(
@@ -5876,76 +5862,34 @@ Examples (echo → action_prompt: ""):
             )
             return
 
-        request_context = AssistantRequestContext(
-            entry_route="scheduled_llm_task",
-            profile="remind_action",
-            nick=row.creator_nick,
-            raw_nick=row.creator_nick,
-            account=row.account,
-            channel=row.channel,
-            is_private=not ircutils.isChannel(row.channel),
-            is_owner=False,
-            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
-        )
-        history, channel_history = plugin._gather_history(row.creator_nick, row.channel)
-        memories = plugin._get_user_memories(row.creator_nick)
-        user_instruction = plugin.db.get_instruction(row.creator_nick)
-        ask_prompt = plugin.registryValue(
-            PROFILES[PROFILE_REMIND_ACTION].overlay_setting, row.channel
-        )
-        effective_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
-        # Local import avoids a service.py -> plugin.py import cycle at module load.
-        from .plugin import Identity
-
-        caller = Identity(raw_nick=row.creator_nick, account=row.account)
-
         # The depth tag on ``msg`` keeps schedule_llm_task itself off the tool
         # surface for this turn (the tool refuses on depth>=1).
-        pending_task_fns: dict[str, Any] = plugin._pending_task_fns(
-            caller=caller,
+        # fold_instruction_into_prompt preserves this path's historical
+        # instruction handling (folded into the system prompt, not user-role).
+        result = plugin._run_unattended_assistant(
             irc=irc,
             msg=msg,
-            channel=row.channel,
-            pass_irc_msg_to_callbacks=False,
-        )
-
-        result = self.assistant_request(
             prompt=row.prompt,
-            request_context=request_context,
-            db=plugin.db,
-            context=plugin.context,
+            nick=row.creator_nick,
+            account=row.account,
+            channel=row.channel,
             bot_nick=irc.nick,
-            history=history,
-            channel_history=channel_history,
-            irc=irc,
-            msg=msg,
-            memories=memories,
-            system_prompt=effective_prompt,
-            search_fn=lambda q: self.search_completion(q, channel=row.channel),
-            fetch_fn=lambda u: self.url_completion(u, channel=row.channel),
-            code_fn=lambda p: plugin._code_for_assistant(p, row.channel),
-            draw_fn=lambda p, _i=irc, _m=msg: plugin._draw_for_assistant(_i, _m, p),
-            cleanup_fn=lambda n: plugin._run_memory_cleanup(n, row.channel),
-            **pending_task_fns,
+            entry_route="scheduled_llm_task",
+            fold_instruction_into_prompt=True,
         )
 
         response = (result.content or "").strip()
         if not plugin._llm_executor.closing:
-            try:
-                plugin.db.log_usage(
-                    row.account or row.creator_nick,
-                    row.channel,
-                    "scheduled_llm_task",
-                    result.model,
-                    result.prompt_tokens,
-                    result.completion_tokens,
-                    result.cost,
-                    prompt=row.prompt,
-                    status=("silent" if row.watch_mode and response == "[silent]" else "success"),
-                    error_detail=(result.error or "")[:200],
-                )
-            except Exception:
-                self.log.exception("scheduled_llm_task usage log failed: %s", row.event_name)
+            plugin._log_unattended_usage(
+                nick=row.creator_nick,
+                account=row.account,
+                channel=row.channel,
+                command="scheduled_llm_task",
+                prompt=row.prompt,
+                result=result,
+                silent=bool(row.watch_mode and response == "[silent]"),
+                log_context=row.event_name,
+            )
 
         if not response or (row.watch_mode and response == "[silent]"):
             return

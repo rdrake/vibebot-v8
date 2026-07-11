@@ -501,12 +501,20 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
 
     mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
 
+    from llm.plugin import LLM
+
     plugin = llm_service.plugin
     plugin._check_rate_limit.return_value = False
     plugin._gather_history.return_value = ([], [])
     plugin._get_user_memories.return_value = []
     mocker.patch.object(plugin.db, "get_instruction", return_value="")
     plugin._pending_task_fns.return_value = {}
+    # The fire plumbing lives in plugin._run_unattended_assistant (shared
+    # with reminder action fires); bind the real helpers to the mock plugin
+    # so the dispatch path reaches the patched assistant_request.
+    plugin.llm_service = llm_service
+    plugin._unattended_ask_rate_limited = LLM._unattended_ask_rate_limited.__get__(plugin)
+    plugin._run_unattended_assistant = LLM._run_unattended_assistant.__get__(plugin)
 
     captured: dict[str, object] = {}
 
