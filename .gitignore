@@ -19,7 +19,8 @@ env/
 
 # Limnoria generated
 conf/
-data/
+/data/
+plugins/llm/data/
 logs/
 backup/
 tmp/

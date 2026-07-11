@@ -77,7 +77,7 @@ Follow the printed instructions to copy `bot.conf` into place and enable the ser
 New code reaches production two ways:
 
 1. **CI auto-deploy**: after a push to `main` passes CI and the Docker image publishes, the deploy step connects over SSH and restarts the service.
-2. **Updater timer**: `make install-timer` installs `vibebot-updater.timer`, which polls GHCR every 15 minutes and restarts the service when the image digest changes.
+2. **Updater timer** (fallback): `make install-timer` installs `vibebot-updater.timer`, which polls GHCR every 15 minutes and restarts the service when the image digest changes. With CI auto-deploy in place it only matters for out-of-band image pushes or a host that was offline during the push.
 
 ```bash
 systemctl --user status vibebot-updater.timer      # check timer status

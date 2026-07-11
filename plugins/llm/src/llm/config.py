@@ -438,7 +438,10 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# Verse Storybook (illustrated story tool)
+# Storybook (illustrated story tool) — despite the verse* prefix these keys
+# also govern the standalone @story command, which needs no verse. The
+# prefix is kept because renaming registry keys silently orphans prod
+# bot.conf values.
 # ============================================================================
 
 conf.registerChannelValue(
@@ -446,10 +449,12 @@ conf.registerChannelValue(
     "verseStorybookEnabled",
     registry.Boolean(
         False,
-        _("""Expose the verse_storybook tool in this channel."""),
+        _("""Expose the verse_storybook tool in this channel. (@story is
+        independent of this flag — it is gated like @draw.)"""),
     ),
 )
 
+# (Verse engagement measurement, not storybook — filed here historically.)
 conf.registerChannelValue(
     LLM,
     "verseReactionCaptureEnabled",
@@ -466,7 +471,7 @@ conf.registerChannelValue(
     "verseStorybookMaxImages",
     registry.NonNegativeInteger(
         5,
-        _("""Max illustrations drawn per story."""),
+        _("""Max illustrations drawn per story (verse_storybook and @story)."""),
     ),
 )
 
@@ -484,7 +489,8 @@ conf.registerChannelValue(
     "verseStorybookCooldownSeconds",
     registry.NonNegativeInteger(
         300,
-        _("""Per-account cooldown between stories."""),
+        _("""Per-account cooldown between stories (shared by verse_storybook
+        and @story)."""),
     ),
 )
 
@@ -493,7 +499,8 @@ conf.registerChannelValue(
     "verseStorybookDailyImageCap",
     registry.NonNegativeInteger(
         30,
-        _("""Per-account daily ceiling on storybook images."""),
+        _("""Per-account daily ceiling on storybook images (enforcement
+        deferred; cooldown + per-turn cap bound spend today)."""),
     ),
 )
 
@@ -502,7 +509,8 @@ conf.registerChannelValue(
     "verseStorybookMaxChars",
     registry.NonNegativeInteger(
         6000,
-        _("""Story length cap before image embedding."""),
+        _("""Story length cap before image embedding (verse_storybook and
+        @story)."""),
     ),
 )
 
@@ -511,10 +519,12 @@ conf.registerChannelValue(
     "verseStorybookImageTimeout",
     registry.NonNegativeInteger(
         45,
-        _("""Per-image timeout (seconds) for storybook draws."""),
+        _("""Per-image timeout (seconds) for storybook draws (verse_storybook
+        and @story)."""),
     ),
 )
 
+# (Verse retention compaction, not storybook — filed here historically.)
 conf.registerGlobalValue(
     LLM,
     "verseCompactionMinKeepEvents",

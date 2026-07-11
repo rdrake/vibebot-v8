@@ -34,7 +34,10 @@ typecheck:
 	uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/
 
 syntax-check:
-	uv run python scripts/check_python_syntax_compat.py --versions 3.12 3.13 3.14
+	uv run python scripts/check_python_syntax_compat.py \
+		plugins/llm/src plugins/llm/tests \
+		plugins/nickinmiddle/src plugins/nickinmiddle/tests scripts \
+		--versions 3.12 3.13 3.14
 
 check: lint format-check typecheck syntax-check test
 
@@ -44,6 +47,8 @@ check-fast: lint format-check typecheck syntax-check
 
 preflight: format check
 
+# Local approximation of CI — the authoritative definition lives in
+# .github/workflows/ci.yml (prek + syntax-check + test matrix per version).
 ci:
 	uv sync --locked
 	uv run prek run --all-files
@@ -146,6 +151,8 @@ deep-clean: clean clean-runtime
 	rm -rf .venv
 	uv cache clean
 
+# Prod-host recipe (run on the server, not a dev box): the bot writes
+# generated pages/images to /var/www/llm behind the reverse proxy.
 setup-http:
 	@echo "Creating HTTP directory for code/image output..."
 	mkdir -p /var/www/llm

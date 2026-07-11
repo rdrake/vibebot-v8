@@ -539,7 +539,9 @@ class ToolSpec:
     handler_name: str
     capability: str | None = "llm.ask"
     require_account: bool = False
-    rate_bucket: str = "ask"
+    # Log-only telemetry flag — nothing gates on it. Actual rate limiting
+    # lives in plugin.py's per-command buckets; enforcement here is
+    # capability + require_account + visible_in.
     destructive: bool = False
     visible_in: frozenset[str] = frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION})
 
@@ -752,11 +754,10 @@ class AssistantToolExecutor:
         )
         if denial_reason is not None:
             _log.info(
-                "tool=%s profile=%s nick=%s bucket=%s decision=deny reason=%s",
+                "tool=%s profile=%s nick=%s decision=deny reason=%s",
                 tool_name,
                 self.route_profile,
                 self.nick,
-                spec.rate_bucket,
                 denial_reason,
             )
             return ToolResult(content=self._err(denial_reason))
@@ -769,11 +770,10 @@ class AssistantToolExecutor:
             )
             return ToolResult(content=self._err(f"Unknown tool implementation: {tool_name}"))
         _log.info(
-            "tool=%s profile=%s nick=%s bucket=%s destructive=%s decision=allow",
+            "tool=%s profile=%s nick=%s destructive=%s decision=allow",
             tool_name,
             self.route_profile,
             self.nick,
-            spec.rate_bucket,
             spec.destructive,
         )
         try:
