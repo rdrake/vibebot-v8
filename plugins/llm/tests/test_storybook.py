@@ -241,7 +241,10 @@ def test_make_verse_tool_specs_includes_storybook_when_enabled():
 def test_storybook_job_records_canon_event(plugin_env, tmp_path, mocker):
     from llm.verse.store import VerseStore
 
+    from .conftest import make_registry_side_effect
+
     plugin, irc, msg = plugin_env
+    plugin.registryValue.side_effect = make_registry_side_effect({"verseEnabled": True})
     store = VerseStore(tmp_path / "verse", "#afnet")
     avatar_id = store.opt_in_avatar(nick="alice", account="alice-acct", instruct_text="").entity_id
     mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
@@ -261,7 +264,10 @@ def test_storybook_job_records_canon_event(plugin_env, tmp_path, mocker):
 def test_storybook_job_no_avatar_skips_record(plugin_env, tmp_path, mocker):
     from llm.verse.store import VerseStore
 
+    from .conftest import make_registry_side_effect
+
     plugin, irc, msg = plugin_env
+    plugin.registryValue.side_effect = make_registry_side_effect({"verseEnabled": True})
     store = VerseStore(tmp_path / "verse", "#afnet")  # nobody opted in
     mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
     mocker.patch.object(plugin, "_llm_executor")
@@ -271,3 +277,72 @@ def test_storybook_job_no_avatar_skips_record(plugin_env, tmp_path, mocker):
     )
 
     assert store.recent_events(limit=10) == []
+
+
+def test_storybook_job_non_verse_channel_skips_store(plugin_env, mocker):
+    """@story in a non-verse channel (or PM) must not lazily create a verse DB."""
+    plugin, irc, msg = plugin_env  # verseEnabled defaults to False
+    get_store = mocker.patch.object(plugin, "_get_or_create_verse_store")
+    mocker.patch.object(plugin, "_llm_executor")
+
+    plugin._submit_storybook_job(
+        channel="#test", nick="alice", persona="", brief="a tale", account="acct"
+    )
+    plugin._submit_storybook_job(
+        channel="testbot", nick="alice", persona="", brief="a tale", account="acct"
+    )
+
+    get_store.assert_not_called()
+
+
+def test_storybook_job_logs_usage_on_success(plugin_env, mocker):
+    from llm.service import StorybookResult
+
+    plugin, irc, msg = plugin_env
+    plugin.llm_service.generate_storybook.return_value = StorybookResult(
+        url="http://h/llm/story_x.html",
+        title="A Tale",
+        image_count=2,
+        dropped=0,
+        prompt_tokens=10,
+        completion_tokens=20,
+        cost=0.08,
+        model="dall-e-3",
+    )
+    mocker.patch.object(plugin._llm_executor, "submit", side_effect=lambda label, fn, *a: fn(*a))
+    mocker.patch("llm.plugin.world.ircs", [irc])
+    mocker.patch.object(plugin, "_safe_queue", return_value=True)
+
+    plugin._submit_storybook_job(
+        channel="#test", nick="alice", persona="", brief="a tale", account="acct"
+    )
+
+    plugin.db.log_usage.assert_called_once()
+    kwargs = plugin.db.log_usage.call_args.kwargs
+    assert kwargs["command"] == "story"
+    assert kwargs["cost"] == 0.08
+    assert kwargs["model"] == "dall-e-3"
+
+
+def test_storybook_job_pm_delivers_to_nick(plugin_env, mocker):
+    """A PM @story delivers the link to the requesting nick, not the void."""
+    from llm.service import StorybookResult
+
+    plugin, irc, msg = plugin_env
+    plugin.llm_service.generate_storybook.return_value = StorybookResult(
+        url="http://h/llm/story_x.html", title="A Tale", image_count=0, dropped=0
+    )
+    mocker.patch.object(plugin._llm_executor, "submit", side_effect=lambda label, fn, *a: fn(*a))
+    mocker.patch("llm.plugin.world.ircs", [irc])
+    safe_queue = mocker.patch.object(plugin, "_safe_queue", return_value=True)
+    privmsg = mocker.patch.object(plugin, "_safe_privmsg", side_effect=lambda t, m: (t, m))
+
+    # "channel" for a PM is the bot's own nick — never in state.channels.
+    plugin._submit_storybook_job(
+        channel="testbot", nick="alice", persona="", brief="a tale", account="acct"
+    )
+
+    assert safe_queue.called
+    target, text = privmsg.call_args.args
+    assert target == "alice"
+    assert "story_x.html" in text

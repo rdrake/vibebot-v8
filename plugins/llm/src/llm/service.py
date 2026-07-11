@@ -639,12 +639,21 @@ class ImageResult(NamedTuple):
 
 
 class StorybookResult(NamedTuple):
-    """Result of an illustrated storybook generation."""
+    """Result of an illustrated storybook generation.
+
+    Token/cost fields cover the illustration draws (the dominant spend);
+    the story-text completion goes through ``_ask_completion``, which does
+    not expose usage.
+    """
 
     url: str
     title: str
     image_count: int
     dropped: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    model: str = ""
 
 
 class ExtractionResult(NamedTuple):
@@ -3586,11 +3595,18 @@ Examples (echo → action_prompt: ""):
         # (the verse_storybook job), so a scoped pool here is safe. Cap the
         # fan-out so a long story can't open a huge burst of image jobs.
         drawn: dict[int, tuple[str, str]] = {}
+        prompt_tokens = completion_tokens = 0
+        cost = 0.0
         if wanted:
             with ThreadPoolExecutor(
                 max_workers=min(len(wanted), 5), thread_name_prefix="storybook-img"
             ) as pool:
                 for it, res in pool.map(_draw, wanted):
+                    if res is not None:
+                        # Failed draws may still have billed; count them.
+                        prompt_tokens += res.prompt_tokens
+                        completion_tokens += res.completion_tokens
+                        cost += res.cost
                     if res and res.url and not res.error:
                         drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
                     else:
@@ -3608,7 +3624,16 @@ Examples (echo → action_prompt: ""):
         url = self.save_markdown_to_http(markdown_doc, title=title, style="story")
         if not url:
             return None
-        return StorybookResult(url=url, title=title, image_count=len(used), dropped=dropped)
+        return StorybookResult(
+            url=url,
+            title=title,
+            image_count=len(used),
+            dropped=dropped,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost=cost,
+            model=model,
+        )
 
     @staticmethod
     def _validate_story_obj(obj):

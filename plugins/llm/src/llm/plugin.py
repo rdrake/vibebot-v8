@@ -2750,26 +2750,36 @@ class LLM(callbacks.Plugin):
         """
         # Record a canon event so an illustrated turn isn't invisible to verse
         # retention (the tool/@story paths short-circuit before any verse record
-        # step). Best-effort: never break delivery if the store/avatar lookup fails.
+        # step). Only for verse channels — @story works anywhere, and a bare
+        # @story in a non-verse channel or PM must not lazily create a verse DB.
+        # Best-effort: never break delivery if the store/avatar lookup fails.
         try:
-            store = self._get_or_create_verse_store(channel)
-            avatar_id = (
-                store.find_avatar_by_account(account) if account else None
-            ) or store.find_avatar_by_nick(nick)
-            if avatar_id is not None:
-                store.record_user_event(
-                    actor_id=avatar_id,
-                    summary=(brief.strip()[:200] or "told an illustrated tale"),
-                    actor_names=[],
-                )
+            if ircutils.isChannel(channel) and self.registryValue("verseEnabled", channel):
+                store = self._get_or_create_verse_store(channel)
+                avatar_id = (
+                    store.find_avatar_by_account(account) if account else None
+                ) or store.find_avatar_by_nick(nick)
+                if avatar_id is not None:
+                    store.record_user_event(
+                        actor_id=avatar_id,
+                        summary=(brief.strip()[:200] or "told an illustrated tale"),
+                        actor_names=[],
+                    )
         except Exception:
             self.log.exception("storybook canon-record failed (non-fatal) channel=%s", channel)
 
         def _deliver(text: str) -> None:
             collapsed = self._collapse_for_irc(text) or text
+            if ircutils.isChannel(channel):
+                for irc_conn in world.ircs:
+                    if channel in irc_conn.state.channels:
+                        self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
+                        return
+                return
+            # PM: the "channel" is the bot's own nick, never in state.channels —
+            # deliver to the requesting nick on the first available connection.
             for irc_conn in world.ircs:
-                if channel in irc_conn.state.channels:
-                    self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
+                if self._safe_queue(irc_conn, self._safe_privmsg(nick, collapsed)):
                     return
 
         def _job(b: str) -> None:
@@ -2778,6 +2788,22 @@ class LLM(callbacks.Plugin):
                     b, channel=channel, persona=persona, conversation=[]
                 )
                 if res is not None:
+                    # @story's command wrapper returns before generation, so the
+                    # shared _store_context_and_log_usage path never sees the
+                    # spend — log the (image-dominated) usage here instead.
+                    try:
+                        self.db.log_usage(
+                            nick=nick,
+                            channel=channel,
+                            command="story",
+                            model=res.model,
+                            prompt_tokens=res.prompt_tokens,
+                            completion_tokens=res.completion_tokens,
+                            cost=res.cost,
+                            prompt=b[:200],
+                        )
+                    except Exception:
+                        self.log.exception("storybook usage logging failed nick=%s", nick)
                     _deliver(f"the tale is told — {res.title}: {res.url}")
                 else:
                     _deliver("the tale slipped away before it could be illustrated.")
@@ -4175,7 +4201,7 @@ class LLM(callbacks.Plugin):
         # Per-account cooldown (shared with verse_storybook), reserve-at-start.
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
         if self._storybook_cooldown_active(pf.account, cooldown):
-            self._safe_error(irc, _("Easy — give the muse a moment before the next tale."))
+            self._safe_error(irc, _("Storybook cooldown is active — try again in a bit."))
             return
 
         # Fire-and-return: the page is rendered + posted asynchronously, so the
