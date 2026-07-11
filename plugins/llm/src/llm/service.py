@@ -41,7 +41,12 @@ from .profile import (
     PROFILE_VERSE,
     PROFILES,
 )
-from .prompts import MEMORY_CLEANUP_PROMPT, MEMORY_EXTRACTION_PROMPT, PROMPTS
+from .prompts import (
+    BRIDGE_TOOLS_GUIDANCE,
+    MEMORY_CLEANUP_PROMPT,
+    MEMORY_EXTRACTION_PROMPT,
+    PROMPTS,
+)
 from .tracing import TraceFilter, extract_server_headers, request_id
 
 # MUST be set before any LiteLLM calls create HTTPHandler
@@ -689,6 +694,9 @@ class AssistantResult(NamedTuple):
     grounding_used: bool = False
     error: str | None = None
     last_successful_tool: str | None = None
+    # Internal signal only (plugin checks its emptiness to decide whether a
+    # tool-mutation turn needs a spoken reply) — deliberately UNsanitized;
+    # never send it to IRC. User-facing text rides in ``content``.
     final_text_after_tools: str = ""
     was_verse: bool = False
 
@@ -1550,44 +1558,22 @@ class LLMService:
 
         return ValidationResult(True)
 
-    def _is_private_host(self, hostname: str) -> bool:
-        """Check if hostname resolves to private/internal IP.
-
-        Fails closed — returns True (blocked) on any resolution error.
-
-        Note: This is a TOCTOU check — DNS may resolve differently when LiteLLM
-        later fetches the URL. DNS rebinding attacks could bypass this, but the
-        fail-closed design and the low value of the target (IRC bot) limit risk.
-
-        Args:
-            hostname: Hostname to check
-
-        Returns:
-            True if private/internal (should be blocked), False if public
-        """
-        import ipaddress
-        import socket
-
-        try:
-            ip = socket.gethostbyname(hostname)
-            ip_obj = ipaddress.ip_address(ip)
-            return (
-                ip_obj.is_private
-                or ip_obj.is_loopback
-                or ip_obj.is_link_local
-                or ip_obj.is_reserved
-            )
-        except (socket.gaierror, ValueError):
-            return True  # Fail closed
-
     def validate_image_url(self, url: str) -> bool:
         """Validate image URL for safety.
 
         Security checks:
         - Only http/https schemes allowed (blocks javascript:, data:, file:, ftp:)
         - No path traversal attempts (blocks ../ in path)
-        - SSRF protection: blocks private/internal IP addresses
         - Must have valid image extension (checked on path, ignoring query string)
+        - SSRF protection via the shared pair: ``validate_external_url``
+          (scheme + literal-IP policy, no DNS) then ``_resolves_to_public``
+          (every resolved IP must be globally routable, fail-closed) — the
+          same policy as provider-URL downloads, replacing an older weaker
+          single-A-record check.
+
+        Note: still a TOCTOU check — DNS may resolve differently when LiteLLM
+        later fetches the URL — but resolving all records and requiring
+        is_global narrows the rebinding window.
 
         Args:
             url: Image URL to validate
@@ -1597,10 +1583,6 @@ class LLMService:
         """
         from urllib.parse import urlparse
 
-        # Guard clauses — fail fast
-        if not url.startswith(("http://", "https://")):
-            return False
-
         try:
             parsed = urlparse(url)
         except ValueError:
@@ -1609,12 +1591,12 @@ class LLMService:
         if ".." in parsed.path:
             return False
 
-        # SSRF protection
-        if self._is_private_host(parsed.hostname or ""):
+        valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+        if not any(parsed.path.lower().endswith(ext) for ext in valid_extensions):
             return False
 
-        valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        return any(parsed.path.lower().endswith(ext) for ext in valid_extensions)
+        # Cheap static policy first (scheme, literal private IPs), DNS last.
+        return validate_external_url(url) and self._resolves_to_public(url)
 
     def _completion_with_tool_fallback(
         self,
@@ -3979,6 +3961,16 @@ Examples (echo → action_prompt: ""):
             # miss per channel-session at first verse turn; subsequent verse
             # turns share a verse-mode prefix and hit cache among themselves.
             framework = PROMPTS[profile.prompt_id].format(bot_nick=bot_nick)
+            # Bridge operating rules ride only when the bridge tools are
+            # actually injected (extra_tools, bridgeEnabled channels) — the
+            # framework must not describe tools the model can't see. Stable
+            # per channel, so prefix caching is unaffected.
+            if any(
+                (t.get("function", t) or {}).get("name")
+                in ("run_limnoria_command", "search_bridge_commands")
+                for t in (extra_tools or [])
+            ):
+                framework += "\n" + BRIDGE_TOOLS_GUIDANCE
             if system_prompt:
                 # ``str.replace`` rather than ``.format`` so user-supplied text
                 # containing literal '{...}' (e.g. JSON examples) doesn't blow

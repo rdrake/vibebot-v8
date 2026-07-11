@@ -101,7 +101,14 @@ CHAT_SYSTEM_PROMPT = (
     "thumbs-up for cancel). You can stay quiet — your reply would just "
     "duplicate the reaction. If the tool returned an error or refusal "
     "(cap reached, not found, parse failed), DO speak: surface the "
-    "reason in one short sentence so the user knows what went wrong.\n"
+    "reason in one short sentence so the user knows what went wrong."
+)
+
+# Appended to the chat framework ONLY when the bridge tools are actually
+# injected for the request (bridgeEnabled is per-channel and defaults off) —
+# permanently describing tools the model can't see wastes prompt budget and
+# invites hallucinated calls.
+BRIDGE_TOOLS_GUIDANCE = (
     "- The Limnoria bridge tools (run_limnoria_command, "
     "search_bridge_commands) EXECUTE plugin commands on the user's "
     "behalf. They are NOT a documentation lookup. For meta-questions "

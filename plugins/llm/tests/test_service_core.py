@@ -212,7 +212,7 @@ class TestLLMService:
     )
     def test_validate_image_url_accepts_valid_urls(self, url: str) -> None:
         """GIVEN valid HTTP(S) image URL WHEN validated THEN accepted."""
-        self.mocker.patch.object(self.service, "_is_private_host", return_value=False)
+        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
         assert self.service.validate_image_url(url) is True
 
     def test_api_key_sanitization_sk_format(self) -> None:

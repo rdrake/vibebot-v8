@@ -3250,9 +3250,20 @@ class LLM(callbacks.Plugin):
         if not error:
             return False
         lower = error.lower()
-        return (
-            "content" in lower or "moderation" in lower or "safety" in lower or "blocked" in lower
+        # Phrase-level matching: a bare "content" substring also matches
+        # "content-length mismatch" / "unsupported content type" and skewed
+        # the usage-status analytics toward content_blocked.
+        phrases = (
+            "content policy",
+            "content blocked",
+            "content_blocked",
+            "content filter",
+            "content management policy",
+            "moderation",
+            "safety",
+            "blocked",
         )
+        return any(p in lower for p in phrases)
 
     @staticmethod
     def _month_start_ts() -> float:

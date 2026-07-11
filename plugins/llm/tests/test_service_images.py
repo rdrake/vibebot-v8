@@ -780,15 +780,17 @@ class TestImageUrlSsrfProtection:
 
     def test_allows_public_urls(self) -> None:
         """GIVEN public URL WHEN validated THEN accepted."""
-        # Note: This test requires DNS resolution, so we mock the private check
-        self.mocker.patch.object(self.service, "_is_private_host", return_value=False)
+        # Note: This test requires DNS resolution, so we mock the resolver
+        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
         assert self.service.validate_image_url("https://example.com/image.png") is True
 
-    def test_is_private_host_fails_closed(self) -> None:
-        """GIVEN DNS resolution failure WHEN checking host THEN returns True (blocked)."""
-        # Invalid hostname should fail closed
+    def test_resolver_fails_closed(self) -> None:
+        """GIVEN DNS resolution failure WHEN checking host THEN blocked."""
         assert (
-            self.service._is_private_host("definitely-not-a-valid-hostname-12345.invalid") is True
+            self.service._resolves_to_public(
+                "http://definitely-not-a-valid-hostname-12345.invalid/x.png"
+            )
+            is False
         )
 
 

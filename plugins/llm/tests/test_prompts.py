@@ -164,3 +164,11 @@ class TestProfileSpecificContent:
     def test_remind_action_documents_mechanical_recurrence(self):
         """The fire-time prompt must say the scheduler handles recurrence."""
         assert "Recurrence is handled mechanically" in prompts.PROMPTS["remind_action"]
+
+
+class TestBridgeGuidanceSplit:
+    """Bridge operating rules are injected per-request, not baked into chat."""
+
+    def test_chat_prompt_does_not_mention_bridge_tools(self):
+        assert "run_limnoria_command" not in prompts.CHAT_SYSTEM_PROMPT
+        assert "run_limnoria_command" in prompts.BRIDGE_TOOLS_GUIDANCE
