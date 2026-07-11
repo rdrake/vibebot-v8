@@ -73,6 +73,37 @@ def test_update_entity_sets_name_and_summary(tmp_path):
     assert ent.summary == "new"
 
 
+def test_update_entity_place_rename_relocates_avatars(tmp_path):
+    """Renaming a place rewrites avatar 'location' attributes that pointed at
+    the old name (case-insensitively) — otherwise every avatar standing there
+    is stranded at a ghost name and loses the aging occupied-place protection."""
+    store = _store(tmp_path)
+    place_id = store.add_entity("place", "The Clearing", "a glade")
+    here = store.add_entity("avatar", "alice")
+    store.set_attribute(here, "location", "the clearing")  # case differs
+    elsewhere = store.add_entity("avatar", "bob")
+    store.set_attribute(elsewhere, "location", "The Tavern")
+
+    _apply(store, op="update_entity", payload={"entity_id": place_id, "name": "The Glade"})
+
+    assert store.get_attribute(here, "location") == "The Glade"
+    assert store.get_attribute(elsewhere, "location") == "The Tavern"  # untouched
+
+
+def test_update_entity_npc_rename_leaves_locations_alone(tmp_path):
+    """The location rewrite is scoped to kind='place' renames — renaming an
+    NPC that happens to share a place's name must not move anyone."""
+    store = _store(tmp_path)
+    store.add_entity("place", "Echo")
+    npc = store.add_entity("npc", "Echo")
+    avatar = store.add_entity("avatar", "alice")
+    store.set_attribute(avatar, "location", "Echo")
+
+    _apply(store, op="update_entity", payload={"entity_id": npc, "name": "Reverb"})
+
+    assert store.get_attribute(avatar, "location") == "Echo"
+
+
 def test_set_status_invalid_status(tmp_path):
     store = _store(tmp_path)
     eid = store.add_entity("npc", "Bob")

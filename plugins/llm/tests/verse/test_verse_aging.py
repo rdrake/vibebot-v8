@@ -144,9 +144,10 @@ class TestAgeAutoCreatedEntities:
         assert row[0] == "active"
 
     def test_digest_insert_bumps_last_seen(self, store: VerseStore) -> None:
-        """When _replace_events_with_source inserts a digest, every entity
-        in entity_ids has last_seen_ts bumped to ts. The bump is on the
-        same conn as the INSERT — atomic with the digest write."""
+        """When _replace_events_with_source inserts a digest, every non-avatar
+        entity in entity_ids has last_seen_ts bumped to ts (the heartbeat now
+        rides on add_event itself). The bump is on the same conn as the
+        INSERT — atomic with the digest write."""
         from llm.verse.aging import age_auto_created_entities
 
         eid = store.add_entity("npc", "ghost", "")
@@ -216,8 +217,10 @@ class TestAgeAutoCreatedEntities:
         assert set(truncated_status) == {"retired"}
 
     def test_applied_add_event_bumps_last_seen(self, store: VerseStore) -> None:
-        """apply_direct(add_event) does NOT auto-bump last_seen_ts; an explicit
-        heartbeat is required. After the heartbeat, aging keeps the entity alive."""
+        """apply_direct(add_event) — verse_edit's add_event op — DOES auto-bump
+        last_seen_ts on linked non-avatar entities: any event write counts as
+        activity, so an NPC interacted with only via events must not age out.
+        Aging then keeps the entity alive with no explicit heartbeat."""
         from llm.verse.aging import age_auto_created_entities
 
         eid = store.add_entity("npc", "ghost", "")
@@ -230,21 +233,30 @@ class TestAgeAutoCreatedEntities:
             source="llm",
             provenance="test",
         )
-        # Step 3: op must NOT auto-bump — last_seen_ts stays at "0.0"
-        assert store.get_attribute(eid, "last_seen_ts") == "0.0"
-
-        # Step 4: explicit heartbeat
-        store.set_attribute(eid, "last_seen_ts", str(time.time()))
-
-        # Step 5: bump recorded
+        # The event write IS the heartbeat — last_seen_ts is bumped
         last_seen = float(store.get_attribute(eid, "last_seen_ts") or "0")
         assert last_seen > 0.0
 
-        # Step 6: aging keeps the recently-heartbeated entity alive
+        # Aging keeps the entity alive without any explicit heartbeat
         keep = age_auto_created_entities(
             store, retire_after_days=14, now=lambda: last_seen + SECONDS_PER_DAY
         )
         assert keep.retired == 0
+
+    def test_verse_act_event_keeps_npc_alive(self, store: VerseStore) -> None:
+        """Plain add_event (the verse_act path) bumps last_seen_ts on a linked
+        NPC but never on a linked avatar — an NPC interacted with exclusively
+        via verse_act must not age out despite the activity."""
+        npc_id = store.add_entity("npc", "ghost", "")
+        store.set_attribute(npc_id, "auto_created", "1")
+        store.set_attribute(npc_id, "last_seen_ts", "0.0")
+        avatar_id = store.add_entity("avatar", "alice", "")
+
+        store.add_event("alice examines ghost", [avatar_id, npc_id], "avatar")
+
+        assert float(store.get_attribute(npc_id, "last_seen_ts") or "0") > 0.0
+        # Avatars are lifecycle-managed by opt-in/out, not aging heartbeats.
+        assert store.get_attribute(avatar_id, "last_seen_ts") is None
 
     def test_applied_set_attribute_bumps_last_seen(self, store: VerseStore) -> None:
         """apply_direct(set_attribute) does NOT auto-bump last_seen_ts; an explicit
@@ -316,27 +328,17 @@ class TestAgeAutoCreatedEntities:
         )
         assert keep.retired == 0
 
-    def test_add_event_with_invalid_ref_does_not_bump(self, store: VerseStore) -> None:
+    def test_add_event_with_invalid_ref_skips_bad_id_bumps_real(self, store: VerseStore) -> None:
         """apply_direct(add_event) with a nonexistent entity id in entity_ids
-        succeeds (the store silently skips bad ids in the event_actor join)
-        but no heartbeat is written — last_seen_ts stays 0.0.
-
-        The heartbeat is always explicit and must not fire when the write
-        is invalid from the caller's perspective.
-
-        Aging invariant: because last_seen_ts remains 0.0, the entity IS
-        past the retirement cutoff and MUST be retired by aging — the flip
-        side of test_applied_add_event_bumps_last_seen."""
-        from llm.verse.aging import age_auto_created_entities
-
+        still succeeds: the bad id is silently dropped from event_actor AND
+        gets no heartbeat (it has no entity row to bump), while the real
+        linked NPC is bumped — a hallucinated co-actor must not crash the
+        write or cost the real actor its heartbeat."""
         real_eid = store.add_entity("npc", "ghost", "")
         store.set_attribute(real_eid, "auto_created", "1")
         store.set_attribute(real_eid, "last_seen_ts", "0.0")
         nonexistent_id = real_eid + 999_999
 
-        # The store accepts the event (bad id is silently dropped from
-        # event_actor); no heartbeat is written because validation failed
-        # at the caller level — real_eid must NOT be bumped.
         store.apply_direct(
             op="add_event",
             payload={
@@ -346,17 +348,15 @@ class TestAgeAutoCreatedEntities:
             source="llm",
             provenance="test",
         )
-        # No heartbeat — assert no bump
-        assert store.get_attribute(real_eid, "last_seen_ts") == "0.0"
-
-        # Because last_seen_ts stayed at 0.0 (epoch), aging at now=1e9
-        # (well past any retirement cutoff) MUST retire the entity.
-        # This fails if aging wrongly treats the event write as a heartbeat.
-        result = age_auto_created_entities(store, retire_after_days=14, now=lambda: 1e9)
-        assert result.retired == 1
+        # The real entity got the heartbeat; the phantom id wrote nothing.
+        assert float(store.get_attribute(real_eid, "last_seen_ts") or "0") > 0.0
         with store.read_connection() as conn:
-            row = conn.execute("SELECT status FROM entities WHERE id=?", (real_eid,)).fetchone()
-        assert row[0] == "retired"
+            rows = conn.execute("SELECT entity_id FROM event_actor ORDER BY entity_id").fetchall()
+            attr_rows = conn.execute(
+                "SELECT 1 FROM attributes WHERE entity_id=?", (nonexistent_id,)
+            ).fetchall()
+        assert [r[0] for r in rows] == [real_eid]
+        assert attr_rows == []
 
 
 class TestAgingExemptsAuthorLocked:

@@ -21,7 +21,7 @@ _SAFE_RE = re.compile(r"[^a-z0-9_-]")
 
 # Attribute keys that drive entity lifecycle/identity. Proposals (model
 # output) must never set these — they are maintained only by the engine's own
-# inline writers (aging, compaction heartbeat, verse_move).
+# writers (aging, the add_event heartbeat, verse_move).
 # Letting a model-proposed set_attribute write them would grant NPC immortality
 # (last_seen_ts), toggle aging enrollment (auto_created), or relocate/retype an
 # entity outside the guarded paths (location/status/kind).
@@ -265,14 +265,23 @@ class VerseStore:
     # Entity CRUD
     # ------------------------------------------------------------------
 
-    def _add_entity_inline(
+    def add_entity(
         self,
-        conn: sqlite3.Connection,
         kind: str,
         name: str,
         summary: str = "",
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> int:
-        """Insert a new entity on the caller's open ``conn`` and return its id."""
+        """Insert a new entity and return its id.
+
+        ``conn=None`` opens its own ``write_transaction``; a caller-provided
+        open conn composes into the caller's transaction (the write lock is
+        non-reentrant, so in-transaction callers MUST pass their conn).
+        """
+        if conn is None:
+            with self.write_transaction() as wconn:
+                return self.add_entity(kind, name, summary, conn=wconn)
         now = time.time()
         cur = conn.execute(
             "INSERT INTO entities (kind, name, summary, created_at, updated_at)"
@@ -281,11 +290,6 @@ class VerseStore:
         )
         assert cur.lastrowid is not None
         return cur.lastrowid
-
-    def add_entity(self, kind: str, name: str, summary: str = "") -> int:
-        """Insert a new entity and return its id."""
-        with self.write_transaction() as conn:
-            return self._add_entity_inline(conn, kind, name, summary)
 
     def get_entity(self, entity_id: int) -> Entity | None:
         """Return the Entity with the given id, or None."""
@@ -321,17 +325,21 @@ class VerseStore:
             row = conn.execute(sql, params).fetchone()
         return Entity(*row) if row else None
 
-    def _find_active_entity_by_name_inline(
+    def find_active_entity_by_name(
         self,
-        conn: sqlite3.Connection,
         name: str,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> Entity | None:
         """Resolve a name with precedence avatar > npc > item > place,
-        case-insensitive, restricted to status='active'. Caller-provided
-        open conn (works under both read_connection and write_transaction).
+        case-insensitive, restricted to status='active'.
 
-        Used by record_user_event (in-tx, must avoid lock reentry) and by
-        find_active_entity_by_name (out-of-tx, public)."""
+        ``conn=None`` opens a read connection; record_user_event passes its
+        open write conn (in-tx, must avoid write-lock reentry). Works under
+        both read_connection and write_transaction."""
+        if conn is None:
+            with self.read_connection() as rconn:
+                return self.find_active_entity_by_name(name, conn=rconn)
         row = conn.execute(
             "SELECT id, kind, name, summary, status, created_at, updated_at"
             " FROM entities"
@@ -350,20 +358,17 @@ class VerseStore:
         ).fetchone()
         return Entity(*row) if row else None
 
-    def find_active_entity_by_name(self, name: str) -> Entity | None:
-        """Public wrapper around _find_active_entity_by_name_inline."""
-        with self.read_connection() as conn:
-            return self._find_active_entity_by_name_inline(conn, name)
-
-    def _add_alias_inline(self, conn: sqlite3.Connection, entity_id: int, alias: str) -> None:
+    def add_alias(
+        self, entity_id: int, alias: str, *, conn: sqlite3.Connection | None = None
+    ) -> None:
+        if conn is None:
+            with self.write_transaction() as wconn:
+                self.add_alias(entity_id, alias, conn=wconn)
+            return
         conn.execute(
             "INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)",
             (entity_id, alias),
         )
-
-    def add_alias(self, entity_id: int, alias: str) -> None:
-        with self.write_transaction() as conn:
-            self._add_alias_inline(conn, entity_id, alias)
 
     def list_aliases(self, entity_id: int) -> list[str]:
         with self.read_connection() as conn:
@@ -377,7 +382,7 @@ class VerseStore:
     def find_entity_by_name_or_alias(self, name: str) -> Entity | None:
         """Active resolution: canonical name (kind-precedence) first, then alias."""
         with self.read_connection() as conn:
-            ent = self._find_active_entity_by_name_inline(conn, name)
+            ent = self.find_active_entity_by_name(name, conn=conn)
             if ent is not None:
                 return ent
             row = conn.execute(
@@ -388,11 +393,12 @@ class VerseStore:
             ).fetchone()
         return Entity(*row) if row else None
 
-    def _reactivate_auto_npc_inline(
+    def _reactivate_auto_npc(
         self,
-        conn: sqlite3.Connection,
         name: str,
         ts: float,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> int | None:
         """If a retired auto-created npc exists by this name, reactivate it
         (status->active, refresh last_seen_ts) and return its id; else None.
@@ -402,8 +408,11 @@ class VerseStore:
         re-mention reuses the same id instead of inserting a fresh entity.
         Scoped to ``auto_created`` npcs so the avatar lifecycle (opted-out
         avatars) and deliberate operator retirements of canon are never
-        silently undone. Caller-provided open conn (used inside
-        record_user_event's write transaction)."""
+        silently undone. ``conn=None`` opens its own write_transaction;
+        record_user_event passes its open write conn (non-reentrant lock)."""
+        if conn is None:
+            with self.write_transaction() as wconn:
+                return self._reactivate_auto_npc(name, ts, conn=wconn)
         row = conn.execute(
             "SELECT e.id FROM entities e JOIN attributes a ON a.entity_id = e.id"
             " WHERE LOWER(e.name) = LOWER(?) AND e.kind = 'npc'"
@@ -414,8 +423,8 @@ class VerseStore:
         if row is None:
             return None
         eid = int(row[0])
-        self._set_status_inline(conn, eid, "active")
-        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+        self.set_status(eid, "active", conn=conn)
+        self.set_attribute(eid, "last_seen_ts", str(ts), conn=conn)
         return eid
 
     def resolve_ref(self, ref: str) -> int:
@@ -435,23 +444,26 @@ class VerseStore:
             raise LookupError(f"no active entity named {ref!r}")
         return ent.id
 
-    def _set_status_inline(
+    def set_status(
         self,
-        conn: sqlite3.Connection,
         entity_id: int,
         status: str,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
-        """Update entity status + updated_at on the caller's open ``conn``."""
+        """Update entity status and updated_at. Silent no-op if entity_id not found.
+
+        ``conn=None`` opens its own write_transaction; in-transaction callers
+        pass their open conn (the write lock is non-reentrant)."""
+        if conn is None:
+            with self.write_transaction() as wconn:
+                self.set_status(entity_id, status, conn=wconn)
+            return
         now = time.time()
         conn.execute(
             "UPDATE entities SET status = ?, updated_at = ? WHERE id = ?",
             (status, now, entity_id),
         )
-
-    def set_status(self, entity_id: int, status: str) -> None:
-        """Update entity status and updated_at. Silent no-op if entity_id not found."""
-        with self.write_transaction() as conn:
-            self._set_status_inline(conn, entity_id, status)
 
     def list_entities_by_kind(self, kind: str, status: str | None = "active") -> list[Entity]:
         """List entities of the given kind. Filter by status unless status is None."""
@@ -467,42 +479,31 @@ class VerseStore:
             rows = conn.execute(sql, params).fetchall()
         return [Entity(*row) for row in rows]
 
-    def list_pinned_entities(self) -> list[Entity]:
-        """Active entities carrying the 'pinned' attribute, deterministic order.
-
-        Order: kind precedence (avatar, npc, place, faction, item) then name,
-        so the roster prompt block is cache-stable.
-        """
-        with self.read_connection() as conn:
-            rows = conn.execute(
-                "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
-                "FROM entities e JOIN attributes a ON a.entity_id = e.id "
-                "WHERE a.key='pinned' AND a.value='1' AND e.status='active' "
-                "ORDER BY CASE e.kind WHEN 'avatar' THEN 0 WHEN 'npc' THEN 1 "
-                "  WHEN 'place' THEN 2 WHEN 'faction' THEN 3 ELSE 4 END, e.name COLLATE NOCASE"
-            ).fetchall()
-        return [Entity(*row) for row in rows]
-
-    def _set_author_locked_inline(
-        self, conn: sqlite3.Connection, entity_id: int, locked: bool
+    def set_author_locked(
+        self,
+        entity_id: int,
+        locked: bool,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
+        """Lock/unlock durable canon (always injected, aging-exempt, edit-gated)."""
+        if conn is None:
+            with self.write_transaction() as wconn:
+                self.set_author_locked(entity_id, locked, conn=wconn)
+            return
         if locked:
-            self._set_attribute_inline(conn, entity_id, "author_locked", "1")
+            self.set_attribute(entity_id, "author_locked", "1", conn=conn)
         else:
             conn.execute(
                 "DELETE FROM attributes WHERE entity_id=? AND key='author_locked'", (entity_id,)
             )
 
-    def set_author_locked(self, entity_id: int, locked: bool) -> None:
-        """Lock/unlock durable canon (always injected, aging-exempt, edit-gated)."""
-        with self.write_transaction() as conn:
-            self._set_author_locked_inline(conn, entity_id, locked)
-
     def list_canon_entities(self) -> list[Entity]:
         """Active entities that are durable canon: pinned (operator) OR author_locked.
 
-        DISTINCT (an entity may carry both). Deterministic kind-then-name order
-        (matches list_pinned_entities so the roster prompt block stays cache-stable).
+        DISTINCT (an entity may carry both). Deterministic kind precedence
+        (avatar, npc, place, faction, item) then name, so the roster prompt
+        block stays cache-stable.
         """
         with self.read_connection() as conn:
             rows = conn.execute(
@@ -527,24 +528,27 @@ class VerseStore:
     # Attribute CRUD
     # ------------------------------------------------------------------
 
-    def _set_attribute_inline(
+    def set_attribute(
         self,
-        conn: sqlite3.Connection,
         entity_id: int,
         key: str,
         value: str,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
-        """Upsert an attribute on the caller's open ``conn``."""
+        """Upsert an attribute key/value for the given entity.
+
+        ``conn=None`` opens its own write_transaction; in-transaction callers
+        pass their open conn (the write lock is non-reentrant)."""
+        if conn is None:
+            with self.write_transaction() as wconn:
+                self.set_attribute(entity_id, key, value, conn=wconn)
+            return
         conn.execute(
             "INSERT INTO attributes (entity_id, key, value) VALUES (?, ?, ?)"
             " ON CONFLICT(entity_id, key) DO UPDATE SET value = excluded.value",
             (entity_id, key, value),
         )
-
-    def set_attribute(self, entity_id: int, key: str, value: str) -> None:
-        """Upsert an attribute key/value for the given entity."""
-        with self.write_transaction() as conn:
-            self._set_attribute_inline(conn, entity_id, key, value)
 
     def get_attribute(self, entity_id: int, key: str) -> str | None:
         """Return the attribute value for key, or None if not set."""
@@ -626,21 +630,31 @@ class VerseStore:
     # Event CRUD
     # ------------------------------------------------------------------
 
-    def _add_event_inline(
+    def add_event(
         self,
-        conn: sqlite3.Connection,
-        *,
         summary: str,
         entity_ids: Sequence[int],
         source: str,
+        *,
         ts: float | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> int:
-        """Insert an event on the caller's open ``conn`` and return its id.
+        """Insert an event and return its id.
 
         Single writer for both ``events`` and the ``event_actor`` join. The
         join is populated FK-safe (only ids that resolve to an ``entities``
-        row), de-duped, via ``INSERT OR IGNORE``.
+        row), de-duped, via ``INSERT OR IGNORE``. Every linked NON-avatar
+        entity gets its ``last_seen_ts`` heartbeat bumped to ``ts`` — any
+        event path (verse_act, verse_edit's add_event, digests) counts as
+        activity so an NPC interacted with does not age out; avatars are
+        lifecycle-managed by opt-in/out, never by aging.
+
+        ``conn=None`` opens its own write_transaction; in-transaction callers
+        pass their open conn (the write lock is non-reentrant).
         """
+        if conn is None:
+            with self.write_transaction() as wconn:
+                return self.add_event(summary, entity_ids, source, ts=ts, conn=wconn)
         if ts is None:
             ts = time.time()
         ids = list(entity_ids)
@@ -651,24 +665,16 @@ class VerseStore:
         assert cur.lastrowid is not None
         event_id = int(cur.lastrowid)
         for eid in dict.fromkeys(ids):
-            if conn.execute("SELECT 1 FROM entities WHERE id=?", (eid,)).fetchone():
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
-                    (event_id, eid),
-                )
-        return event_id
-
-    def add_event(
-        self,
-        summary: str,
-        entity_ids: Sequence[int],
-        source: str,
-    ) -> int:
-        """Insert an event and return its id."""
-        with self.write_transaction() as conn:
-            return self._add_event_inline(
-                conn, summary=summary, entity_ids=entity_ids, source=source
+            row = conn.execute("SELECT kind FROM entities WHERE id=?", (eid,)).fetchone()
+            if row is None:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO event_actor (event_id, entity_id) VALUES (?, ?)",
+                (event_id, eid),
             )
+            if row[0] != "avatar":
+                self.set_attribute(eid, "last_seen_ts", str(ts), conn=conn)
+        return event_id
 
     def record_user_event(
         self,
@@ -702,22 +708,20 @@ class VerseStore:
 
             ids: list[int] = [actor_id]
             for name in actor_names:
-                entity = self._find_active_entity_by_name_inline(conn, name)
+                entity = self.find_active_entity_by_name(name, conn=conn)
                 if entity is None:
-                    eid = self._reactivate_auto_npc_inline(conn, name, ts)
+                    eid = self._reactivate_auto_npc(name, ts, conn=conn)
                     if eid is None:
-                        eid = self._add_entity_inline(conn, "npc", name, "")
-                        self._set_attribute_inline(conn, eid, "auto_created", "1")
-                        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+                        eid = self.add_entity("npc", name, "", conn=conn)
+                        self.set_attribute(eid, "auto_created", "1", conn=conn)
+                        self.set_attribute(eid, "last_seen_ts", str(ts), conn=conn)
                 else:
                     eid = entity.id
                     if entity.kind != "avatar":
-                        self._set_attribute_inline(conn, eid, "last_seen_ts", str(ts))
+                        self.set_attribute(eid, "last_seen_ts", str(ts), conn=conn)
                 ids.append(eid)
 
-            return self._add_event_inline(
-                conn, summary=summary, entity_ids=ids, source="avatar", ts=ts
-            )
+            return self.add_event(summary, ids, "avatar", ts=ts, conn=conn)
 
     # ------------------------------------------------------------------
     # Avatar link CRUD
@@ -783,7 +787,13 @@ class VerseStore:
         entity's name/id is not replayed into a prompt via the event log.
         Entity-less narration events are always kept. ``limit`` then counts
         surviving rows, so the SQL LIMIT is dropped and the cursor is scanned
-        lazily newest-first until ``limit`` survivors are collected."""
+        lazily newest-first until ``limit`` survivors are collected.
+
+        NOTE (dual event-linkage): this filter walks the legacy
+        ``events.entity_ids`` JSON blob in Python, whereas
+        ``events_for_entities`` filters in SQL over the ``event_actor`` join.
+        The asymmetry is intentional — this path must keep entity-less
+        narration and tolerate corrupt blobs; do not unify them."""
         where = ""
         params: list = []
         if exclude_sources:
@@ -887,7 +897,13 @@ class VerseStore:
     def events_for_entities(self, entity_ids: Sequence[int], limit: int = 8) -> list[Event]:
         """Recent events linking any of ``entity_ids`` (via ``event_actor``),
         restricted to events that still have >=1 ACTIVE actor (SQL-side filter).
-        Newest first."""
+        Newest first.
+
+        NOTE (dual event-linkage): this filters in SQL over ``event_actor``
+        (an event must have a join row to surface at all), unlike
+        ``recent_events(require_active_entity=True)``'s Python walk of the
+        ``entity_ids`` JSON, which keeps entity-less events. Intentional —
+        see the note there before "fixing" either side."""
         if not entity_ids:
             return []
         ph = ",".join("?" * len(entity_ids))
@@ -920,7 +936,11 @@ class VerseStore:
         ts: float,
         source: str,
     ) -> int:
-        """Atomic delete-then-insert. Returns the new event's id."""
+        """Atomic delete-then-insert. Returns the new event's id.
+
+        The digest heartbeat (bump ``last_seen_ts`` on referenced non-avatar
+        entities that exist) rides on ``add_event`` itself — no manual bump
+        here."""
         with self.write_transaction() as conn:
             if delete_ids:
                 placeholders = ",".join("?" for _ in delete_ids)
@@ -928,20 +948,7 @@ class VerseStore:
                     f"DELETE FROM events WHERE id IN ({placeholders})",
                     tuple(delete_ids),
                 )
-            new_id = self._add_event_inline(
-                conn, summary=summary, entity_ids=entity_ids, source=source, ts=ts
-            )
-            # Heartbeat: bump last_seen_ts on every entity referenced in
-            # the digest. ``events.entity_ids`` is a JSON blob with no FK
-            # enforcement, so we defensively skip ids that do not resolve
-            # to an ``entities`` row (otherwise the attributes-FK would
-            # fail).
-            for eid in entity_ids:
-                row = conn.execute("SELECT 1 FROM entities WHERE id=?", (int(eid),)).fetchone()
-                if row is None:
-                    continue
-                self._set_attribute_inline(conn, int(eid), "last_seen_ts", str(ts))
-            return new_id
+            return self.add_event(summary, entity_ids, source, ts=ts, conn=conn)
 
     def replace_events_with_lore_digest(
         self,
@@ -1217,12 +1224,12 @@ class VerseStore:
         if op in _DESTRUCTIVE_OPS and not privileged:
             raise PermissionError(f"op {op!r} requires operator privilege")
         if op == "add_event":
-            return self._add_event_inline(
-                conn,
-                summary=payload["summary"],
-                entity_ids=payload.get("entity_ids", []),
-                source=source,
+            return self.add_event(
+                payload["summary"],
+                payload.get("entity_ids", []),
+                source,
                 ts=now,
+                conn=conn,
             )
         if op == "set_attribute":
             eid = payload["entity_id"]
@@ -1285,9 +1292,12 @@ class VerseStore:
             eid = payload["entity_id"]
             if "kind" in payload:
                 raise ValueError("update_entity cannot change kind")
-            row = conn.execute("SELECT status FROM entities WHERE id=?", (eid,)).fetchone()
+            row = conn.execute(
+                "SELECT status, kind, name FROM entities WHERE id=?", (eid,)
+            ).fetchone()
             if row is None:
                 raise LookupError(f"entity_id {eid} does not exist")
+            old_kind, old_name = row[1], row[2]
             sets, args = [], []
             if "name" in payload:
                 sets.append("name=?")
@@ -1301,6 +1311,16 @@ class VerseStore:
             args.append(now)
             args.append(eid)
             conn.execute(f"UPDATE entities SET {', '.join(sets)} WHERE id=?", args)
+            if old_kind == "place" and "name" in payload:
+                # Avatar location is stored as the place's NAME string in an
+                # attributes row (key='location'), so a bare rename would
+                # strand every avatar standing here (and lose the aging
+                # occupied-place protection). Rewrite matching location
+                # attributes to the new name in the same transaction.
+                conn.execute(
+                    "UPDATE attributes SET value=? WHERE key='location' AND LOWER(value)=LOWER(?)",
+                    (payload["name"], old_name),
+                )
             return None
         if op == "set_status":
             eid = payload["entity_id"]

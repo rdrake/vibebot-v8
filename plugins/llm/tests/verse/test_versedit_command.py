@@ -16,7 +16,7 @@ def test_versedit_add_then_pin(tmp_path):
         source="operator",
         provenance="@versedit pin",
     )
-    assert [e.name for e in store.list_pinned_entities()] == ["Archie"]
+    assert [e.name for e in store.list_canon_entities()] == ["Archie"]
 
 
 def test_versedit_event_and_delete(tmp_path):
@@ -137,9 +137,9 @@ class TestVerseditCommand:
         plugin, irc, msg, store = verse_env
         eid = store.add_entity("npc", "Archie")
         plugin.versedit(irc, msg, ["pin", f"#{eid}"])
-        assert [e.name for e in store.list_pinned_entities()] == ["Archie"]
+        assert [e.name for e in store.list_canon_entities()] == ["Archie"]
         plugin.versedit(irc, msg, ["unpin", f"#{eid}"])
-        assert store.list_pinned_entities() == []
+        assert store.list_canon_entities() == []
         replies = [c.args[0] for c in irc.reply.call_args_list]
         assert any(r.startswith("pinned #") for r in replies)
         assert any(r.startswith("unpinned #") for r in replies)

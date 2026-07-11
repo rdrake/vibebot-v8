@@ -104,6 +104,13 @@ class TestVerseAct:
         assert "bob" in events[0].summary
         assert result.scene_shift_text == "You whisper bob."
 
+    def test_sibilant_verb_pluralizes_with_es(self, store: VerseStore) -> None:
+        """'search' -> 'searches' in the third-person event summary, not 'searchs'."""
+        alice_id = _opt_in(store, nick="alice")
+        verse_act(store, alice_id, "search", target="the bushes")
+        events = store.recent_events(limit=10)
+        assert any(e.summary.startswith("alice searches") for e in events)
+
     def test_move_verb_success_updates_location(self, store: VerseStore) -> None:
         alice_id = _opt_in(store)
         riverside_id = store.add_entity("place", "Riverside", "A bend in the river.")
@@ -301,6 +308,24 @@ class TestVerseLook:
         eid = store.add_entity("avatar", "ghost", "A wandering spirit.")
         result = verse_look(store, eid)
         assert result is None
+
+    def test_retired_target_returns_none(self, store: VerseStore) -> None:
+        """A retired entity is not part of the scene — verse_look must not
+        describe it (parity with verse_move/verse_act active-only lookups)."""
+        alice_id = _opt_in(store)
+        gone_id = store.add_entity("item", "Sword", "A bright blade.")
+        store.set_status(gone_id, "retired")
+        assert verse_look(store, alice_id, target="Sword") is None
+
+    def test_retired_location_returns_none(self, store: VerseStore) -> None:
+        """If the avatar's recorded location has since been retired, the
+        no-target look must say nothing rather than describe a ghost place
+        the system prompt calls 'nowhere'."""
+        alice_id = _opt_in(store)  # placed at The Clearing
+        place = store.find_entity_by_name("The Clearing", kind="place")
+        assert place is not None
+        store.set_status(place.id, "retired")
+        assert verse_look(store, alice_id) is None
 
 
 # ---------------------------------------------------------------------------
@@ -822,8 +847,8 @@ class TestVerseToolDispatch:
 
 
 class TestDispatchContract:
-    def test_existing_tools_return_ok_result(self, store: VerseStore) -> None:
-        """GIVEN any of the four existing tools WHEN dispatched THEN returns
+    def test_mutation_tools_return_ok_result(self, store: VerseStore) -> None:
+        """GIVEN the mutation tools WHEN dispatched THEN returns
         VerseDispatchResult(ok=True, payload={'status':'ok'}). The wrapper's
         observable JSON is unchanged so the model's tool-result payloads
         do not regress."""
@@ -836,14 +861,42 @@ class TestDispatchContract:
         for name, args in [
             ("verse_act", {"verb": "speak"}),
             ("verse_move", {"place_name": "anywhere"}),
-            ("verse_look", {}),
-            ("verse_recall", {"query": "x"}),
         ]:
             result = dispatch_verse_tool_call(store, alice_id, name, args)
             assert isinstance(result, VerseDispatchResult)
             assert result.ok is True
             assert result.payload == {"status": "ok"}
             assert result.error is None
+
+    def test_verse_look_returns_description_payload(self, store: VerseStore) -> None:
+        """verse_look no longer swallows its result: the dispatch payload
+        carries the description text the model asked for."""
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)  # opt_in places alice at The Clearing
+        result = dispatch_verse_tool_call(store, alice_id, "verse_look", {})
+        assert result.ok is True
+        assert result.payload == {
+            "status": "ok",
+            "description": "A quiet woodland clearing where new stories begin.",
+        }
+
+    def test_verse_recall_returns_events_payload(self, store: VerseStore) -> None:
+        """verse_recall no longer swallows its result: the dispatch payload
+        carries the recalled events (≤5, summary + ts), newest first."""
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        for i in range(7):
+            store.add_event(summary=f"alpha event {i}", entity_ids=[], source="avatar")
+            time.sleep(0.01)
+        result = dispatch_verse_tool_call(store, alice_id, "verse_recall", {"query": "alpha"})
+        assert result.ok is True
+        assert result.payload is not None
+        events = result.payload["events"]
+        assert len(events) == 5
+        assert all(set(e) == {"summary", "ts"} for e in events)
+        assert events[0]["summary"] == "alpha event 6"  # newest first
 
     def test_verse_record_on_retired_avatar_returns_error(self, store: VerseStore) -> None:
         """A retired avatar's verse_record must fail loudly (ok=False with a
@@ -904,6 +957,30 @@ class TestHandlerConsumesResult:
         payload = json.loads(result.content)
         assert payload["status"] == "ok"
         assert payload["tool"] == "verse_act"
+
+    def test_handler_json_carries_look_description(self, store: VerseStore) -> None:
+        """The model-visible verse_look JSON includes the description."""
+        from llm.verse.avatar import make_verse_extra_handlers
+
+        alice_id = _opt_in(store)  # opt_in places alice at The Clearing
+        handlers = make_verse_extra_handlers(store, alice_id)
+        payload = json.loads(handlers["verse_look"]({}).content)
+        assert payload["status"] == "ok"
+        assert payload["tool"] == "verse_look"
+        assert payload["description"] == "A quiet woodland clearing where new stories begin."
+
+    def test_handler_json_carries_recall_events(self, store: VerseStore) -> None:
+        """The model-visible verse_recall JSON includes the recalled events."""
+        from llm.verse.avatar import make_verse_extra_handlers
+
+        alice_id = _opt_in(store)
+        store.add_event(summary="Alice walks to the river", entity_ids=[], source="avatar")
+        handlers = make_verse_extra_handlers(store, alice_id)
+        payload = json.loads(handlers["verse_recall"]({"query": "river"}).content)
+        assert payload["status"] == "ok"
+        assert payload["tool"] == "verse_recall"
+        assert [e["summary"] for e in payload["events"]] == ["Alice walks to the river"]
+        assert all("ts" in e for e in payload["events"])
 
     def test_handler_emits_error_on_not_ok(
         self, store: VerseStore, monkeypatch: pytest.MonkeyPatch
