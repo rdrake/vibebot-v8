@@ -794,8 +794,11 @@ def make_verse_extra_handlers(
 
     ``max_actors`` is the per-call cap on ``verse_record.actors`` after
     filtering; it travels into the dispatch closure via ``_max_actors``
-    in the args dict (callers that pass ``_max_actors`` explicitly win,
-    so existing tests continue to work).
+    in the args dict. The handler always overwrites the key — the args
+    dict is model-controlled, so a tool call passing its own
+    ``_max_actors`` must not be able to raise the server-side cap.
+    (Tests that call ``dispatch_verse_tool_call`` directly may still pass
+    ``_max_actors`` themselves.)
     """
     log = logger or _log
     _verse_names = {
@@ -809,7 +812,7 @@ def make_verse_extra_handlers(
     def _handler(name: str) -> Callable[[dict[str, Any]], _VerseToolResult]:
         def _call(args: dict[str, Any]) -> _VerseToolResult:
             args = dict(args)
-            args.setdefault("_max_actors", max_actors)
+            args["_max_actors"] = max_actors
             result = dispatch_verse_tool_call(store, avatar_id, name, args, logger=log)
             if result.ok:
                 payload: dict[str, Any] = {"status": "ok", "tool": name}

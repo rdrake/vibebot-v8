@@ -363,3 +363,24 @@ class TestVerseRecordDispatch:
             assert store.find_active_entity_by_name(f"npc{i}") is not None
         for i in range(5, 20):
             assert store.find_active_entity_by_name(f"npc{i}") is None
+
+
+class TestMaxActorsNotModelOverridable:
+    def test_handler_overwrites_model_supplied_max_actors(self, store: VerseStore) -> None:
+        """_max_actors is server-side plumbing: a tool call smuggling its own
+        value in the (model-controlled) args dict must not raise the cap."""
+        import json
+
+        from llm.verse.avatar import make_verse_extra_handlers
+
+        alice_id = _opt_in(store)
+        handlers = make_verse_extra_handlers(store, alice_id, max_actors=2)
+        raw = [f"smuggle{i}" for i in range(6)]
+
+        res = handlers["verse_record"]({"summary": "s", "actors": raw, "_max_actors": 99})
+
+        assert json.loads(res.content)["status"] == "ok"
+        for i in range(2):
+            assert store.find_active_entity_by_name(f"smuggle{i}") is not None
+        for i in range(2, 6):
+            assert store.find_active_entity_by_name(f"smuggle{i}") is None

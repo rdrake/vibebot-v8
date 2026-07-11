@@ -1133,10 +1133,11 @@ class LLMService:
             s = src.strip()
             if "://" in s or s.startswith("//"):
                 return s.startswith(url_base)
-            # relative: allow a bare filename in the same dir; reject absolute paths
-            # unless they're under url_base
+            # Relative: allow only a bare filename in the same dir. Absolute
+            # paths are rejected outright — nothing we generate emits them
+            # (url_base is always absolute http(s), so they can't match it).
             if s.startswith("/"):
-                return s.startswith(url_base)
+                return False
             return "/" not in s.split("?", 1)[0]
 
         def _sub(m):

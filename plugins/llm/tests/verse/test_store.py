@@ -1416,3 +1416,21 @@ class TestSceneRetrieval:
         )
         evs = store.events_for_entities([a], limit=10)
         assert any("returned" in e.summary for e in evs)
+
+
+class TestOptInCorruptEventTolerance:
+    def test_opt_in_survives_corrupt_entity_ids_row(self, store) -> None:
+        """A corrupt events.entity_ids row must not crash avatar opt-in
+        (starter-place scoring parses every event's entity_ids)."""
+        store.add_entity("place", "The Tavern", "A busy tavern.")
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO events (ts, summary, entity_ids, source)"
+                " VALUES (1.0, 'corrupt', ?, 'operator')",
+                ('["abc", null]',),
+            )
+
+        result = store.opt_in_avatar("alice", None, "curious traveller")
+
+        assert result.entity_id is not None
+        assert "Tavern" in result.scene_text

@@ -4223,15 +4223,19 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<channel>]
 
-        Clear your volatile memory (conversation context) for the current or specified
-        channel. Use this to start fresh. Volatile memory expires automatically after a
-        timeout.
+        Clear volatile memory (conversation context) for the current or specified
+        channel: your own thread AND the channel's shared recent-history, so stale
+        bot answers stop feeding follow-ups. Volatile memory expires automatically
+        after a timeout.
         """
         caller = self._resolve_identity(irc, msg)
         # Default to current channel if not specified
         if channel is None:
             channel = self._get_channel(msg)
         self.context.clear(caller.key, channel)
+        # Deliberately channel-wide (not just the caller's thread): stale bot
+        # text in the shared context poisons everyone's follow-ups, and the
+        # shared window repopulates as people talk.
         self.context.clear_channel(channel)
         irc.reply(_("Context cleared."), prefixNick=False)
 
@@ -5779,8 +5783,9 @@ class LLM(callbacks.Plugin):
                 return
             irc.reply(self._avatar_scene_oneliner(store, entity_id), prefixNick=False)
         else:
-            # Target given: look up entity by name.
-            entity = store.find_entity_by_name(target)
+            # Target given: look up entity by name or alias (same resolution
+            # as @canon, so "@look Archie" works on an alias too).
+            entity = store.find_entity_by_name_or_alias(target)
             if entity is None:
                 irc.reply("Nothing matches.", prefixNick=False)
                 return

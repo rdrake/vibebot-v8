@@ -750,10 +750,15 @@ class VerseStore:
             )
 
     def find_avatar_by_nick(self, nick: str) -> int | None:
-        """Case-insensitive nick lookup. Returns entity_id or None."""
+        """Case-insensitive nick lookup. Returns entity_id or None.
+
+        ``COLLATE NOCASE`` (not ``LOWER() =``) so the lookup can seek
+        ``idx_avatar_link_nick_nocase`` instead of scanning — same idiom as
+        ``opt_in_avatar``.
+        """
         with self.read_connection() as conn:
             row = conn.execute(
-                "SELECT entity_id FROM avatar_link WHERE LOWER(nick) = LOWER(?)",
+                "SELECT entity_id FROM avatar_link WHERE nick = ? COLLATE NOCASE",
                 (nick,),
             ).fetchone()
         return int(row[0]) if row else None
@@ -1163,19 +1168,16 @@ class VerseStore:
                     # For each active place, find the max event ts that references it.
                     # Fetch event rows once; iterate in Python to find best place.
                     event_rows = conn.execute(
-                        "SELECT entity_ids, ts FROM events ORDER BY ts DESC",
+                        "SELECT id, entity_ids, ts FROM events ORDER BY ts DESC",
                     ).fetchall()
 
                     # Build map: place_id -> latest_event_ts
                     place_ids = {row[0] for row in place_rows}
                     latest_ts: dict[int, float] = dict.fromkeys(place_ids, 0.0)
-                    for ev_entity_ids_json, ev_ts in event_rows:
-                        try:
-                            ev_entity_ids = json.loads(ev_entity_ids_json)
-                        except (ValueError, TypeError):
-                            continue
-                        for eid_val in ev_entity_ids:
-                            pid = int(eid_val)
+                    for ev_id, ev_entity_ids_json, ev_ts in event_rows:
+                        # Tolerant parse: one corrupt entity_ids row must not
+                        # sink the whole opt-in.
+                        for pid in _parse_entity_ids(ev_entity_ids_json, ev_id):
                             if pid in latest_ts and ev_ts > latest_ts[pid]:
                                 latest_ts[pid] = ev_ts
 
