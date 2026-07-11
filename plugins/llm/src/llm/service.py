@@ -1309,9 +1309,10 @@ class LLMService:
 
         Kept *out* of the cacheable prefix (system + context + ack) so
         switching speakers in a channel doesn't invalidate the xAI
-        prefix cache. _build_messages appends this after the
-        channel-history block so the speaker line lands deeper in
-        the message list.
+        prefix cache. _build_messages appends this LAST among the context
+        messages (after instruction, memories, and channel history): the
+        per-minute clock below re-tokenizes everything downstream of it,
+        so nothing cache-worthy may follow it.
 
         Args:
             irc: IRC connection object
@@ -2078,6 +2079,12 @@ class LLMService:
         if cache_key:
             existing = kwargs.get("extra_headers") or {}
             kwargs["extra_headers"] = {**existing, "x-grok-conv-id": cache_key}
+            # Also send the documented OpenAI-compatible routing field — the
+            # header above is folklore and the Responses path already uses
+            # prompt_cache_key; without a body key the load balancer can
+            # scatter chat requests and cached_tokens stays at 0.
+            existing_body = kwargs.get("extra_body") or {}
+            kwargs["extra_body"] = {"prompt_cache_key": cache_key, **existing_body}
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
@@ -5213,27 +5220,16 @@ Examples (echo → action_prompt: ""):
             messages.append(topic_msg)
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
-        # Add shared channel context (allows following group conversations)
-        if channel_history:
-            channel_summary = self._format_channel_history(channel_history)
-            if channel_summary:
-                messages.append(
-                    {
-                        "role": Role.USER,
-                        "content": f"[Recent channel discussion]\n{channel_summary}",
-                    }
-                )
-                messages.append({"role": Role.ASSISTANT, "content": "I see the context."})
-
-        # Per-speaker bytes (nick + roles) live deeper than the
-        # cacheable prefix so switching speakers in a channel doesn't
-        # invalidate xAI's automatic prompt cache from the system
-        # message onward. See _build_speaker_message and the prefix
-        # cache notes on memories below.
-        speaker_msg = self._build_speaker_message(irc, msg)
-        if speaker_msg:
-            messages.append(speaker_msg)
-            messages.append({"role": Role.ASSISTANT, "content": "Got it."})
+        # Ordering from here on is stability-sorted for prefix caching:
+        # per-USER-stable blocks (instruction, memories — change rarely, on
+        # @instruct / memory extraction) come BEFORE per-TURN-volatile blocks
+        # (channel history mutates on every tracked channel message; the
+        # speaker block carries a per-minute clock). A same-user follow-up
+        # therefore keeps everything through memories byte-identical, instead
+        # of re-tokenizing it because the channel scrolled or the minute
+        # ticked. (This inverts an earlier layout that put channel history
+        # first on the assumption it was the more stable block — it isn't:
+        # it slides with every channel message.)
 
         # The user's standing @instruct rides as user-role data, NOT in the
         # system prompt — a user request must not be able to pose as
@@ -5252,11 +5248,6 @@ Examples (echo → action_prompt: ""):
             )
             messages.append({"role": Role.ASSISTANT, "content": "Understood."})
 
-        # Memories live AFTER channel history. Memories mutate when
-        # extract_memories adds/reinforces a fact; placing them after
-        # channel_history means a memory change only invalidates the
-        # cache from this point onward — the channel-history block (often
-        # the largest chunk) stays cached even when memories shift.
         if memories:
             nick = "this user"
             if msg is not None and getattr(msg, "prefix", None):
@@ -5276,6 +5267,27 @@ Examples (echo → action_prompt: ""):
                     ),
                 }
             )
+            messages.append({"role": Role.ASSISTANT, "content": "Got it."})
+
+        # Add shared channel context (allows following group conversations).
+        # Per-turn volatile — see the stability-sort note above.
+        if channel_history:
+            channel_summary = self._format_channel_history(channel_history)
+            if channel_summary:
+                messages.append(
+                    {
+                        "role": Role.USER,
+                        "content": f"[Recent channel discussion]\n{channel_summary}",
+                    }
+                )
+                messages.append({"role": Role.ASSISTANT, "content": "I see the context."})
+
+        # Speaker block last among the context messages: it carries a
+        # per-minute clock, so every block after it re-tokenizes when the
+        # minute ticks — keep that blast radius to just the live turn.
+        speaker_msg = self._build_speaker_message(irc, msg)
+        if speaker_msg:
+            messages.append(speaker_msg)
             messages.append({"role": Role.ASSISTANT, "content": "Got it."})
 
         # Add personal conversation history if provided

@@ -2343,6 +2343,46 @@ class TestBuildMessages:
         assert any("Speaking with: alice" in str(m.get("content", "")) for m in msgs_a)
         assert any("Speaking with: bob" in str(m.get("content", "")) for m in msgs_b)
 
+    def test_context_blocks_are_stability_sorted(self) -> None:
+        """Per-user-stable blocks (instruction, memories) precede per-turn
+        volatile ones (channel history, speaker clock): a same-user follow-up
+        must keep everything through memories byte-identical even when the
+        channel scrolled or the minute ticked."""
+        ch_state = self.mocker.Mock(topic="t", ops=set(), halfops=set(), voices=set())
+        irc = self.mocker.Mock()
+        irc.state.channels = {"#test": ch_state}
+        m = self.mocker.Mock()
+        m.args = ("#test",)
+        m.prefix = "alice!alice@host"
+
+        msgs = self.service._build_messages(
+            "hi",
+            None,
+            channel_history=[{"nick": "bob", "role": "user", "content": "scroll"}],
+            irc=irc,
+            msg=m,
+            memories=["likes tea"],
+            user_instruction="be terse",
+        )
+
+        def idx(needle: str) -> int:
+            for i, message in enumerate(msgs):
+                if needle in str(message.get("content", "")):
+                    return i
+            raise AssertionError(f"{needle!r} not found")
+
+        assert (
+            idx("<user_instruction>")
+            < idx("<user_memory>")
+            < idx("channel discussion")
+            < idx("Speaking with:")
+        )
+        # The per-minute clock rides only in the speaker block.
+        time_carriers = [
+            i for i, message in enumerate(msgs) if "Time:" in str(message.get("content", ""))
+        ]
+        assert time_carriers == [idx("Speaking with:")]
+
 
 class TestValidateExternalUrl:
     """Property-based tests for validate_external_url SSRF protection.
