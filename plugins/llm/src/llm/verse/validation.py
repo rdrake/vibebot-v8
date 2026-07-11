@@ -40,10 +40,6 @@ _PAYLOAD_SCHEMA: dict[str, tuple[tuple[str, Callable[[Any], bool], str], ...]] =
         ("kind", lambda v: isinstance(v, str), "str"),
         ("name", lambda v: isinstance(v, str), "str"),
     ),
-    "crosspoll_seed": (
-        ("summary", lambda v: isinstance(v, str), "str"),
-        ("entity_ids", _is_int_list, "list[int]"),
-    ),
     "update_entity": (("entity_id", _is_strict_int, "int"),),
 }
 

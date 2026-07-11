@@ -14,26 +14,35 @@ class TestPromptsRegistry:
     """The PROMPTS dict is the single source of truth for prompt lookup."""
 
     def test_registry_has_all_expected_keys(self):
-        """PROMPTS exposes every framework and internal prompt by name."""
+        """PROMPTS exposes every profile prompt by name (the memory pair is
+        imported directly, not registered)."""
         assert set(prompts.PROMPTS.keys()) == {
             "chat",
             "code",
             "draw",
             "verse",
             "remind_action",
-            "memory_extraction",
-            "memory_cleanup",
         }
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "verse", "remind_action", "memory_extraction", "memory_cleanup"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_every_prompt_is_nonempty(self, name):
         """Each registered prompt is a non-empty string."""
         text = prompts.PROMPTS[name]
         assert isinstance(text, str)
         assert text.strip(), f"prompt {name!r} is empty"
+
+    @pytest.mark.parametrize(
+        "name",
+        ["MEMORY_EXTRACTION_PROMPT", "MEMORY_CLEANUP_PROMPT"],
+    )
+    def test_memory_prompts_are_nonempty(self, name):
+        """The directly-imported memory pair is a non-empty string."""
+        text = getattr(prompts, name)
+        assert isinstance(text, str)
+        assert text.strip()
 
 
 class TestProfilePromptInvariants:
@@ -49,7 +58,7 @@ class TestProfilePromptInvariants:
 
     @pytest.mark.parametrize(
         "name",
-        ["memory_extraction", "memory_cleanup"],
+        ["MEMORY_EXTRACTION_PROMPT", "MEMORY_CLEANUP_PROMPT"],
     )
     def test_memory_prompts_have_no_bot_nick_placeholder(self, name):
         """Memory prompts are used as raw constants — no .format(bot_nick=...) call.
@@ -57,7 +66,7 @@ class TestProfilePromptInvariants:
         (They contain literal ``{"add": ...}`` JSON examples, so we can't
         assert the absence of every ``{`` — just the bot_nick contract.)
         """
-        assert "{bot_nick}" not in prompts.PROMPTS[name]
+        assert "{bot_nick}" not in getattr(prompts, name)
 
 
 class TestIrcOutputFormatSharing:

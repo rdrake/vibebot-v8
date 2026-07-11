@@ -297,22 +297,6 @@ class VerseStore:
             ).fetchone()
         return Entity(*row) if row else None
 
-    def entity_exists(self, entity_id: object) -> bool:
-        """True iff *entity_id* coerces to int and a row with that id exists.
-
-        Tolerates non-int input (returns False for None, strings, etc.) so
-        callers validating LLM-emitted payloads don't have to pre-check
-        types. ``add_relation`` and ``set_attribute`` payloads use this to
-        drop proposals referencing nonexistent ids before they reach the
-        operator queue.
-        """
-        if isinstance(entity_id, bool) or not isinstance(entity_id, int):
-            return False
-        eid = entity_id
-        with self.read_connection() as conn:
-            row = conn.execute("SELECT 1 FROM entities WHERE id = ?", (eid,)).fetchone()
-        return row is not None
-
     def find_entity_by_name(
         self, name: str, kind: str | None = None, *, active_only: bool = False
     ) -> Entity | None:
@@ -985,8 +969,7 @@ class VerseStore:
 
         Used by retention compaction to gather rows that will be replaced by
         a single lore-digest event. Lock-free read. ``entity_ids`` are
-        normalised to ``int`` to match the existing ``recent_events``
-        convention (``store.py:387``).
+        normalised to ``int`` to match the ``recent_events`` convention.
         """
         with self.read_connection() as conn:
             cur = conn.execute(

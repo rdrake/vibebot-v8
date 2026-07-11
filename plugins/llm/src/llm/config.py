@@ -101,8 +101,6 @@ class ValidatedLogLevel(registry.String):
 
 def configure(advanced: bool) -> None:
     """Plugin configuration wizard."""
-    from supybot.questions import yn  # noqa: F401
-
     conf.registerPlugin("LLM", True)
 
     print("=" * 60)
@@ -212,7 +210,7 @@ conf.registerChannelValue(
     LLM,
     "codeModel",
     ValidatedModelName(
-        "gemini/gemini-1.5-flash",
+        "gemini/gemini-flash-latest",
         _("""Model for code generation"""),
     ),
 )
@@ -703,9 +701,10 @@ conf.registerGlobalValue(
     LLM,
     "commandPrefixes",
     registry.SpaceSeparatedListOfStrings(
-        ["."],
+        [".", "@"],
         _("""Command prefixes to sanitize in output. Lines starting with these
-        are prefixed with a space to prevent IRC command injection. Default: ."""),
+        are prefixed with a space to prevent IRC command injection.
+        Default: . @"""),
     ),
 )
 

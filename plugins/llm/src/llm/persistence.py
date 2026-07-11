@@ -1841,22 +1841,6 @@ class LLMDatabase:
                 (nick.lower(),),
             )
 
-    def get_memory_saves(self, nick: str) -> int:
-        """Get the current memory-saves-since-cleanup count for a user.
-
-        Args:
-            nick: IRC nick (matched case-insensitively).
-
-        Returns:
-            Current counter value, or 0 if no record exists.
-        """
-        conn = self._connect()
-        row = conn.execute(
-            "SELECT saves_since_cleanup FROM memory_cleanup_state WHERE nick = ?",
-            (nick.lower(),),
-        ).fetchone()
-        return row[0] if row else 0
-
     # ------------------------------------------------------------------
     # Memory candidate operations
     # ------------------------------------------------------------------

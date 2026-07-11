@@ -1718,10 +1718,6 @@ class TestMemoryCleanupState:
         test_db.reset_memory_saves("user1")
         assert test_db.increment_memory_saves("user1") == 1
 
-    def test_get_memory_saves_default_zero(self, test_db: LLMDatabase) -> None:
-        """GIVEN no prior saves WHEN get THEN returns 0."""
-        assert test_db.get_memory_saves("user1") == 0
-
 
 class TestMemoryCandidates:
     """Tests for the multi-stage memory candidate table."""

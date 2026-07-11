@@ -16,9 +16,9 @@ Channel-overridable personality overlays (``assistantSystemPrompt``,
 ``codeSystemPrompt``) live in ``config.py`` and intentionally stay there —
 they're operator-tunable settings, not framework prompts.
 
-Lookup via ``PROMPTS[name]``. Keys match ``assistant.PROFILE_*`` identifiers
-for profile prompts, plus ``"memory_extraction"`` and ``"memory_cleanup"``
-for the internal pair.
+Lookup via ``PROMPTS[name]``; keys match ``assistant.PROFILE_*`` identifiers.
+The memory-pipeline pair is imported directly by name (service.py), not via
+the dict.
 """
 
 from __future__ import annotations
@@ -304,6 +304,4 @@ PROMPTS: dict[str, str] = {
     "draw": DRAW_SYSTEM_PROMPT,
     "verse": VERSE_SYSTEM_PROMPT,
     "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
-    "memory_extraction": MEMORY_EXTRACTION_PROMPT,
-    "memory_cleanup": MEMORY_CLEANUP_PROMPT,
 }

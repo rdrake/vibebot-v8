@@ -10,32 +10,6 @@ import pytest
 from llm.service import LLMService
 
 
-class TestCodeFenceEdgeCases:
-    """Canonical executable spec for ``_strip_markdown_fences``.
-
-    Round-trip (with and without language), no-fence pass-through, and
-    re-strip idempotence are covered by
-    ``test_strip_markdown_fences_properties.py``. The single example
-    below documents the happy path; cases like incomplete fences,
-    multiline bodies, nested backticks, empty bodies, and non-``\\w+``
-    language tokens are subsumed by the property suite there.
-    """
-
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:
-        """Create service with default config."""
-        service, _ = make_service()
-        return service
-
-    def test_strip_simple_fence_with_language(self, service: LLMService) -> None:
-        """GIVEN fenced code with language WHEN stripping THEN extracts both."""
-        code = "```python\nprint('hello')\n```"
-        clean, lang = service._strip_markdown_fences(code)
-
-        assert clean == "print('hello')"
-        assert lang == "python"
-
-
 class TestMarkdownInCodeOutput:
     """Test markdown rendering edge cases in save_code_to_http."""
 

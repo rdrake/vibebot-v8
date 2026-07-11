@@ -800,8 +800,8 @@ class AssistantToolExecutor:
         """Resolve target nick from tool args with owner access control.
 
         Returns the target nick to operate on, or None if access is denied.
-        When None is returned, an error JSON string has already been prepared
-        — the caller should return the result of ``_deny_access()``.
+        Nothing is pre-built on denial — the caller must return
+        ``self._deny_access()`` itself when this returns None.
         """
         target = args.get("nick")
         if not target or target.lower() == self.nick.lower():

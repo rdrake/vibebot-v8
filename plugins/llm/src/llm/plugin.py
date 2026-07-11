@@ -205,9 +205,9 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "(follow-up questions) and vision (include image URLs)."
         ),
         examples=(
-            "%ask What is the capital of France?",
-            "%ask Describe this: https://example.com/image.jpg",
-            "%ask And what about Germany?  (follow-up using context)",
+            "@ask What is the capital of France?",
+            "@ask Describe this: https://example.com/image.jpg",
+            "@ask And what about Germany?  (follow-up using context)",
         ),
         category="generation",
     ),
@@ -219,8 +219,8 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Code is saved to an HTTP link with syntax highlighting."
         ),
         examples=(
-            "%code Python function to calculate fibonacci numbers",
-            "%code Now add memoization to that",
+            "@code Python function to calculate fibonacci numbers",
+            "@code Now add memoization to that",
         ),
         category="generation",
     ),
@@ -229,8 +229,8 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="<prompt>",
         description="Generate an image from a text description.",
         examples=(
-            "%draw A sunset over mountains in watercolor style",
-            "%draw A cyberpunk cityscape at night",
+            "@draw A sunset over mountains in watercolor style",
+            "@draw A cyberpunk cityscape at night",
         ),
         category="generation",
     ),
@@ -243,8 +243,8 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "concept with diagrams as a learning aid. No verse mode needed."
         ),
         examples=(
-            "%story an illustrated tale of stinky lads winning the pub quiz",
-            "%story explain how photosynthesis works, with diagrams",
+            "@story an illustrated tale of stinky lads winning the pub quiz",
+            "@story explain how photosynthesis works, with diagrams",
         ),
         category="generation",
     ),
@@ -255,7 +255,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Clear your volatile memory (conversation context) "
             "for the current or specified channel."
         ),
-        examples=("%forget", "%forget #channel"),
+        examples=("@forget", "@forget #channel"),
         category="memory",
     ),
     CommandInfo(
@@ -266,10 +266,10 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "remembers about you across conversations)."
         ),
         examples=(
-            "%memories",
-            "%memories delete 3",
-            "%memories edit 5 corrected fact",
-            "%memories clear",
+            "@memories",
+            "@memories delete 3",
+            "@memories edit 5 corrected fact",
+            "@memories clear",
         ),
         category="memory",
     ),
@@ -277,14 +277,14 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         name="instruct",
         args="[<instruction> | clear]",
         description=(
-            "Set persistent instructions that shape how %ask responds to you. "
+            "Set persistent instructions that shape how @ask responds to you. "
             "Your instruction is prepended to the system prompt."
         ),
         examples=(
-            "%instruct You are Captain Picard. Respond in character.",
-            "%instruct Respond only in haiku",
-            "%instruct clear",
-            "%instruct",
+            "@instruct You are Captain Picard. Respond in character.",
+            "@instruct Respond only in haiku",
+            "@instruct clear",
+            "@instruct",
         ),
         category="memory",
     ),
@@ -293,12 +293,12 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="[<persona> | clear]",
         description=(
             "Set the persona that shapes your avatar in verse-enabled channels. "
-            "Independent of %instruct — this only affects the verse, not %ask."
+            "Independent of @instruct — this only affects the verse, not @ask."
         ),
         examples=(
-            "%avatar A moss-covered tree spirit who speaks in riddles.",
-            "%avatar clear",
-            "%avatar",
+            "@avatar A moss-covered tree spirit who speaks in riddles.",
+            "@avatar clear",
+            "@avatar",
         ),
         category="memory",
     ),
@@ -307,13 +307,13 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         args="[<text> | list | del <id> | clear | admin <list|del|clear> <nick> [<id>...]]",
         description="Set and manage reminders using natural language.",
         examples=(
-            "%remind in 30 minutes check the build",
-            "%remind list",
-            "%remind delete abc1",
-            "%remind clear",
-            "%remind admin list someone",
-            "%remind admin del someone abc1",
-            "%remind admin clear someone",
+            "@remind in 30 minutes check the build",
+            "@remind list",
+            "@remind delete abc1",
+            "@remind clear",
+            "@remind admin list someone",
+            "@remind admin del someone abc1",
+            "@remind admin clear someone",
         ),
         category="utility",
     ),
@@ -321,7 +321,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         name="usage",
         args="[nick | #channel]",
         description="Show API usage statistics.",
-        examples=("%usage", "%usage someone", "%usage #channel"),
+        examples=("@usage", "@usage someone", "@usage #channel"),
         category="utility",
     ),
     CommandInfo(
@@ -331,7 +331,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Opt your avatar in or out of the verse for this channel. "
             "Requires the llm.verse capability."
         ),
-        examples=("%verseopt in", "%verseopt out"),
+        examples=("@verseopt in", "@verseopt out"),
         category="utility",
     ),
     CommandInfo(
@@ -341,7 +341,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Show your current scene one-liner in the verse. "
             "Requires the llm.verse capability and a verse-enabled channel."
         ),
-        examples=("%verse",),
+        examples=("@verse",),
         category="utility",
     ),
     CommandInfo(
@@ -351,7 +351,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Show your current scene, or describe a named entity in the verse. "
             "Requires the llm.verse capability and a verse-enabled channel."
         ),
-        examples=("%look", "%look The Clearing", "%look alice"),
+        examples=("@look", "@look The Clearing", "@look alice"),
         category="utility",
     ),
     CommandInfo(
@@ -361,7 +361,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "List active avatars and their locations in the verse. "
             "Requires the llm.verse capability and a verse-enabled channel."
         ),
-        examples=("%who",),
+        examples=("@who",),
         category="utility",
     ),
     CommandInfo(
@@ -370,7 +370,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         description=(
             "Dump the full verse state for a channel as JSON. Requires the llm.verse.gm capability."
         ),
-        examples=("%versedump", "%versedump #afnet", "%versedump #afnet --format=json"),
+        examples=("@versedump", "@versedump #afnet", "@versedump #afnet --format=json"),
         category="utility",
     ),
     CommandInfo(
@@ -381,7 +381,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "First call issues a confirmation token; second call with the token performs the wipe. "
             "Requires the llm.verse.gm capability."
         ),
-        examples=("%versepurge #afnet", "%versepurge #afnet a1b2c3"),
+        examples=("@versepurge #afnet", "@versepurge #afnet a1b2c3"),
         category="utility",
     ),
     CommandInfo(
@@ -391,7 +391,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Manually run retention compaction for a channel: summarise old "
             "events into a single digest entry. Requires the llm.verse.gm capability."
         ),
-        examples=("%versecompact #afnet",),
+        examples=("@versecompact #afnet",),
         category="utility",
     ),
     CommandInfo(
@@ -403,9 +403,9 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Requires the llm.verse.edit capability."
         ),
         examples=(
-            "%versedit add npc Assgas Archie :: Y11 windbag",
-            "%versedit pin Assgas Archie",
-            "%versedit retire #42",
+            "@versedit add npc Assgas Archie :: Y11 windbag",
+            "@versedit pin Assgas Archie",
+            "@versedit retire #42",
         ),
         category="utility",
     ),
@@ -417,7 +417,7 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "aging-exempt). 'forget' is an alias for 'unlock'. "
             "Requires the llm.verse.edit capability and a verse-enabled channel."
         ),
-        examples=("%canon lock Harry", "%canon unlock Harry", "%canon forget Harry"),
+        examples=("@canon lock Harry", "@canon unlock Harry", "@canon forget Harry"),
         category="utility",
     ),
 )
@@ -2002,7 +2002,7 @@ class LLM(callbacks.Plugin):
 
         When the account differs from the nick, old usage rows logged under
         the raw nick are lazily migrated to the account name (once per nick
-        per session) so that ``%usage`` reports include historical data.
+        per session) so that ``@usage`` reports include historical data.
 
         Args:
             irc: IRC connection (provides account lookup via ``state``)
@@ -3653,9 +3653,9 @@ class LLM(callbacks.Plugin):
         and vision (include image URLs in your question).
 
         Examples:
-          %ask What is the capital of France?
-          %ask Describe this: https://example.com/image.jpg
-          %ask And what about Germany?  (follow-up using context)
+          @ask What is the capital of France?
+          @ask Describe this: https://example.com/image.jpg
+          @ask And what about Germany?  (follow-up using context)
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
@@ -3987,9 +3987,9 @@ class LLM(callbacks.Plugin):
         Supports conversation context for iterating on code.
 
         Examples:
-          %code Python function to calculate fibonacci numbers
-          %code Now add memoization to that
-          %code JavaScript async fetch with error handling
+          @code Python function to calculate fibonacci numbers
+          @code Now add memoization to that
+          @code JavaScript async fetch with error handling
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
@@ -4090,8 +4090,8 @@ class LLM(callbacks.Plugin):
         Generate an image from a text description.
 
         Examples:
-          %draw A sunset over mountains in watercolor style
-          %draw A cyberpunk cityscape at night
+          @draw A sunset over mountains in watercolor style
+          @draw A cyberpunk cityscape at night
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
@@ -4345,14 +4345,14 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<instruction> | clear]
 
-        Set persistent instructions that shape how %ask responds to you.
-        Your instruction is prepended to the system prompt for every %ask call.
+        Set persistent instructions that shape how @ask responds to you.
+        Your instruction is prepended to the system prompt for every @ask call.
 
         Examples:
-          %instruct You are Captain Picard. Respond in character.
-          %instruct Respond only in haiku
-          %instruct clear
-          %instruct          (show current instruction)
+          @instruct You are Captain Picard. Respond in character.
+          @instruct Respond only in haiku
+          @instruct clear
+          @instruct          (show current instruction)
         """
         caller = self._resolve_identity(irc, msg)
 
@@ -4361,7 +4361,7 @@ class LLM(callbacks.Plugin):
             if current:
                 irc.reply(f"Current instruction: {current}", prefixNick=False)
             else:
-                irc.reply("No instruction set. Use %instruct <text> to set one.", prefixNick=False)
+                irc.reply("No instruction set. Use @instruct <text> to set one.", prefixNick=False)
             return
 
         is_clear = text.strip().lower() == "clear"
@@ -4388,12 +4388,12 @@ class LLM(callbacks.Plugin):
         """[<persona> | clear]
 
         Set the persona that shapes your avatar in verse-enabled channels.
-        Independent of %instruct — this only affects the verse, not %ask.
+        Independent of @instruct — this only affects the verse, not @ask.
 
         Examples:
-          %avatar A moss-covered tree spirit who speaks in riddles.
-          %avatar clear
-          %avatar          (show current persona)
+          @avatar A moss-covered tree spirit who speaks in riddles.
+          @avatar clear
+          @avatar          (show current persona)
         """
         caller = self._resolve_identity(irc, msg)
 
@@ -4402,7 +4402,7 @@ class LLM(callbacks.Plugin):
             if current:
                 irc.reply(f"Current persona: {current}", prefixNick=False)
             else:
-                irc.reply("No persona set. Use %avatar <text> to set one.", prefixNick=False)
+                irc.reply("No persona set. Use @avatar <text> to set one.", prefixNick=False)
             return
 
         channel = msg.args[0] if msg.args else None
@@ -4563,7 +4563,7 @@ class LLM(callbacks.Plugin):
         """Show usage stats for a specific nick.
 
         Resolves the target nick to a NickServ account before querying the
-        database, so ``%usage OldNick`` finds stats logged under the account.
+        database, so ``@usage OldNick`` finds stats logged under the account.
         The display still uses the nick the caller typed.
         """
         channel = msg.channel
@@ -5284,14 +5284,14 @@ class LLM(callbacks.Plugin):
         `list` are LLM actions.
 
         Examples:
-          %remind in 30 minutes check the build
-          %remind in 2 hours check status of CVE-2026-31431 in Debian
-          %remind list
-          %remind delete abc1
-          %remind clear
-          %remind admin list <nick>      (owner only)
-          %remind admin del <nick> <id>  (owner only)
-          %remind admin clear <nick>     (owner only)
+          @remind in 30 minutes check the build
+          @remind in 2 hours check status of CVE-2026-31431 in Debian
+          @remind list
+          @remind delete abc1
+          @remind clear
+          @remind admin list <nick>      (owner only)
+          @remind admin del <nick> <id>  (owner only)
+          @remind admin clear <nick>     (owner only)
         """
         caller = self._resolve_identity(irc, msg)
 
@@ -5532,6 +5532,9 @@ class LLM(callbacks.Plugin):
         client = _compaction.LiteLLMVerseClient(api_key=api_key)
 
         def _log_usage(*, op: str, model: str, usage, channel: str) -> None:
+            # The loom subsystem is gone, but "loom"/"loom:" stays as the
+            # accounting identity on purpose — renaming would silently re-key
+            # historical usage rows (see compaction.LiteLLMVerseClient).
             self.db.log_usage(
                 nick="loom",
                 channel=channel,
@@ -6394,6 +6397,8 @@ class LLM(callbacks.Plugin):
         client = _compaction.LiteLLMVerseClient(api_key=api_key)
 
         def _log_usage(*, op: str, model: str, usage, channel: str = channel) -> None:
+            # "loom"/"loom:" kept as the accounting identity on purpose —
+            # see the daily-pass twin above.
             self.db.log_usage(
                 nick="loom",
                 channel=channel,

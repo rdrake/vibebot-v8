@@ -5,7 +5,8 @@ Exposes loaded Limnoria plugin commands to the LLM as a single
 
 1. Hard-coded ``DENY_PLUGINS`` / ``DENY_COMMANDS`` (this module).
 2. Operator-set ``bridgeAllowedPlugins`` (per-channel registry).
-3. Limnoria's own capability system via ``checkCommandCapability``.
+3. ``MUTATING_COMMANDS`` gated behind ``bridgeAllowMutating``.
+4. Limnoria's own capability system via ``checkCommandCapability``.
 
 See docs/plans/archive/2026-05-02-limnoria-tool-bridge-plan.md for the full design.
 """
@@ -349,8 +350,9 @@ def dispatch(
     On success, returns ``{"status": "ok", "reply": "<captured text>"}``.
     On any check failure or uncaught exception, returns
     ``{"error": "<reason>"}``. The shape matches ``AssistantToolExecutor._ok``
-    / ``_err`` (see assistant.py:676-683) so the assistant loop's
-    ``last_successful_tool`` guard at service.py:2705-2710 fires correctly.
+    / ``_err`` (assistant.py) so the assistant loop's
+    ``last_successful_tool`` guard in ``service.assistant_completion`` fires
+    correctly.
     """
     # arg_string is LLM-generated and may carry secrets (e.g. a URL with an API
     # key). Never log its content at INFO — only its length. Full content goes

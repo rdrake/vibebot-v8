@@ -406,8 +406,7 @@ class ConversationContext:
             count = len(self._conversations)
             self._conversations.clear()
             self._channel_contexts.clear()
-            if self._db is not None:
-                self._db.delete_all_conversations()
+            self._best_effort_db("clear all", "delete_all_conversations")
             return count
 
     def migrate_user(self, old_nick: str, new_nick: str) -> int:

@@ -125,6 +125,9 @@ PROFILES: dict[str, Profile] = {
     ),
     PROFILE_VERSE: Profile(
         id=PROFILE_VERSE,
+        # Fallback only: the live verse model comes from the verseModel
+        # registry key, threaded through as model_override at the dispatch
+        # site (plugin.py) — same pattern as PROFILE_CODE's inner one-shot.
         model_setting="assistantModel",
         api_key_setting="assistantApiKey",
         prompt_id="verse",
@@ -140,8 +143,10 @@ PROFILES: dict[str, Profile] = {
         force_search_on_explicit=False,
         # Dampen the run-on/repetition spiral a non-reasoning model falls into
         # over a long roleplay thread: a modest temperature keeps prose varied
-        # without drifting incoherent, and a frequency penalty discourages the
-        # token-looping that precedes a quality collapse.
+        # without drifting incoherent. NOTE: frequency_penalty was verified a
+        # no-op on grok (the deployed verse model) during retention-v1 live
+        # validation — kept for providers that honour it, but don't expect it
+        # to do anything on xAI.
         temperature=0.8,
         frequency_penalty=0.4,
     ),

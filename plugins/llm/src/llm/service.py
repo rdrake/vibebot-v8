@@ -61,8 +61,6 @@ _ = PluginInternationalization("LLM")
 # Constants
 CLEANUP_INTERVAL_SECONDS = 3600
 CHANNEL_MSG_TRUNCATE_LEN = 150
-CODE_PREVIEW_MAX_LEN = 60
-CODE_PREVIEW_TRUNCATE_LEN = 57  # 60 - len("...")
 EXPLICIT_SEARCH_RE = re.compile(
     r"\b(search|find|look\s+up|latest|news|recent|current)\b",
     re.IGNORECASE,
@@ -419,10 +417,6 @@ _GEMINI_SAFETY_SETTINGS: list[dict[str, str]] = [
         "HARM_CATEGORY_CIVIC_INTEGRITY",
     )
 ]
-
-# Pre-compiled regex patterns for markdown fence stripping
-_FENCE_WITH_LANG_RE = re.compile(r"^```(\w+)\n(.*?)\n?```$", re.DOTALL)
-_FENCE_NO_LANG_RE = re.compile(r"^```\n(.*?)\n?```$", re.DOTALL)
 
 # Pre-generated Pygments CSS for a light syntax theme (constant across calls).
 # Light to match the reading-friendly page background; "friendly" is soft on the
@@ -4735,30 +4729,6 @@ Examples (echo → action_prompt: ""):
             return ImageResult(content=error_content, error=error_content)
         finally:
             stop_typing()
-
-    def _strip_markdown_fences(self, code: str) -> tuple[str, str | None]:
-        """Strip markdown code fences and extract language if present.
-
-        Args:
-            code: Code potentially wrapped in markdown fences
-
-        Returns:
-            Tuple of (clean_code, language)
-        """
-        code = code.strip()
-
-        # Check for markdown fence with language (```python)
-        fence_match = _FENCE_WITH_LANG_RE.match(code)
-        if fence_match:
-            return fence_match.group(2), fence_match.group(1)
-
-        # Check for fence without language (```)
-        fence_match = _FENCE_NO_LANG_RE.match(code)
-        if fence_match:
-            return fence_match.group(1), None
-
-        # No fences
-        return code, None
 
     def get_http_paths(self) -> tuple[str, str]:
         """Get HTTP root directory and URL base for file storage.
