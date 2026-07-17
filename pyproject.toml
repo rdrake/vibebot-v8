@@ -84,10 +84,10 @@ exclude_lines = [
 dev = [
     "hypothesis>=6.100",
     "mkdocs-material>=9.6",
-    "prek>=0.4.4",
+    "prek>=0.4.10",
     "pytest>=9.0.3",
     "pytest-cov>=7.0.0",
     "pytest-mock>=3.14.0",
-    "ruff>=0.15.17",
-    "ty>=0.0.49",
+    "ruff>=0.15.22",
+    "ty>=0.0.60",
 ]
