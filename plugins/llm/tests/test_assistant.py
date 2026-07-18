@@ -2762,6 +2762,110 @@ class TestRepeatReplyGuard:
             for m in seen[1]
         )
 
+    def test_degraded_history_reply_does_not_anchor_repetition(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a degraded stored reply WHEN a clean reply resembles it THEN
+        the reply is delivered without a repetition retry."""
+        degraded = "The lads sharted and then. " * 40
+        candidate = "The lads sharted and then."
+        calls = 0
+        assert _is_degraded_reply(degraded) is True
+        assert _is_degraded_reply(candidate) is False
+        assert _replies_repetitive(candidate, degraded) is True
+
+        def fake_completion(**_kwargs: object) -> MagicMock:
+            nonlocal calls
+            calls += 1
+            return self._text_response(mocker, candidate)
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="continue with something concise",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            history=[{"role": "assistant", "content": degraded}],
+        )
+
+        assert result.content == candidate
+        assert result.error is None
+        assert calls == 1
+
+    def test_verse_denial_history_reply_does_not_anchor_repetition(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a stored verse denial WHEN a valid reply resembles it THEN
+        the reply is delivered without a repetition retry."""
+        from llm.service import PROFILE_VERSE
+
+        denial = "That never happened at all, pure fiction not in the canon."
+        candidate = "In the canon, that fiction became spectacle at all."
+        calls = 0
+        assert _is_verse_denial(denial) is True
+        assert _is_verse_denial(candidate) is False
+        assert _replies_repetitive(candidate, denial) is True
+
+        def fake_completion(**_kwargs: object) -> MagicMock:
+            nonlocal calls
+            calls += 1
+            return self._text_response(mocker, candidate)
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="continue the scene",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+            history=[{"role": "assistant", "content": denial}],
+        )
+
+        assert result.content == candidate
+        assert result.error is None
+        assert calls == 1
+
+    def test_verse_channel_history_reply_does_not_anchor_repetition(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a matching reply only in verse channel history WHEN the
+        model answers THEN channel chatter does not trigger a retry."""
+        from llm.service import PROFILE_VERSE
+
+        calls = 0
+        assert _replies_repetitive(self.COMET_A, self.COMET_B) is True
+
+        def fake_completion(**_kwargs: object) -> MagicMock:
+            nonlocal calls
+            calls += 1
+            return self._text_response(mocker, self.COMET_A)
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="continue the scene",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            route_profile=PROFILE_VERSE,
+            channel_history=[{"role": "assistant", "content": self.COMET_B}],
+        )
+
+        assert result.content == self.COMET_A
+        assert result.error is None
+        assert calls == 1
+
     def test_chat_delivers_best_effort_when_repeat_persists(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:

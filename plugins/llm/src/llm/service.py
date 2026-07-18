@@ -4367,15 +4367,16 @@ Examples (echo → action_prompt: ""):
                         continue
 
                     # Self-repetition guard (all routes): a reply that
-                    # near-duplicates one of the bot's own surviving past
-                    # replies is the stuck record playing again — persisted
-                    # history re-seeds it every turn until the greeting is
-                    # the same cheese-comet line for days. Nudge (asking for
-                    # genuinely fresh phrasing) and retry once; the fresh
-                    # reply is delivered AND stored. After the budget, fall
-                    # through and deliver the best effort — the every-turn
-                    # _strip_repeated_replies pass evicts the pair from
-                    # future history regardless.
+                    # near-duplicates one of the bot's own cleaned comparison
+                    # anchors is the stuck record playing again. Those anchors
+                    # may include duplicate-cluster replies excluded from the
+                    # prompt-visible history, because persisted history can
+                    # otherwise re-seed the same cheese-comet line for days.
+                    # Nudge (asking for genuinely fresh phrasing) and retry
+                    # once; the fresh reply is delivered AND stored. After the
+                    # budget, fall through and deliver the best effort — the
+                    # repeated pair remains persisted but is excluded from
+                    # future prompts by _strip_repeated_replies.
                     if repeat_retries < _MAX_REPEAT_RETRIES and any(
                         _replies_repetitive(content, prior) for prior in prior_replies
                     ):
