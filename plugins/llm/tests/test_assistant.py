@@ -17,6 +17,7 @@ from llm.assistant import (
 from llm.plugin import LLM, Identity
 from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
+    _REPEAT_RETRY_NUDGE,
     LLMService,
     _depoison_verse_history,
     _is_degraded_reply,
@@ -2714,8 +2715,48 @@ class TestRepeatReplyGuard:
         assert result.error is None
         assert len(seen) == 2
         # The retry call carries the corrective nudge as a user message.
-        from llm.service import _REPEAT_RETRY_NUDGE
+        assert any(
+            m.get("role") == "user" and str(m.get("content", "")) == _REPEAT_RETRY_NUDGE
+            for m in seen[1]
+        )
 
+    def test_chat_retries_reply_matching_stripped_duplicate_cluster(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN persisted duplicate replies WHEN the model repeats them THEN
+        they stay out of the prompt but remain anchors for the retry guard."""
+        responses = [
+            self._text_response(mocker, self.COMET_A),
+            self._text_response(mocker, self.FRESH),
+        ]
+        seen: list[list] = []
+
+        def fake_completion(**kwargs: object) -> MagicMock:
+            seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
+            return responses[len(seen) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="how's it going",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+            history=[
+                {"role": "user", "content": "how's it going"},
+                {"role": "assistant", "content": self.COMET_A},
+                {"role": "user", "content": "same question tomorrow"},
+                {"role": "assistant", "content": self.COMET_B},
+            ],
+        )
+
+        assert result.content == self.FRESH
+        assert result.error is None
+        assert len(seen) == 2
+        assert all(m.get("content") not in {self.COMET_A, self.COMET_B} for m in seen[0])
         assert any(
             m.get("role") == "user" and str(m.get("content", "")) == _REPEAT_RETRY_NUDGE
             for m in seen[1]

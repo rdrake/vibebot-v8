@@ -4103,15 +4103,12 @@ Examples (echo → action_prompt: ""):
             # is re-injected every turn, seeding the next reply via
             # self-imitation.
             #
-            # Verse runs the full pass (strip denials → strip degraded →
-            # strip repeats → tight window). Every other route — notably
-            # @ask, which falls back to the chat profile and produces long
-            # answers that can collapse the same way — strips the bot's
-            # collapsed turns and stuck-record repeats: no denial strip
-            # (premise-refusal is a verse concept) and no tighter window, so
-            # chat keeps its normal context depth.
+            # Denials and degraded turns are excluded before repetition
+            # anchors are captured. Duplicate clusters remain anchors for the
+            # in-loop retry guard, but are excluded from the model prompt.
             if route_profile == PROFILE_VERSE:
-                history = _depoison_verse_history(history)
+                history = _strip_verse_denials(history)
+                history = _strip_degraded(history)
                 # A verse turn is a scene between the user and their avatar;
                 # the shared channel group chatter is NOT part of the story.
                 # Feeding it in (a) bleeds unrelated regular messages into the
@@ -4122,18 +4119,24 @@ Examples (echo → action_prompt: ""):
                 # drop the channel window entirely for verse.
                 channel_history = None
             else:
-                history = _strip_repeated_replies(_strip_degraded(history))
-                channel_history = _strip_repeated_replies(_strip_degraded(channel_history))
+                history = _strip_degraded(history)
+                channel_history = _strip_degraded(channel_history)
 
-            # The bot's own surviving past replies, used by the in-loop
+            # The bot's own non-degraded past replies, used by the in-loop
             # repetition guard: a fresh reply that near-duplicates any of
-            # these is the stuck record trying to play again. Captured after
-            # the strips so a de-poisoned turn can't anchor the comparison.
+            # these is the stuck record trying to play again. Capture them
+            # before duplicate clusters are excluded from the model prompt.
             prior_replies = [
                 str(m.get("content", ""))
                 for m in [*(history or []), *(channel_history or [])]
                 if m.get("role") == Role.ASSISTANT
             ]
+
+            history = _strip_repeated_replies(history)
+            if route_profile == PROFILE_VERSE:
+                history = _trim_history_window(history, _VERSE_HISTORY_MAX_MESSAGES)
+            else:
+                channel_history = _strip_repeated_replies(channel_history)
 
             messages = self._build_messages(
                 prompt,
