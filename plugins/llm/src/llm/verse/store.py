@@ -176,12 +176,28 @@ class VerseStore:
         existing = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         current = existing[0] if existing and existing[0] is not None else None
         if current is None:
-            with self.write_transaction() as wconn:
-                wconn.execute(
-                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                    (SCHEMA_VERSION, time.time()),
-                )
-            return
+            # No schema_version row. Two cases:
+            #  * brand-new DB — executescript just created every table at the
+            #    latest schema, so there is nothing to migrate; stamp and return.
+            #  * legacy pre-versioning DB — it predates the schema_version table
+            #    and still holds data under the OLD schema. `CREATE ... IF NOT
+            #    EXISTS` left its events/proposals tables untouched and only
+            #    created event_actor/entity_alias (empty), so we MUST run the
+            #    upgrade chain from v1 or the event_actor backfill never runs and
+            #    every historical entity's event history vanishes from prompts.
+            # Distinguish by whether any pre-existing data is present.
+            has_data = bool(
+                conn.execute("SELECT 1 FROM events LIMIT 1").fetchone()
+                or conn.execute("SELECT 1 FROM entities LIMIT 1").fetchone()
+            )
+            if not has_data:
+                with self.write_transaction() as wconn:
+                    wconn.execute(
+                        "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                        (SCHEMA_VERSION, time.time()),
+                    )
+                return
+            current = 1
         if current < 2:
             self._upgrade_v1_to_v2()
         if current < 3:
@@ -971,19 +987,27 @@ class VerseStore:
             source="llm",
         )
 
-    def events_older_than(self, *, cutoff_ts: float) -> list[Event]:
-        """All events with ``ts < cutoff_ts``, oldest-first.
+    def events_older_than(self, *, cutoff_ts: float, limit: int | None = None) -> list[Event]:
+        """Events with ``ts < cutoff_ts``, oldest-first.
 
         Used by retention compaction to gather rows that will be replaced by
         a single lore-digest event. Lock-free read. ``entity_ids`` are
         normalised to ``int`` to match the ``recent_events`` convention.
+
+        ``limit`` caps how many rows are materialised — compaction only
+        processes one batch per pass, so passing the batch size avoids
+        building Event tuples for a large aged backlog that is then discarded.
         """
         with self.read_connection() as conn:
-            cur = conn.execute(
+            sql = (
                 "SELECT id, ts, summary, entity_ids, source FROM events "
-                "WHERE ts < ? ORDER BY ts ASC, id ASC",
-                (cutoff_ts,),
+                "WHERE ts < ? ORDER BY ts ASC, id ASC"
             )
+            params: tuple[object, ...] = (cutoff_ts,)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (cutoff_ts, limit)
+            cur = conn.execute(sql, params)
             return [
                 Event(
                     id=row[0],
@@ -1060,13 +1084,21 @@ class VerseStore:
                 # scanning avatar_link under the write lock. Both are ASCII-only,
                 # so the match semantics are identical for IRC nicks.
                 row = conn.execute(
-                    "SELECT al.entity_id, e.status"
+                    "SELECT al.entity_id, e.status, al.account"
                     " FROM avatar_link al"
                     " JOIN entities e ON e.id = al.entity_id"
                     " WHERE al.nick = ? COLLATE NOCASE",
                     (nick,),
                 ).fetchone()
-                if row:
+                # Only claim a nick-matched avatar when it is unowned
+                # (account NULL) or already owned by THIS account. A link owned
+                # by a DIFFERENT account means the nick was recycled: its prior
+                # holder authenticated and opted in under it, then someone else
+                # took the nick. Relinking would transfer that avatar — lore,
+                # location, history — to the new user (_relink_avatar overwrites
+                # the account unconditionally), so treat it as no match and fall
+                # through to create a fresh avatar instead.
+                if row and (row[2] is None or row[2] == account):
                     entity_id, entity_status = int(row[0]), row[1]
 
             # ----------------------------------------------------------
@@ -1096,6 +1128,24 @@ class VerseStore:
                 )
                 assert cur.lastrowid is not None
                 entity_id = cur.lastrowid
+                # ``avatar_link.nick`` is UNIQUE NOT NULL. We only reach the
+                # create path when the nick did not resolve to an avatar we may
+                # claim — including the recycled-nick case where the nick is
+                # still recorded on ANOTHER account's stale link (the gate above
+                # rejected it to avoid a takeover). The opting-in user is the
+                # live holder of the nick, so free it from any stale link and
+                # park that link under a collision-proof sentinel. The parked
+                # avatar stays resolvable by account and self-heals its nick on
+                # its owner's next opt-in; without this the INSERT below would
+                # raise IntegrityError and crash opt-in.
+                for (stale_eid,) in conn.execute(
+                    "SELECT entity_id FROM avatar_link WHERE nick = ? COLLATE NOCASE",
+                    (nick,),
+                ).fetchall():
+                    conn.execute(
+                        "UPDATE avatar_link SET nick = ? WHERE entity_id = ?",
+                        (f"\x00stale:{stale_eid}", stale_eid),
+                    )
                 conn.execute(
                     "INSERT INTO avatar_link (entity_id, nick, account) VALUES (?, ?, ?)"
                     " ON CONFLICT(entity_id) DO UPDATE SET nick = excluded.nick,"
@@ -1317,10 +1367,33 @@ class VerseStore:
                 # strand every avatar standing here (and lose the aging
                 # occupied-place protection). Rewrite matching location
                 # attributes to the new name in the same transaction.
-                conn.execute(
-                    "UPDATE attributes SET value=? WHERE key='location' AND LOWER(value)=LOWER(?)",
-                    (payload["name"], old_name),
-                )
+                #
+                # BUT the value match is by name, which cannot distinguish
+                # homonym places. If another ACTIVE place still shares old_name
+                # (we just renamed this one, so it no longer does), rewriting
+                # every location=old_name would teleport avatars standing at the
+                # homonym too. In that ambiguous case skip the bulk rewrite and
+                # warn — better to strand this place's avatars (recoverable via
+                # verse_move) than to silently relocate unrelated ones.
+                homonyms = conn.execute(
+                    "SELECT COUNT(*) FROM entities"
+                    " WHERE kind='place' AND status='active' AND LOWER(name)=LOWER(?)",
+                    (old_name,),
+                ).fetchone()[0]
+                if homonyms:
+                    _log.warning(
+                        "verse update_entity: renamed place %r->%r left %d active "
+                        "homonym place(s); skipping ambiguous location rewrite",
+                        old_name,
+                        payload["name"],
+                        homonyms,
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE attributes SET value=? WHERE key='location'"
+                        " AND LOWER(value)=LOWER(?)",
+                        (payload["name"], old_name),
+                    )
             return None
         if op == "set_status":
             eid = payload["entity_id"]

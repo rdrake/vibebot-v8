@@ -90,6 +90,23 @@ def test_update_entity_place_rename_relocates_avatars(tmp_path):
     assert store.get_attribute(elsewhere, "location") == "The Tavern"  # untouched
 
 
+def test_update_entity_place_rename_skips_ambiguous_homonym(tmp_path):
+    """When another ACTIVE place shares the old name, the location rewrite is
+    ambiguous (location is stored by name, not id) — rewriting would teleport
+    avatars standing at the homonym place. Skip the rewrite in that case rather
+    than mislocate unrelated avatars."""
+    store = _store(tmp_path)
+    cave1 = store.add_entity("place", "Cave", "the first cave")
+    store.add_entity("place", "Cave", "a different, same-named cave")  # homonym
+    at_homonym = store.add_entity("avatar", "bob")
+    store.set_attribute(at_homonym, "location", "Cave")
+
+    _apply(store, op="update_entity", payload={"entity_id": cave1, "name": "Deep Cave"})
+
+    # The homonym-place avatar is NOT teleported to "Deep Cave".
+    assert store.get_attribute(at_homonym, "location") == "Cave"
+
+
 def test_update_entity_npc_rename_leaves_locations_alone(tmp_path):
     """The location rewrite is scoped to kind='place' renames — renaming an
     NPC that happens to share a place's name must not move anyone."""

@@ -4494,7 +4494,10 @@ class LLM(callbacks.Plugin):
                 if not ircdb.checkCapability(msg.prefix, "owner"):
                     irc.error("Only bot owners can clean up other users' memories.")
                     return
-                target = parts[1]
+                # Memories are keyed by NickServ account (caller.key), so resolve
+                # the typed nick to its account or cleanup runs against the wrong
+                # key for any user whose account differs from their nick.
+                target = self._resolve_nick_to_identity(irc, parts[1])
             else:
                 target = caller.key
             channel = (msg.channel or msg.args[0]) if msg.args else "#unknown"
@@ -4506,8 +4509,10 @@ class LLM(callbacks.Plugin):
             if not ircdb.checkCapability(msg.prefix, "owner"):
                 irc.error("Usage: memories [del <id> | edit <id> <text> | clear | cleanup]")
                 return
-            target = parts[0]
-            self._memories_list(irc, target, target)
+            # Query by resolved account (memories are account-keyed) but show
+            # the operator the nick they typed.
+            target = self._resolve_nick_to_identity(irc, parts[0])
+            self._memories_list(irc, target, parts[0])
 
         else:
             irc.error("Usage: memories [del <id> | edit <id> <text> | clear | cleanup]")

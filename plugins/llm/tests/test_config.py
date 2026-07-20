@@ -267,8 +267,16 @@ class TestRateLimitDefaults:
             ("drawRateLimitWindow", 300),
             ("drawTrustedRateLimitCount", 5),
             ("drawTrustedRateLimitWindow", 60),
-            ("drawUnregRateLimitCount", 0),
-            ("drawUnregRateLimitWindow", 60),
+            # Unregistered is the STRICTEST tier: 1 image/hour, NOT 0 (which
+            # _is_rate_limited treats as "disabled → unlimited").
+            ("drawUnregRateLimitCount", 1),
+            ("drawUnregRateLimitWindow", 3600),
+            ("storyRateLimitCount", 2),
+            ("storyRateLimitWindow", 300),
+            ("storyTrustedRateLimitCount", 5),
+            ("storyTrustedRateLimitWindow", 60),
+            ("storyUnregRateLimitCount", 1),
+            ("storyUnregRateLimitWindow", 3600),
         ],
     )
     def test_rate_limit_defaults(self, key: str, expected: int) -> None:

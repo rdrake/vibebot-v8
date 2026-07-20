@@ -294,12 +294,13 @@ class TestCompactVerse:
         assert count == 500 - _MAX_EVENTS_PER_PASS + 1
 
     def test_bullet_trim_only_deletes_events_in_prompt(self, verse_db_dir: Path) -> None:
-        """When the bullet block exceeds _MAX_BULLET_BLOCK_CHARS, oldest
-        bullets are dropped from the prompt. Regression: previously the
-        delete_ids list still referenced the FULL batch, so events the
-        LLM never saw got deleted. Now: delete_ids matches exactly the
-        events whose bullets remain in the prompt; events with trimmed
-        bullets survive for the next pass.
+        """When the bullet block exceeds _MAX_BULLET_BLOCK_CHARS, the NEWEST
+        bullets are dropped from the prompt so the oldest-fitting prefix is
+        compacted this pass (forward progress — the oldest lore is never
+        stranded). Regression: previously the delete_ids list still referenced
+        the FULL batch, so events the LLM never saw got deleted. Now: delete_ids
+        matches exactly the events whose bullets remain in the prompt; the
+        trimmed (newest) events survive for the next pass.
         """
         from llm.verse.compaction import (
             _MAX_BULLET_BLOCK_CHARS,
@@ -351,8 +352,10 @@ class TestCompactVerse:
         assert kept_bullet_lines < n_events  # i.e. some were trimmed
 
         # After compaction, surviving events = (n_events - kept) originals
-        # + 1 digest. Events whose bullets were trimmed off the front
-        # MUST survive; their ids are the OLDEST ones (lowest ts).
+        # + 1 digest. The bullet block trims the NEWEST events off the end so
+        # the OLDEST-fitting prefix is compacted + deleted this pass — that is
+        # what guarantees forward progress (the oldest lore never gets stranded
+        # and re-served every pass). So survivors are the NEWEST events.
         with store.read_connection() as conn:
             rows = conn.execute("SELECT id, source FROM events ORDER BY ts ASC, id ASC").fetchall()
         # 1 digest row (source='llm') + (n_events - kept_bullet_lines) survivors.
@@ -361,8 +364,9 @@ class TestCompactVerse:
         assert len(digest_rows) == 1
         # Number of deletions equals number of bullet lines actually shown.
         assert len(survivor_ids) == n_events - kept_bullet_lines
-        # Survivors are the OLDEST events (front-trimmed off the prompt).
-        assert survivor_ids == ids[: n_events - kept_bullet_lines]
+        # Survivors are the NEWEST events (end-trimmed off the prompt); the
+        # oldest were compacted into the digest and deleted.
+        assert survivor_ids == ids[kept_bullet_lines:]
 
     def test_per_event_summary_cap_truncates_long_summaries(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import (

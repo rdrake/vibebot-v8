@@ -228,6 +228,18 @@ def test_build_reaction_report_channel_filter():
     assert rep.post.reactions == 1
 
 
+def test_build_reaction_report_channel_filter_case_insensitive():
+    """IRC channels are case-insensitive: events are stored in the server's
+    case (#AfterNet), but the report filter is typically lowercased. The match
+    must be case-folded or every reaction is silently dropped."""
+    events = [
+        _ev("2026-06-23", "approve", channel="#AfterNet"),
+        _ev("2026-06-23", "approve", channel="#AFTERNET"),
+    ]
+    rep = build_reaction_report(events, rollout="2026-06-22", channel="#afternet")
+    assert rep.post.reactions == 2
+
+
 def test_build_reaction_report_monthly_and_recent_order():
     events = [_ev("2026-05-10", "approve"), _ev("2026-06-23", "disapprove")]
     rep = build_reaction_report(events, rollout="2026-06-22", channel="#afnet")

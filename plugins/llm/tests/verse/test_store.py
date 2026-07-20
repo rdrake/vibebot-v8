@@ -55,6 +55,45 @@ class TestVerseStoreInit:
             count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
             assert count == 1
 
+    def test_migrate_backfills_event_actor_for_legacy_unversioned_db(
+        self, verse_db_dir: Path
+    ) -> None:
+        """A pre-versioning DB — events present, no schema_version row, empty
+        event_actor — must run the v2->v3 backfill on open, not skip straight to
+        stamping the latest version. Otherwise every historical entity's event
+        history silently vanishes from prompts."""
+        import sqlite3
+
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#legacy")
+        eid = store.add_entity("npc", "Alice", "a traveller")
+        store.add_event(summary="Alice arrived", entity_ids=[eid], source="operator")
+        path = store.path
+
+        # add_event dual-writes event_actor; simulate a legacy DB by dropping the
+        # version row and clearing event_actor while leaving events (and their
+        # entity_ids JSON) intact.
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("SELECT COUNT(*) FROM event_actor").fetchone()[0] == 1
+            raw.execute("DELETE FROM schema_version")
+            raw.execute("DELETE FROM event_actor")
+            raw.commit()
+        finally:
+            raw.close()
+
+        # Re-open: _migrate must detect the data and run the upgrade chain,
+        # rebuilding event_actor from events.entity_ids.
+        VerseStore(verse_db_dir, "#legacy")
+
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("SELECT COUNT(*) FROM event_actor").fetchone()[0] == 1
+            assert raw.execute("SELECT entity_id FROM event_actor").fetchone()[0] == eid
+        finally:
+            raw.close()
+
 
 class TestEntityCrud:
     def test_add_returns_id_and_persists(self, verse_db_dir: Path) -> None:
@@ -723,6 +762,47 @@ class TestOptInAvatar:
         assert result.was_already_opted_in is True
         # The contested nick stays mapped to bob@net's avatar.
         assert store.find_avatar_by_nick("bob") == b.entity_id
+
+    def test_opt_in_does_not_hijack_another_accounts_nick_avatar(self, verse_db_dir: Path) -> None:
+        """A new account opting in on a recycled nick must NOT take over the
+        avatar owned by the nick's previous authenticated holder.
+
+        bob@net opts in as 'bob'. The nick 'bob' is later recycled to a
+        different authenticated user alice@net who has no avatar of their own.
+        The nick fallback resolves to bob@net's avatar, but relinking it would
+        transfer bob@net's lore/history/account to alice@net. Instead alice@net
+        gets a fresh avatar, the live nick follows them, and bob@net keeps their
+        avatar (still resolvable by account, self-healing on next opt-in).
+        """
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        b = store.opt_in_avatar("bob", "bob@net", "the smith")
+
+        result = store.opt_in_avatar("bob", "alice@net", "a newcomer")
+
+        # alice@net gets their OWN new avatar, not bob@net's — no takeover.
+        assert result.entity_id != b.entity_id
+        assert result.was_already_opted_in is False
+        # bob@net still owns their original avatar (resolved by account).
+        assert store.find_avatar_by_account("bob@net") == b.entity_id
+        # The live nick now points at the newcomer's avatar.
+        assert store.find_avatar_by_nick("bob") == result.entity_id
+
+    def test_anon_opt_in_does_not_hijack_authed_nick_avatar(self, verse_db_dir: Path) -> None:
+        """An UNauthenticated user reusing an authenticated user's nick must not
+        be handed that user's avatar, and opt-in must not crash on the UNIQUE
+        nick constraint."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        b = store.opt_in_avatar("bob", "bob@net", "the smith")
+
+        result = store.opt_in_avatar("bob", None, "just passing through")
+
+        assert result.entity_id != b.entity_id
+        assert result.was_already_opted_in is False
+        assert store.find_avatar_by_account("bob@net") == b.entity_id
 
     def test_opt_in_nick_lookup_is_indexed_not_full_scan(self, verse_db_dir: Path) -> None:
         """The nick-fallback avatar lookup must seek an index, not scan avatar_link.

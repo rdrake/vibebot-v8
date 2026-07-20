@@ -62,8 +62,21 @@ _URL_RE = re.compile(r"https?://")
 _DEFAULT_BOT_NICKS: tuple[str, ...] = ("grok", "vibebot")
 
 
+#: Matches nothing — used when there are no bot nicks to key on. Compiling an
+#: empty alternation instead ('^(?:)\b') would match almost every line and
+#: discard nearly all candidates.
+_MATCH_NOTHING_RE = re.compile(r"(?!)")
+
+
 def _addressed_re(bot_nicks: Sequence[str]) -> re.Pattern[str]:
-    """Compile the '^<botnick> …' addressed-line matcher for the given nicks."""
+    """Compile the '^<botnick> …' addressed-line matcher for the given nicks.
+
+    With no nicks the alternation would be empty (``^(?:)\\b``), which matches
+    almost every line; return a never-matching pattern instead so callers that
+    pass an empty list simply skip the addressed-line filter.
+    """
+    if not bot_nicks:
+        return _MATCH_NOTHING_RE
     return re.compile(r"^(?:" + "|".join(re.escape(n) for n in bot_nicks) + r")\b", re.IGNORECASE)
 
 

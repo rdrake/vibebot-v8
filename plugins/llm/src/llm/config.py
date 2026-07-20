@@ -38,14 +38,22 @@ class ValidatedModelName(registry.String):
         """Validate a model name against litellm's known models."""
         try:
             litellm.get_llm_provider(model)
-        except litellm.exceptions.BadRequestError:
+        except Exception as exc:  # noqa: BLE001
+            # BadRequestError is litellm's documented "unknown model" signal,
+            # but get_llm_provider can also raise other types internally (e.g.
+            # a KeyError/ValueError on a malformed provider prefix). Any of
+            # those escaping here would abort registry construction / bot.conf
+            # loading at startup instead of rejecting one bad value, so map
+            # every failure to a clean InvalidRegistryValue.
             suggestions = self._suggest_models(model)
             msg = f"Unknown model: {model!r}."
             if suggestions:
                 msg += f" Did you mean: {', '.join(suggestions)}?"
             else:
                 msg += " See https://docs.litellm.ai/docs/providers for supported models."
-            raise registry.InvalidRegistryValue(msg)  # noqa: B904
+            if not isinstance(exc, litellm.exceptions.BadRequestError):
+                msg += f" ({type(exc).__name__})"
+            raise registry.InvalidRegistryValue(msg) from exc
 
         # Provider recognized — warn once if model is not in the known list
         if model not in litellm.model_list:
@@ -376,10 +384,12 @@ conf.registerChannelValue(
 conf.registerChannelValue(
     LLM,
     "verseEventRetentionDays",
-    registry.Integer(
+    registry.NonNegativeInteger(
         30,
         _("""Number of days to retain verse events before pruning.
-        Older events are removed during housekeeping runs."""),
+        Older events are removed during housekeeping runs. Must be
+        non-negative: a negative value would push the prune cutoff into
+        the future and delete every event."""),
     ),
 )
 
@@ -811,17 +821,21 @@ _register_rate_limit_block(
 )
 
 # --- draw (expensive) ---
+# Unregistered is the STRICTEST tier: 1 image/hour, not 0. A count of 0 means
+# "rate limiting disabled" (see _is_rate_limited), so 0 would give accountless
+# users UNLIMITED access to the most expensive command — the opposite of the
+# intended tier ordering. Keep it a small positive cap.
 _register_rate_limit_block(
     "draw",
-    counts=(2, 5, 0),
-    windows=(300, 60, 60),
+    counts=(2, 5, 1),
+    windows=(300, 60, 3600),
 )
 
 # --- story (expensive, illustrated storybook) ---
 _register_rate_limit_block(
     "story",
-    counts=(2, 5, 0),
-    windows=(300, 60, 60),
+    counts=(2, 5, 1),
+    windows=(300, 60, 3600),
 )
 
 # ============================================================================

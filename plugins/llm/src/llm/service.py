@@ -292,7 +292,7 @@ def _is_degraded_reply(content: str) -> bool:
     n = len(words)
     if n < _DEGRADED_MIN_WORDS:
         return False
-    terminators = text.count(".") + text.count("!") + text.count("?")
+    terminators = text.count(".") + text.count("!") + text.count("?") + text.count("…")
     words_per_sentence = n / terminators if terminators else float(n)
     if words_per_sentence > _DEGRADED_MAX_WORDS_PER_SENTENCE:
         return True
@@ -2410,6 +2410,20 @@ class LLMService:
 
         timeout = self.plugin.registryValue("timeout")
         optional_kwargs = self._get_provider_kwargs(task.model)
+        # Re-apply the profile generation caps stashed at timeout so the retry
+        # matches the foreground call (unbounded output otherwise collapses into
+        # run-on gibberish on the long-form verse/ask profiles).
+        max_tokens = request_data.get("max_tokens")
+        if isinstance(max_tokens, int):
+            optional_kwargs["max_tokens"] = max_tokens
+        temperature = request_data.get("temperature")
+        frequency_penalty = request_data.get("frequency_penalty")
+        if isinstance(temperature, (int, float)):
+            optional_kwargs.setdefault("temperature", temperature)
+        if isinstance(frequency_penalty, (int, float)):
+            optional_kwargs.setdefault("frequency_penalty", frequency_penalty)
+        if temperature is not None or frequency_penalty is not None:
+            optional_kwargs.setdefault("drop_params", True)
 
         response = self._completion_with_tool_fallback(
             model=task.model,
@@ -4608,9 +4622,9 @@ Examples (echo → action_prompt: ""):
             total_completion_tokens += executor.accumulated_completion_tokens
             total_cost += executor.accumulated_cost
             fallback = last_assistant_text.strip()
-            # Never let a degenerate echo of the prompt leak out as the
-            # step-cap fallback either.
-            if not fallback or _is_echo_reply(prompt, fallback):
+            # Never let a degenerate echo of the prompt — or a run-on/looping
+            # collapse — leak out as the step-cap fallback.
+            if not fallback or _is_echo_reply(prompt, fallback) or _is_degraded_reply(fallback):
                 fallback = "I couldn't pull enough context to answer that — give me more detail."
             return AssistantResult(
                 content=self.sanitize_output(fallback),
@@ -4648,7 +4662,17 @@ Examples (echo → action_prompt: ""):
                     is_channel=is_channel,
                     prompt=prompt,
                     model=model,
-                    request_data={"messages": stash_messages},
+                    # Carry the profile's generation caps so the background
+                    # retry regenerates under the SAME bound as the foreground
+                    # call. Without max_tokens a stashed verse/ask retry can run
+                    # unbounded and deliver the run-on gibberish the output cap
+                    # exists to prevent.
+                    request_data={
+                        "messages": stash_messages,
+                        "max_tokens": profile.max_output_tokens,
+                        "temperature": profile.temperature,
+                        "frequency_penalty": profile.frequency_penalty,
+                    },
                     submitted_at=time.time(),
                     account=stash_account,
                 )

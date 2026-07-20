@@ -154,10 +154,15 @@ def build_reaction_report(
     Each event is dated by ``ts[:10]``. If ``channel`` is given, only events for
     that channel are counted.
     """
+    # IRC channel names are case-insensitive, and events are stored with the
+    # server-supplied case (e.g. '#AfterNet') while the report is typically
+    # filtered with a lowercased channel — compare case-folded so the filter
+    # actually matches captured events.
+    want = channel.lower() if channel is not None else None
     evs = [
         e
         for e in events
-        if (channel is None or e.get("channel") == channel)
+        if (want is None or str(e.get("channel", "")).lower() == want)
         and isinstance(e.get("ts"), str)
         and len(e["ts"]) >= 10
     ]

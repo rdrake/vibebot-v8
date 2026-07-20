@@ -96,7 +96,7 @@ def compact_verse(
         return CompactionOutcome("skipped_below_floor", total, 0)
 
     cutoff_ts = now() - retention_days * SECONDS_PER_DAY
-    olds = store.events_older_than(cutoff_ts=cutoff_ts)
+    olds = store.events_older_than(cutoff_ts=cutoff_ts, limit=_MAX_EVENTS_PER_PASS)
     if not olds:
         return CompactionOutcome("skipped_no_events", total, 0)
 
@@ -117,9 +117,14 @@ def compact_verse(
     pairs: list[tuple[Any, str]] = [(e, f"- {_truncated(e.summary)}") for e in batch]
     bullets = "\n".join(b for _, b in pairs)
     if len(bullets) > _MAX_BULLET_BLOCK_CHARS:
-        # Trim oldest pairs first; newest of the batch stay in.
+        # Trim the NEWEST pairs first so the OLDEST-fitting prefix survives and
+        # gets compacted + deleted this pass. `batch` is ordered oldest->newest,
+        # so pop from the end. Trimming the front (oldest) instead would leave
+        # the very oldest events undeleted, and events_older_than would re-serve
+        # them at the head of every subsequent pass — they would never compact
+        # and the events table would grow without bound under sustained inflow.
         while pairs and len("\n".join(b for _, b in pairs)) > _MAX_BULLET_BLOCK_CHARS:
-            pairs.pop(0)
+            pairs.pop()
         bullets = "\n".join(b for _, b in pairs)
         _LOG.info(
             "verse compaction: bullet block trimmed to %d chars over %d-event batch",

@@ -2406,6 +2406,19 @@ class TestVerseDegradedGuard:
         """GIVEN a clean scene or a short reply WHEN checked THEN not degraded."""
         assert _is_degraded_reply(reply) is False
 
+    def test_is_degraded_reply_ellipsis_prose_not_flagged(self) -> None:
+        """Long, varied prose broken mainly with the Unicode ellipsis (…) must
+        not read as a pathological run-on: … is a sentence/clause terminator.
+
+        Before the fix only ASCII . ! ? were counted, so an ellipsis-heavy
+        scene with a single period had words_per_sentence far over the run-on
+        threshold and was wrongly stripped + retried.
+        """
+        words = [f"word{i}" for i in range(160)]  # 160 distinct words, high diversity
+        reply = "… ".join(words) + "."
+        assert len(reply.split()) >= 150  # long enough to be judged
+        assert _is_degraded_reply(reply) is False
+
     def test_strip_degraded_removes_assistant_collapses(self) -> None:
         """GIVEN a thread with a collapsed turn WHEN stripped THEN only the
         model's degraded turn drops; user and clean turns are kept."""
