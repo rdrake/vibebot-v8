@@ -116,6 +116,16 @@ _REMINDER_MUTATION_TOOLS = frozenset(
 
 _FULL_ANSWER_LABEL = "Full answer"
 
+# Slice 2 canon layer: appended to the chat-path canon block when
+# verseChatRecordEnabled + an opted-in avatar. Invites the model to persist a
+# genuinely new durable fact to canon, sparingly, so canon grows from ordinary
+# chat and not only @rp roleplay. Kept terse to avoid over-eager recording.
+_VERSE_CHAT_RECORD_NUDGE = (
+    "If this exchange establishes a genuinely NEW, durable fact about these "
+    "characters or the world (not small talk, opinions, or one-off banter), you "
+    "may call verse_record ONCE to save it to canon. When in doubt, don't."
+)
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -2904,9 +2914,48 @@ class LLM(callbacks.Plugin):
                 avatar_id=avatar_id,
                 roster_max_chars=self.registryValue("verseRosterMaxChars", channel),
             )
-            return block or None
+            if not block:
+                return None
+            # Slice 2 nudge: when chat-path canon recording is enabled for an
+            # opted-in avatar, invite the model to save a genuinely new durable
+            # fact (sparingly) via verse_record. Only when the handler is
+            # actually wired (see _verse_chat_record_handler) — same gate.
+            if avatar_id is not None and self.registryValue("verseChatRecordEnabled", channel):
+                block = f"{block}\n{_VERSE_CHAT_RECORD_NUDGE}"
+            return block
         except Exception:
             self.log.exception("verse context injection failed (non-fatal) channel=%s", channel)
+            return None
+
+    def _verse_chat_record_handler(
+        self, preflight: PreflightResult
+    ) -> Callable[[dict], _VerseToolResult] | None:
+        """Live ``verse_record`` handler for the CHAT path, or None.
+
+        Slice 2 of the canon layer: when ``verseChatRecordEnabled`` is on and the
+        caller is an opted-in avatar, canon may accrue from ordinary
+        (non-roleplay) chat — the model can call verse_record to save a durable
+        fact, bound to the caller's avatar. Off by default, so chat-path
+        verse_record stays denied and canon only grows during @rp roleplay.
+        Best-effort: returns None on any failure (→ the denial handler stands).
+        """
+        channel = preflight.channel
+        if not self.registryValue("verseEnabled", channel):
+            return None
+        if not self.registryValue("verseChatRecordEnabled", channel):
+            return None
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            if avatar_id is None:
+                return None
+            max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
+            handlers = make_verse_extra_handlers(store, avatar_id, max_actors=max_actors)
+            return handlers.get("verse_record")
+        except Exception:
+            self.log.exception(
+                "verse chat-record handler build failed (non-fatal) channel=%s", channel
+            )
             return None
 
     def _build_verse_handlers_for(self, channel: str) -> dict | None:
@@ -4053,6 +4102,7 @@ class LLM(callbacks.Plugin):
                         entry_route=entry_route,
                         extra_tools_override=verse_specs,
                         verse_context=self._verse_context_for(preflight, text),
+                        verse_record_handler=self._verse_chat_record_handler(preflight),
                     )
                     return
                 self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
@@ -4101,6 +4151,7 @@ class LLM(callbacks.Plugin):
         verse_route: VerseRoute | None = None,
         model_override: str | None = None,
         verse_context: str | None = None,
+        verse_record_handler: Callable[[dict], _VerseToolResult] | None = None,
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight.
 
@@ -4245,6 +4296,13 @@ class LLM(callbacks.Plugin):
                         **(bridge_handlers or {}),
                         **denial_handlers,
                     }
+                    # Slice 2: overlay a LIVE verse_record over its denial handler
+                    # so an opted-in avatar's ordinary chat turn can save canon
+                    # (gated by verseChatRecordEnabled; None otherwise). All other
+                    # verse tools stay denied on the chat path — only recording is
+                    # freed, not the roleplay actions.
+                    if verse_record_handler is not None:
+                        combined_handlers["verse_record"] = verse_record_handler
                 else:
                     combined_handlers = bridge_handlers
 

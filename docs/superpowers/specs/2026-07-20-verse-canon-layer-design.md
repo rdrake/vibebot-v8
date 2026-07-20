@@ -64,7 +64,13 @@ double-dispatch/relay problem; richer doors — sticky toggle — possible later
 - **Slice 1 (SHIPPED).** Read-injection on the chat path + demote the auto-trigger +
   minimal `@rp` roleplay door. Fixes the surprise-story and the grok-4.3 tax
   without touching tuned roleplay internals.
-- **Slice 2.** `record_canon` write tool on the normal path.
+- **Slice 2 (SHIPPED).** Chat-path canon WRITE: `verse_record` made live on the
+  normal chat path for opted-in avatars, gated behind `verseChatRecordEnabled`
+  (default OFF), plus a terse recording nudge in the canon block. Realises the
+  "record_canon" intent by generalising the existing `verse_record` tool rather
+  than adding a new one (keeps the tool surface small). Ships DORMANT — rdrake
+  flips the flag per channel when ready; canon-pollution risk stays behind the
+  opt-in. Roleplay-only tools (act/move) remain denied on the chat path.
 - **Slice 3.** Richer roleplay door (sticky toggle / auto-expiry) if wanted.
 
 ## Slice 1 — detail

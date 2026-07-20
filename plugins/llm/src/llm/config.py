@@ -464,6 +464,21 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "verseChatRecordEnabled",
+    registry.Boolean(
+        False,
+        _("""Let canon accrue from ORDINARY chat, not just @rp roleplay turns.
+        When on, an opted-in avatar's normal (non-roleplay) chat turn can call
+        verse_record to save a genuinely new, durable canon fact; the model is
+        nudged to do so sparingly. Off (default) keeps chat-path verse_record
+        denied, so canon only grows during explicit roleplay. Guards
+        canon-pollution risk behind an opt-in per the cautious verse-write
+        rollout pattern."""),
+    ),
+)
+
 # (Verse engagement measurement, not storybook — filed here historically.)
 conf.registerChannelValue(
     LLM,

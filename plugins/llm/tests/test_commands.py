@@ -3340,6 +3340,102 @@ class TestVerseStorybook:
         pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
         assert plugin._verse_context_for(pf, "hello there") is None
 
+    # --- Slice 2: chat-path canon recording --------------------------------
+
+    def test_chat_record_handler_none_when_flag_off(self, plugin_env, mocker, tmp_path):
+        """Default (verseChatRecordEnabled off) → no live handler; chat-path
+        verse_record stays denied."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        av = store.add_entity("avatar", "Alice")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin, "_find_caller_avatar", return_value=av)
+        base = make_registry_side_effect({"verseEnabled": True, "verseChatRecordEnabled": False})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        assert plugin._verse_chat_record_handler(pf) is None
+
+    def test_chat_record_handler_none_without_avatar(self, plugin_env, mocker, tmp_path):
+        """Flag on but caller has no avatar → still None (only opted-in avatars
+        write canon)."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin, "_find_caller_avatar", return_value=None)
+        base = make_registry_side_effect({"verseEnabled": True, "verseChatRecordEnabled": True})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="bob", account=None)
+        assert plugin._verse_chat_record_handler(pf) is None
+
+    def test_chat_record_handler_live_records_to_canon(self, plugin_env, mocker, tmp_path):
+        """Flag on + opted-in avatar → live handler that actually writes an
+        event to the store (canon accrues from ordinary chat)."""
+        import json
+
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        av = store.add_entity("avatar", "Alice")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin, "_find_caller_avatar", return_value=av)
+        base = make_registry_side_effect(
+            {
+                "verseEnabled": True,
+                "verseChatRecordEnabled": True,
+                "verseAutoEntityMaxNamesPerCall": 8,
+            }
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        handler = plugin._verse_chat_record_handler(pf)
+        assert handler is not None
+        res = handler({"summary": "Alice found the golden key"})
+        assert json.loads(res.content)["status"] == "ok"
+        assert any("golden key" in e.summary for e in store.recent_events(limit=10))
+
+    def test_verse_context_appends_record_nudge_when_enabled(self, plugin_env, mocker, tmp_path):
+        """With recording on + an avatar, the canon block carries the
+        verse_record nudge; off, it does not."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        archie = store.add_entity("npc", "Archie", "the windbag")
+        store.apply_direct(
+            op="set_pinned",
+            payload={"entity_id": archie, "pinned": True},
+            source="operator",
+            provenance="t",
+        )
+        av = store.add_entity("avatar", "Alice")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin, "_find_caller_avatar", return_value=av)
+
+        def _regs(enabled):
+            return make_registry_side_effect(
+                {
+                    "verseEnabled": True,
+                    "verseTriggerRegex": "",
+                    "verseRosterMaxChars": 2000,
+                    "verseChatRecordEnabled": enabled,
+                }
+            )
+
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_regs(True))
+        on = plugin._verse_context_for(pf, "what does Archie think?")
+        assert on is not None and "verse_record" in on
+
+        plugin.registryValue = mocker.MagicMock(side_effect=_regs(False))
+        off = plugin._verse_context_for(pf, "what does Archie think?")
+        assert off is not None and "verse_record" not in off
+
     # --- handler gates -----------------------------------------------------
 
     def _build(self, plugin, mock_irc, mock_msg, mocker, *, account="acct"):
