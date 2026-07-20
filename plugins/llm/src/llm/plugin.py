@@ -558,7 +558,7 @@ def _patch_irc_dojoin(plugin: LLM) -> None:
         # If WHO is skipped, do NOT touch startedSync — do315 will never arrive
         # and the dict would leak across rejoins.
 
-    irclib.Irc.doJoin = doJoin  # ty: ignore[invalid-assignment]
+    irclib.Irc.doJoin = doJoin
 
 
 def _patch_irc_docapnew() -> None:
@@ -589,7 +589,7 @@ def _patch_irc_docapnew() -> None:
         if new:
             self.requestCapabilities(new)
 
-    irclib.Irc.doCapNew = doCapNew  # ty: ignore[invalid-assignment]
+    irclib.Irc.doCapNew = doCapNew
 
 
 def _format_compaction_outcome(
