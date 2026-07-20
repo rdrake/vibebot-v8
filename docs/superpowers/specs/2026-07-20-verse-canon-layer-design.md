@@ -55,13 +55,14 @@ conversation, not only roleplay turns. (Generalises today's roleplay-only
 
 ### 3. Roleplay mode — explicit door
 Keep today's roleplay internals unchanged; it just stops auto-arming on a bare
-mention. Entered explicitly (Slice 1: `@verse <text>` command — single-fire, dodges
-the double-dispatch/relay problem; richer doors — sticky toggle — possible later).
+mention. Entered explicitly (Slice 1: `@rp <text>` command — `@verse` was already
+taken by the scene-readout command; single-fire, dodges the
+double-dispatch/relay problem; richer doors — sticky toggle — possible later).
 
 ## Slices
 
-- **Slice 1 (active).** Read-injection on the chat path + demote the auto-trigger +
-  minimal `@verse` roleplay door. Fixes the surprise-story and the grok-4.3 tax
+- **Slice 1 (SHIPPED).** Read-injection on the chat path + demote the auto-trigger +
+  minimal `@rp` roleplay door. Fixes the surprise-story and the grok-4.3 tax
   without touching tuned roleplay internals.
 - **Slice 2.** `record_canon` write tool on the normal path.
 - **Slice 3.** Richer roleplay door (sticky toggle / auto-expiry) if wanted.
@@ -82,9 +83,9 @@ nothing matches.
   additive context (rides alongside `memories`/`channel_history`, not as a
   persona-bearing `system_prompt_override`).
 
-**`@verse` command:** thin wrapper that runs `_dispatch_addressed` with the verse
-route forced on (reusing `_verse_route_for`'s builder), gated like verse today
-(`llm.verse`).
+**`@rp` command:** thin wrapper that runs `_dispatch_with_verse_routing` with
+`force_roleplay=True` (reusing `_verse_route_for`'s builder), gated like verse
+today (`llm.verse`), and sharing `@ask`'s rate-limit config (no new `rp*` keys).
 
 **Unchanged:** `build_verse_system_prompt`, denial/degradation guards, prefix
 caching, storybook (`@story` + its `world_context`/`scene_context`), `verse_record`

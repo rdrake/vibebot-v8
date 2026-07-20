@@ -1736,7 +1736,7 @@ class TestVerseRouteForC7c:
         """GIVEN opted-in avatar WHEN _verse_route_for called THEN non-None route returned."""
         plugin, _irc, _msg, store = verse_env
 
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
 
         assert route is not None
         assert route.avatar_id is not None
@@ -1757,15 +1757,25 @@ class TestVerseRouteForC7c:
         plugin, _irc, _msg, _store = verse_env
 
         # Sanity: the same message without the // marker DOES route to verse.
-        assert plugin._verse_route_for("#afnet", "alice", None, "what model are you?") is not None
+        assert (
+            plugin._verse_route_for(
+                "#afnet", "alice", None, "what model are you?", force_roleplay=True
+            )
+            is not None
+        )
 
-        assert plugin._verse_route_for("#afnet", "alice", None, "// what model are you?") is None
+        assert (
+            plugin._verse_route_for(
+                "#afnet", "alice", None, "// what model are you?", force_roleplay=True
+            )
+            is None
+        )
 
     def test_route_system_prompt_includes_identity(self, verse_env) -> None:
         """System prompt must start with 'You are alice.'"""
         plugin, _irc, _msg, _store = verse_env
 
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
 
         assert route is not None
         assert route.system_prompt.startswith("You are alice.")
@@ -1774,7 +1784,7 @@ class TestVerseRouteForC7c:
         """System prompt must include a Scene section."""
         plugin, _irc, _msg, _store = verse_env
 
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
 
         assert route is not None
         assert "Scene:" in route.system_prompt
@@ -1783,7 +1793,7 @@ class TestVerseRouteForC7c:
         """Returned tools must be the six verse tool specs (incl. verse_edit)."""
         plugin, _irc, _msg, _store = verse_env
 
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello")
+        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
 
         assert route is not None
         tool_names = {t["function"]["name"] for t in route.tools}
@@ -1875,7 +1885,7 @@ class TestAskWithVerseRoute:
         """
         plugin, irc, msg, _store = verse_ask_env
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         plugin.llm_service.assistant_request.assert_called_once()
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
@@ -1890,7 +1900,7 @@ class TestAskWithVerseRoute:
         """GIVEN verse route WHEN @ask THEN system_prompt includes avatar name 'alice'."""
         plugin, irc, msg, _store = verse_ask_env
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         system_prompt = kwargs.get("system_prompt", "")
@@ -1900,7 +1910,7 @@ class TestAskWithVerseRoute:
         """GIVEN verse route WHEN @ask THEN all 5 verse tool names appear in extra_tools."""
         plugin, irc, msg, _store = verse_ask_env
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         extra_tools = kwargs.get("extra_tools") or []
@@ -1925,7 +1935,7 @@ class TestAskWithVerseRoute:
 
         plugin, irc, msg, _store = verse_ask_env
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         request_context = kwargs.get("request_context")
@@ -1953,7 +1963,7 @@ class TestAskWithVerseRoute:
 
         plugin.registryValue = mocker.MagicMock(side_effect=_registry)
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs.get("model_override") is None
@@ -1979,7 +1989,7 @@ class TestAskWithVerseRoute:
 
         plugin.registryValue = mocker.MagicMock(side_effect=_registry)
 
-        plugin.ask(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs.get("model_override") == "openrouter/grok-3-non-reasoning"
@@ -1999,8 +2009,8 @@ class TestAskWithVerseRoute:
 
         plugin.registryValue = mocker.MagicMock(side_effect=_registry)
 
-        plugin.ask(irc, msg, ["hello"])
-        plugin.ask(irc, msg, ["hello again"])
+        plugin.rp(irc, msg, ["hello"])
+        plugin.rp(irc, msg, ["hello again"])
 
         verse_warnings = [
             c
@@ -3164,7 +3174,7 @@ def test_verse_route_threads_style_exemplars(plugin_env, tmp_path, mocker):
     plugin.verseopt(irc, msg, ["in"])
     irc.reply.reset_mock()
 
-    route = plugin._verse_route_for("#afnet", "alice", None, "what happened")
+    route = plugin._verse_route_for("#afnet", "alice", None, "what happened", force_roleplay=True)
 
     assert route is not None
     assert "the lads marched on the chippy" in route.system_prompt

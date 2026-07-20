@@ -649,6 +649,71 @@ def build_story_world_context(store: VerseStore, roster_max_chars: int = 2000) -
     return "\n".join(lines)
 
 
+def build_verse_context_block(
+    store: VerseStore,
+    message_text: str,
+    *,
+    avatar_id: int | None = None,
+    roster_max_chars: int = 2000,
+) -> str:
+    """Facts-only canon retrieval block for a NORMAL (non-roleplay) chat turn.
+
+    The retrieval half of ``build_verse_system_prompt`` — the durable canon
+    roster plus the message-matched cast, their 1-hop relations, and recent
+    events — with NONE of the roleplay framing: no "You are <avatar>" identity
+    line, no persona, no ``VERSE_SCENE_MARKER`` scene block. Injecting this
+    grounds an ordinary answer in canon when the message references it, without
+    assuming the avatar persona or the narrative toolset.
+
+    ``avatar_id`` (if given) is excluded from the referenced cast so the speaker
+    isn't described back to themselves. Returns "" when nothing canon is
+    referenced (no roster and no matched cast), so the caller can inject
+    unconditionally.
+    """
+    canon = store.list_canon_entities()
+    scene = [e for e in store.match_entities_in_text(message_text) if e.id != avatar_id]
+    if not canon and not scene:
+        return ""
+
+    parts: list[str] = ["Relevant world canon (reference facts — weave in as fits, do not recite):"]
+
+    if canon:
+        parts.append("Established characters:")
+        used = 0
+        for e in canon:
+            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+            if used + len(line) + 1 > roster_max_chars:
+                parts.append("- (roster truncated)")
+                break
+            parts.append(line)
+            used += len(line) + 1
+
+    roster_ids = {e.id for e in canon}
+    fresh = [e for e in scene if e.id not in roster_ids]
+    if fresh:
+        parts.append("Referenced here:")
+        parts.extend([f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}" for e in fresh])
+
+    rel_ids = list(roster_ids | {e.id for e in scene})
+    rels = store.relations_for(rel_ids) if rel_ids else []
+    if rels:
+        parts.append("Known relationships:")
+        parts.extend(
+            [
+                f"- {r.from_name} {r.kind.replace('_', ' ')} {r.to_name}"
+                + (f" ({r.note})" if r.note else "")
+                for r in rels
+            ]
+        )
+
+    scene_events = store.events_for_entities([e.id for e in scene], limit=8) if scene else []
+    if scene_events:
+        parts.append("Recent events involving them:")
+        parts.extend([f"- {ev.summary}" for ev in scene_events])
+
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # verse_edit: gated canon-editing tool
 # ---------------------------------------------------------------------------

@@ -3259,11 +3259,12 @@ class TestVerseStorybook:
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         mocker.patch("llm.plugin.is_ooc", return_value=False)
 
-        # Flag off → no storybook spec. Permissive trigger regex so the
-        # _verse_triggered gate passes (this test is about tool specs).
+        # Flag off → no storybook spec. force_roleplay=True enters the roleplay
+        # route explicitly (a bare mention no longer routes); this test is about
+        # tool specs, not the trigger.
         base = make_registry_side_effect({"verseEnabled": True, "verseTriggerRegex": "."})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        route = plugin._verse_route_for("#test", "testnick", None, "hi")
+        route = plugin._verse_route_for("#test", "testnick", None, "hi", force_roleplay=True)
         assert route is not None
         names_off = {t["function"]["name"] for t in route.tools}
         assert "verse_storybook" not in names_off
@@ -3275,9 +3276,69 @@ class TestVerseStorybook:
             return base(key, *args)
 
         plugin.registryValue = mocker.MagicMock(side_effect=side_effect)
-        route = plugin._verse_route_for("#test", "testnick", None, "hi")
+        route = plugin._verse_route_for("#test", "testnick", None, "hi", force_roleplay=True)
         names_on = {t["function"]["name"] for t in route.tools}
         assert "verse_storybook" in names_on
+
+    def test_bare_mention_does_not_enter_roleplay(self, plugin_env, mocker):
+        """Canon-layer split: a bare trigger no longer arms roleplay mode; only
+        an explicit @verse (force_roleplay=True) routes into it."""
+        plugin, mock_irc, mock_msg = plugin_env
+        store = mocker.MagicMock()
+        store.find_avatar_by_account.return_value = None
+        store.find_avatar_by_nick.return_value = 7
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin.db, "get_avatar_persona", return_value="a sly fox")
+        mocker.patch("llm.plugin.build_verse_system_prompt", return_value="SCENE")
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch("llm.plugin.is_ooc", return_value=False)
+        base = make_registry_side_effect({"verseEnabled": True, "verseTriggerRegex": "."})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        # Trigger would match, but without the explicit signal → chat path.
+        assert plugin._verse_route_for("#test", "testnick", None, "hi") is None
+        # Explicit @verse opt-in still enters roleplay.
+        assert (
+            plugin._verse_route_for("#test", "testnick", None, "hi", force_roleplay=True)
+            is not None
+        )
+
+    def test_verse_context_for_injects_canon_on_trigger(self, plugin_env, mocker, tmp_path):
+        """Retrieval side: a canon reference yields a facts block for the chat turn."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        archie = store.add_entity("npc", "Archie", "the windbag")
+        store.apply_direct(
+            op="set_pinned",
+            payload={"entity_id": archie, "pinned": True},
+            source="operator",
+            provenance="t",
+        )
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        base = make_registry_side_effect(
+            {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+        block = plugin._verse_context_for(pf, "what does Archie think?")
+        assert block is not None
+        assert "Archie: the windbag" in block
+        assert "You are" not in block  # facts only, no persona takeover
+
+    def test_verse_context_for_none_when_no_reference(self, plugin_env, mocker, tmp_path):
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        store.add_entity("npc", "Archie", "windbag")  # not pinned, not mentioned
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        base = make_registry_side_effect(
+            {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+        assert plugin._verse_context_for(pf, "hello there") is None
 
     # --- handler gates -----------------------------------------------------
 

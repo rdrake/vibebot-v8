@@ -1,9 +1,39 @@
 from llm.verse.avatar import (
     VERSE_SCENE_MARKER,
     build_story_world_context,
+    build_verse_context_block,
     build_verse_system_prompt,
 )
 from llm.verse.store import VerseStore
+
+
+def test_verse_context_block_facts_without_roleplay_framing(tmp_path):
+    """The chat-path canon block carries facts (roster + referenced cast) but
+    NONE of the roleplay framing — no identity line, persona, or scene marker."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    store.apply_direct(
+        op="set_pinned",
+        payload={"entity_id": archie, "pinned": True},
+        source="operator",
+        provenance="t",
+    )
+    block = build_verse_context_block(store, "what would Assgas Archie say?", avatar_id=me)
+    assert "Assgas Archie: Y11 windbag" in block
+    # Facts only — no persona takeover.
+    assert "You are" not in block
+    assert VERSE_SCENE_MARKER not in block
+    assert "Persona" not in block
+    # Speaker isn't described back to themselves.
+    assert "Hero" not in block
+
+
+def test_verse_context_block_empty_when_no_canon_and_no_match(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    store.add_entity("avatar", "Hero")
+    store.add_entity("npc", "Ghost", "unpinned, unmentioned")
+    assert build_verse_context_block(store, "hello there") == ""
 
 
 def test_story_world_context_lists_canon(tmp_path):

@@ -450,6 +450,8 @@ class TestInvalidCommand:
         # chat path delegates to _ask_impl. Verse routing is covered by
         # TestVerseRouting / TestAskCommand fixtures.
         plugin._verse_route_for = mocker.MagicMock(return_value=None)
+        # Likewise stub the chat-path canon retrieval (covered by its own tests).
+        plugin._verse_context_for = mocker.MagicMock(return_value=None)
 
         return plugin, mock_irc, mock_msg
 
@@ -675,6 +677,7 @@ class TestCommandRegistry:
             "usage",
             "verseopt",
             "verse",
+            "rp",
             "look",
             "who",
             "canon",

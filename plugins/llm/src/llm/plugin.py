@@ -60,6 +60,7 @@ from .verse.aging import AgingOutcome
 from .verse.avatar import (
     _VerseToolResult,
     build_story_world_context,
+    build_verse_context_block,
     build_verse_system_prompt,
     dispatch_verse_edit,
     is_ooc,
@@ -344,6 +345,18 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "Requires the llm.verse capability and a verse-enabled channel."
         ),
         examples=("@verse",),
+        category="utility",
+    ),
+    CommandInfo(
+        name="rp",
+        args="<text>",
+        description=(
+            "Roleplay: take one in-character verse turn as your avatar (persona, "
+            "scene, narrative tools). A bare canon mention only grounds a normal "
+            "reply now — use @rp to opt into roleplay. Requires the llm.verse "
+            "capability and a verse-enabled channel."
+        ),
+        examples=("@rp Archie kicks the door open and bellows for the lads",),
         category="utility",
     ),
     CommandInfo(
@@ -1984,6 +1997,7 @@ class LLM(callbacks.Plugin):
         preflight: PreflightResult,
         *,
         entry_route: str,
+        force_roleplay: bool = False,
     ) -> None:
         """Run addressed-text dispatch in a daemon thread so the IRC driver
         thread is freed to flush the typing indicator immediately.
@@ -2030,7 +2044,12 @@ class LLM(callbacks.Plugin):
                 return
             try:
                 self._dispatch_with_verse_routing(
-                    irc, msg, text, preflight, entry_route=entry_route
+                    irc,
+                    msg,
+                    text,
+                    preflight,
+                    entry_route=entry_route,
+                    force_roleplay=force_roleplay,
                 )
             except Exception:
                 self.log.exception("addressed dispatch failed in worker thread")
@@ -2801,17 +2820,24 @@ class LLM(callbacks.Plugin):
         account: str | None,
         message_text: str,
         prefix: str | None = None,
+        *,
+        force_roleplay: bool = False,
     ) -> VerseRoute | None:
-        """Return a VerseRoute when the message should be handled by the verse
-        engine, or None to fall through to the normal chat path.
+        """Return a VerseRoute when the message should enter verse ROLEPLAY mode,
+        or None to fall through to the normal chat path.
 
         Gates (applied in order):
         1. verseEnabled must be True for the channel.
         2. User must hold the llm.verse capability.
         3. OOC messages (wrapped in ((...)) or with a leading //) bypass the
            verse engine.
-
-        Body (avatar lookup + route construction) lands in C7c.
+        4. The caller must have an avatar in the verse.
+        5. Roleplay is entered EXPLICITLY (``force_roleplay=True``, the @verse
+           command) — a bare keyword/entity mention no longer arms roleplay
+           mode. Mentions instead inject canon *facts* into the normal chat
+           turn (see ``build_verse_context_block`` in
+           ``_dispatch_with_verse_routing``). This separates the canon layer
+           (read/write, cheap) from the roleplay persona (explicit, heavy).
         """
         if not self.registryValue("verseEnabled", channel):
             return None
@@ -2828,11 +2854,10 @@ class LLM(callbacks.Plugin):
         avatar_id = self._find_caller_avatar(store, account, nick)
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
-        # Trigger gate: don't route every avatar-user message into verse. Only
-        # route when the message carries a verse signal — a configured keyword
-        # or a reference to a known in-universe entity (not the speaker's own
-        # avatar). Otherwise fall through to the normal chat path.
-        if not self._verse_triggered(channel, store, avatar_id, message_text):
+        # Explicit-only: roleplay mode is entered by the @verse command, not by
+        # a bare mention. Without the explicit signal, fall through to chat
+        # (where the mention still injects canon facts).
+        if not force_roleplay:
             return None
         persona = self.db.get_avatar_persona(nick) or ""
         system_prompt = build_verse_system_prompt(
@@ -2849,6 +2874,40 @@ class LLM(callbacks.Plugin):
             storybook=bool(self.registryValue("verseStorybookEnabled", channel)),
         )
         return VerseRoute(avatar_id, system_prompt, tools, store)
+
+    def _verse_context_for(self, preflight: PreflightResult, text: str) -> str | None:
+        """Facts-only canon block to inject into a NORMAL chat turn, or None.
+
+        The retrieval side of the canon layer: when a verse-channel message
+        references canon (an entity mention or the channel's trigger keyword),
+        return the compact lore block (``build_verse_context_block``) so an
+        ordinary chat answer is grounded in canon — WITHOUT entering roleplay
+        mode. Returns None when the channel has no verse or nothing is
+        referenced. Best-effort: a failure here never breaks the chat turn.
+        """
+        channel = preflight.channel
+        if not self.registryValue("verseEnabled", channel):
+            return None
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            # Retrieval trigger: only inject when the message actually references
+            # canon. -1 stands in for a non-avatar speaker (no self to exclude),
+            # so lore grounding works for opted-out users too.
+            if not self._verse_triggered(
+                channel, store, avatar_id if avatar_id is not None else -1, text
+            ):
+                return None
+            block = build_verse_context_block(
+                store,
+                text,
+                avatar_id=avatar_id,
+                roster_max_chars=self.registryValue("verseRosterMaxChars", channel),
+            )
+            return block or None
+        except Exception:
+            self.log.exception("verse context injection failed (non-fatal) channel=%s", channel)
+            return None
 
     def _build_verse_handlers_for(self, channel: str) -> dict | None:
         """Build the verse extra-handlers dict for ``channel``, plumbing
@@ -3887,6 +3946,40 @@ class LLM(callbacks.Plugin):
 
     ask = wrap(ask, [("checkCapability", "llm.ask"), "text"])
 
+    def rp(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<text>
+
+        Roleplay: speak or act AS your avatar in the channel's shared story —
+        one in-character verse turn (persona, scene, narrative tools). A bare
+        mention of canon (a character name, the channel's keyword) no longer
+        enters this mode on its own; it only grounds a normal reply in canon.
+        Use @rp to opt into roleplay explicitly.
+
+        Needs an avatar in the verse and the llm.verse capability; without an
+        avatar it degrades to a normal, canon-grounded chat reply.
+
+        Example:
+          @rp Archie kicks the door open and bellows for the lads
+        """
+        if self._is_old_message(msg):
+            return
+        # Share @ask's rate-limit config (no separate rp* limit keys); the
+        # entry_route tag still distinguishes rp in traces.
+        pf = self._run_preflight(irc, msg, text, "ask", require_account=False)
+        if pf.blocked:
+            return
+        self._dispatch_with_verse_routing(
+            irc, msg, text, pf, entry_route="rp_command", force_roleplay=True
+        )
+
+    rp = wrap(rp, [("checkCapability", "llm.verse"), "text"])
+
     def _dispatch_with_verse_routing(
         self,
         irc: callbacks.Irc,
@@ -3895,6 +3988,7 @@ class LLM(callbacks.Plugin):
         preflight: PreflightResult,
         *,
         entry_route: str,
+        force_roleplay: bool = False,
     ) -> None:
         """Look up a VerseRoute for the (channel, nick, account, text) and
         dispatch to ``_ask_impl`` with the verse overrides applied when one
@@ -3905,7 +3999,11 @@ class LLM(callbacks.Plugin):
         nick-comma-prefixed text). Without this on every entry point a
         verse-enabled channel still falls back to the chat profile for any
         message that isn't routed through ``@ask``, so verse_record never
-        fires and the canon goes unrecorded."""
+        fires and the canon goes unrecorded.
+
+        ``force_roleplay`` (the @verse command) enters verse roleplay mode
+        explicitly. Otherwise a canon mention only injects facts into the chat
+        turn (``verse_context`` below) — it no longer arms roleplay."""
         # Fire the typing indicator the moment we know preflight passed —
         # before any DB work (verse route lookup, history fetch, memory
         # fetch, executor permit acquisition). Otherwise the user waits
@@ -3913,7 +4011,12 @@ class LLM(callbacks.Plugin):
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             route = self._verse_route_for(
-                preflight.channel, preflight.nick, preflight.account, text, msg.prefix
+                preflight.channel,
+                preflight.nick,
+                preflight.account,
+                text,
+                msg.prefix,
+                force_roleplay=force_roleplay,
             )
             if route is None:
                 verse_enabled = self.registryValue("verseEnabled", preflight.channel)
@@ -3949,6 +4052,7 @@ class LLM(callbacks.Plugin):
                         preflight,
                         entry_route=entry_route,
                         extra_tools_override=verse_specs,
+                        verse_context=self._verse_context_for(preflight, text),
                     )
                     return
                 self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
@@ -3996,6 +4100,7 @@ class LLM(callbacks.Plugin):
         profile_override: str | None = None,
         verse_route: VerseRoute | None = None,
         model_override: str | None = None,
+        verse_context: str | None = None,
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight.
 
@@ -4007,6 +4112,11 @@ class LLM(callbacks.Plugin):
           (e.g. PROFILE_VERSE to bypass the token cap).
         - ``verse_route``: when set, verse tool handlers are built and merged
           into extra_handlers so the assistant loop can dispatch them (C7d).
+        - ``verse_context``: facts-only canon block appended to the chat overlay
+          (retrieval side of the canon layer). ADDITIVE — unlike
+          ``system_prompt_override`` it keeps the personality overlay and layers
+          reference lore after it, so a normal answer is grounded in canon
+          without assuming the avatar persona.
         """
         nick, channel = pf.nick, pf.channel
         effective_profile = profile_override or PROFILE_CHAT
@@ -4059,6 +4169,12 @@ class LLM(callbacks.Plugin):
                 effective_prompt = "\n\n".join(parts)
             else:
                 effective_prompt = ask_prompt
+            # Retrieval side of the canon layer: append facts-only lore AFTER the
+            # personality overlay (never replacing it), so a canon mention grounds
+            # a normal chat answer without the roleplay persona. Off on roleplay
+            # turns (system_prompt_override already carries the full scene).
+            if verse_context and system_prompt_override is None:
+                effective_prompt = "\n\n".join(p for p in [effective_prompt, verse_context] if p)
 
             with self._allow_concurrent(), self._llm_executor.permit():
                 request_text = text
