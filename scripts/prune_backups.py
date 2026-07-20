@@ -43,7 +43,9 @@ def main() -> int:
         print(f"Found {len(matches)} backups in {target_dir}; nothing over keep={args.keep}.")
         return 0
 
-    to_delete = matches[: -args.keep]
+    # keep=0 must delete all: matches[:-0] == matches[:0] == [] (a silent
+    # no-op), so slice only when keep>0 and otherwise take everything.
+    to_delete = matches[: -args.keep] if args.keep else matches
     print(f"Found {len(matches)} backups; keeping {args.keep} newest, removing {len(to_delete)}.")
     for path in to_delete:
         if args.dry_run:

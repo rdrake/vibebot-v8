@@ -2239,30 +2239,44 @@ class LLM(callbacks.Plugin):
             if key in self._migrated_nicks:
                 return
             self._migrated_nicks.add(key)
-        usage_count = self.db.migrate_nick(old_nick, account)
-        if usage_count > 0:
-            self.log.info("Migrated %d usage row(s) from %s to %s", usage_count, old_nick, account)
-        convo_count = self.db.migrate_conversations(old_nick, account)
-        if convo_count > 0:
-            self.log.info(
-                "Migrated %d conversation row(s) from %s to %s",
-                convo_count,
-                old_nick,
-                account,
-            )
-        # Memories, candidates, instruction, and persona follow the identity
-        # too — otherwise facts saved while unidentified go dark on identify.
-        data_count = self.db.migrate_user_data(old_nick, account)
-        if data_count > 0:
-            self.log.info(
-                "Migrated %d memory/instruction row(s) from %s to %s",
-                data_count,
-                old_nick,
-                account,
-            )
-        # Also rekey in-memory conversation context so the live thread
-        # carries over without waiting for DB reload.
-        self.context.migrate_user(old_nick, account)
+        # If any step below raises (e.g. a locked DB), a partial migration would
+        # otherwise leave the key marked forever — later steps (memories,
+        # instruction, persona, context rekey) would never retry this session
+        # and the identity's data would silently go dark. It would also
+        # propagate up into the triggering @ask/@code/@draw and error it. So on
+        # failure we un-claim the key (allowing a retry on the next message) and
+        # swallow — migration is best-effort and must not break the request.
+        try:
+            usage_count = self.db.migrate_nick(old_nick, account)
+            if usage_count > 0:
+                self.log.info(
+                    "Migrated %d usage row(s) from %s to %s", usage_count, old_nick, account
+                )
+            convo_count = self.db.migrate_conversations(old_nick, account)
+            if convo_count > 0:
+                self.log.info(
+                    "Migrated %d conversation row(s) from %s to %s",
+                    convo_count,
+                    old_nick,
+                    account,
+                )
+            # Memories, candidates, instruction, and persona follow the identity
+            # too — otherwise facts saved while unidentified go dark on identify.
+            data_count = self.db.migrate_user_data(old_nick, account)
+            if data_count > 0:
+                self.log.info(
+                    "Migrated %d memory/instruction row(s) from %s to %s",
+                    data_count,
+                    old_nick,
+                    account,
+                )
+            # Also rekey in-memory conversation context so the live thread
+            # carries over without waiting for DB reload.
+            self.context.migrate_user(old_nick, account)
+        except Exception:
+            with self._migrated_nicks_lock:
+                self._migrated_nicks.discard(key)
+            self.log.exception("Nick migration from %s to %s failed; will retry", old_nick, account)
 
     def _log_pending_delivery_usage(
         self, result: PendingTaskResult, nick: str, target: str
@@ -4891,17 +4905,23 @@ class LLM(callbacks.Plugin):
         after a timeout.
         """
         caller = self._resolve_identity(irc, msg)
+        origin = self._get_channel(msg)
         # Default to current channel if not specified
         if channel is None:
-            channel = self._get_channel(msg)
+            channel = origin
         self.context.clear(caller.key, channel)
-        # Deliberately channel-wide (not just the caller's thread): stale bot
-        # text in the shared context poisons everyone's follow-ups, and the
-        # shared window repopulates as people talk.
-        self.context.clear_channel(channel)
+        # The channel-wide clear wipes the shared recent-history for EVERYONE in
+        # the channel, so only allow it from within that same channel. Otherwise
+        # any user could wipe an arbitrary channel's context from PM on demand
+        # (griefing). A cross-channel / PM request still clears the caller's own
+        # thread above; it just can't nuke a channel it isn't in.
+        if ircutils.isChannel(channel) and channel == origin:
+            # Stale bot text in the shared context poisons everyone's
+            # follow-ups, and the shared window repopulates as people talk.
+            self.context.clear_channel(channel)
         irc.reply(_("Context cleared."), prefixNick=False)
 
-    forget = wrap(forget, [optional("channel")])
+    forget = wrap(forget, [("checkCapability", "llm.ask"), optional("channel")])
 
     def memories(
         self,

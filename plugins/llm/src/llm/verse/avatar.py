@@ -861,7 +861,6 @@ def _dispatch_verse_record(
     ``_max_actors``, so a payload like ``["alice", 42, "bob"]`` with
     max=2 yields ``["alice", "bob"]`` rather than ``["alice"]``.
     """
-    _ = log  # currently unused; kept for symmetry with other branches
     # Retired-avatar guard (mirrors verse_act): fail with a model-facing error
     # instead of letting record_user_event raise into the broad dispatch except,
     # which would silently swallow it. Also closes the TOCTOU window where the
@@ -883,12 +882,20 @@ def _dispatch_verse_record(
     max_actors = args.get("_max_actors", 8)
     cleaned = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
     actors = cleaned[:max_actors]
-    event_id = store.record_user_event(
-        actor_id=avatar_id,
-        summary=summary,
-        actor_names=actors,
-        now=time.time,
-    )
+    # Any DB-level failure here (OperationalError, IntegrityError, or the
+    # active-actor recheck's ValueError on a TOCTOU retire) must surface as
+    # ok=False rather than propagate to the broad dispatch except, which would
+    # report ok=True and let the model narrate an event that was never written.
+    try:
+        event_id = store.record_user_event(
+            actor_id=avatar_id,
+            summary=summary,
+            actor_names=actors,
+            now=time.time,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verse_record write failed (avatar=%s): %s", avatar_id, exc)
+        return VerseDispatchResult(ok=False, error="could not record event")
     return VerseDispatchResult(ok=True, payload={"status": "ok", "event_id": event_id})
 
 

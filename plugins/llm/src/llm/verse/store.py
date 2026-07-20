@@ -395,18 +395,26 @@ class VerseStore:
                 )
             ]
 
-    def find_entity_by_name_or_alias(self, name: str) -> Entity | None:
-        """Active resolution: canonical name (kind-precedence) first, then alias."""
-        with self.read_connection() as conn:
-            ent = self.find_active_entity_by_name(name, conn=conn)
-            if ent is not None:
-                return ent
-            row = conn.execute(
-                "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
-                "FROM entities e JOIN entity_alias al ON al.entity_id = e.id "
-                "WHERE al.alias = ? COLLATE NOCASE AND e.status='active' ORDER BY e.id ASC LIMIT 1",
-                (name,),
-            ).fetchone()
+    def find_entity_by_name_or_alias(
+        self, name: str, *, conn: sqlite3.Connection | None = None
+    ) -> Entity | None:
+        """Active resolution: canonical name (kind-precedence) first, then alias.
+
+        ``conn=None`` opens a read connection; callers inside a write
+        transaction (record_user_event) pass their open write conn to avoid
+        write-lock reentry and to see same-transaction writes."""
+        if conn is None:
+            with self.read_connection() as rconn:
+                return self.find_entity_by_name_or_alias(name, conn=rconn)
+        ent = self.find_active_entity_by_name(name, conn=conn)
+        if ent is not None:
+            return ent
+        row = conn.execute(
+            "SELECT e.id, e.kind, e.name, e.summary, e.status, e.created_at, e.updated_at "
+            "FROM entities e JOIN entity_alias al ON al.entity_id = e.id "
+            "WHERE al.alias = ? COLLATE NOCASE AND e.status='active' ORDER BY e.id ASC LIMIT 1",
+            (name,),
+        ).fetchone()
         return Entity(*row) if row else None
 
     def _reactivate_auto_npc(
@@ -724,7 +732,11 @@ class VerseStore:
 
             ids: list[int] = [actor_id]
             for name in actor_names:
-                entity = self.find_active_entity_by_name(name, conn=conn)
+                # Alias-aware so a known canon character referenced by an alias
+                # ("Bobby" for entity "Bob") reuses the existing entity instead
+                # of auto-creating a duplicate npc — the retrieval side already
+                # honours aliases, so the write side must too.
+                entity = self.find_entity_by_name_or_alias(name, conn=conn)
                 if entity is None:
                     eid = self._reactivate_auto_npc(name, ts, conn=conn)
                     if eid is None:

@@ -2296,6 +2296,15 @@ class LLMService:
         if not expiry:
             return False
 
+        # No delivery target → nothing to stash. This is the case for inner
+        # tool callbacks (e.g. generate_code) that call completion() without an
+        # irc/msg: a stashed row here would carry an empty reply_target, burn a
+        # billed background retry, and emit a malformed empty-target PRIVMSG on
+        # every delivery attempt. The inner call just returns its error to the
+        # outer assistant loop, which owns the real user-facing delivery.
+        if not reply_target:
+            return False
+
         db = getattr(self.plugin, "db", None)
         if db is None:
             self.log.warning("No database available for pending task stashing")

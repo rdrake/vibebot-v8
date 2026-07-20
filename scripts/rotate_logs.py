@@ -64,7 +64,10 @@ def main() -> int:
 
     siblings = sorted(path for path in log_path.parent.glob(f"{log_path.name}.*") if path.is_file())
     if len(siblings) > args.keep:
-        for old in siblings[: -args.keep]:
+        # keep=0 must delete all: siblings[:-0] == siblings[:0] == [] (a silent
+        # no-op), so slice only when keep>0 and otherwise take everything.
+        to_delete = siblings[: -args.keep] if args.keep else siblings
+        for old in to_delete:
             print(f"  removing old rotated file {old.name}")
             if not args.dry_run:
                 try:
