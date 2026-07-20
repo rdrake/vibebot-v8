@@ -3368,6 +3368,67 @@ class TestVerseStorybook:
         pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
         assert plugin._verse_context_for(pf, "hello there") is None
 
+    def test_verse_context_for_chat_appends_flavour(self, plugin_env, mocker, tmp_path):
+        """for_chat=True adds the world's-voice nudge (livelier answers); the
+        default (the @draw grounding path) leaves it off."""
+        from llm.plugin import _VERSE_CHAT_FLAVOUR_NUDGE
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        archie = store.add_entity("npc", "Archie", "the windbag")
+        store.apply_direct(
+            op="set_pinned",
+            payload={"entity_id": archie, "pinned": True},
+            source="operator",
+            provenance="t",
+        )
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        base = make_registry_side_effect(
+            {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+
+        chat = plugin._verse_context_for(pf, "who is Archie?", for_chat=True)
+        assert _VERSE_CHAT_FLAVOUR_NUDGE in chat
+        draw = plugin._verse_context_for(pf, "who is Archie?")
+        assert _VERSE_CHAT_FLAVOUR_NUDGE not in draw
+
+    def test_ambient_story_max_images_by_intent(self, plugin_env, mocker):
+        """A plain/recount story uses the small ambient cap; an explicit
+        'illustrate' request opens the full storybook budget."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"verseStoryAmbientMaxImages": 1, "verseStorybookMaxImages": 5}
+            )
+        )
+        assert plugin._ambient_story_max_images("#c", "what have the lads done today") == 1
+        assert plugin._ambient_story_max_images("#c", "the lads stormed the chippy") == 1
+        assert plugin._ambient_story_max_images("#c", "illustrate the lads' saga") == 5
+
+    def test_duplicate_dispatch_suppressed_within_window(self, plugin_env, mocker):
+        """First identical line passes; an immediate echo is dropped; a fresh
+        line and a different channel both pass."""
+        import llm.plugin as plugmod
+
+        plugin, mock_irc, mock_msg = plugin_env
+        t = [1000.0]
+        mocker.patch.object(plugmod.time, "time", side_effect=lambda: t[0])
+
+        assert plugin._is_duplicate_dispatch("#c", "vibebot story about the lads") is False
+        # Same text, same channel, a beat later → duplicate.
+        t[0] += 2.0
+        assert plugin._is_duplicate_dispatch("#c", "vibebot story about the lads") is True
+        # Different channel is independent.
+        assert plugin._is_duplicate_dispatch("#other", "vibebot story about the lads") is False
+        # A different line passes.
+        assert plugin._is_duplicate_dispatch("#c", "vibebot draw the lads") is False
+        # After the window lapses the same line is fresh again.
+        t[0] += plugmod._DISPATCH_DEDUP_WINDOW + 1.0
+        assert plugin._is_duplicate_dispatch("#c", "vibebot story about the lads") is False
+
     # --- Slice 2: chat-path canon recording --------------------------------
 
     def test_chat_record_handler_none_when_flag_off(self, plugin_env, mocker, tmp_path):
@@ -3542,11 +3603,16 @@ class TestVerseStorybook:
         f = LLM._ambient_verse_intent
         assert f("draw the stinky lads") == "draw"
         assert f("sketch of the lads") == "draw"
-        assert f("what do the lads think?") == "question"
-        assert f("how are the lads") == "question"
+        assert f("illustrate the lads' saga") == "illustrate"  # illustrated tale != single pic
+        assert f("a comic about the lads") == "illustrate"
+        # Identity/state lookups → a quick grounded answer.
+        assert f("who is Diarrhoea Dan?") == "question"
+        assert f("what are the stinky lads") == "question"
         assert f("") == "question"
+        # Everything narrative → story, INCLUDING a recount question (the fix).
+        assert f("what have the stinky lads done at school today") == "story"
         assert f("the stinky lads stormed the chippy") == "story"
-        assert f("illustrate the lads' saga") == "story"  # illustrate != draw
+        assert f("what do the lads think of the headmaster?") == "story"
 
     def test_ambient_storybook_brief_gates(self, plugin_env, mocker, tmp_path):
         """Narrative mention + gates → brief; question/draw/no-account/flag-off → None."""
@@ -3569,9 +3635,11 @@ class TestVerseStorybook:
 
         narrative = "the stinky lads stormed the chippy"
         assert plugin._ambient_storybook_brief(mock_msg, pf, narrative) == narrative
-        assert (
-            plugin._ambient_storybook_brief(mock_msg, pf, "what do the stinky lads think?") is None
-        )
+        # A recount question is a tale too (the fix), so it yields a brief.
+        recount = "what have the stinky lads done today"
+        assert plugin._ambient_storybook_brief(mock_msg, pf, recount) == recount
+        # An identity lookup and a single-picture draw stay off the story path.
+        assert plugin._ambient_storybook_brief(mock_msg, pf, "who are the stinky lads?") is None
         assert plugin._ambient_storybook_brief(mock_msg, pf, "draw the stinky lads") is None
         assert plugin._ambient_storybook_brief(mock_msg, pf, "hello there") is None  # not canon
 

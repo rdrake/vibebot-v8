@@ -457,6 +457,8 @@ class TestInvalidCommand:
         plugin._verse_chat_record_handler = mocker.MagicMock(return_value=None)
         plugin._roleplay_sticky_active = mocker.MagicMock(return_value=False)
         plugin._ambient_storybook_brief = mocker.MagicMock(return_value=None)
+        # Dedup guard reads an in-memory dict/lock that the no-op __init__ skips.
+        plugin._is_duplicate_dispatch = mocker.MagicMock(return_value=False)
 
         return plugin, mock_irc, mock_msg
 

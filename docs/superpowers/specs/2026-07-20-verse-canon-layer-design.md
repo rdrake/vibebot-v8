@@ -78,6 +78,37 @@ grounded `_submit_storybook_job` directly (deterministic, fast, cooldown-bounded
 the chat path, still verse-grounded. `@ask`/`@rp` are NOT ambient → never
 auto-story. `@rp` kept as a bonus.
 
+## Refinement (2026-07-20, live-tuning) — prose-first tales, intent, dedup
+
+Live use surfaced three problems, all fixed in one pass:
+
+1. **Flat "questions".** A verse mention that opened with an interrogative
+   ("what have the stinky lads done at school today") was classified as a
+   question → grounded chat one-liner (facts-only, grok-fast) → "dogshit". The
+   fix inverts the bias: on a verse mention, **default to a story**, and route to
+   a quick chat answer ONLY for a short identity lookup (`_FACTUAL_QUESTION_RE`:
+   `who/what/where/which/whose … is/are/was/were`). A recount question
+   ("what have the lads done") therefore becomes a story, which is what the user
+   wanted. Genuine chat answers also get a flavour nudge
+   (`_VERSE_CHAT_FLAVOUR_NUDGE`, chat path only, not `@draw`) so they read in the
+   world's voice.
+2. **Always-on images.** The ambient story fired the full 3-image storybook. The
+   user wants **prose-first ~5-paragraph tales, the odd image at most.** New
+   `verseStoryAmbientMaxImages` (default 1) caps ambient stories;
+   `_storybook_illustration_rules(max_images)` swaps the prompt from "illustrate
+   GENEROUSLY" to "PROSE-FIRST … at most one" (or "no illustrations" at 0).
+   An explicit **"illustrate"/comic** cue (`_ILLUSTRATE_INTENT_RE`, intent
+   `"illustrate"`) opens the full `verseStorybookMaxImages` storybook; a
+   **"draw"** cue stays a single chat-draw image. `max_images` now threads
+   through `_submit_storybook_job` → `generate_storybook` → `_generate_story_struct`.
+3. **Double story.** One "story about …" spawned two different story files. A
+   relay echo / double entry-point dispatched the same line twice; the
+   cooldown-reserve then split the twins across two paths (direct job + chat-tool
+   call). Fixed with a content dedup guard (`_is_duplicate_dispatch`): a second
+   identical addressed line to the same channel within `_DISPATCH_DEDUP_WINDOW`
+   (12 s) is dropped before any LLM turn. Source-agnostic (catches relay echoes
+   and double entry-points alike).
+
 ## Slices
 
 - **Slice 1 (SHIPPED).** Read-injection on the chat path + demote the auto-trigger +

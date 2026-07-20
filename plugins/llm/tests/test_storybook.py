@@ -16,6 +16,64 @@ def test_storybook_config_defaults():
     assert int(group.verseStorybookImageTimeout()) == 45
 
 
+def test_story_ambient_max_images_config_default():
+    import llm.config as cfg
+
+    assert int(cfg.LLM.verseStoryAmbientMaxImages()) == 1
+
+
+def test_storybook_illustration_rules_scale_with_budget():
+    from llm.service import _storybook_illustration_rules as rules
+
+    # Text-only: no illustrations at all.
+    zero = rules(0)
+    assert "PROSE page" in zero and "NO illustrations" in zero
+    assert "empty" in zero
+    # Prose-first: at most one, zero is fine, ~5 paragraphs.
+    one = rules(1)
+    assert "PROSE-FIRST" in one and "AT MOST ONE" in one
+    assert "five paragraphs" in one
+    # Illustrated: generous, up to the cap.
+    many = rules(4)
+    assert "GENEROUSLY" in many and "2 to 4" in many
+
+
+def test_generate_storybook_honours_max_images_override(make_service, mocker, tmp_path):
+    """An explicit max_images overrides verseStorybookMaxImages for both the
+    prompt budget and the image cap (the ambient prose-first path uses this)."""
+    service, plugin = make_service(
+        httpRoot=str(tmp_path), httpUrlBase="http://h/llm", verseStorybookMaxImages=5
+    )
+    illos = [{"id": i, "caption": f"c{i}", "image_prompt": f"p{i}"} for i in range(1, 6)]
+    markers = " ".join(f"[[illustration:{i}]]" for i in range(1, 6))
+    struct = mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={"title": "T", "story_markdown": markers, "illustrations": illos},
+    )
+    from llm.service import ImageResult
+
+    gen = mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="ok", url="http://h/llm/i.jpg"),
+    )
+    service.generate_storybook("b", channel="#c", persona="v", max_images=1)
+    # Only one image drawn despite five markers + a config cap of five.
+    assert gen.call_count == 1
+    # And the struct generation was told the same budget.
+    assert struct.call_args.kwargs["max_images"] == 1
+
+
+def test_generate_story_struct_prose_first_prompt_when_budget_low(make_service, mocker):
+    service, plugin = make_service(verseStorybookMaxImages=5, verseStorybookMaxChars=6000)
+    ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
+    service._generate_story_struct("the lads", channel="#c", persona="v", max_images=1)
+    system_prompt = ask.call_args.args[0]
+    assert "PROSE-FIRST" in system_prompt
+    assert "GENEROUSLY" not in system_prompt
+
+
 def test_image_result_has_url_field():
     from llm.service import ImageResult
 

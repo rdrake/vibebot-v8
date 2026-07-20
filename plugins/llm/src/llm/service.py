@@ -946,12 +946,10 @@ STORYBOOK_SYSTEM_PROMPT = (
     "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
     '{{"title": str, "style": str, "story_markdown": str, '
     '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
-    "Rules: illustrate GENEROUSLY — most pages want several pictures, not one. "
-    "Aim for 2 to {max_images} illustrations across the key beats or sections; a "
-    "single picture usually undersells it, and zero is a failure. For EACH "
-    "illustration, put a matching [[illustration:N]] marker INLINE in "
-    "story_markdown at the moment or idea it depicts, AND a corresponding entry in "
-    "illustrations with the same integer id. image_prompt is a concrete, vivid "
+    "{illustration_rules} For EACH illustration you DO include, put a matching "
+    "[[illustration:N]] marker INLINE in story_markdown at the moment or idea it "
+    "depicts, AND a corresponding entry in illustrations with the same integer id. "
+    "image_prompt is a concrete, vivid "
     "visual description — for an explainer, the diagram or scene that makes the "
     "idea clear; for a story, the setting/characters/action/mood — not a caption. "
     "\nSTYLE: pick ONE cohesive visual style for the whole page and put it in "
@@ -975,6 +973,34 @@ STORYBOOK_WORLD_TEMPLATE = (
     "name and keep them true to their descriptions; do NOT invent new names or "
     "backstories for anyone listed here:\n{roster}"
 )
+
+
+def _storybook_illustration_rules(max_images: int) -> str:
+    """The image-budget clause of the storybook prompt, scaled to ``max_images``.
+
+    An ambient verse tale is prose-first (0-1 images) — the writing carries it;
+    only an explicit "illustrate"/@story request opens the generous, several-
+    picture storybook (>=2). This keeps the model from cramming pictures into a
+    tale the user wanted mostly as text.
+    """
+    if max_images <= 0:
+        return (
+            "Rules: this is a PROSE page — write a full, vivid tale of about five "
+            "paragraphs and include NO illustrations. Return an empty "
+            '"illustrations" list and put no [[illustration:N]] markers in the text.'
+        )
+    if max_images == 1:
+        return (
+            "Rules: this is a PROSE-FIRST tale — the WRITING carries it. Write a "
+            "full, vivid story of about five paragraphs. Include AT MOST ONE "
+            "illustration, and only for the single strongest moment; zero "
+            "illustrations is perfectly fine."
+        )
+    return (
+        "Rules: illustrate GENEROUSLY — most pages want several pictures, not one. "
+        f"Aim for 2 to {max_images} illustrations across the key beats or sections; "
+        "a single picture usually undersells it, and zero is a failure."
+    )
 
 
 class LLMService:
@@ -3619,7 +3645,7 @@ Examples (echo → action_prompt: ""):
         return teaser or None
 
     def _generate_story_struct(
-        self, brief, *, channel, persona, world_context="", scene_context=""
+        self, brief, *, channel, persona, world_context="", scene_context="", max_images=None
     ):
         """Generate a validated storybook struct via the plain ask path.
 
@@ -3638,7 +3664,8 @@ Examples (echo → action_prompt: ""):
         lets a thin brief ("recap today", "the stinky lads") draw on what
         actually happened. Empty when context is off → prompt is unchanged.
         """
-        max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
+        if max_images is None:
+            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
         world = (
             STORYBOOK_WORLD_TEMPLATE.format(roster=world_context)
@@ -3646,7 +3673,10 @@ Examples (echo → action_prompt: ""):
             else ""
         )
         system = STORYBOOK_SYSTEM_PROMPT.format(
-            max_images=max_images, max_chars=max_chars, persona=persona or "", world=world
+            illustration_rules=_storybook_illustration_rules(max_images),
+            max_chars=max_chars,
+            persona=persona or "",
+            world=world,
         )
         user = brief or "Tell an illustrated story drawn from the recent scene."
         if scene_context and scene_context.strip():
@@ -3666,7 +3696,9 @@ Examples (echo → action_prompt: ""):
             nudge = "\n\nIMPORTANT: emit ONLY the JSON object — no prose, no fence."
         return None
 
-    def generate_storybook(self, brief, *, channel, persona, world_context="", scene_context=""):
+    def generate_storybook(
+        self, brief, *, channel, persona, world_context="", scene_context="", max_images=None
+    ):
         """Generate an illustrated story page; returns StorybookResult or None.
 
         One story completion, then up to verseStorybookMaxImages illustrations drawn
@@ -3677,12 +3709,15 @@ Examples (echo → action_prompt: ""):
         transcript) are forwarded to the story completion so a tale uses the
         established cast and draws on what actually happened.
         """
+        if max_images is None:
+            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         story = self._generate_story_struct(
             brief,
             channel=channel,
             persona=persona,
             world_context=world_context,
             scene_context=scene_context,
+            max_images=max_images,
         )
         if story is None:
             self.log.info("storybook: story generation returned nothing (brief=%r)", brief)
@@ -3692,7 +3727,6 @@ Examples (echo → action_prompt: ""):
             story["title"],
             len(story["illustrations"]),
         )
-        max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
         timeout = int(self.plugin.registryValue("verseStorybookImageTimeout", channel) or 45)
         model = self.plugin.registryValue("imageModel", channel)

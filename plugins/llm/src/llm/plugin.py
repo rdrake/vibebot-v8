@@ -121,45 +121,35 @@ _FULL_ANSWER_LABEL = "Full answer"
 # promotes only these to roleplay turns — explicit @ask / @rp stay as-is.
 _AMBIENT_ENTRY_ROUTES = frozenset({"addressed", "invalid_command"})
 
-# Interrogative openers used to classify an ambient verse-mention as a question
-# (→ grounded chat) rather than a narrative prompt (→ grounded story).
-_QUESTION_OPENERS = frozenset(
-    {
-        "what",
-        "whats",
-        "why",
-        "how",
-        "hows",
-        "who",
-        "whos",
-        "where",
-        "when",
-        "which",
-        "whose",
-        "is",
-        "are",
-        "am",
-        "do",
-        "does",
-        "did",
-        "can",
-        "could",
-        "would",
-        "will",
-        "should",
-        "was",
-        "were",
-        "has",
-        "have",
-        "had",
-    }
-)
+# Drop a second identical addressed message to the same channel within this many
+# seconds. Kills relay echoes (LarryBot re-injecting a "vibebot …" line) and any
+# double entry-point that would otherwise spawn a duplicate answer — or, worse, a
+# duplicate illustrated story. Short enough that a user genuinely re-asking after
+# a beat is not blocked.
+_DISPATCH_DEDUP_WINDOW = 12.0
 
-# Explicit image-intent cues: an ambient verse-mention asking for a PICTURE, so
-# it draws an image instead of defaulting to a story. ("illustrate" is
-# deliberately excluded — that reads as an illustrated STORY.)
+# Explicit image-intent cues: an ambient verse-mention asking for a single
+# PICTURE, so it draws an image instead of a story. ("illustrate" is deliberately
+# excluded here — that reads as an illustrated STORY, see _ILLUSTRATE_INTENT_RE.)
 _DRAW_INTENT_RE = re.compile(
     r"\b(draw|sketch|paint|render|picture of|image of|a pic of|drawing of)\b",
+    re.IGNORECASE,
+)
+
+# Explicit request for an ILLUSTRATED tale — opens the generous multi-image
+# storybook rather than the prose-first ambient default.
+_ILLUSTRATE_INTENT_RE = re.compile(
+    r"\b(illustrat\w*|comic|storybook|picture\s*book|with\s+(?:pictures|pics|art|illustrations))\b",
+    re.IGNORECASE,
+)
+
+# A short identity/state lookup ("who is X", "what are the lads") that wants a
+# quick grounded answer, NOT a tale. Everything else on a verse mention defaults
+# to a story — misrouting a narrative into a flat one-liner is the failure we're
+# fixing, so a recount question ("what have the lads done today") deliberately
+# does NOT match here and becomes a story.
+_FACTUAL_QUESTION_RE = re.compile(
+    r"^\s*(?:who|what|where|which|whose)(?:'s|s)?\s+(?:is|are|was|were)\b",
     re.IGNORECASE,
 )
 
@@ -171,6 +161,14 @@ _VERSE_CHAT_RECORD_NUDGE = (
     "If this exchange establishes a genuinely NEW, durable fact about these "
     "characters or the world (not small talk, opinions, or one-off banter), you "
     "may call verse_record ONCE to save it to canon. When in doubt, don't."
+)
+
+# Appended to the canon block on the CHAT answer path (not the draw path): a
+# grounded reply should have the world's flavour, not read as a dry fact recital
+# — this is what the "livelier grounded answer" is asking for.
+_VERSE_CHAT_FLAVOUR_NUDGE = (
+    "Answer in this world's voice — vivid and a little larger-than-life — not a "
+    "flat recital of these facts."
 )
 
 
@@ -755,6 +753,13 @@ class LLM(callbacks.Plugin):
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
+
+        # Recent addressed dispatches for duplicate suppression:
+        # (channel, normalized-text) -> last-seen epoch. Drops relay echoes and
+        # double entry-points within _DISPATCH_DEDUP_WINDOW (see
+        # _is_duplicate_dispatch). In-memory; lost on reload, by design.
+        self._recent_dispatch: dict[tuple[str, str], float] = {}
+        self._recent_dispatch_lock = threading.Lock()
 
         # Sticky @rp roleplay sessions: (channel, account-or-nick) -> expiry epoch
         # (inf = never auto-expire). While present+unexpired, the ambient path
@@ -2052,6 +2057,23 @@ class LLM(callbacks.Plugin):
             return
         self._dispatch_addressed_async(irc, msg, text, preflight, entry_route="addressed")
 
+    def _is_duplicate_dispatch(self, channel: str, text: str) -> bool:
+        """True if identical addressed text hit ``channel`` within the dedup
+        window — a relay echo (LarryBot re-injecting a "vibebot …" line) or a
+        double entry-point that would otherwise spawn a second answer, or a
+        second illustrated story. Records the sighting and prunes stale keys.
+        """
+        key = (channel or "", " ".join((text or "").split()).lower())
+        now = time.time()
+        with self._recent_dispatch_lock:
+            for k in [
+                k for k, ts in self._recent_dispatch.items() if now - ts > _DISPATCH_DEDUP_WINDOW
+            ]:
+                del self._recent_dispatch[k]
+            prev = self._recent_dispatch.get(key)
+            self._recent_dispatch[key] = now
+            return prev is not None and (now - prev) < _DISPATCH_DEDUP_WINDOW
+
     def _dispatch_addressed_async(
         self,
         irc: callbacks.Irc,
@@ -2095,6 +2117,10 @@ class LLM(callbacks.Plugin):
         and deadlock once the pool fills — ``submit`` guards against exactly
         this nesting with ``RecursiveSubmitError``.
         """
+        # Suppress a duplicate of the same addressed line (relay echo / double
+        # entry-point) before spending an LLM turn or spawning a second story.
+        if self._is_duplicate_dispatch(preflight.channel, text):
+            return
 
         def _work() -> None:
             # Shutdown may have begun between spawn and execution. Bail
@@ -2938,7 +2964,9 @@ class LLM(callbacks.Plugin):
         )
         return VerseRoute(avatar_id, system_prompt, tools, store)
 
-    def _verse_context_for(self, preflight: PreflightResult, text: str) -> str | None:
+    def _verse_context_for(
+        self, preflight: PreflightResult, text: str, *, for_chat: bool = False
+    ) -> str | None:
         """Facts-only canon block to inject into a NORMAL chat turn, or None.
 
         The retrieval side of the canon layer: when a verse-channel message
@@ -2947,6 +2975,10 @@ class LLM(callbacks.Plugin):
         ordinary chat answer is grounded in canon — WITHOUT entering roleplay
         mode. Returns None when the channel has no verse or nothing is
         referenced. Best-effort: a failure here never breaks the chat turn.
+
+        ``for_chat`` appends a flavour nudge so a grounded ANSWER reads in the
+        world's voice; left False for the ``@draw`` grounding path, where an
+        "answer in voice" instruction has no business in an image prompt.
         """
         channel = preflight.channel
         if not self.registryValue("verseEnabled", channel):
@@ -2975,6 +3007,8 @@ class LLM(callbacks.Plugin):
             # actually wired (see _verse_chat_record_handler) — same gate.
             if avatar_id is not None and self.registryValue("verseChatRecordEnabled", channel):
                 block = f"{block}\n{_VERSE_CHAT_RECORD_NUDGE}"
+            if for_chat:
+                block = f"{block}\n{_VERSE_CHAT_FLAVOUR_NUDGE}"
             return block
         except Exception:
             self.log.exception("verse context injection failed (non-fatal) channel=%s", channel)
@@ -2986,20 +3020,23 @@ class LLM(callbacks.Plugin):
 
         The trigger word pulls verse context in regardless; this only decides
         what to *produce*:
-        - "draw"     — an explicit picture request → image.
-        - "question" — reads like a question → grounded chat answer.
-        - "story"    — anything else (a narrative mention) → the default, a
-                       grounded illustrated story (the fun of the trigger word).
+        - "draw"       — an explicit single-picture request → image.
+        - "illustrate" — an explicit request for an illustrated tale → the full
+                         multi-image storybook.
+        - "question"   — a short identity/state lookup ("who is X") → grounded
+                         chat answer.
+        - "story"      — anything else, INCLUDING a recount question ("what have
+                         the lads done today") → the default, a prose-first
+                         grounded tale (the fun of the trigger word).
         """
         t = (text or "").strip()
         if not t:
             return "question"
         if _DRAW_INTENT_RE.search(t):
             return "draw"
-        if t.endswith("?"):
-            return "question"
-        first = t.lower().split()[0].strip(".,!:;")
-        if first in _QUESTION_OPENERS:
+        if _ILLUSTRATE_INTENT_RE.search(t):
+            return "illustrate"
+        if _FACTUAL_QUESTION_RE.match(t):
             return "question"
         return "story"
 
@@ -3010,16 +3047,21 @@ class LLM(callbacks.Plugin):
         or None to fall through to normal grounded chat.
 
         Returns ``text`` only when ALL hold: storybook enabled, the message
-        reads like a narrative (not a question/draw), it references canon
+        reads like a tale — a narrative mention or a recount question ("story"),
+        or an explicit "illustrate" request ("illustrate"), NOT a factual
+        question or a single-picture draw — it references canon
         (``_verse_triggered``), and the @story-style spend gates pass (account +
         llm.draw + not on cooldown). Any miss → None → the caller uses the chat
         path (question answered, draw drawn), still verse-grounded. The cooldown
         check reserves the slot, matching the verse_storybook tool handler.
+
+        The image budget (prose-first vs full storybook) is decided separately
+        by the caller from the same intent — see ``_ambient_story_max_images``.
         """
         channel = preflight.channel
         if not self.registryValue("verseStorybookEnabled", channel):
             return None
-        if self._ambient_verse_intent(text) != "story":
+        if self._ambient_verse_intent(text) not in ("story", "illustrate"):
             return None
         try:
             store = self._get_or_create_verse_store(channel)
@@ -3041,6 +3083,18 @@ class LLM(callbacks.Plugin):
         if self._storybook_cooldown_active(preflight.account, cooldown):
             return None
         return text
+
+    def _ambient_story_max_images(self, channel: str, text: str) -> int:
+        """Image budget for an ambient verse story.
+
+        An explicit "illustrate"/comic request gets the full storybook
+        (``verseStorybookMaxImages``); a plain narrative mention or a recount
+        question stays prose-first (``verseStoryAmbientMaxImages``, default 1 —
+        the odd hero image, not a full picture book).
+        """
+        if self._ambient_verse_intent(text) == "illustrate":
+            return int(self.registryValue("verseStorybookMaxImages", channel) or 3)
+        return int(self.registryValue("verseStoryAmbientMaxImages", channel) or 1)
 
     def _verse_chat_record_handler(
         self, preflight: PreflightResult
@@ -3175,7 +3229,14 @@ class LLM(callbacks.Plugin):
             return False
 
     def _submit_storybook_job(
-        self, *, channel: str, nick: str, persona: str, brief: str, account: str | None = None
+        self,
+        *,
+        channel: str,
+        nick: str,
+        persona: str,
+        brief: str,
+        account: str | None = None,
+        max_images: int | None = None,
     ) -> None:
         """Fire a background job that renders a storybook for ``brief`` and
         posts the resulting link to ``channel``. Fire-and-return — never raises
@@ -3245,6 +3306,7 @@ class LLM(callbacks.Plugin):
                     persona=persona,
                     world_context=world_context,
                     scene_context=scene_context,
+                    max_images=max_images,
                 )
                 if res is not None:
                     # @story's command wrapper returns before generation, so the
@@ -4275,6 +4337,7 @@ class LLM(callbacks.Plugin):
                             persona=persona,
                             brief=brief,
                             account=preflight.account,
+                            max_images=self._ambient_story_max_images(preflight.channel, text),
                         )
                         return
                 # Verse-enabled channel + non-opted-in speaker: advertise the
@@ -4301,7 +4364,7 @@ class LLM(callbacks.Plugin):
                         preflight,
                         entry_route=entry_route,
                         extra_tools_override=verse_specs,
-                        verse_context=self._verse_context_for(preflight, text),
+                        verse_context=self._verse_context_for(preflight, text, for_chat=True),
                         verse_record_handler=self._verse_chat_record_handler(preflight),
                     )
                     return
