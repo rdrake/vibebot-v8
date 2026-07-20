@@ -955,7 +955,17 @@ STORYBOOK_SYSTEM_PROMPT = (
     "visual description — for an explainer, the diagram or scene that makes the "
     "idea clear; for a story, the setting/characters/action/mood — not a caption. "
     "Keep it under {max_chars} characters."
+    "{world}"
     "\n\nPERSONA:\n{persona}"
+)
+
+#: Injected before PERSONA when the storybook is drawn from a verse channel that
+#: has canon. Grounds the freeform generator in the established cast so it uses
+#: the real characters instead of inventing names. Empty string otherwise.
+STORYBOOK_WORLD_TEMPLATE = (
+    "\n\nWORLD & CAST — these characters already exist in this world. Use them by "
+    "name and keep them true to their descriptions; do NOT invent new names or "
+    "backstories for anyone listed here:\n{roster}"
 )
 
 
@@ -3600,18 +3610,28 @@ Examples (echo → action_prompt: ""):
         teaser = self.sanitize_output(teaser)
         return teaser or None
 
-    def _generate_story_struct(self, brief, *, channel, persona, conversation):
+    def _generate_story_struct(self, brief, *, channel, persona, conversation, world_context=""):
         """Generate a validated storybook struct via the plain ask path.
 
         Uses ``_ask_completion`` (not the verse roleplay completion) on purpose:
         the verse overlay forbids Markdown / bracket output and the verse denial
         guard would false-positive on dramatic story titles. Retries up to twice
         with a stronger JSON-only nudge before giving up.
+
+        ``world_context`` is the canon-roster block (see
+        ``build_story_world_context``); when non-empty it grounds the generator
+        in the established cast so it uses real character names instead of
+        inventing them. Empty for non-verse callers → prompt is unchanged.
         """
         max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
+        world = (
+            STORYBOOK_WORLD_TEMPLATE.format(roster=world_context)
+            if world_context and world_context.strip()
+            else ""
+        )
         system = STORYBOOK_SYSTEM_PROMPT.format(
-            max_images=max_images, max_chars=max_chars, persona=persona or ""
+            max_images=max_images, max_chars=max_chars, persona=persona or "", world=world
         )
         user = brief or "Tell an illustrated story drawn from the recent scene."
         nudge = ""
@@ -3623,15 +3643,22 @@ Examples (echo → action_prompt: ""):
             nudge = "\n\nIMPORTANT: emit ONLY the JSON object — no prose, no fence."
         return None
 
-    def generate_storybook(self, brief, *, channel, persona, conversation):
+    def generate_storybook(self, brief, *, channel, persona, conversation, world_context=""):
         """Generate an illustrated story page; returns StorybookResult or None.
 
         One story completion, then up to verseStorybookMaxImages illustrations drawn
         SEQUENTIALLY via _attempt_image_generation (single attempt, no safety-rewrite
         laundering). Failed/blocked images drop their marker; the story still ships.
+
+        ``world_context`` (canon roster) is forwarded to the story completion so a
+        verse-channel tale uses the established cast instead of invented names.
         """
         story = self._generate_story_struct(
-            brief, channel=channel, persona=persona, conversation=conversation
+            brief,
+            channel=channel,
+            persona=persona,
+            conversation=conversation,
+            world_context=world_context,
         )
         if story is None:
             self.log.info("storybook: story generation returned nothing (brief=%r)", brief)

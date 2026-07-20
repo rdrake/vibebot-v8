@@ -87,6 +87,36 @@ def test_generate_story_struct_parses_and_validates(make_service, mocker):
     assert "[[illustration:1]]" in out["story_markdown"]
 
 
+def test_generate_story_struct_injects_world_context(make_service, mocker):
+    """A non-empty world_context grounds the generator: the canon roster must
+    reach the system prompt so the model uses established names."""
+    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    payload = (
+        '{"title":"T","story_markdown":"a [[illustration:1]]",'
+        '"illustrations":[{"id":1,"caption":"c","image_prompt":"p"}]}'
+    )
+    ask = mocker.patch.object(service, "_ask_completion", return_value=payload)
+    service._generate_story_struct(
+        "the stinky lads",
+        channel="#c",
+        persona="voice",
+        conversation=[],
+        world_context="- Assgas Archie: Y11 windbag",
+    )
+    system_prompt = ask.call_args.args[0]
+    assert "WORLD & CAST" in system_prompt
+    assert "Assgas Archie: Y11 windbag" in system_prompt
+
+
+def test_generate_story_struct_no_world_block_when_empty(make_service, mocker):
+    """Empty world_context (non-verse caller) leaves the prompt unchanged —
+    no dangling WORLD header."""
+    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
+    service._generate_story_struct("x", channel="#c", persona="v", conversation=[])
+    assert "WORLD & CAST" not in ask.call_args.args[0]
+
+
 def test_generate_story_struct_retries_then_fails(make_service, mocker):
     service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
     m = mocker.patch.object(service, "_ask_completion", return_value="no json here")

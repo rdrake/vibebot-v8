@@ -1,5 +1,30 @@
-from llm.verse.avatar import VERSE_SCENE_MARKER, build_verse_system_prompt
+from llm.verse.avatar import (
+    VERSE_SCENE_MARKER,
+    build_story_world_context,
+    build_verse_system_prompt,
+)
 from llm.verse.store import VerseStore
+
+
+def test_story_world_context_lists_canon(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    store.add_entity("npc", "Nobody", "not pinned")
+    store.apply_direct(
+        op="set_pinned",
+        payload={"entity_id": archie, "pinned": True},
+        source="operator",
+        provenance="t",
+    )
+    ctx = build_story_world_context(store)
+    assert "- Assgas Archie: Y11 windbag" in ctx
+    assert "Nobody" not in ctx  # unpinned → not canon
+
+
+def test_story_world_context_empty_when_no_canon(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    store.add_entity("npc", "Ghost", "unpinned")
+    assert build_story_world_context(store) == ""
 
 
 def test_pinned_entities_appear_in_prompt(tmp_path):

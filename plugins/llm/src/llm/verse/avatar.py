@@ -620,6 +620,35 @@ def build_verse_system_prompt(
     return "\n".join(parts)
 
 
+def build_story_world_context(store: VerseStore, roster_max_chars: int = 2000) -> str:
+    """Compact canon-roster block for the standalone storybook generator.
+
+    The storybook model runs OUTSIDE the verse completion (see
+    ``LLMService._generate_story_struct``), so it never sees
+    ``build_verse_system_prompt``'s roster. Without grounding it invents fresh
+    names for characters that already exist in canon (e.g. spinning wholly new
+    people for "the stinky lads"). This returns the durable CANON roster
+    (pinned OR author_locked entities) as ``- name: summary`` lines, char-capped,
+    mirroring the roster section of the verse prompt.
+
+    Returns "" when there is no canon so non-verse callers (a bare @story in a
+    non-verse channel or PM) are entirely unaffected.
+    """
+    canon = store.list_canon_entities()
+    if not canon:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for e in canon:
+        line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+        if used + len(line) + 1 > roster_max_chars:
+            lines.append("- (roster truncated)")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # verse_edit: gated canon-editing tool
 # ---------------------------------------------------------------------------

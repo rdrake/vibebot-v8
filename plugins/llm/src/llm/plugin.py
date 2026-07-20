@@ -59,6 +59,7 @@ from .verse import reactions
 from .verse.aging import AgingOutcome
 from .verse.avatar import (
     _VerseToolResult,
+    build_story_world_context,
     build_verse_system_prompt,
     dispatch_verse_edit,
     is_ooc,
@@ -2922,9 +2923,16 @@ class LLM(callbacks.Plugin):
         # step). Only for verse channels — @story works anywhere, and a bare
         # @story in a non-verse channel or PM must not lazily create a verse DB.
         # Best-effort: never break delivery if the store/avatar lookup fails.
+        # Also captures the canon roster so the story generator (which runs
+        # outside the verse completion) uses established characters by name
+        # instead of inventing them.
+        world_context = ""
         try:
             if ircutils.isChannel(channel) and self.registryValue("verseEnabled", channel):
                 store = self._get_or_create_verse_store(channel)
+                world_context = build_story_world_context(
+                    store, roster_max_chars=self.registryValue("verseRosterMaxChars", channel)
+                )
                 avatar_id = self._find_caller_avatar(store, account, nick)
                 if avatar_id is not None:
                     store.record_user_event(
@@ -2952,7 +2960,11 @@ class LLM(callbacks.Plugin):
         def _job(b: str) -> None:
             try:
                 res = self.llm_service.generate_storybook(
-                    b, channel=channel, persona=persona, conversation=[]
+                    b,
+                    channel=channel,
+                    persona=persona,
+                    conversation=[],
+                    world_context=world_context,
                 )
                 if res is not None:
                     # @story's command wrapper returns before generation, so the
