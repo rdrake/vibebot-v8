@@ -4695,6 +4695,17 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
+        # Verse grounding: if the prompt references canon, layer the facts-only
+        # lore block onto the draw overlay (personality-overlay slot; the draw
+        # framework/tools are still added downstream by assistant_completion) so
+        # "@draw the stinky lads" depicts the canon cast, not literal words. None
+        # when nothing is referenced → the default draw prompt, unchanged.
+        draw_system_prompt: str | None = None
+        verse_ctx = self._verse_context_for(pf, text)
+        if verse_ctx:
+            draw_overlay = self.registryValue(PROFILES[PROFILE_DRAW].overlay_setting, channel)
+            draw_system_prompt = "\n\n".join(p for p in [draw_overlay, verse_ctx] if p)
+
         # Typing fires immediately after preflight so users see "is
         # composing" before history fetch / executor permit / image
         # generation latency stack up.
@@ -4729,6 +4740,7 @@ class LLM(callbacks.Plugin):
                         irc=irc,
                         msg=msg,
                         memories=[],
+                        system_prompt=draw_system_prompt,
                         draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
                         manage_typing=False,
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),

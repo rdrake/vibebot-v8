@@ -805,6 +805,34 @@ class TestDrawCommand:
         assert ctx.profile == "draw"
         assert ctx.entry_route == "draw"
 
+    def test_draw_grounds_in_canon_when_referenced(self, plugin_env, mocker: MockerFixture):
+        """@draw of canon layers the lore block onto the draw overlay so the
+        image depicts the real cast."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        mocker.patch.object(
+            plugin, "_verse_context_for", return_value="Established characters:\n- Archie: windbag"
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["the", "stinky", "lads"])
+
+        sp = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert sp is not None and "Archie: windbag" in sp
+
+    def test_draw_no_grounding_without_canon(self, plugin_env, mocker: MockerFixture):
+        """No canon reference → system_prompt stays None (default draw prompt)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+
+        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
+
+        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+
     def test_draw_requires_account(self, plugin_env, mocker: MockerFixture):
         """@draw still requires authenticated account."""
         plugin, mock_irc, mock_msg = plugin_env
