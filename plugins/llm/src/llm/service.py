@@ -3618,7 +3618,9 @@ Examples (echo → action_prompt: ""):
         teaser = self.sanitize_output(teaser)
         return teaser or None
 
-    def _generate_story_struct(self, brief, *, channel, persona, conversation, world_context=""):
+    def _generate_story_struct(
+        self, brief, *, channel, persona, world_context="", scene_context=""
+    ):
         """Generate a validated storybook struct via the plain ask path.
 
         Uses ``_ask_completion`` (not the verse roleplay completion) on purpose:
@@ -3630,6 +3632,11 @@ Examples (echo → action_prompt: ""):
         ``build_story_world_context``); when non-empty it grounds the generator
         in the established cast so it uses real character names instead of
         inventing them. Empty for non-verse callers → prompt is unchanged.
+
+        ``scene_context`` is a pre-formatted ``nick: line`` transcript of the
+        recent channel scene (see ``_format_channel_history``); when non-empty it
+        lets a thin brief ("recap today", "the stinky lads") draw on what
+        actually happened. Empty when context is off → prompt is unchanged.
         """
         max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
         max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
@@ -3642,6 +3649,14 @@ Examples (echo → action_prompt: ""):
             max_images=max_images, max_chars=max_chars, persona=persona or "", world=world
         )
         user = brief or "Tell an illustrated story drawn from the recent scene."
+        if scene_context and scene_context.strip():
+            # Ground the tale in the real scene. Framed as reference — the model
+            # draws on it, it does not transcribe it (this is untrusted channel
+            # text, already line-break-guarded by _format_channel_history).
+            user = (
+                f"{user}\n\nRECENT SCENE (what actually happened — draw on it, "
+                f"do not quote it verbatim):\n{scene_context}"
+            )
         nudge = ""
         for _attempt in range(3):  # initial + 2 retries
             raw = self._ask_completion(system + nudge, user, channel)
@@ -3651,22 +3666,23 @@ Examples (echo → action_prompt: ""):
             nudge = "\n\nIMPORTANT: emit ONLY the JSON object — no prose, no fence."
         return None
 
-    def generate_storybook(self, brief, *, channel, persona, conversation, world_context=""):
+    def generate_storybook(self, brief, *, channel, persona, world_context="", scene_context=""):
         """Generate an illustrated story page; returns StorybookResult or None.
 
         One story completion, then up to verseStorybookMaxImages illustrations drawn
         SEQUENTIALLY via _attempt_image_generation (single attempt, no safety-rewrite
         laundering). Failed/blocked images drop their marker; the story still ships.
 
-        ``world_context`` (canon roster) is forwarded to the story completion so a
-        verse-channel tale uses the established cast instead of invented names.
+        ``world_context`` (canon roster) and ``scene_context`` (recent channel
+        transcript) are forwarded to the story completion so a tale uses the
+        established cast and draws on what actually happened.
         """
         story = self._generate_story_struct(
             brief,
             channel=channel,
             persona=persona,
-            conversation=conversation,
             world_context=world_context,
+            scene_context=scene_context,
         )
         if story is None:
             self.log.info("storybook: story generation returned nothing (brief=%r)", brief)
@@ -3689,8 +3705,12 @@ Examples (echo → action_prompt: ""):
         # One shared style anchor for the whole page, prepended to EVERY image so
         # the stateless image model keeps art + recurring characters consistent
         # panel to panel. The model authors it (story["style"]); fall back to the
-        # generic fairytale look when it leaves it blank.
-        style_prefix = story.get("style") or "storybook illustration, painted fairytale style"
+        # generic fairytale look when it leaves it blank. Cap its length: it rides
+        # on every image prompt, so an over-long style would bloat each one (and
+        # some image backends truncate long prompts, silently dropping the scene).
+        style_prefix = (story.get("style") or "").strip()[:200] or (
+            "storybook illustration, painted fairytale style"
+        )
 
         def _draw(it):
             """Draw one illustration. Returns (it, ImageResult|None); never

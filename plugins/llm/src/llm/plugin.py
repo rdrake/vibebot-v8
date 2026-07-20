@@ -2943,6 +2943,20 @@ class LLM(callbacks.Plugin):
         except Exception:
             self.log.exception("storybook canon-record failed (non-fatal) channel=%s", channel)
 
+        # Recent channel scene so a thin brief can draw on what actually
+        # happened. Channel history only (shared, who-said-what) — the caller's
+        # personal history isn't relevant to a shared tale. Best-effort + capped;
+        # never block delivery on it. Empty when context is off for the channel.
+        scene_context = ""
+        try:
+            _personal, channel_history = self._gather_history(nick, channel)
+            if channel_history:
+                scene_context = self.llm_service._format_channel_history(channel_history)[:2000]
+        except Exception:
+            self.log.exception(
+                "storybook scene-context gather failed (non-fatal) channel=%s", channel
+            )
+
         def _deliver(text: str) -> None:
             collapsed = self._collapse_for_irc(text) or text
             if ircutils.isChannel(channel):
@@ -2963,8 +2977,8 @@ class LLM(callbacks.Plugin):
                     b,
                     channel=channel,
                     persona=persona,
-                    conversation=[],
                     world_context=world_context,
+                    scene_context=scene_context,
                 )
                 if res is not None:
                     # @story's command wrapper returns before generation, so the

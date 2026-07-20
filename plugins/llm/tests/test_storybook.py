@@ -80,7 +80,9 @@ def test_generate_story_struct_parses_and_validates(make_service, mocker):
     )
     mocker.patch.object(service, "_ask_completion", return_value=payload)
     out = service._generate_story_struct(
-        "spin a tale", channel="#c", persona="voice", conversation=[]
+        "spin a tale",
+        channel="#c",
+        persona="voice",
     )
     assert out["title"] == "The Tin Fox"
     assert out["illustrations"][0]["id"] == 1
@@ -100,7 +102,6 @@ def test_generate_story_struct_injects_world_context(make_service, mocker):
         "the stinky lads",
         channel="#c",
         persona="voice",
-        conversation=[],
         world_context="- Assgas Archie: Y11 windbag",
     )
     system_prompt = ask.call_args.args[0]
@@ -113,14 +114,42 @@ def test_generate_story_struct_no_world_block_when_empty(make_service, mocker):
     no dangling WORLD header."""
     service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
     ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
-    service._generate_story_struct("x", channel="#c", persona="v", conversation=[])
+    service._generate_story_struct(
+        "x",
+        channel="#c",
+        persona="v",
+    )
     assert "WORLD & CAST" not in ask.call_args.args[0]
+
+
+def test_generate_story_struct_injects_scene_context(make_service, mocker):
+    """A non-empty scene_context is folded into the user prompt so a thin brief
+    draws on what actually happened. Empty leaves the brief untouched."""
+    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
+    service._generate_story_struct(
+        "recap today",
+        channel="#c",
+        persona="v",
+        scene_context="alice: we won the quiz\nbob: barely",
+    )
+    user_prompt = ask.call_args.args[1]
+    assert "RECENT SCENE" in user_prompt
+    assert "alice: we won the quiz" in user_prompt
+
+    ask.reset_mock()
+    service._generate_story_struct("recap today", channel="#c", persona="v")
+    assert "RECENT SCENE" not in ask.call_args.args[1]
 
 
 def test_generate_story_struct_retries_then_fails(make_service, mocker):
     service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
     m = mocker.patch.object(service, "_ask_completion", return_value="no json here")
-    out = service._generate_story_struct("x", channel="#c", persona="v", conversation=[])
+    out = service._generate_story_struct(
+        "x",
+        channel="#c",
+        persona="v",
+    )
     assert out is None
     assert m.call_count >= 3  # initial + >=2 retries
 
@@ -185,7 +214,11 @@ def test_generate_storybook_applies_model_style_to_every_image(make_service, moc
         "_attempt_image_generation",
         return_value=ImageResult(content="ok", url="http://h/llm/img.jpg"),
     )
-    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    service.generate_storybook(
+        "b",
+        channel="#c",
+        persona="v",
+    )
     prompts = [c.args[0] for c in gen.call_args_list]
     assert len(prompts) == 2
     assert all(p.startswith("muted watercolour, the Lads: three grubby boys: ") for p in prompts)
@@ -212,7 +245,11 @@ def test_generate_storybook_falls_back_to_default_style(make_service, mocker, tm
         "_attempt_image_generation",
         return_value=ImageResult(content="ok", url="http://h/llm/img.jpg"),
     )
-    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    service.generate_storybook(
+        "b",
+        channel="#c",
+        persona="v",
+    )
     assert gen.call_args.args[0] == "storybook illustration, painted fairytale style: p"
 
 
@@ -234,7 +271,11 @@ def test_generate_storybook_embeds_and_saves(make_service, mocker, tmp_path):
         "_attempt_image_generation",
         return_value=ImageResult(content="ok", url="http://h/llm/img_fox.jpg"),
     )
-    res = service.generate_storybook("brief", channel="#c", persona="v", conversation=[])
+    res = service.generate_storybook(
+        "brief",
+        channel="#c",
+        persona="v",
+    )
     assert res is not None and res.title == "The Tin Fox" and res.image_count == 1
     page = (tmp_path / res.url.split("/")[-1]).read_text()
     assert "<img" in page and 'src="img_fox.jpg"' in page  # bare filename embedded
@@ -258,7 +299,11 @@ def test_generate_storybook_image_failure_drops_marker(make_service, mocker, tmp
         "_attempt_image_generation",
         return_value=ImageResult(content="blocked", url=None, error="safety"),
     )
-    res = service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    res = service.generate_storybook(
+        "b",
+        channel="#c",
+        persona="v",
+    )
     assert res is not None and res.image_count == 0
     page = (tmp_path / res.url.split("/")[-1]).read_text()
     assert "[[illustration:1]]" not in page
@@ -276,7 +321,11 @@ def test_generate_storybook_image_none_drops_marker(make_service, mocker, tmp_pa
         },
     )
     mocker.patch.object(service, "_attempt_image_generation", return_value=None)
-    res = service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    res = service.generate_storybook(
+        "b",
+        channel="#c",
+        persona="v",
+    )
     assert res is not None and res.image_count == 0
 
 
@@ -298,14 +347,25 @@ def test_generate_storybook_caps_images(make_service, mocker, tmp_path):
         "_attempt_image_generation",
         return_value=ImageResult(content="ok", url="http://h/llm/i.jpg"),
     )
-    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    service.generate_storybook(
+        "b",
+        channel="#c",
+        persona="v",
+    )
     assert gen.call_count == 3  # capped at verseStorybookMaxImages
 
 
 def test_generate_storybook_none_when_story_fails(make_service, mocker):
     service, plugin = make_service()
     mocker.patch.object(service, "_generate_story_struct", return_value=None)
-    assert service.generate_storybook("b", channel="#c", persona="v", conversation=[]) is None
+    assert (
+        service.generate_storybook(
+            "b",
+            channel="#c",
+            persona="v",
+        )
+        is None
+    )
 
 
 def test_resolves_to_public(make_service, mocker):
