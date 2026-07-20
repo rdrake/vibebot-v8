@@ -3506,6 +3506,118 @@ class TestVerseStorybook:
         plugin._dispatch_with_verse_routing(mock_irc, mock_msg, "hello", pf, entry_route="ask")
         assert rf.call_args.kwargs["force_roleplay"] is False
 
+    # --- intent-routed ambient stories ------------------------------------
+
+    def test_ambient_verse_intent_classifier(self):
+        from llm.plugin import LLM
+
+        f = LLM._ambient_verse_intent
+        assert f("draw the stinky lads") == "draw"
+        assert f("sketch of the lads") == "draw"
+        assert f("what do the lads think?") == "question"
+        assert f("how are the lads") == "question"
+        assert f("") == "question"
+        assert f("the stinky lads stormed the chippy") == "story"
+        assert f("illustrate the lads' saga") == "story"  # illustrate != draw
+
+    def test_ambient_storybook_brief_gates(self, plugin_env, mocker, tmp_path):
+        """Narrative mention + gates → brief; question/draw/no-account/flag-off → None."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        base = make_registry_side_effect(
+            {
+                "verseEnabled": True,
+                "verseStorybookEnabled": True,
+                "verseTriggerRegex": r"\bstinky lads\b",
+                "verseStorybookCooldownSeconds": 0,
+            }
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        narrative = "the stinky lads stormed the chippy"
+        assert plugin._ambient_storybook_brief(mock_msg, pf, narrative) == narrative
+        assert (
+            plugin._ambient_storybook_brief(mock_msg, pf, "what do the stinky lads think?") is None
+        )
+        assert plugin._ambient_storybook_brief(mock_msg, pf, "draw the stinky lads") is None
+        assert plugin._ambient_storybook_brief(mock_msg, pf, "hello there") is None  # not canon
+
+        pf_anon = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        assert plugin._ambient_storybook_brief(mock_msg, pf_anon, narrative) is None  # no account
+
+    def test_ambient_narrative_mention_fires_story_not_chat(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(
+            plugin, "_ambient_storybook_brief", return_value="the lads stormed the chippy"
+        )
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value="")
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="addressed"
+        )
+        job.assert_called_once()
+        assert job.call_args.kwargs["brief"] == "the lads stormed the chippy"
+        ask.assert_not_called()
+
+    def test_ambient_question_falls_through_to_chat(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_storybook_brief", return_value=None)
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "what do the lads think?", pf, entry_route="addressed"
+        )
+        job.assert_not_called()
+        ask.assert_called_once()
+
+    def test_explicit_ask_does_not_autofire_story(self, plugin_env, mocker):
+        """entry_route='ask' is not ambient → the auto-story gate is skipped
+        entirely (brief never computed), honouring the explicit command."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        sb = mocker.patch.object(plugin, "_ambient_storybook_brief")
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="ask"
+        )
+        sb.assert_not_called()
+        job.assert_not_called()
+        ask.assert_called_once()
+
     # --- handler gates -----------------------------------------------------
 
     def _build(self, plugin, mock_irc, mock_msg, mocker, *, account="acct"):

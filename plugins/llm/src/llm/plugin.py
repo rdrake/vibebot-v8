@@ -121,6 +121,48 @@ _FULL_ANSWER_LABEL = "Full answer"
 # promotes only these to roleplay turns — explicit @ask / @rp stay as-is.
 _AMBIENT_ENTRY_ROUTES = frozenset({"addressed", "invalid_command"})
 
+# Interrogative openers used to classify an ambient verse-mention as a question
+# (→ grounded chat) rather than a narrative prompt (→ grounded story).
+_QUESTION_OPENERS = frozenset(
+    {
+        "what",
+        "whats",
+        "why",
+        "how",
+        "hows",
+        "who",
+        "whos",
+        "where",
+        "when",
+        "which",
+        "whose",
+        "is",
+        "are",
+        "am",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "would",
+        "will",
+        "should",
+        "was",
+        "were",
+        "has",
+        "have",
+        "had",
+    }
+)
+
+# Explicit image-intent cues: an ambient verse-mention asking for a PICTURE, so
+# it draws an image instead of defaulting to a story. ("illustrate" is
+# deliberately excluded — that reads as an illustrated STORY.)
+_DRAW_INTENT_RE = re.compile(
+    r"\b(draw|sketch|paint|render|picture of|image of|a pic of|drawing of)\b",
+    re.IGNORECASE,
+)
+
 # Slice 2 canon layer: appended to the chat-path canon block when
 # verseChatRecordEnabled + an opted-in avatar. Invites the model to persist a
 # genuinely new durable fact to canon, sparingly, so canon grows from ordinary
@@ -2938,6 +2980,68 @@ class LLM(callbacks.Plugin):
             self.log.exception("verse context injection failed (non-fatal) channel=%s", channel)
             return None
 
+    @staticmethod
+    def _ambient_verse_intent(text: str) -> str:
+        """Classify an ambient verse-mention by requested OUTPUT.
+
+        The trigger word pulls verse context in regardless; this only decides
+        what to *produce*:
+        - "draw"     — an explicit picture request → image.
+        - "question" — reads like a question → grounded chat answer.
+        - "story"    — anything else (a narrative mention) → the default, a
+                       grounded illustrated story (the fun of the trigger word).
+        """
+        t = (text or "").strip()
+        if not t:
+            return "question"
+        if _DRAW_INTENT_RE.search(t):
+            return "draw"
+        if t.endswith("?"):
+            return "question"
+        first = t.lower().split()[0].strip(".,!:;")
+        if first in _QUESTION_OPENERS:
+            return "question"
+        return "story"
+
+    def _ambient_storybook_brief(
+        self, msg: IrcMsg, preflight: PreflightResult, text: str
+    ) -> str | None:
+        """Brief to fire a grounded storybook for an ambient narrative mention,
+        or None to fall through to normal grounded chat.
+
+        Returns ``text`` only when ALL hold: storybook enabled, the message
+        reads like a narrative (not a question/draw), it references canon
+        (``_verse_triggered``), and the @story-style spend gates pass (account +
+        llm.draw + not on cooldown). Any miss → None → the caller uses the chat
+        path (question answered, draw drawn), still verse-grounded. The cooldown
+        check reserves the slot, matching the verse_storybook tool handler.
+        """
+        channel = preflight.channel
+        if not self.registryValue("verseStorybookEnabled", channel):
+            return None
+        if self._ambient_verse_intent(text) != "story":
+            return None
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            if not self._verse_triggered(
+                channel, store, avatar_id if avatar_id is not None else -1, text
+            ):
+                return None
+        except Exception:
+            self.log.exception("ambient storybook trigger check failed channel=%s", channel)
+            return None
+        # Spend gates, mirroring _storybook_handler: authenticated + llm.draw +
+        # per-account cooldown (reserve-at-start). A miss falls through to chat.
+        if not preflight.account:
+            return None
+        if not ircdb.checkCapability(msg.prefix, "llm.draw"):
+            return None
+        cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
+        if self._storybook_cooldown_active(preflight.account, cooldown):
+            return None
+        return text
+
     def _verse_chat_record_handler(
         self, preflight: PreflightResult
     ) -> Callable[[dict], _VerseToolResult] | None:
@@ -4156,6 +4260,23 @@ class LLM(callbacks.Plugin):
                 # meaning on a verse channel — elsewhere they are ordinary text.
                 if verse_enabled and is_ooc(text):
                     text = strip_ooc(text)
+                # Ambient narrative mention → grounded STORY (the point of the
+                # trigger word). Only for "just talk" turns (not @ask/@rp) that
+                # read like a narrative, reference canon, and pass the @story
+                # spend gates. A question or a draw request returns None here and
+                # falls through to chat (answered / drawn), still verse-grounded.
+                if verse_enabled and entry_route in _AMBIENT_ENTRY_ROUTES:
+                    brief = self._ambient_storybook_brief(msg, preflight, text)
+                    if brief is not None:
+                        persona = self.db.get_avatar_persona(preflight.nick) or ""
+                        self._submit_storybook_job(
+                            channel=preflight.channel,
+                            nick=preflight.nick,
+                            persona=persona,
+                            brief=brief,
+                            account=preflight.account,
+                        )
+                        return
                 # Verse-enabled channel + non-opted-in speaker: advertise the
                 # verse tool *schemas* anyway so the channel's tool surface is
                 # byte-identical across all speakers. Invocations land on

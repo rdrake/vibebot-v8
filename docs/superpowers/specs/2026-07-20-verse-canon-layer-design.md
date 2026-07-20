@@ -59,6 +59,25 @@ mention. Entered explicitly (Slice 1: `@rp <text>` command — `@verse` was alre
 taken by the scene-readout command; single-fire, dodges the
 double-dispatch/relay problem; richer doors — sticky toggle — possible later).
 
+## Correction (2026-07-20, post-Slice-3)
+
+Original intent was misread. The trigger word should **pull verse context in and
+let the OUTPUT follow intent** — a plain narrative mention *should* default to a
+grounded story (that's the fun of it); only an explicit `draw`/command must not
+be hijacked into a story. Slice 1's demotion was still correct (it's why "draw
+the stinky lads" now yields an image via the chat draw tool instead of a
+roleplay-storybook), but it wrongly killed narrative-mention → story.
+
+**Fix (SHIPPED).** On ambient turns (`_AMBIENT_ENTRY_ROUTES`) in a verse channel,
+`_ambient_verse_intent` classifies the message: **draw** (image), **question**
+(grounded chat), or **story** (default). For a story-intent mention that
+references canon and passes the @story spend gates (account + llm.draw +
+cooldown), `_ambient_storybook_brief` returns the brief and dispatch fires a
+grounded `_submit_storybook_job` directly (deterministic, fast, cooldown-bounded
+— which also dampens the old double-dispatch). Questions/draws fall through to
+the chat path, still verse-grounded. `@ask`/`@rp` are NOT ambient → never
+auto-story. `@rp` kept as a bonus.
+
 ## Slices
 
 - **Slice 1 (SHIPPED).** Read-injection on the chat path + demote the auto-trigger +
