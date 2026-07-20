@@ -944,7 +944,7 @@ STORYBOOK_SYSTEM_PROMPT = (
     "the facts. Use the persona's voice if one is given, but accuracy comes first.\n"
     "Write the prose, then choose the moments or ideas most worth illustrating.\n\n"
     "Respond with ONLY a single JSON object, no prose outside it, no code fence:\n"
-    '{{"title": str, "story_markdown": str, '
+    '{{"title": str, "style": str, "story_markdown": str, '
     '"illustrations": [{{"id": int, "caption": str, "image_prompt": str}}]}}\n'
     "Rules: illustrate GENEROUSLY — most pages want several pictures, not one. "
     "Aim for 2 to {max_images} illustrations across the key beats or sections; a "
@@ -954,6 +954,14 @@ STORYBOOK_SYSTEM_PROMPT = (
     "illustrations with the same integer id. image_prompt is a concrete, vivid "
     "visual description — for an explainer, the diagram or scene that makes the "
     "idea clear; for a story, the setting/characters/action/mood — not a caption. "
+    "\nSTYLE: pick ONE cohesive visual style for the whole page and put it in "
+    "'style' — the art medium and palette (e.g. 'muted watercolour storybook, "
+    "warm earth tones'), PLUS a one-line fixed appearance for each recurring "
+    "character (e.g. 'the Stinky Lads: three grubby teen boys in mud-caked "
+    "football kit'). This exact 'style' string is prepended to EVERY illustration, "
+    "so it is what keeps the art and the characters looking the same panel to "
+    "panel. Do NOT repeat the style or those appearance details inside each "
+    "image_prompt — keep image_prompt about the specific moment only. "
     "Keep it under {max_chars} characters."
     "{world}"
     "\n\nPERSONA:\n{persona}"
@@ -3678,11 +3686,17 @@ Examples (echo → action_prompt: ""):
         if dropped:
             self.log.info("storybook: dropped %d illustrations over cap", dropped)
 
+        # One shared style anchor for the whole page, prepended to EVERY image so
+        # the stateless image model keeps art + recurring characters consistent
+        # panel to panel. The model authors it (story["style"]); fall back to the
+        # generic fairytale look when it leaves it blank.
+        style_prefix = story.get("style") or "storybook illustration, painted fairytale style"
+
         def _draw(it):
             """Draw one illustration. Returns (it, ImageResult|None); never
             raises, so one failed draw can't sink the whole batch."""
             try:
-                styled = f"storybook illustration, painted fairytale style: {it['image_prompt']}"
+                styled = f"{style_prefix}: {it['image_prompt']}"
                 return it, self._attempt_image_generation(styled, model, timeout, channel=channel)
             except Exception as e:  # noqa: BLE001 — isolate per-image failures
                 self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
@@ -3765,7 +3779,14 @@ Examples (echo → action_prompt: ""):
                         "image_prompt": it["image_prompt"],
                     }
                 )
-        return {"title": title.strip(), "story_markdown": story, "illustrations": illos}
+        style = obj.get("style")
+        style = style.strip() if isinstance(style, str) else ""
+        return {
+            "title": title.strip(),
+            "style": style,
+            "story_markdown": story,
+            "illustrations": illos,
+        }
 
     @staticmethod
     def _is_content_safety_error(error: Exception) -> bool:

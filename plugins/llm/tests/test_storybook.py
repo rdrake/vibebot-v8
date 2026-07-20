@@ -149,6 +149,73 @@ def test_validate_story_obj_requires_title_and_story():
     assert S._validate_story_obj("not a dict") is None
 
 
+def test_validate_story_obj_captures_style():
+    from llm.service import LLMService as S
+
+    out = S._validate_story_obj(
+        {"title": "T", "style": "  muted watercolour  ", "story_markdown": "x"}
+    )
+    assert out["style"] == "muted watercolour"
+    # Missing / non-string style degrades to "" rather than failing.
+    assert S._validate_story_obj({"title": "T", "story_markdown": "x"})["style"] == ""
+    assert S._validate_story_obj({"title": "T", "style": 7, "story_markdown": "x"})["style"] == ""
+
+
+def test_generate_storybook_applies_model_style_to_every_image(make_service, mocker, tmp_path):
+    """The model-authored style is prepended to EVERY illustration prompt so the
+    stateless image model stays consistent panel to panel."""
+    service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "T",
+            "style": "muted watercolour, the Lads: three grubby boys",
+            "story_markdown": "a [[illustration:1]] b [[illustration:2]] c",
+            "illustrations": [
+                {"id": 1, "caption": "c1", "image_prompt": "kickoff"},
+                {"id": 2, "caption": "c2", "image_prompt": "the winning goal"},
+            ],
+        },
+    )
+    from llm.service import ImageResult
+
+    gen = mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="ok", url="http://h/llm/img.jpg"),
+    )
+    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    prompts = [c.args[0] for c in gen.call_args_list]
+    assert len(prompts) == 2
+    assert all(p.startswith("muted watercolour, the Lads: three grubby boys: ") for p in prompts)
+    assert "kickoff" in prompts[0] and "the winning goal" in prompts[1]
+
+
+def test_generate_storybook_falls_back_to_default_style(make_service, mocker, tmp_path):
+    """No model style → the generic fairytale prefix, preserving prior behaviour."""
+    service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "T",
+            "style": "",
+            "story_markdown": "a [[illustration:1]] b",
+            "illustrations": [{"id": 1, "caption": "c", "image_prompt": "p"}],
+        },
+    )
+    from llm.service import ImageResult
+
+    gen = mocker.patch.object(
+        service,
+        "_attempt_image_generation",
+        return_value=ImageResult(content="ok", url="http://h/llm/img.jpg"),
+    )
+    service.generate_storybook("b", channel="#c", persona="v", conversation=[])
+    assert gen.call_args.args[0] == "storybook illustration, painted fairytale style: p"
+
+
 def test_generate_storybook_embeds_and_saves(make_service, mocker, tmp_path):
     service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
     mocker.patch.object(
