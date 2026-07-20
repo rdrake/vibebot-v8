@@ -116,6 +116,11 @@ _REMINDER_MUTATION_TOOLS = frozenset(
 
 _FULL_ANSWER_LABEL = "Full answer"
 
+# Entry routes for "just talk" ambient messages (nick-addressed text and bare
+# `vibebot foo`), as opposed to explicit commands. Sticky @rp roleplay (Slice 3)
+# promotes only these to roleplay turns — explicit @ask / @rp stay as-is.
+_AMBIENT_ENTRY_ROUTES = frozenset({"addressed", "invalid_command"})
+
 # Slice 2 canon layer: appended to the chat-path canon block when
 # verseChatRecordEnabled + an opted-in avatar. Invites the model to persist a
 # genuinely new durable fact to canon, sparingly, so canon grows from ordinary
@@ -708,6 +713,12 @@ class LLM(callbacks.Plugin):
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
+
+        # Sticky @rp roleplay sessions: (channel, account-or-nick) -> expiry epoch
+        # (inf = never auto-expire). While present+unexpired, the ambient path
+        # treats the caller's plain messages as roleplay turns. Slice 3.
+        self._roleplay_sticky: dict[tuple[str, str], float] = {}
+        self._roleplay_sticky_lock = threading.Lock()
 
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
@@ -2958,6 +2969,49 @@ class LLM(callbacks.Plugin):
             )
             return None
 
+    # --- Slice 3: sticky @rp roleplay sessions -----------------------------
+
+    @staticmethod
+    def _roleplay_identity(preflight: PreflightResult) -> str:
+        """Key a sticky roleplay session by account (stable across nick changes),
+        falling back to the nick when unauthenticated."""
+        return preflight.account or preflight.nick
+
+    def _roleplay_sticky_set(self, preflight: PreflightResult, on: bool) -> None:
+        """Turn sticky @rp roleplay on/off for this caller+channel.
+
+        On: store an expiry ``verseRoleplayStickyTtlSeconds`` in the future (inf
+        when the TTL is 0 → never auto-expire). Off: drop the entry.
+        """
+        key = (preflight.channel, self._roleplay_identity(preflight))
+        with self._roleplay_sticky_lock:
+            if not on:
+                self._roleplay_sticky.pop(key, None)
+                return
+            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", preflight.channel) or 0)
+            self._roleplay_sticky[key] = (time.time() + ttl) if ttl > 0 else float("inf")
+
+    def _roleplay_sticky_active(self, preflight: PreflightResult) -> bool:
+        """True when sticky roleplay is live for this caller+channel.
+
+        Sliding window: an active check refreshes the expiry, so ambient
+        roleplay persists while you're talking and lapses only after
+        ``verseRoleplayStickyTtlSeconds`` of silence. Expired entries are
+        evicted lazily here.
+        """
+        key = (preflight.channel, self._roleplay_identity(preflight))
+        now = time.time()
+        with self._roleplay_sticky_lock:
+            exp = self._roleplay_sticky.get(key)
+            if exp is None:
+                return False
+            if exp <= now:  # lapsed
+                self._roleplay_sticky.pop(key, None)
+                return False
+            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", preflight.channel) or 0)
+            self._roleplay_sticky[key] = (now + ttl) if ttl > 0 else float("inf")
+            return True
+
     def _build_verse_handlers_for(self, channel: str) -> dict | None:
         """Build the verse extra-handlers dict for ``channel``, plumbing
         the per-channel ``verseAutoEntityMaxNamesPerCall`` into the
@@ -4002,13 +4056,18 @@ class LLM(callbacks.Plugin):
         args: list,
         text: str,
     ) -> None:
-        """<text>
+        """<text> | on | off
 
         Roleplay: speak or act AS your avatar in the channel's shared story —
-        one in-character verse turn (persona, scene, narrative tools). A bare
+        an in-character verse turn (persona, scene, narrative tools). A bare
         mention of canon (a character name, the channel's keyword) no longer
         enters this mode on its own; it only grounds a normal reply in canon.
-        Use @rp to opt into roleplay explicitly.
+
+        - ``@rp <text>`` — one in-character turn.
+        - ``@rp on`` — sticky mode: your plain messages are treated as roleplay
+          turns until ``@rp off`` (or after a spell of silence). Slip a single
+          message OOC with a leading ``//``.
+        - ``@rp off`` — leave sticky mode.
 
         Needs an avatar in the verse and the llm.verse capability; without an
         avatar it degrades to a normal, canon-grounded chat reply.
@@ -4022,6 +4081,18 @@ class LLM(callbacks.Plugin):
         # entry_route tag still distinguishes rp in traces.
         pf = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if pf.blocked:
+            return
+        toggle = text.strip().lower()
+        if toggle in ("on", "off"):
+            self._roleplay_sticky_set(pf, toggle == "on")
+            if toggle == "on":
+                irc.reply(
+                    "Roleplay mode ON — just talk and I'll answer in character. "
+                    "`@rp off` to stop; a leading `//` slips one message OOC.",
+                    prefixNick=False,
+                )
+            else:
+                irc.reply("Roleplay mode off — back to normal chat.", prefixNick=False)
             return
         self._dispatch_with_verse_routing(
             irc, msg, text, pf, entry_route="rp_command", force_roleplay=True
@@ -4059,6 +4130,14 @@ class LLM(callbacks.Plugin):
         # several seconds before "is composing" appears.
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
+            # Slice 3: sticky @rp promotes ambient "just talk" messages to
+            # roleplay turns while a session is live (explicit @ask/@rp untouched).
+            if (
+                not force_roleplay
+                and entry_route in _AMBIENT_ENTRY_ROUTES
+                and self._roleplay_sticky_active(preflight)
+            ):
+                force_roleplay = True
             route = self._verse_route_for(
                 preflight.channel,
                 preflight.nick,

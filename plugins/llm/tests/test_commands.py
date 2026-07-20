@@ -3436,6 +3436,76 @@ class TestVerseStorybook:
         off = plugin._verse_context_for(pf, "what does Archie think?")
         assert off is not None and "verse_record" not in off
 
+    # --- Slice 3: sticky @rp roleplay --------------------------------------
+
+    def test_roleplay_sticky_on_off(self, plugin_env, mocker):
+        plugin, _i, _m = plugin_env
+        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        assert plugin._roleplay_sticky_active(pf) is False
+        plugin._roleplay_sticky_set(pf, True)
+        assert plugin._roleplay_sticky_active(pf) is True
+        plugin._roleplay_sticky_set(pf, False)
+        assert plugin._roleplay_sticky_active(pf) is False
+
+    def test_roleplay_sticky_expires_and_evicts(self, plugin_env, mocker):
+        import time as _t
+
+        plugin, _i, _m = plugin_env
+        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        plugin._roleplay_sticky_set(pf, True)
+        plugin._roleplay_sticky[("#test", "alice")] = _t.time() - 1  # force lapse
+        assert plugin._roleplay_sticky_active(pf) is False
+        assert ("#test", "alice") not in plugin._roleplay_sticky
+
+    def test_roleplay_sticky_never_expires_when_ttl_zero(self, plugin_env, mocker):
+        import math
+
+        plugin, _i, _m = plugin_env
+        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 0})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        plugin._roleplay_sticky_set(pf, True)
+        assert plugin._roleplay_sticky[("#test", "alice")] == math.inf
+        assert plugin._roleplay_sticky_active(pf) is True
+
+    def test_roleplay_sticky_keyed_by_account_over_nick(self, plugin_env, mocker):
+        """Account identity wins so a nick change doesn't drop the session."""
+        plugin, _i, _m = plugin_env
+        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        pf_on = mocker.MagicMock(channel="#test", nick="alice", account="acct1")
+        plugin._roleplay_sticky_set(pf_on, True)
+        pf_renamed = mocker.MagicMock(channel="#test", nick="alice_away", account="acct1")
+        assert plugin._roleplay_sticky_active(pf_renamed) is True
+
+    def test_sticky_promotes_ambient_but_not_explicit(self, plugin_env, mocker):
+        """Sticky roleplay promotes ambient (nick-addressed) turns to roleplay,
+        but leaves explicit @ask untouched."""
+        plugin, mock_irc, mock_msg = plugin_env
+        base = make_registry_side_effect(
+            {"verseEnabled": True, "verseRoleplayStickyTtlSeconds": 900}
+        )
+        plugin.registryValue = mocker.MagicMock(side_effect=base)
+        rf = mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        mocker.patch.object(plugin, "_ask_impl")
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        plugin._roleplay_sticky_set(pf, True)
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "hello", pf, entry_route="addressed"
+        )
+        assert rf.call_args.kwargs["force_roleplay"] is True
+
+        plugin._dispatch_with_verse_routing(mock_irc, mock_msg, "hello", pf, entry_route="ask")
+        assert rf.call_args.kwargs["force_roleplay"] is False
+
     # --- handler gates -----------------------------------------------------
 
     def _build(self, plugin, mock_irc, mock_msg, mocker, *, account="acct"):

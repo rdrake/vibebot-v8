@@ -71,7 +71,13 @@ double-dispatch/relay problem; richer doors — sticky toggle — possible later
   than adding a new one (keeps the tool surface small). Ships DORMANT — rdrake
   flips the flag per channel when ready; canon-pollution risk stays behind the
   opt-in. Roleplay-only tools (act/move) remain denied on the chat path.
-- **Slice 3.** Richer roleplay door (sticky toggle / auto-expiry) if wanted.
+- **Slice 3 (SHIPPED).** Sticky roleplay door — restores the ambient feel.
+  `@rp on` starts a per-caller+channel session (keyed by account, nick
+  fallback); while live, the ambient "just talk" path (`_AMBIENT_ENTRY_ROUTES`)
+  is promoted to roleplay turns. `@rp off` ends it; a sliding
+  `verseRoleplayStickyTtlSeconds` (default 900s, 0 = never) auto-lapses it after
+  silence; a leading `//` still slips one message OOC. Explicit `@ask`/`@rp
+  <text>` are untouched. In-memory state (lost on restart, by design).
 
 ## Slice 1 — detail
 

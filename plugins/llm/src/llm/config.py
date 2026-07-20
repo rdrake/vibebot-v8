@@ -466,6 +466,18 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "verseRoleplayStickyTtlSeconds",
+    registry.NonNegativeInteger(
+        900,
+        _("""Sliding inactivity timeout (seconds) for sticky @rp roleplay mode
+        (`@rp on`). Each in-character turn refreshes it; after this much silence
+        you drop back to normal chat. 0 = never auto-expire (until `@rp off` or
+        a bot restart)."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "verseChatRecordEnabled",
     registry.Boolean(
         False,
