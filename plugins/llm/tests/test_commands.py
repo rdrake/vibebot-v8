@@ -3614,6 +3614,87 @@ class TestVerseStorybook:
         assert f("the stinky lads stormed the chippy") == "story"
         assert f("what do the lads think of the headmaster?") == "story"
 
+    def test_looks_like_question_classifier(self):
+        from llm.plugin import LLM
+
+        f = LLM._looks_like_question
+        assert f("who got rid of school milk entirely") is True
+        assert f("what have the stinky lads done today") is True
+        assert f("how does photosynthesis work") is True
+        assert f("is the sky blue") is True
+        assert f("tell me about it?") is True  # trailing ? still counts
+        # Not questions.
+        assert f("the stinky lads stormed the chippy") is False
+        assert f("go mental") is False
+        assert f("") is False
+
+    def test_factual_question_gets_straight_overlay(self, plugin_env, mocker):
+        """A real-world question with no canon reference → chat path with the
+        factual overlay swapped in for the tall-tale channel overlay."""
+        from llm.plugin import _FACTUAL_CHAT_OVERLAY
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)  # no canon
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "who got rid of school milk entirely", pf, entry_route="addressed"
+        )
+        ask.assert_called_once()
+        assert ask.call_args.kwargs["overlay_override"] == _FACTUAL_CHAT_OVERLAY
+
+    def test_canon_question_keeps_inworld_overlay(self, plugin_env, mocker):
+        """A question that DOES pull canon keeps the in-world overlay (no swap)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_verse_context_for", return_value="CANON: the lads")
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "who is the headmaster", pf, entry_route="addressed"
+        )
+        ask.assert_called_once()
+        assert ask.call_args.kwargs["overlay_override"] is None
+
+    def test_non_question_keeps_inworld_overlay(self, plugin_env, mocker):
+        """A non-question with no canon still keeps the tall-tale overlay — the
+        factual swap is only for genuine questions."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        ask = mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "go mental about dragons", pf, entry_route="addressed"
+        )
+        ask.assert_called_once()
+        assert ask.call_args.kwargs["overlay_override"] is None
+
     def test_ambient_storybook_brief_gates(self, plugin_env, mocker, tmp_path):
         """Only an explicit 'illustrate' request → brief; a plain narrative /
         recount / question / draw / no-account / flag-off → None (a plain

@@ -153,6 +153,33 @@ _FACTUAL_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A message shaped like a question (interrogative opener, or ends in "?"). Used
+# on the chat path to spot a genuine question so a real-world one — asked in a
+# channel whose overlay says "tell the tallest tales, go mental" — gets a
+# straight, true answer instead of invented lore. Deliberately broad on the
+# opener; the canon check (verse_context is None) is what keeps in-world
+# questions ("what have the stinky lads done") out of the factual path.
+_QUESTION_SHAPE_RE = re.compile(
+    r"^\s*(?:who|whos|what|whats|when|where|which|whose|whom|why|how|"
+    r"is|are|was|were|do|does|did|can|could|would|will|should|has|have|had)\b",
+    re.IGNORECASE,
+)
+
+# Chat-overlay replacement for a real-world question with no canon reference.
+# Swapped in for the channel's "tallest tales / go mental" overlay so vibebot
+# answers the actual question (school milk → Margaret Thatcher) instead of
+# fictionalising it. The carve-out lets it still play along when the question is
+# genuinely about the channel's own running characters (which usually trip the
+# canon check anyway, but this covers the odd un-tracked in-joke).
+_FACTUAL_CHAT_OVERLAY = (
+    "The user is asking a real question. Answer it directly, accurately, and "
+    "truthfully from real-world knowledge — the actual answer, concise and "
+    "correct. Do NOT fictionalise it, invent facts, or spin it into a tall tale. "
+    "Only if the question is genuinely about this channel's own running "
+    "characters or in-jokes may you answer in that playful spirit. Stay vibebot "
+    "— never claim to be a user from the channel."
+)
+
 # Slice 2 canon layer: appended to the chat-path canon block when
 # verseChatRecordEnabled + an opted-in avatar. Invites the model to persist a
 # genuinely new durable fact to canon, sparingly, so canon grows from ordinary
@@ -3054,6 +3081,18 @@ class LLM(callbacks.Plugin):
             return "question"
         return "story"
 
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        """True when the message reads as a question (interrogative opener or a
+        trailing '?'). Used to route a real-world question to a straight,
+        truthful answer instead of the channel's tall-tale voice — see the
+        chat-path use of ``_FACTUAL_CHAT_OVERLAY``.
+        """
+        t = (text or "").strip()
+        if not t:
+            return False
+        return bool(_QUESTION_SHAPE_RE.match(t)) or t.endswith("?")
+
     def _ambient_storybook_brief(
         self, msg: IrcMsg, preflight: PreflightResult, text: str
     ) -> str | None:
@@ -4416,6 +4455,18 @@ class LLM(callbacks.Plugin):
                             self.registryValue("verseStorybookEnabled", preflight.channel)
                         ),
                     )
+                    verse_context = self._verse_context_for(preflight, text, for_chat=True)
+                    # A real-world question with NO canon reference (verse_context
+                    # is None) is a genuine ask, not a story cue — answer it
+                    # straight instead of letting the "tell the tallest tales"
+                    # overlay fictionalise it (e.g. "who got rid of school milk"
+                    # → Margaret Thatcher, not invented Stinky Lads lore). A
+                    # question that DOES pull canon keeps the in-world voice.
+                    overlay_override = (
+                        _FACTUAL_CHAT_OVERLAY
+                        if verse_context is None and self._looks_like_question(text)
+                        else None
+                    )
                     self._ask_impl(
                         irc,
                         msg,
@@ -4423,8 +4474,9 @@ class LLM(callbacks.Plugin):
                         preflight,
                         entry_route=entry_route,
                         extra_tools_override=verse_specs,
-                        verse_context=self._verse_context_for(preflight, text, for_chat=True),
+                        verse_context=verse_context,
                         verse_record_handler=self._verse_chat_record_handler(preflight),
+                        overlay_override=overlay_override,
                     )
                     return
                 self._ask_impl(irc, msg, text, preflight, entry_route=entry_route)
@@ -4474,6 +4526,7 @@ class LLM(callbacks.Plugin):
         model_override: str | None = None,
         verse_context: str | None = None,
         verse_record_handler: Callable[[dict], _VerseToolResult] | None = None,
+        overlay_override: str | None = None,
     ) -> None:
         """Core ask logic, separated so invalidCommand can reuse without double-preflight.
 
@@ -4490,6 +4543,11 @@ class LLM(callbacks.Plugin):
           ``system_prompt_override`` it keeps the personality overlay and layers
           reference lore after it, so a normal answer is grounded in canon
           without assuming the avatar persona.
+        - ``overlay_override``: REPLACES the channel ``assistantSystemPrompt``
+          personality overlay (e.g. swap a "tell the tallest tales" overlay for
+          ``_FACTUAL_CHAT_OVERLAY`` so a real-world question gets a straight
+          answer, not invented lore). Distinct from ``system_prompt_override``,
+          which APPENDS a verse scene to the overlay; here we substitute it.
         """
         nick, channel = pf.nick, pf.channel
         effective_profile = profile_override or PROFILE_CHAT
@@ -4534,6 +4592,13 @@ class LLM(callbacks.Plugin):
             # channel overlay (ask_prompt) and verse override are unchanged, so
             # the verse energy/length pump is preserved.
             ask_prompt = self.registryValue(PROFILES[effective_profile].overlay_setting, channel)
+            # A real-world question with no canon reference: substitute the
+            # channel personality overlay ("tell the tallest tales, go mental")
+            # with a factual one so the answer is true, not invented lore. Never
+            # combined with a verse scene (system_prompt_override), which is a
+            # roleplay turn — this is the plain chat path only.
+            if overlay_override is not None:
+                ask_prompt = overlay_override
             if system_prompt_override is not None:
                 parts: list[str] = []
                 if ask_prompt:
