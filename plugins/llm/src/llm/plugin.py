@@ -3057,25 +3057,23 @@ class LLM(callbacks.Plugin):
     def _ambient_storybook_brief(
         self, msg: IrcMsg, preflight: PreflightResult, text: str
     ) -> str | None:
-        """Brief to fire a grounded storybook for an ambient narrative mention,
-        or None to fall through to normal grounded chat.
+        """Brief to fire an illustrated storybook for an ambient mention that
+        EXPLICITLY asks to be illustrated, or None to fall through.
 
-        Returns ``text`` only when ALL hold: storybook enabled, the message
-        reads like a tale — a narrative mention or a recount question ("story"),
-        or an explicit "illustrate" request ("illustrate"), NOT a factual
-        question or a single-picture draw — it references canon
-        (``_verse_triggered``), and the @story-style spend gates pass (account +
-        llm.draw + not on cooldown). Any miss → None → the caller uses the chat
-        path (question answered, draw drawn), still verse-grounded. The cooldown
-        check reserves the slot, matching the verse_storybook tool handler.
-
-        The image budget (prose-first vs full storybook) is decided separately
-        by the caller from the same intent — see ``_ambient_story_max_images``.
+        Returns ``text`` only when ALL hold: storybook enabled, the message is
+        an explicit "illustrate"/comic/storybook request ("illustrate") — a
+        plain narrative mention or recount ("story") is NOT here: it becomes a
+        prose-first inline tale (see ``_ambient_inline_story``), NOT an image
+        page — it references canon (``_verse_triggered``), and the @story-style
+        spend gates pass (account + llm.draw + not on cooldown). Any miss →
+        None → the caller uses the chat path (question answered, draw drawn),
+        still verse-grounded. The cooldown check reserves the slot, matching the
+        verse_storybook tool handler.
         """
         channel = preflight.channel
         if not self.registryValue("verseStorybookEnabled", channel):
             return None
-        if self._ambient_verse_intent(text) not in ("story", "illustrate"):
+        if self._ambient_verse_intent(text) != "illustrate":
             return None
         try:
             store = self._get_or_create_verse_store(channel)
@@ -3098,13 +3096,46 @@ class LLM(callbacks.Plugin):
             return None
         return text
 
-    def _ambient_story_max_images(self, channel: str, text: str) -> int:
-        """Image budget for an ambient verse story.
+    def _ambient_inline_story(self, preflight: PreflightResult, text: str) -> bool:
+        """True when a plain ambient mention should become an INLINE prose tale.
 
-        An explicit "illustrate"/comic request gets the full storybook
-        (``verseStorybookMaxImages``); a plain narrative mention or a recount
-        question stays prose-first (``verseStoryAmbientMaxImages``, default 1 —
-        the odd hero image, not a full picture book).
+        The prose-first ambient story: a narrative mention or recount ("story"
+        intent) that references canon, from an avatar-holder, is answered as a
+        multi-paragraph tale posted straight in the channel (the verse
+        completion) — no image, no pastebin page. Deliberately NOT an
+        "illustrate" request (that opens the image storybook), NOT a factual
+        "who is X" question, and NOT a "draw" single-picture request; those keep
+        their own paths.
+
+        The caller uses this to promote the turn to a one-shot verse-prose route
+        (``force_roleplay`` for this call only — it does NOT arm sticky @rp).
+        Requires an avatar because the prose is told in that avatar's voice; a
+        non-avatar speaker falls through to grounded chat instead. Best-effort:
+        any failure returns False (→ the caller's normal chat/draw paths stand).
+        """
+        channel = preflight.channel
+        if not self.registryValue("verseEnabled", channel):
+            return False
+        if self._ambient_verse_intent(text) != "story":
+            return False
+        try:
+            store = self._get_or_create_verse_store(channel)
+            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            if avatar_id is None:
+                return False
+            return self._verse_triggered(channel, store, avatar_id, text)
+        except Exception:
+            self.log.exception("ambient inline-story check failed channel=%s", channel)
+            return False
+
+    def _ambient_story_max_images(self, channel: str, text: str) -> int:
+        """Image budget for an ambient illustrated storybook.
+
+        Only an explicit "illustrate"/comic request reaches the storybook now
+        (a plain narrative mention is a prose-first INLINE tale with no image —
+        see ``_ambient_inline_story``), so this returns the full storybook
+        budget (``verseStorybookMaxImages``). The ``verseStoryAmbientMaxImages``
+        fallback stays for any non-illustrate brief that still reaches here.
         """
         if self._ambient_verse_intent(text) == "illustrate":
             return int(self.registryValue("verseStorybookMaxImages", channel) or 3)
@@ -4318,6 +4349,18 @@ class LLM(callbacks.Plugin):
                 and self._roleplay_sticky_active(preflight)
             ):
                 force_roleplay = True
+            # Prose-first ambient story: a plain narrative/recount mention that
+            # references canon becomes a multi-paragraph INLINE tale in the
+            # avatar's voice (the verse completion) — no image. One-shot: this
+            # promotes only THIS turn; it does not arm sticky @rp. An explicit
+            # draw/illustrate or a factual "who is X" is not a story and keeps
+            # its own path (image / storybook / grounded chat).
+            if (
+                not force_roleplay
+                and entry_route in _AMBIENT_ENTRY_ROUTES
+                and self._ambient_inline_story(preflight, text)
+            ):
+                force_roleplay = True
             route = self._verse_route_for(
                 preflight.channel,
                 preflight.nick,
@@ -4336,11 +4379,13 @@ class LLM(callbacks.Plugin):
                 # meaning on a verse channel — elsewhere they are ordinary text.
                 if verse_enabled and is_ooc(text):
                     text = strip_ooc(text)
-                # Ambient narrative mention → grounded STORY (the point of the
-                # trigger word). Only for "just talk" turns (not @ask/@rp) that
-                # read like a narrative, reference canon, and pass the @story
-                # spend gates. A question or a draw request returns None here and
-                # falls through to chat (answered / drawn), still verse-grounded.
+                # Explicit "illustrate"/comic mention → grounded illustrated
+                # STORYBOOK (an image page). Only for "just talk" turns (not
+                # @ask/@rp) that ask to be illustrated, reference canon, and pass
+                # the @story spend gates. A plain narrative mention became an
+                # inline prose tale above (force_roleplay); a question or a draw
+                # request returns None here and falls through to chat (answered /
+                # drawn), still verse-grounded.
                 if verse_enabled and entry_route in _AMBIENT_ENTRY_ROUTES:
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:

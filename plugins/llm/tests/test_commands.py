@@ -3615,7 +3615,9 @@ class TestVerseStorybook:
         assert f("what do the lads think of the headmaster?") == "story"
 
     def test_ambient_storybook_brief_gates(self, plugin_env, mocker, tmp_path):
-        """Narrative mention + gates → brief; question/draw/no-account/flag-off → None."""
+        """Only an explicit 'illustrate' request → brief; a plain narrative /
+        recount / question / draw / no-account / flag-off → None (a plain
+        narrative is an inline prose tale, not an image storybook)."""
         from llm.verse.store import VerseStore
 
         plugin, mock_irc, mock_msg = plugin_env
@@ -3633,25 +3635,89 @@ class TestVerseStorybook:
         mock_msg.prefix = "alice!u@h"
         pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
 
-        narrative = "the stinky lads stormed the chippy"
-        assert plugin._ambient_storybook_brief(mock_msg, pf, narrative) == narrative
-        # A recount question is a tale too (the fix), so it yields a brief.
-        recount = "what have the stinky lads done today"
-        assert plugin._ambient_storybook_brief(mock_msg, pf, recount) == recount
+        # Explicit "illustrate" → the image storybook.
+        illustrate = "illustrate the stinky lads' saga"
+        assert plugin._ambient_storybook_brief(mock_msg, pf, illustrate) == illustrate
+        # A plain narrative or recount is a prose-first INLINE tale, not here.
+        assert (
+            plugin._ambient_storybook_brief(mock_msg, pf, "the stinky lads stormed the chippy")
+            is None
+        )
+        assert (
+            plugin._ambient_storybook_brief(mock_msg, pf, "what have the stinky lads done today")
+            is None
+        )
         # An identity lookup and a single-picture draw stay off the story path.
         assert plugin._ambient_storybook_brief(mock_msg, pf, "who are the stinky lads?") is None
         assert plugin._ambient_storybook_brief(mock_msg, pf, "draw the stinky lads") is None
-        assert plugin._ambient_storybook_brief(mock_msg, pf, "hello there") is None  # not canon
+        assert (
+            plugin._ambient_storybook_brief(mock_msg, pf, "illustrate a fox") is None
+        )  # not canon
 
         pf_anon = mocker.MagicMock(channel="#test", nick="alice", account=None)
-        assert plugin._ambient_storybook_brief(mock_msg, pf_anon, narrative) is None  # no account
+        assert plugin._ambient_storybook_brief(mock_msg, pf_anon, illustrate) is None  # no account
 
-    def test_ambient_narrative_mention_fires_story_not_chat(self, plugin_env, mocker):
+    def test_ambient_inline_story_gates(self, plugin_env, mocker, tmp_path):
+        """A plain narrative/recount mention that references canon, from an
+        avatar-holder → True (inline prose tale); question/draw/illustrate,
+        non-canon, no-avatar, flag-off → False."""
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        mocker.patch.object(plugin, "_find_caller_avatar", return_value=7)
+        mocker.patch.object(plugin, "_verse_triggered", return_value=True)
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        assert plugin._ambient_inline_story(pf, "the stinky lads stormed the chippy") is True
+        assert plugin._ambient_inline_story(pf, "what have the lads done today") is True
+        # Not a story intent → False (draw/illustrate/question keep their paths).
+        assert plugin._ambient_inline_story(pf, "draw the lads") is False
+        assert plugin._ambient_inline_story(pf, "illustrate the lads") is False
+        assert plugin._ambient_inline_story(pf, "who is Dan?") is False
+        # No avatar → grounded chat instead of prose.
+        plugin._find_caller_avatar.return_value = None
+        assert plugin._ambient_inline_story(pf, "the lads stormed the chippy") is False
+        plugin._find_caller_avatar.return_value = 7
+        # Canon not referenced → not a verse story.
+        plugin._verse_triggered.return_value = False
+        assert plugin._ambient_inline_story(pf, "the lads stormed the chippy") is False
+
+    def test_ambient_narrative_mention_enters_inline_prose(self, plugin_env, mocker):
+        """A plain narrative mention promotes to a one-shot verse-prose route
+        (force_roleplay=True) — NOT the image storybook job."""
+        plugin, mock_irc, mock_msg = plugin_env
+        rf = mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=True)
+        mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+        mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="addressed"
+        )
+        assert rf.call_args.kwargs["force_roleplay"] is True
+        job.assert_not_called()
+
+    def test_ambient_illustrate_mention_fires_storybook(self, plugin_env, mocker):
+        """An explicit 'illustrate' mention still fires the image storybook job."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch.object(plugin, "_verse_route_for", return_value=None)
         mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
         mocker.patch.object(
-            plugin, "_ambient_storybook_brief", return_value="the lads stormed the chippy"
+            plugin, "_ambient_storybook_brief", return_value="illustrate the lads' saga"
         )
         plugin.db.get_avatar_persona = mocker.MagicMock(return_value="")
         job = mocker.patch.object(plugin, "_submit_storybook_job")
@@ -3663,16 +3729,17 @@ class TestVerseStorybook:
         pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
 
         plugin._dispatch_with_verse_routing(
-            mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="addressed"
+            mock_irc, mock_msg, "illustrate the lads' saga", pf, entry_route="addressed"
         )
         job.assert_called_once()
-        assert job.call_args.kwargs["brief"] == "the lads stormed the chippy"
+        assert job.call_args.kwargs["brief"] == "illustrate the lads' saga"
         ask.assert_not_called()
 
     def test_ambient_question_falls_through_to_chat(self, plugin_env, mocker):
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch.object(plugin, "_verse_route_for", return_value=None)
         mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
         mocker.patch.object(plugin, "_ambient_storybook_brief", return_value=None)
         mocker.patch.object(plugin, "_verse_context_for", return_value=None)
         mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
@@ -3685,7 +3752,7 @@ class TestVerseStorybook:
         pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
 
         plugin._dispatch_with_verse_routing(
-            mock_irc, mock_msg, "what do the lads think?", pf, entry_route="addressed"
+            mock_irc, mock_msg, "who is Dan?", pf, entry_route="addressed"
         )
         job.assert_not_called()
         ask.assert_called_once()
