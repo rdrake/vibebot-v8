@@ -135,11 +135,12 @@ PROFILES: dict[str, Profile] = {
         # Bounded (was None/unbounded). Verse is long-form, but a
         # non-reasoning model loses coherence in the tail of a very long
         # generation — run-on sentences and gibberish — and that degraded
-        # prose then poisons the next turn via self-imitation. 2000 (~1500
-        # words, matching PROFILE_CHAT) is generous enough for a full multi-
-        # paragraph scene while capping the worst-case run-on blob; overflow
-        # still pastebins via _send_long_reply.
-        max_output_tokens=2000,
+        # prose then poisons the next turn via self-imitation. Bumped to 3000
+        # (~2250 words) on request for fuller multi-paragraph scenes; still
+        # capped to bound the worst-case run-on blob, and overflow pastebins
+        # via _send_long_reply. (Higher than PROFILE_CHAT's 2000 by design —
+        # verse is the one profile people ask to run long.)
+        max_output_tokens=3000,
         force_search_on_explicit=False,
         # Dampen the run-on/repetition spiral a non-reasoning model falls into
         # over a long roleplay thread: a modest temperature keeps prose varied
