@@ -143,16 +143,6 @@ _ILLUSTRATE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A short identity/state lookup ("who is X", "what are the lads") that wants a
-# quick grounded answer, NOT a tale. Everything else on a verse mention defaults
-# to a story — misrouting a narrative into a flat one-liner is the failure we're
-# fixing, so a recount question ("what have the lads done today") deliberately
-# does NOT match here and becomes a story.
-_FACTUAL_QUESTION_RE = re.compile(
-    r"^\s*(?:who|what|where|which|whose)(?:'s|s)?\s+(?:is|are|was|were)\b",
-    re.IGNORECASE,
-)
-
 # A message shaped like a question (interrogative opener, or ends in "?"). Used
 # on the chat path to spot a genuine question so a real-world one — asked in a
 # channel whose overlay says "tell the tallest tales, go mental" — gets a
@@ -3059,26 +3049,25 @@ class LLM(callbacks.Plugin):
     def _ambient_verse_intent(text: str) -> str:
         """Classify an ambient verse-mention by requested OUTPUT.
 
-        The trigger word pulls verse context in regardless; this only decides
-        what to *produce*:
-        - "draw"       — an explicit single-picture request → image.
+        A canon mention is ALWAYS a story cue — the trigger word exists to get a
+        tale, so we never try to guess that some phrasing "only" wants a short
+        answer. There are exactly two exceptions, both of which are the user
+        explicitly asking for pictures:
         - "illustrate" — an explicit request for an illustrated tale → the full
-                         multi-image storybook.
-        - "question"   — a short identity/state lookup ("who is X") → grounded
-                         chat answer.
-        - "story"      — anything else, INCLUDING a recount question ("what have
-                         the lads done today") → the default, a prose-first
-                         grounded tale (the fun of the trigger word).
+                         multi-image storybook, told from the same canon.
+        - "draw"       — an explicit single-picture request → canon-grounded
+                         image, no tale.
+        - "story"      — EVERYTHING else, including questions ("who is X",
+                         "what have the lads done today") → a full prose tale.
+
+        Illustrate is checked first so "draw the story with pictures" opens the
+        storybook rather than being read as a single-picture request.
         """
         t = (text or "").strip()
-        if not t:
-            return "question"
-        if _DRAW_INTENT_RE.search(t):
-            return "draw"
         if _ILLUSTRATE_INTENT_RE.search(t):
             return "illustrate"
-        if _FACTUAL_QUESTION_RE.match(t):
-            return "question"
+        if _DRAW_INTENT_RE.search(t):
+            return "draw"
         return "story"
 
     @staticmethod
@@ -3100,14 +3089,13 @@ class LLM(callbacks.Plugin):
         EXPLICITLY asks to be illustrated, or None to fall through.
 
         Returns ``text`` only when ALL hold: storybook enabled, the message is
-        an explicit "illustrate"/comic/storybook request ("illustrate") — a
-        plain narrative mention or recount ("story") is NOT here: it becomes a
-        prose-first inline tale (see ``_ambient_inline_story``), NOT an image
-        page — it references canon (``_verse_triggered``), and the @story-style
-        spend gates pass (account + llm.draw + not on cooldown). Any miss →
-        None → the caller uses the chat path (question answered, draw drawn),
-        still verse-grounded. The cooldown check reserves the slot, matching the
-        verse_storybook tool handler.
+        an explicit "illustrate"/comic/storybook request ("illustrate") — every
+        other canon mention is a prose-first inline tale (see
+        ``_ambient_inline_story``), NOT an image page — it references canon
+        (``_verse_triggered``), and the @story-style spend gates pass (account +
+        llm.draw + not on cooldown). Any miss → None → the caller uses the chat
+        path (draw drawn), still verse-grounded. The cooldown check reserves the
+        slot, matching the verse_storybook tool handler.
         """
         channel = preflight.channel
         if not self.registryValue("verseStorybookEnabled", channel):
@@ -3136,14 +3124,15 @@ class LLM(callbacks.Plugin):
         return text
 
     def _ambient_inline_story(self, preflight: PreflightResult, text: str) -> bool:
-        """True when a plain ambient mention should become an INLINE prose tale.
+        """True when an ambient mention should become an INLINE prose tale.
 
-        The prose-first ambient story: a narrative mention or recount ("story"
-        intent) that references canon, from an avatar-holder, is answered as a
+        The prose-first ambient story, and the DEFAULT for any canon mention: a
+        message that references canon, from an avatar-holder, is answered as a
         multi-paragraph tale posted straight in the channel (the verse
-        completion) — no image, no pastebin page. Deliberately NOT an
-        "illustrate" request (that opens the image storybook), NOT a factual
-        "who is X" question, and NOT a "draw" single-picture request; those keep
+        completion) — no image, no pastebin page. Questions included: we do not
+        try to guess that some phrasing wants a short answer instead. The only
+        exceptions are the two explicit picture asks — "illustrate" (opens the
+        image storybook) and "draw" (single canon-grounded picture) — which keep
         their own paths.
 
         The caller uses this to promote the turn to a one-shot verse-prose route
@@ -4388,12 +4377,12 @@ class LLM(callbacks.Plugin):
                 and self._roleplay_sticky_active(preflight)
             ):
                 force_roleplay = True
-            # Prose-first ambient story: a plain narrative/recount mention that
-            # references canon becomes a multi-paragraph INLINE tale in the
-            # avatar's voice (the verse completion) — no image. One-shot: this
-            # promotes only THIS turn; it does not arm sticky @rp. An explicit
-            # draw/illustrate or a factual "who is X" is not a story and keeps
-            # its own path (image / storybook / grounded chat).
+            # Prose-first ambient story, the DEFAULT for a canon mention: any
+            # message that references canon becomes a multi-paragraph INLINE
+            # tale in the avatar's voice (the verse completion) — no image,
+            # questions included. One-shot: this promotes only THIS turn; it
+            # does not arm sticky @rp. Only an explicit draw/illustrate request
+            # keeps its own path (image / storybook), both canon-grounded.
             if (
                 not force_roleplay
                 and entry_route in _AMBIENT_ENTRY_ROUTES
@@ -4421,10 +4410,10 @@ class LLM(callbacks.Plugin):
                 # Explicit "illustrate"/comic mention → grounded illustrated
                 # STORYBOOK (an image page). Only for "just talk" turns (not
                 # @ask/@rp) that ask to be illustrated, reference canon, and pass
-                # the @story spend gates. A plain narrative mention became an
-                # inline prose tale above (force_roleplay); a question or a draw
-                # request returns None here and falls through to chat (answered /
-                # drawn), still verse-grounded.
+                # the @story spend gates. Every other canon mention became an
+                # inline prose tale above (force_roleplay); a draw request
+                # returns None here and falls through to chat (drawn), still
+                # verse-grounded.
                 if verse_enabled and entry_route in _AMBIENT_ENTRY_ROUTES:
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:

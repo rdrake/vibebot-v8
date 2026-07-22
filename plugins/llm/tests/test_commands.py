@@ -3605,11 +3605,12 @@ class TestVerseStorybook:
         assert f("sketch of the lads") == "draw"
         assert f("illustrate the lads' saga") == "illustrate"  # illustrated tale != single pic
         assert f("a comic about the lads") == "illustrate"
-        # Identity/state lookups → a quick grounded answer.
-        assert f("who is Diarrhoea Dan?") == "question"
-        assert f("what are the stinky lads") == "question"
-        assert f("") == "question"
-        # Everything narrative → story, INCLUDING a recount question (the fix).
+        assert f("draw the story with pictures") == "illustrate"  # illustrate wins over draw
+        # Everything else → story, questions included: a canon mention is always
+        # a story cue, we never guess that some phrasing wants a short answer.
+        assert f("who is Diarrhoea Dan?") == "story"
+        assert f("what are the stinky lads") == "story"
+        assert f("") == "story"
         assert f("what have the stinky lads done at school today") == "story"
         assert f("the stinky lads stormed the chippy") == "story"
         assert f("what do the lads think of the headmaster?") == "story"
@@ -3739,9 +3740,9 @@ class TestVerseStorybook:
         assert plugin._ambient_storybook_brief(mock_msg, pf_anon, illustrate) is None  # no account
 
     def test_ambient_inline_story_gates(self, plugin_env, mocker, tmp_path):
-        """A plain narrative/recount mention that references canon, from an
-        avatar-holder → True (inline prose tale); question/draw/illustrate,
-        non-canon, no-avatar, flag-off → False."""
+        """Any canon mention from an avatar-holder → True (inline prose tale),
+        questions included; draw/illustrate, non-canon, no-avatar, flag-off →
+        False."""
         from llm.verse.store import VerseStore
 
         plugin, mock_irc, mock_msg = plugin_env
@@ -3756,10 +3757,11 @@ class TestVerseStorybook:
 
         assert plugin._ambient_inline_story(pf, "the stinky lads stormed the chippy") is True
         assert plugin._ambient_inline_story(pf, "what have the lads done today") is True
-        # Not a story intent → False (draw/illustrate/question keep their paths).
+        # A question is a story too — no short-answer guessing.
+        assert plugin._ambient_inline_story(pf, "who is Dan?") is True
+        # Only the explicit picture asks keep their own paths.
         assert plugin._ambient_inline_story(pf, "draw the lads") is False
         assert plugin._ambient_inline_story(pf, "illustrate the lads") is False
-        assert plugin._ambient_inline_story(pf, "who is Dan?") is False
         # No avatar → grounded chat instead of prose.
         plugin._find_caller_avatar.return_value = None
         assert plugin._ambient_inline_story(pf, "the lads stormed the chippy") is False
