@@ -1046,6 +1046,10 @@ class LLMService:
         # task concurrently — the claim lease alone would otherwise allow a
         # re-claim if one poll outran the lease window.
         self._pending_poll_lock = threading.Lock()
+        # (model, cache lane) -> monotonic timestamp of the last completion,
+        # for the gap_s field on completion_timing. See _cache_gap_seconds.
+        self._cache_gap_last: dict[tuple[str, str], float] = {}
+        self._cache_gap_lock = threading.Lock()
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -2108,6 +2112,7 @@ class LLMService:
         msg_chars: int,
         n_tools: int,
         prefix_hash: str = "-",
+        gap_s: float = -1.0,
         response: Any | None = None,
         error: Exception | None = None,
     ) -> None:
@@ -2121,13 +2126,17 @@ class LLMService:
           elapsed_ms     — wall-clock for the litellm call only
           *_tokens       — usage from the response
           cached_tokens  — provider-reported prompt cache reads (0 = no cache)
+          gap_s          — seconds since the last call on this model+cache lane
+                           (-1 = first call). The dominant predictor of whether
+                           cached_tokens is non-zero; read it next to
+                           prefix_hash to tell a cold cache from a broken prefix.
           tool_calls     — tool calls returned by the model on this turn
         """
         if error is not None:
             self.log.warning(
                 f"completion_timing op={op} model={model} msgs={n_messages} "
                 f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
-                f"elapsed_ms={elapsed_ms:.0f} result=error "
+                f"gap_s={gap_s:.0f} elapsed_ms={elapsed_ms:.0f} result=error "
                 f"error_type={type(error).__name__}"
             )
             return
@@ -2164,28 +2173,59 @@ class LLMService:
         self.log.warning(
             f"completion_timing op={op} model={model} msgs={n_messages} "
             f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
-            f"elapsed_ms={elapsed_ms:.0f} prompt_tokens={pt} cached_tokens={cached} "
+            f"gap_s={gap_s:.0f} elapsed_ms={elapsed_ms:.0f} "
+            f"prompt_tokens={pt} cached_tokens={cached} "
             f"completion_tokens={ct} tool_calls={n_tool_calls}"
         )
 
     @staticmethod
     def _prefix_hash(messages: list[dict[str, Any]], tools: list[Any] | None) -> str:
-        """8-char fingerprint of the cacheable prefix.
+        """8-char fingerprint of the bytes that MUST be identical to cache at all.
 
-        Captures system message + first 2 messages + tool schemas — all the
-        bytes that should be byte-identical across cache-eligible requests.
-        Two requests sharing this hash and being seconds apart should hit
-        any sane prefix cache.
+        The system message plus the tool schemas: the head of every request,
+        ahead of any per-turn content. If this churns between two otherwise
+        similar calls, a prefix cache hit is impossible and the cause is ours;
+        if it is stable and ``cached_tokens`` is still 0, the cause is
+        downstream (a volatile block further in, or the provider's cache having
+        aged out — see ``gap_s``).
+
+        Deliberately NOT ``messages[:3]``, which this used to hash: on a
+        two-message call (``extract_memories``, ``ask_helper``) that swallowed
+        the entire per-turn user message, so the field reported a distinct
+        "prefix" on essentially every call — 4207 distinct values across 4220
+        extract_memories calls in the 2026-05→07 production logs. That made the
+        one field added to detect prefix churn incapable of ever showing
+        stability, and it read as churn where there was none.
         """
         try:
-            payload = {
-                "head": messages[: min(3, len(messages))],
-                "tools": tools or [],
-            }
-            blob = json.dumps(payload, sort_keys=True, default=str)
-        except (TypeError, ValueError):
+            system = next(
+                (m.get("content") for m in messages if m.get("role") == Role.SYSTEM),
+                "",
+            )
+            blob = json.dumps({"system": system, "tools": tools or []}, sort_keys=True, default=str)
+        except (TypeError, ValueError, AttributeError):
             return "?"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
+
+    def _cache_gap_seconds(self, model: str, op: str) -> float:
+        """Seconds since the last completion on this (model, cache lane), or -1.
+
+        Prompt-cache hit rate is dominated by this number, not by prefix
+        stability: in production, xAI main-path calls hit 61% within a minute
+        of the previous same-lane call, 24% at 5-15 minutes, and 0% beyond an
+        hour. Logging it inline makes a cold-cache miss distinguishable from a
+        broken-prefix miss without post-hoc joining across log lines.
+
+        Thread-safe: worker threads race here (``Plugin.threaded``).
+        """
+        key = (model, self._xai_lane(op))
+        now = time.monotonic()
+        with self._cache_gap_lock:
+            prev = self._cache_gap_last.get(key)
+            self._cache_gap_last[key] = now
+            if len(self._cache_gap_last) > 128:  # bounded: model×lane is small
+                self._cache_gap_last.pop(next(iter(self._cache_gap_last)))
+        return -1.0 if prev is None else now - prev
 
     def _timed_completion(
         self,
@@ -2211,6 +2251,7 @@ class LLMService:
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
         prefix_hash = self._prefix_hash(messages, kwargs.get("tools"))
+        gap_s = self._cache_gap_seconds(model, op)
         t0 = time.monotonic()
         try:
             response = litellm.completion(model=model, messages=messages, **kwargs)
@@ -2224,6 +2265,7 @@ class LLMService:
                 msg_chars=msg_chars,
                 n_tools=n_tools,
                 prefix_hash=prefix_hash,
+                gap_s=gap_s,
                 error=exc,
             )
             raise
@@ -2236,6 +2278,7 @@ class LLMService:
             msg_chars=msg_chars,
             n_tools=n_tools,
             prefix_hash=prefix_hash,
+            gap_s=gap_s,
             response=response,
         )
         return response

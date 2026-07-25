@@ -827,6 +827,93 @@ class TestXssSanitization:
         assert "<title>The quick brown fox jumps.</title>" in body
 
 
+class TestCacheDiagnostics:
+    """``prefix_hash`` and ``gap_s`` on completion_timing.
+
+    These two fields are how cache work gets evaluated from the logs, so they
+    have to answer the question they were added for: is a miss ours (the
+    cacheable head changed) or the provider's (the cache aged out)?
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def _msgs(self, system: str, user: str) -> list[dict]:
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "context block"},
+            {"role": "assistant", "content": "Got it."},
+            {"role": "user", "content": user},
+        ]
+
+    def test_prefix_hash_is_stable_across_different_user_turns(self) -> None:
+        """GIVEN two calls sharing a system prompt and tools but differing in
+        every per-turn message THEN prefix_hash is identical.
+
+        Regression: this hashed ``messages[:3]``, which on a short call swallowed
+        the per-turn user message — production logs showed 4207 distinct
+        "prefixes" across 4220 extract_memories calls, so the one field meant to
+        detect prefix churn could never show stability.
+        """
+        a = self.service._prefix_hash(self._msgs("SYS", "what is the time"), None)
+        b = self.service._prefix_hash(self._msgs("SYS", "tell me a story instead"), None)
+        assert a == b
+
+    def test_prefix_hash_is_stable_for_two_message_calls(self) -> None:
+        """The extract_memories / ask_helper shape: system + one user message."""
+        a = self.service._prefix_hash(
+            [{"role": "system", "content": "SYS"}, {"role": "user", "content": "alice said x"}],
+            None,
+        )
+        b = self.service._prefix_hash(
+            [{"role": "system", "content": "SYS"}, {"role": "user", "content": "bob said y"}], None
+        )
+        assert a == b
+
+    def test_prefix_hash_changes_when_system_prompt_changes(self) -> None:
+        """A changed system prompt makes a cache hit impossible — it must show."""
+        a = self.service._prefix_hash(self._msgs("SYS ONE", "hi"), None)
+        b = self.service._prefix_hash(self._msgs("SYS TWO", "hi"), None)
+        assert a != b
+
+    def test_prefix_hash_changes_when_tools_change(self) -> None:
+        """Tool schemas sit in the cacheable head too (the verse tool-surface
+        stability work depends on this being visible)."""
+        tools = [{"type": "function", "function": {"name": "verse_record"}}]
+        a = self.service._prefix_hash(self._msgs("SYS", "hi"), None)
+        b = self.service._prefix_hash(self._msgs("SYS", "hi"), tools)
+        assert a != b
+
+    def test_prefix_hash_survives_unhashable_content(self) -> None:
+        """Vision turns carry list content; the diagnostic must not raise."""
+        msgs = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        ]
+        assert self.service._prefix_hash(msgs, None) != "?"
+
+    def test_cache_gap_first_call_is_negative_then_measures(self) -> None:
+        """First call on a (model, lane) reports -1; the next reports the gap."""
+        assert self.service._cache_gap_seconds("xai/grok-4.3", "assistant_step_1") == -1.0
+        second = self.service._cache_gap_seconds("xai/grok-4.3", "assistant_step_1")
+        assert second >= 0.0
+
+    def test_cache_gap_is_tracked_per_lane(self) -> None:
+        """Side calls share a lane separate from the main reply path, so a
+        memory extraction must not look like a warm main-path cache."""
+        self.service._cache_gap_seconds("xai/grok-4.3", "assistant_step_1")
+        # extract_memories is its own lane — still a first call there.
+        assert self.service._cache_gap_seconds("xai/grok-4.3", "extract_memories") == -1.0
+
+    def test_cache_gap_map_is_bounded(self) -> None:
+        """Never grows without bound across model churn."""
+        for i in range(300):
+            self.service._cache_gap_seconds(f"model-{i}", "assistant_step_1")
+        assert len(self.service._cache_gap_last) <= 128
+
+
 class TestSanitizeOutput:
     """Tests for sanitize_output IRC command injection prevention."""
 
