@@ -543,6 +543,13 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
 
         plugin._safe_queue.side_effect = _passthrough_safe_queue
 
+        # Every raw-queue send builds its IrcMsg with _safe_privmsg (the
+        # safeArgument counterpart to irc.reply's). Use the real staticmethod so
+        # tests inspecting queueMsg see an actual PRIVMSG, not a bare Mock.
+        from llm.plugin import LLM
+
+        plugin._safe_privmsg.side_effect = LLM._safe_privmsg
+
         return LLMService(plugin), plugin
 
     return _make

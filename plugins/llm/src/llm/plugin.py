@@ -1101,12 +1101,12 @@ class LLM(callbacks.Plugin):
             for irc_conn in world.ircs:
                 if r.is_channel:
                     if target in irc_conn.state.channels:
-                        if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+                        if self._safe_queue(irc_conn, self._safe_privmsg(target, text)):
                             delivered = True
                         break
                 else:
                     # PM delivery — use first available connection
-                    if self._safe_queue(irc_conn, ircmsgs.privmsg(target, text)):
+                    if self._safe_queue(irc_conn, self._safe_privmsg(target, text)):
                         delivered = True
                     break
         except Exception as e:
@@ -1480,7 +1480,7 @@ class LLM(callbacks.Plugin):
         safe_text = self.llm_service.sanitize_output(text)
         safe_text = self._collapse_for_irc(safe_text) or safe_text
         prefixed = f"{nick}: {safe_text}" if nick else safe_text
-        self._safe_queue(irc, ircmsgs.privmsg(target, prefixed))
+        self._safe_queue(irc, self._safe_privmsg(target, prefixed))
 
     def _finalize_reminder_fire(
         self,
@@ -2850,7 +2850,13 @@ class LLM(callbacks.Plugin):
                 action_text = f"{GROUNDING_ICON} {action_text}"
             self.log.info("sending action to %s/%s", channel, nick)
             target = channel if ircutils.isChannel(channel) else nick
-            if not self._safe_queue(irc, ircmsgs.action(target, action_text)):
+            # safeArgument for the same reason as _safe_privmsg: this is a
+            # raw-queue send of model-derived text, and IrcMsg's own CR/LF/NUL
+            # assertion vanishes under python -O. sanitize_output already
+            # removed the CTCP delimiter that safeArgument does NOT cover.
+            if not self._safe_queue(
+                irc, ircmsgs.action(target, ircutils.safeArgument(action_text))
+            ):
                 return response, False
             self._record_last_verse_line(irc, channel, action_text, result)
             return f"* {irc.nick} {action_text}", True

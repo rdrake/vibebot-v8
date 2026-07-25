@@ -253,6 +253,33 @@ class TestDeliverPendingResult:
         # ...and no raw newline reaches the wire payload.
         assert "\n" not in msg_text.removesuffix("\r\n")
 
+    def test_nul_in_completed_content_still_delivers(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN recovered content carrying a NUL byte WHEN delivered THEN the
+        body is neutralized and the message still goes out.
+
+        Regression: this path built ``ircmsgs.privmsg`` raw. Limnoria asserts
+        the argument is valid, so a NUL raised, the send was recorded as failed,
+        and the task burned all ten delivery retries before landing in
+        delivery_failed — the user simply never got their answer. (Under
+        ``python -O`` the assertion vanishes instead and the NUL reaches the
+        wire.) Routing through ``_safe_privmsg`` neutralizes it either way.
+
+        The fixture stubs ``sanitize_output`` to identity, so this exercises the
+        raw-queue guard specifically, not the sanitize-time strip.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(content="the answer is\x0042")
+        plugin._deliver_pending_result(r)
+
+        mock_irc.queueMsg.assert_called_once()
+        assert "\x00" not in str(mock_irc.queueMsg.call_args[0][0])
+
     def test_long_completed_content_is_pastebinned_not_truncated(
         self, plugin, mocker: MockerFixture
     ) -> None:

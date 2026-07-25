@@ -981,6 +981,31 @@ class TestSanitizeOutput:
         ):
             assert self.service.sanitize_output(prose) == prose
 
+    def test_sanitize_output_strips_nul_byte(self) -> None:
+        """GIVEN model output containing NUL THEN it is removed.
+
+        NUL terminates the line at the IRC protocol level. safeArgument would
+        catch it on the reply path, but only by repr()ing the whole answer —
+        and the ACTION path does not go through safeArgument at all."""
+        assert self.service.sanitize_output("before\x00after") == "beforeafter"
+
+    def test_sanitize_output_strips_ctcp_delimiter(self) -> None:
+        """GIVEN model output containing \\x01 THEN it is removed.
+
+        The action path wraps model text in CTCP delimiters (\\x01ACTION …\\x01),
+        so an embedded \\x01 closes the CTCP early and lets the model append
+        arbitrary trailing text. ircutils.safeArgument guards CR/LF/NUL only —
+        it does NOT cover \\x01, so this has to happen at sanitize time."""
+        assert self.service.sanitize_output("waves\x01ACTION spoofed") == "wavesACTION spoofed"
+
+    def test_sanitize_output_keeps_irc_formatting_codes(self) -> None:
+        """GIVEN legitimate IRC formatting control bytes THEN they survive.
+
+        Only the structural bytes (NUL, CTCP) are stripped — bold/colour/reset
+        are real formatting a model may reasonably emit."""
+        text = "\x02bold\x02 \x0300,01colour\x03 \x0freset \x1funderline\x1f"
+        assert self.service.sanitize_output(text) == text
+
 
 class TestBuildContextMessage:
     """Tests for _build_context_message context injection."""

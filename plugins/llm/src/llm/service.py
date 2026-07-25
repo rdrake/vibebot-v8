@@ -185,6 +185,14 @@ _VERSE_DENIAL_OPENING_CHARS = 240
 # never legitimate prose that happens to use pipes or angle brackets.
 _CONTROL_TOKEN_PATTERN = re.compile(r"<\|[^|>]*\|>")
 
+# Bytes that are STRUCTURAL on the IRC wire and must never survive in model
+# output: NUL terminates the line at the protocol level, and \x01 is the CTCP
+# delimiter (so a model that emits one inside an ACTION payload closes the CTCP
+# early and appends whatever it likes after it). Everything else in C0 is left
+# alone on purpose — \x02/\x03/\x0f/\x1d/\x1f are legitimate IRC formatting, and
+# the real line breaks are handled by _collapse_for_irc / safeArgument.
+_IRC_STRUCTURAL_CONTROL_RE = re.compile("[\x00\x01]")
+
 
 def _is_verse_denial(content: str) -> bool:
     """Return True iff a verse reply breaks frame to refuse the premise.
@@ -1164,6 +1172,13 @@ class LLMService:
         # non-reasoning grok would parrot it on later turns. Runs before the
         # no-prefix early return so it applies unconditionally.
         text = _CONTROL_TOKEN_PATTERN.sub("", text)
+
+        # Drop wire-structural control bytes (NUL, CTCP \x01). Same placement,
+        # and for the same reason: every outbound model-text path funnels
+        # through here, including the ACTION path, where ircutils.safeArgument
+        # would not have helped (it guards CR/LF/NUL, not \x01) and where the
+        # payload is wrapped in CTCP delimiters we control.
+        text = _IRC_STRUCTURAL_CONTROL_RE.sub("", text)
 
         # Get configurable prefixes (default: . and /)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))
@@ -4120,6 +4135,7 @@ Examples (echo → action_prompt: ""):
         """
         from .assistant import (
             AssistantToolExecutor,
+            ToolResult,
             get_tools_for_profile,
         )
 
@@ -4643,7 +4659,23 @@ Examples (echo → action_prompt: ""):
                     )
 
                     if extra_handlers and tc.function.name in extra_handlers:
-                        tool_result = extra_handlers[tc.function.name](args)
+                        # extra_handlers are built outside AssistantToolExecutor
+                        # (verse tools, the Limnoria bridge) and so miss the
+                        # blanket guard inside ``executor.execute``. Without this
+                        # one raising handler takes down the whole turn — the
+                        # user gets "Sorry, something went wrong." and loses the
+                        # answer, instead of the model seeing a tool error it can
+                        # work around. Same degradation executor.execute applies.
+                        try:
+                            tool_result = extra_handlers[tc.function.name](args)
+                        except Exception:
+                            self.log.exception(
+                                "extra tool handler %s raised; returning tool error",
+                                tc.function.name,
+                            )
+                            tool_result = ToolResult(
+                                content=json.dumps({"error": "Tool execution failed."})
+                            )
                     else:
                         tool_result = executor.execute(tc.function.name, args)
 
@@ -6244,7 +6276,7 @@ Examples (echo → action_prompt: ""):
             try:
                 self.plugin._safe_queue(
                     irc,
-                    ircmsgs.privmsg(
+                    self.plugin._safe_privmsg(
                         target,
                         f"{row.creator_nick}: Scheduled task auto-cancelled — "
                         "you no longer have permission to use @ask.",
@@ -6261,7 +6293,7 @@ Examples (echo → action_prompt: ""):
         if plugin._unattended_ask_rate_limited(account=row.account, nick=row.creator_nick, now=now):
             self.plugin._safe_queue(
                 irc,
-                ircmsgs.privmsg(
+                self.plugin._safe_privmsg(
                     target,
                     f"{row.creator_nick}: Scheduled task skipped — daily ask limit reached.",
                 ),

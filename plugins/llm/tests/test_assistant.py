@@ -934,6 +934,45 @@ class TestMetaCompletion:
         assert result.content == "Carrying on in-scene."
         assert result.last_successful_tool != "verse_record"
 
+    def test_raising_extra_handler_degrades_to_tool_error_not_aborted_turn(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an ``extra_handler`` that raises WHEN the loop dispatches it
+        THEN the turn survives: the model sees a tool error and its follow-up
+        reply is returned, rather than the exception escaping to the
+        function-level "Sorry, something went wrong." handler.
+
+        ``AssistantToolExecutor.execute`` already wraps every registry tool in
+        exactly this guard, but extra_handlers (verse tools, the Limnoria
+        bridge) are constructed outside it and bypassed it entirely — so one
+        DB hiccup inside a verse handler cost the user their whole answer.
+        """
+        boom = mocker.MagicMock(name="verse_handler", side_effect=RuntimeError("db is gone"))
+        call = make_tool_call("verse_record", '{"summary": "x"}', call_id="call_boom")
+        first_response = make_completion_response(None, tool_calls=[call])
+        second_response = make_completion_response("Carrying on in-scene.")
+
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[first_response, second_response],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+
+        result = service.assistant_completion(
+            prompt="do a thing",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"verse_record": boom},
+        )
+
+        boom.assert_called_once()
+        assert result.content == "Carrying on in-scene."
+        # A failed tool must not be recorded as the last SUCCESSFUL tool.
+        assert result.last_successful_tool != "verse_record"
+
     def test_cost_is_populated(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN meta completion WHEN successful THEN cost is calculated."""
         mock_response = make_completion_response("Done.")
