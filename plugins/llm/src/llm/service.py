@@ -1242,17 +1242,24 @@ class LLMService:
         )
 
     def _restrict_img_srcs(self, html: str, url_base: str) -> str:
-        """Drop <img> whose src is neither a bare relative filename nor under url_base.
+        """Drop <img> whose src is neither a bare relative filename nor under one
+        of our own bases (url_base, or the configured external image host).
 
         Storybook embeds its illustrations by relative filename (same http_root as
         the page), so legitimate images survive; externally-hosted images (tracking
-        pixels / SSRF-on-view) are removed from every pastebin page.
+        pixels / SSRF-on-view) are removed from every pastebin page. When
+        imageUploadUrl is set our illustrations live on that host instead and are
+        embedded absolutely, so its prefix is allowed too.
         """
+        allowed = [url_base.rstrip("/") + "/"]
+        upload_base = self._image_upload_base()
+        if upload_base:
+            allowed.append(upload_base)
 
         def _ok(src: str) -> bool:
             s = src.strip()
             if "://" in s or s.startswith("//"):
-                return s.startswith(url_base)
+                return any(s.startswith(base) for base in allowed)
             # Relative: allow only a bare filename in the same dir. Absolute
             # paths are rejected outright — nothing we generate emits them
             # (url_base is always absolute http(s), so they can't match it).
@@ -3784,7 +3791,7 @@ Examples (echo → action_prompt: ""):
                         completion_tokens += res.completion_tokens
                         cost += res.cost
                     if res and res.url and not res.error:
-                        drawn[it["id"]] = (it["caption"], res.url.rsplit("/", 1)[-1])
+                        drawn[it["id"]] = (it["caption"], self._page_image_ref(res.url))
                     else:
                         self.log.warning(
                             "storybook: image id=%s failed (error=%s)",
@@ -5252,8 +5259,138 @@ Examples (echo → action_prompt: ""):
             self.log.debug("PNG→JPEG conversion failed, keeping PNG")
             return image_bytes, "png"
 
+    # Ceiling advertised by the reference host (paste.boxlabs.uk/img/). Bigger
+    # images go straight to local storage instead of burning an upload attempt.
+    _IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+    _IMAGE_MIME_TYPES = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+        "gif": "image/gif",
+    }
+
+    def _image_upload_base(self) -> str:
+        """Origin of the configured external image host, or "" when uploads are off.
+
+        The whole origin rather than the endpoint path: a host is free to file
+        uploads somewhere other than the directory you POST to.
+        """
+        from urllib.parse import urlparse
+
+        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
+        if not endpoint or not validate_external_url(endpoint):
+            return ""
+        # validate_external_url guarantees an http(s) scheme and a hostname.
+        parsed = urlparse(endpoint)
+        return f"{parsed.scheme}://{parsed.netloc}/"
+
+    def _upload_image_bytes(self, image_bytes: bytes, extension: str) -> str | None:
+        """Upload image bytes to the external host in ``imageUploadUrl``.
+
+        Sends a multipart POST on the ``images[]`` field and reads the public URL
+        out of the JSON reply. Returns None for every failure mode — uploads
+        disabled, unsafe endpoint, oversize image, network error, rejected or
+        untrustworthy reply — so callers silently fall back to local storage.
+
+        The reply comes from a third party and is untrusted: only an image URL on
+        the configured host is accepted.
+        """
+        import urllib.request
+        from urllib.parse import urljoin, urlparse
+
+        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
+        if not endpoint:
+            return None
+        if not validate_external_url(endpoint):
+            self.log.warning("imageUploadUrl is not a safe http(s) URL; storing image locally")
+            return None
+        if len(image_bytes) > self._IMAGE_UPLOAD_MAX_BYTES:
+            self.log.info(
+                "Image is %d bytes, over the %d upload limit; storing locally",
+                len(image_bytes),
+                self._IMAGE_UPLOAD_MAX_BYTES,
+            )
+            return None
+
+        boundary = f"----VibeBot{uuid.uuid4().hex}"
+        filename = f"img_{uuid.uuid4().hex[:16]}.{extension}"
+        mime = self._IMAGE_MIME_TYPES.get(extension, "application/octet-stream")
+        body = b"".join(
+            [
+                f"--{boundary}\r\n".encode(),
+                b'Content-Disposition: form-data; name="strip_exif"\r\n\r\n1\r\n',
+                f"--{boundary}\r\n".encode(),
+                (
+                    f'Content-Disposition: form-data; name="images[]"; filename="{filename}"\r\n'
+                    f"Content-Type: {mime}\r\n\r\n"
+                ).encode(),
+                image_bytes,
+                f"\r\n--{boundary}--\r\n".encode(),
+            ]
+        )
+
+        # Same policy as provider-image downloads: a 3xx could point anywhere, so
+        # fail closed rather than follow it.
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect())
+        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "VibeBot/8",
+            },
+        )
+
+        try:
+            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+                payload = json.loads(resp.read(64 * 1024).decode("utf-8", "replace"))
+        except Exception as e:
+            self.log.warning("Image upload to %s failed: %s", endpoint[:200], e)
+            return None
+
+        results = payload.get("results") if isinstance(payload, dict) else None
+        first = results[0] if isinstance(results, list) and results else None
+        if not isinstance(first, dict) or not first.get("success"):
+            reason = first.get("error") if isinstance(first, dict) else "no result in reply"
+            self.log.warning("Image upload rejected by %s: %s", endpoint[:200], reason)
+            return None
+
+        file_path = first.get("filePath")
+        if not isinstance(file_path, str) or not file_path:
+            self.log.warning("Image upload reply had no filePath")
+            return None
+
+        url = urljoin(endpoint, file_path)
+        parsed = urlparse(url)
+        valid_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+        if (
+            parsed.scheme not in ("http", "https")
+            or parsed.hostname != urlparse(endpoint).hostname
+            or ".." in parsed.path
+            or not parsed.path.lower().endswith(valid_extensions)
+        ):
+            self.log.warning("Image upload returned an untrusted URL; storing locally")
+            return None
+        return url
+
+    def _page_image_ref(self, url: str) -> str:
+        """Reference to embed in a generated page: a bare filename for images we
+        host next to the page, the absolute URL for externally-hosted ones."""
+        _, url_base = self.get_http_paths()
+        return url.rsplit("/", 1)[-1] if url.startswith(url_base.rstrip("/") + "/") else url
+
     def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
-        """Save raw image bytes to HTTP server and return public URL.
+        """Save raw image bytes and return their public URL.
+
+        Uploads to ``imageUploadUrl`` when configured, otherwise (and on any
+        upload failure) writes to the local HTTP root.
 
         Args:
             image_bytes: Raw image bytes
@@ -5270,6 +5407,10 @@ Examples (echo → action_prompt: ""):
         # Convert PNG to JPEG for smaller file size
         if extension == "png":
             image_bytes, extension = self._convert_png_to_jpeg(image_bytes)
+
+        uploaded = self._upload_image_bytes(image_bytes, extension)
+        if uploaded:
+            return uploaded
 
         http_root, url_base = self.get_http_paths()
 

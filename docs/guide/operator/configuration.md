@@ -129,10 +129,25 @@ Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{ti
 |---------|-------|---------|-------------|
 | `httpRoot` | global | empty | Filesystem path for output files. Empty uses Limnoria's built-in HTTP server |
 | `httpUrlBase` | global | empty | Public base URL for output files. Empty uses Limnoria's public URL plus `/llm/` |
+| `imageUploadUrl` | global | empty | External image host for generated images. Empty stores them locally |
 | `helpUrl` | global | `https://rdrake.github.io/vibebot-v8/` | URL shown in help output |
 | `longReplyTeaserMaxChars` | channel | `220` | Characters in the one-line teaser for long replies saved as HTML |
 | `fileCleanupAge` | global | `720` | Delete output files older than this many hours (30 days) |
 | `fileCleanupMax` | global | `1000` | Cap on files kept in the output directory |
+
+### Offloading images to an external host
+
+Set `imageUploadUrl` to an uploader that takes a multipart `POST` on the `images[]` field and answers with JSON:
+
+```json
+{"results": [{"success": true, "filePath": "/img/img_abc123.png"}]}
+```
+
+Generated images then live on that host instead of under `httpRoot`, and storybook pages embed the absolute URL. Pages themselves (answers, code, stories) still come from your own HTTP server, so this offloads bandwidth rather than replacing it.
+
+Every failure falls back to local storage: endpoint unreachable, upload rejected, image over 10 MB, or a reply naming a URL that is not an image on the configured host. An outage costs a slower draw, nothing more.
+
+[paste.boxlabs.uk/img/](https://paste.boxlabs.uk/img/) is Eck's uploader, the host this contract follows, and it needs no key. Ask the operator before you point the bot at somebody else's host.
 
 ## Limnoria tool bridge
 

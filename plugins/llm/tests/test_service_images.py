@@ -1339,3 +1339,196 @@ class TestRetryImage:
 
         assert result.status == "failed_terminal"
         assert "blocked" in result.reason
+
+
+class TestExternalImageUpload:
+    """Tests for uploading generated images to an external host (imageUploadUrl)."""
+
+    UPLOAD_URL = "https://paste.example.com/img/"
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture, tmp_path) -> None:
+        """Set up a service whose images upload to an external host."""
+        self.mocker = mocker
+        self.tmp_path = tmp_path
+        self.service, self.mock_plugin = make_service(
+            httpRoot=str(tmp_path),
+            httpUrlBase="https://example.com/llm",
+            imageUploadUrl=self.UPLOAD_URL,
+            drawTimeout=60,
+            timeout=30,
+        )
+
+    def _mock_upload_reply(self, payload: str) -> Mock:
+        """Patch the opener so an upload POST returns ``payload``."""
+        mock_resp = self.mocker.Mock()
+        mock_resp.read.return_value = payload.encode()
+        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
+        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
+
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.return_value = mock_resp
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
+        return mock_opener
+
+    def _local_files(self) -> list[str]:
+        """Names of image files written to the local HTTP root."""
+        return [p.name for p in self.tmp_path.iterdir()]
+
+    def test_upload_success_returns_remote_url(self) -> None:
+        """GIVEN the host accepts the image WHEN saving THEN returns its URL and writes nothing locally."""
+        self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "/img/img_abc123.png"}]}'
+        )
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result == "https://paste.example.com/img/img_abc123.png"
+        assert self._local_files() == []
+
+    def test_upload_posts_multipart_images_field(self) -> None:
+        """GIVEN an image WHEN uploading THEN posts multipart on the images[] field."""
+        mock_opener = self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "/img/x.png"}]}'
+        )
+
+        self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        req = mock_opener.open.call_args[0][0]
+        assert req.full_url == self.UPLOAD_URL
+        assert req.get_header("Content-type").startswith("multipart/form-data; boundary=")
+        assert b'name="images[]"' in req.data
+        assert b'name="strip_exif"' in req.data
+        assert b"\x89PNG\r\n\x1a\nfake image data" in req.data
+
+    def test_upload_rejected_falls_back_to_local(self) -> None:
+        """GIVEN the host rejects the upload WHEN saving THEN falls back to local storage."""
+        self._mock_upload_reply('{"results": [{"success": false, "error": "Unsupported type"}]}')
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result is not None
+        assert result.startswith("https://example.com/llm/img_")
+        assert len(self._local_files()) == 1
+
+    def test_upload_network_error_falls_back_to_local(self) -> None:
+        """GIVEN the host is unreachable WHEN saving THEN falls back to local storage."""
+        import urllib.error
+
+        mock_opener = self.mocker.Mock()
+        mock_opener.open.side_effect = urllib.error.URLError("connection refused")
+        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_upload_reply_on_other_host_rejected(self) -> None:
+        """GIVEN the reply points at another host WHEN saving THEN the URL is not used."""
+        self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "https://evil.example.net/x.png"}]}'
+        )
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_upload_reply_with_non_image_path_rejected(self) -> None:
+        """GIVEN the reply names a non-image path WHEN saving THEN the URL is not used."""
+        self._mock_upload_reply('{"results": [{"success": true, "filePath": "/img/payload.html"}]}')
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_upload_malformed_reply_falls_back_to_local(self) -> None:
+        """GIVEN the host replies with garbage WHEN saving THEN falls back to local storage."""
+        self._mock_upload_reply("not json at all")
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_oversize_image_skips_upload(self) -> None:
+        """GIVEN an image over the upload limit WHEN saving THEN no request is made."""
+        mock_opener = self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "/img/x.png"}]}'
+        )
+        huge = b"\x89PNG\r\n\x1a\n" + b"x" * (10 * 1024 * 1024)
+
+        result = self.service._save_image_bytes(huge)
+
+        mock_opener.open.assert_not_called()
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_unsafe_endpoint_skips_upload(self) -> None:
+        """GIVEN a non-http upload endpoint WHEN saving THEN no request is made."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(self.tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+                "imageUploadUrl": "file:///etc/passwd",
+            }.get(key, "")
+        )
+        mock_opener = self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "/img/x.png"}]}'
+        )
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        mock_opener.open.assert_not_called()
+        assert result.startswith("https://example.com/llm/img_")
+
+    def test_uploads_disabled_stores_locally(self) -> None:
+        """GIVEN imageUploadUrl is empty WHEN saving THEN stores locally without a request."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpRoot": str(self.tmp_path),
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key, "")
+        )
+        mock_opener = self._mock_upload_reply(
+            '{"results": [{"success": true, "filePath": "/img/x.png"}]}'
+        )
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        mock_opener.open.assert_not_called()
+        assert result.startswith("https://example.com/llm/img_")
+
+    # --- page embedding ---
+
+    def test_page_image_ref_keeps_remote_url_absolute(self) -> None:
+        """GIVEN an externally-hosted image WHEN embedding THEN keeps the absolute URL."""
+        url = "https://paste.example.com/img/img_abc.png"
+
+        assert self.service._page_image_ref(url) == url
+
+    def test_page_image_ref_shortens_local_url(self) -> None:
+        """GIVEN a locally-hosted image WHEN embedding THEN uses the bare filename."""
+        assert self.service._page_image_ref("https://example.com/llm/img_abc.png") == "img_abc.png"
+
+    def test_restrict_img_srcs_allows_upload_host(self) -> None:
+        """GIVEN images on the upload host WHEN rendering a page THEN they survive."""
+        html = (
+            '<img src="https://paste.example.com/img/img_abc.png">'
+            '<img src="img_local.png">'
+            '<img src="https://tracker.example.net/pixel.png">'
+        )
+
+        out = self.service._restrict_img_srcs(html, "https://example.com/llm")
+
+        assert "paste.example.com/img/img_abc.png" in out
+        assert "img_local.png" in out
+        assert "tracker.example.net" not in out
+
+    def test_restrict_img_srcs_drops_upload_host_when_disabled(self) -> None:
+        """GIVEN uploads are off WHEN rendering a page THEN foreign-host images are dropped."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: {
+                "httpUrlBase": "https://example.com/llm",
+            }.get(key, "")
+        )
+        html = '<img src="https://paste.example.com/img/img_abc.png">'
+
+        assert self.service._restrict_img_srcs(html, "https://example.com/llm") == ""
