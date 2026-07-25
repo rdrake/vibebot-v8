@@ -642,6 +642,69 @@ class TestInvalidCommand:
         # Positional args: (irc, msg, text, preflight).
         assert plugin._ask_impl.call_args.args[2] == "what model are you running?"
 
+    def test_ooc_message_does_not_fire_ambient_storybook(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an OOC-marked illustrate request on a verse channel WHEN
+        dispatched THEN no storybook is submitted — the // marker means "skip
+        the verse engine", so it must suppress the image path too, not just
+        roleplay.
+
+        Regression: the caller stripped the marker and then handed the cleaned
+        text to _ambient_storybook_brief, so `// illustrate the lads` spent a
+        whole illustrated storybook despite the opt-out."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else 8
+        )
+        plugin._verse_route_for = mocker.MagicMock(return_value=None)
+        plugin._ask_impl = mocker.MagicMock()
+        plugin._ambient_storybook_brief = mocker.MagicMock(return_value="brief")
+        plugin._submit_storybook_job = mocker.MagicMock()
+        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account="forest")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc,
+            mock_msg,
+            "// illustrate the stinky lads",
+            preflight,
+            entry_route="addressed",
+        )
+
+        plugin._submit_storybook_job.assert_not_called()
+        plugin._ambient_storybook_brief.assert_not_called()
+        # Still answered, with the marker stripped.
+        plugin._ask_impl.assert_called_once()
+        assert plugin._ask_impl.call_args.args[2] == "illustrate the stinky lads"
+
+    def test_ooc_message_does_not_fire_ambient_inline_story(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an OOC-marked canon mention WHEN dispatched THEN the ambient
+        inline-story promotion is skipped entirely — the opt-out short-circuits
+        before the verse store lookup, not after it."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: True if key == "verseEnabled" else 8
+        )
+        plugin._verse_route_for = mocker.MagicMock(return_value=None)
+        plugin._ask_impl = mocker.MagicMock()
+        plugin._ambient_inline_story = mocker.MagicMock(return_value=True)
+        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account="forest")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc,
+            mock_msg,
+            "((what have the stinky lads been up to))",
+            preflight,
+            entry_route="addressed",
+        )
+
+        plugin._ambient_inline_story.assert_not_called()
+        assert plugin._verse_route_for.call_args.kwargs["force_roleplay"] is False
+
     def test_invalid_command_does_not_call_meta(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:

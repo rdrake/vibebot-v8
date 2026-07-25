@@ -1991,6 +1991,37 @@ class TestRateLimiter:
             plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
         assert plugin._is_rate_limited("draw", "bob", now, tier="registered") is False
 
+    def test_disabled_tier_does_not_accumulate_bucket(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN a tier whose limit is 0 (disabled — e.g. the default
+        codeTrustedRateLimitCount) WHEN requests flow through _check_rate_limit
+        THEN nothing accumulates in _rate_buckets.
+
+        Regression: _is_rate_limited returns before its eviction pass when the
+        count is 0, but _check_rate_limit still recorded every hit — so a
+        disabled tier grew an unbounded deque of timestamps that nothing ever
+        pruned, for the life of the process."""
+        mock_irc = mocker.MagicMock()
+        for i in range(50):
+            mocker.patch("time.time", return_value=1000.0 + i)
+            blocked = plugin._check_rate_limit(
+                mock_irc, "code", "alice", "alice", "#test", "prompt", tier="trusted"
+            )
+            assert blocked is False
+
+        assert "code:alice" not in plugin._rate_buckets
+
+    def test_disabled_tier_drops_leftover_bucket(self, plugin) -> None:
+        """GIVEN a bucket left over from when the tier was limited WHEN the tier
+        is checked with the limit now 0 THEN the stale bucket is dropped rather
+        than left in memory unpruned."""
+        now = 1000.0
+        for i in range(5):
+            plugin._record_rate_limit_hit("code", "alice", now - 10 + i)
+        assert "code:alice" in plugin._rate_buckets
+
+        assert plugin._is_rate_limited("code", "alice", now, tier="trusted") is False
+        assert "code:alice" not in plugin._rate_buckets
+
     def test_check_rate_limit_blocks_when_enforced(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN enforce=True and over limit WHEN _check_rate_limit THEN blocks and logs."""
         mock_irc = mocker.MagicMock()

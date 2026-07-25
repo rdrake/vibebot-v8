@@ -3694,14 +3694,19 @@ class LLM(callbacks.Plugin):
             True if the user has exceeded the rate limit.
         """
         max_count, window = self._get_tier_limits(command, tier)
+        key = f"{command}:{account}"
 
-        # count=0 means rate limiting is disabled for this tier
+        # count=0 means rate limiting is disabled for this tier. Drop any bucket
+        # left over from a non-zero setting (or from a caller that recorded
+        # before the limit was turned off) — nothing below this point ever
+        # prunes it while the tier is disabled, so it would grow unbounded.
         if max_count == 0:
+            with self._rate_buckets_lock:
+                self._rate_buckets.pop(key, None)
             return False
 
         cutoff = now - window
 
-        key = f"{command}:{account}"
         with self._rate_buckets_lock:
             bucket = self._rate_buckets.get(key)
             if bucket is None:
@@ -3786,7 +3791,10 @@ class LLM(callbacks.Plugin):
         over_limit = self._is_rate_limited(command, account, now, tier=tier)
 
         # Record the hit so the window tracks correctly (unless peeking).
-        if record:
+        # Skipped when the tier's limit is disabled (count 0 — e.g. the default
+        # codeTrustedRateLimitCount): there is no window to track, and the entry
+        # would sit in _rate_buckets unpruned for the life of the process.
+        if record and self._get_tier_limits(command, tier)[0] > 0:
             self._record_rate_limit_hit(command, account, now)
 
         if not over_limit:
@@ -4377,6 +4385,15 @@ class LLM(callbacks.Plugin):
                 and self._roleplay_sticky_active(preflight)
             ):
                 force_roleplay = True
+            # OOC opt-out (((like this)) or a leading //) means "skip the verse
+            # engine for this message". _verse_route_for enforces that for
+            # roleplay, but the two ambient OUTPUT paths below run before/around
+            # it, so they have to honour the marker themselves — otherwise
+            # `// illustrate the lads` still spends a whole storybook. Gated on
+            # verseEnabled because these markers only carry OOC meaning on a
+            # verse channel; elsewhere they are ordinary text.
+            verse_enabled = self.registryValue("verseEnabled", preflight.channel)
+            ooc = bool(verse_enabled and is_ooc(text))
             # Prose-first ambient story, the DEFAULT for a canon mention: any
             # message that references canon becomes a multi-paragraph INLINE
             # tale in the avatar's voice (the verse completion) — no image,
@@ -4385,6 +4402,7 @@ class LLM(callbacks.Plugin):
             # keeps its own path (image / storybook), both canon-grounded.
             if (
                 not force_roleplay
+                and not ooc
                 and entry_route in _AMBIENT_ENTRY_ROUTES
                 and self._ambient_inline_story(preflight, text)
             ):
@@ -4398,23 +4416,18 @@ class LLM(callbacks.Plugin):
                 force_roleplay=force_roleplay,
             )
             if route is None:
-                verse_enabled = self.registryValue("verseEnabled", preflight.channel)
-                # OOC opt-out (((like this)) or a leading //): _verse_route_for
-                # returns None for an avatar-holder who marked a message to skip
-                # the verse engine. Strip the marker here so the chat model
-                # receives a clean prompt instead of the literal ((...)) / //.
-                # Gated on verseEnabled because these markers only carry OOC
-                # meaning on a verse channel — elsewhere they are ordinary text.
-                if verse_enabled and is_ooc(text):
+                # Strip the OOC marker so the chat model receives a clean prompt
+                # instead of the literal ((...)) / //.
+                if ooc:
                     text = strip_ooc(text)
                 # Explicit "illustrate"/comic mention → grounded illustrated
                 # STORYBOOK (an image page). Only for "just talk" turns (not
-                # @ask/@rp) that ask to be illustrated, reference canon, and pass
-                # the @story spend gates. Every other canon mention became an
-                # inline prose tale above (force_roleplay); a draw request
-                # returns None here and falls through to chat (drawn), still
-                # verse-grounded.
-                if verse_enabled and entry_route in _AMBIENT_ENTRY_ROUTES:
+                # @ask/@rp) that ask to be illustrated, reference canon, are not
+                # OOC-opted-out, and pass the @story spend gates. Every other
+                # canon mention became an inline prose tale above
+                # (force_roleplay); a draw request returns None here and falls
+                # through to chat (drawn), still verse-grounded.
+                if verse_enabled and not ooc and entry_route in _AMBIENT_ENTRY_ROUTES:
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:
                         persona = self.db.get_avatar_persona(preflight.nick) or ""
