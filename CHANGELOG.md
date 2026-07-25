@@ -8,6 +8,18 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Ambient narrative → inline prose tale, not image storybook (`verse`)
+- Remediate 6 verified findings from comprehensive review
+- Trigger word grounds; output follows intent (restore narrative→story) (`verse`)
+- Ground story generator in verse canon roster (`storybook`)
+- Resolve codebase review findings (rate limits, avatar takeover, compaction, misc)
+- Retain stripped replies for retry detection (`assistant`)
+- Break self-repetition loop in chat replies (`assistant`)
+- Command-layer divergence sweep (`plugin`)
+- Unify nick casing, migrate memory family on identify (v17) (`persistence`)
+- Stability-sort context blocks, send documented prompt_cache_key (`cache`)
+- Opt-in corrupt-row tolerance, model-proof actors cap, misc correctness (`verse`)
+- Account @story spend, deliver PM results, gate verse side-write (`story`)
 - Inject minute-granular UTC time into speaker message (`assistant`)
 - Drop shared channel window from verse turns (`verse`)
 - Case-insensitive reaction matching + close test gaps (`verse`)
@@ -294,6 +306,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Assistant/config/infra polish
+- Ghost-label, dead-code, and stale-doc sweep
 - Consolidate uv lock bumps (aiohttp, litellm, hypothesis, pytest, ruff, ty) (`deps`)
 - Log event id on corrupt-blob skip in purge; docstring/constant polish (`verse`)
 - Remove 14 loom-family registry keys (`config`)
@@ -337,6 +351,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Dependencies
 
+- Consolidated dependency upgrade via uv lock --upgrade
 - Consolidate Dependabot bumps into one re-lock (#67-#71)
 - Bump the dev-tools group with 2 updates (#63)
 - Add python-dateutil as direct runtime dep (`llm`)
@@ -354,6 +369,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Verse canon-layer design (decouple retrieval from roleplay mode)
+- Design preserved repeat detection history
+- Full documentation revamp for accuracy, organization, and style
 - Codex red-team fix — tag was_verse on 4281 (generate_image) (`verse`)
 - Apply red-team corrections to reaction-signal plan (`verse`)
 - Implementation plan for reaction-signal instrument (`verse`)
@@ -486,6 +504,20 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Optional external image host (thanks Eck for paste.boxlabs.uk) (`images`)
+- Any canon mention is a story — stop guessing reply length (`verse`)
+- Straight answers for real-world questions, tales for canon (`verse`)
+- Demand longer scenes — concrete 6-paragraph / 600-900 word floor (`verse`)
+- Lift verse output cap 2000 → 3000 tokens (`verse`)
+- Prose-first ambient stories, intent routing, dedup guard (`verse`)
+- Ground the explicit @draw command in canon (`verse`)
+- Slice 3 — sticky @rp roleplay (restores ambient feel) (`verse`)
+- Slice 2 — chat-path canon recording (flag-gated, default off) (`verse`)
+- Slice 1 — canon layer read-injection + @rp roleplay door (`verse`)
+- Cap style prefix; ground story in recent channel scene (`storybook`)
+- One model-authored style anchor for consistent illustrations (`storybook`)
+- Gate pending-task tools per channel, story theme for verse pastes (`assistant`)
+- Split page themes — storybook for stories, plain for code/answers (`http`)
 - Full scene on every verse turn, drop aside carve-out (`verse`)
 - Gate verse triggering on entity refs or keyword regex (`verse`)
 - DoTagmsg inbound reaction capture -> reactions.jsonl (`verse`)
@@ -852,6 +884,10 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Drop redundant get_instruction tool (`assistant`)
+- Consolidate long-reply finishing and action-fire plumbing
+- Collapse inline pairs, heartbeat/lookup fixes, look/recall payloads (`verse`)
+- Unify SSRF validators, inject bridge guidance per-request (`service`)
 - Delete dead store proposal helpers + bump_last_seen_ts (`verse`)
 - Remove loom-moderation commands (verseproposals/verseapprove/versereject) (`verse`)
 - Remove loom lifecycle wiring, _PluginLoomBridge, crosspoll plumbing from plugin (`verse`)
@@ -950,6 +986,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- Pin retry anchor exclusions (`assistant`)
+- Mock migrate_user_data default alongside its siblings
 - Pin thin-sample OR, win-truncation boundary, distinct-date active_days (`verse`)
 - Cover taste_mine detector branches (`verse`)
 - Cover Scene:/bullet-prefix exemplar forgery drops (`verse`)
