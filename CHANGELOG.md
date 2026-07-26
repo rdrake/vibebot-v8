@@ -8,6 +8,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Make the cache diagnostics answer the question they were added for (`cache`)
+- Wire-structural bytes reached IRC; one raising tool handler killed the turn
+- OOC opt-out leaked into the storybook; disabled rate tiers leaked memory
 - Ambient narrative → inline prose tale, not image storybook (`verse`)
 - Remediate 6 verified findings from comprehensive review
 - Trigger word grounds; output follows intent (restore narrative→story) (`verse`)
@@ -369,6 +372,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Correct @verse/@rp drift in the routing docstrings (`verse`)
+- Resync the guide with the canon-layer codebase
 - Verse canon-layer design (decouple retrieval from roleplay mode)
 - Design preserved repeat detection history
 - Full documentation revamp for accuracy, organization, and style
@@ -1086,6 +1091,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Changelog
 
+- External image host + recent verse work
 - Verse_record + auto-NPC aging
 
 ### Config
