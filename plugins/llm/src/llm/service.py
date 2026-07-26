@@ -243,6 +243,103 @@ def _strip_verse_denials(
     return _strip_assistant_turns(history, _is_verse_denial)
 
 
+# Safety-refusal guard (all routes). Sibling of the verse denial guard above,
+# aimed at a different failure: not "that never happened" (breaking fiction
+# frame) but "I can't help with that" — a policy-shaped refusal of a request
+# that is in bounds for the channel. Grok's non-reasoning variants over-refuse
+# crude and dark material that the channel overlay explicitly invites, and the
+# refusal then POISONS the thread: left in history it becomes the in-context
+# exemplar and the next turn refuses too, exactly like the verse denials did.
+# So: detect, nudge, retry once, and strip past refusals every turn.
+#
+# The detector is deliberately narrow. It matches refusal verbs only when they
+# carry a COMPLIANCE complement ("can't help with", "won't write"), never a
+# bare "can't". An honest capability answer — "I can't find that in the logs",
+# "I don't have access to uptime data" — must survive untouched: retrying it
+# would punish the model for admitting a gap and push it toward inventing an
+# answer instead, which is a worse failure than the refusal.
+_MAX_SAFETY_REFUSAL_RETRIES = 1
+# The nudge targets PRISSINESS, not judgement. Measured against 14k real bot
+# lines, the refusals split into "that's rude/vulgar/grim" (the complaint —
+# retry those) and substantive ones (meth synthesis, malware, sexual imagery of
+# real people). Telling the model "the request is in bounds" would lean on both;
+# telling it that distaste alone is not a reason here, and that a substantive
+# refusal must lose the sermon, fixes the first without touching the second.
+_SAFETY_REFUSAL_RETRY_NUDGE = (
+    "Stop — that reply declined or moralised at the user. This channel's "
+    "register is crude, profane, and dark by design: 'that is rude, vulgar, "
+    "or grim' is not a reason to refuse here. If that is all that stopped "
+    "you, answer it properly, in voice, with no disclaimer, no content "
+    "warning, and no lecture about the request. If you are declining for a "
+    "substantive reason rather than mere distaste, keep the refusal — but "
+    "make it one short line and nothing else."
+)
+_SAFETY_REFUSAL_PATTERNS = re.compile(
+    # Refusal verb + compliance complement. "find"/"see"/"reach"/"remember"
+    # are deliberately absent: those are honest answers, not refusals.
+    r"i (?:can'?t|cannot|can not|won'?t|will not|am unable to|'m unable to) "
+    r"(?:help (?:you )?with|assist(?: you)? with|comply|engage|do that|write|"
+    r"generate|create|produce|participate|go along|continue with|fulfill|fulfil)"
+    # Explicit declines.
+    r"|i (?:must|have to|need to|'ll|will) (?:decline|refuse|pass on that)"
+    r"|i'?m not (?:comfortable|willing)"
+    r"|i'?m sorry,? but i (?:can'?t|cannot|won'?t|will not)"
+    r"|i'?d rather not"
+    # Policy boilerplate.
+    r"|(?:content|safety|usage|community) (?:polic|guideline)"
+    r"|(?:that|this|it)'?s (?:not appropriate|inappropriate)"
+    r"|i don'?t (?:think|feel) (?:that )?(?:i should|it'?s appropriate)"
+    # AI-identity boilerplate, but ONLY when it leads into a refusal in the
+    # same sentence. Bare "I'm an AI assistant, while LarryBot is a normal
+    # bot" and "I'm an AI, so I don't have a digestive system" are factual,
+    # often funny, answers — flagging those was a measured false positive.
+    r"|(?:as an ai|as a language model|i'?m an ai)"
+    r"[^.!?]{0,80}?(?:can'?t|cannot|won'?t|will not|decline|refuse|unable)",
+    re.IGNORECASE,
+)
+# Image-generation refusals are excluded: they come from the image provider's
+# own filter (or are a legitimate error, e.g. "the tool requires an
+# authenticated account"), and this guard only re-rolls the TEXT completion, so
+# a retry cannot change the outcome — it would just burn a call. 19 of the 43
+# historical hits were these.
+_IMAGE_GENERATION_REFUSAL_RE = re.compile(
+    r"\b(?:generate|create|produce|render|draw|make)\b[^.!?]{0,40}?"
+    r"\b(?:image|images|picture|pictures|ascii art|diagram|diagrams)\b",
+    re.IGNORECASE,
+)
+# Same rationale as _VERSE_DENIAL_OPENING_CHARS: refusals are front-loaded, so
+# scanning only the opening avoids flagging a real reply that uses one of these
+# phrases in passing (in dialogue, or quoting someone) further down.
+_SAFETY_REFUSAL_OPENING_CHARS = 240
+
+
+def _is_safety_refusal(content: str) -> bool:
+    """Return True iff a reply refuses the request on policy grounds.
+
+    Narrow by design — see the note above ``_MAX_SAFETY_REFUSAL_RETRIES``.
+    An honest "I can't find it" is not a refusal and must return False.
+    """
+    if not content:
+        return False
+    opening = content[:_SAFETY_REFUSAL_OPENING_CHARS]
+    if _IMAGE_GENERATION_REFUSAL_RE.search(opening):
+        return False
+    return _SAFETY_REFUSAL_PATTERNS.search(opening) is not None
+
+
+def _strip_safety_refusals(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop the model's own past policy-refusals from history.
+
+    Mirrors :func:`_strip_verse_denials`. The retry guard stops a refusal
+    reaching the channel; this stops one that already did (or that slipped
+    the retry budget) from seeding the next turn via self-imitation. Only
+    assistant turns are considered, so a user quoting a refusal is kept.
+    """
+    return _strip_assistant_turns(history, _is_safety_refusal)
+
+
 # Quality-collapse guard. Distinct from the denial guard above (which is
 # verse-only): a non-reasoning model treats its own recent prose as the style
 # exemplar, so one degraded reply (a 200-word run-on, or text that loops the
@@ -4297,6 +4394,13 @@ Examples (echo → action_prompt: ""):
             # Denials and degraded turns are excluded before repetition
             # anchors are captured. Duplicate clusters remain anchors for the
             # in-loop retry guard, but are excluded from the model prompt.
+            #
+            # Policy-refusals are stripped on EVERY route, before the
+            # route-specific passes below: a refusal breeds refusals by
+            # self-imitation regardless of profile, and the channel window
+            # carries the bot's own lines too.
+            history = _strip_safety_refusals(history)
+            channel_history = _strip_safety_refusals(channel_history)
             if route_profile == PROFILE_VERSE:
                 history = _strip_verse_denials(history)
                 history = _strip_degraded(history)
@@ -4429,6 +4533,9 @@ Examples (echo → action_prompt: ""):
             # Count of verse premise-refusal retries spent this invocation
             # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
             verse_denial_retries = 0
+            # Count of policy-refusal retries spent this invocation (see
+            # _is_safety_refusal / _MAX_SAFETY_REFUSAL_RETRIES). All routes.
+            safety_refusal_retries = 0
             # Count of quality-collapse retries spent this invocation (see
             # _is_degraded_reply / _MAX_DEGRADED_RETRIES). All routes.
             degraded_retries = 0
@@ -4528,6 +4635,35 @@ Examples (echo → action_prompt: ""):
                         )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
+                        continue
+
+                    # Safety-refusal guard (all routes): a policy-shaped
+                    # refusal of a request the channel considers in bounds
+                    # ("I can't help with that", "I'm not comfortable
+                    # writing that"). Nudge with the channel context and
+                    # retry once; the corrected reply is delivered AND
+                    # stored, so the refusal neither reaches the channel nor
+                    # seeds the next turn. After the budget, fall through and
+                    # deliver the refusal — an honest no beats an error, and
+                    # the every-turn _strip_safety_refusals pass keeps it out
+                    # of future prompts regardless.
+                    if (
+                        _is_safety_refusal(content)
+                        and safety_refusal_retries < _MAX_SAFETY_REFUSAL_RETRIES
+                    ):
+                        safety_refusal_retries += 1
+                        self.log.warning(
+                            "assistant_completion: reply refused the request "
+                            "on policy grounds, nudging and retrying (%d/%d) "
+                            "model=%s channel=%s route=%s",
+                            safety_refusal_retries,
+                            _MAX_SAFETY_REFUSAL_RETRIES,
+                            model,
+                            channel,
+                            route_profile,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _SAFETY_REFUSAL_RETRY_NUDGE})
                         continue
 
                     # Quality-collapse guard (all routes): a reply that has
