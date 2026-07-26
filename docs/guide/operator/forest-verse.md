@@ -20,7 +20,7 @@ Three capabilities gate verse access:
 
 | Capability | Who needs it | What it unlocks |
 |------------|--------------|-----------------|
-| `llm.verse` | Regular users | `@verseopt`, `@verse`, `@look`, `@who`, and verse-routed messages |
+| `llm.verse` | Regular users | `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, and verse-routed messages |
 | `llm.verse.edit` | Canon editors | `@versedit`, `@canon`, and the model's `verse_edit` tool |
 | `llm.verse.gm` | Game moderators (GMs) | `@versedump`, `@versepurge`, `@versecompact` |
 
@@ -35,14 +35,45 @@ The `llm.verse.edit` capability is checked globally against the caller's account
 
 Without `llm.verse`, a user can still talk to the bot in a verse channel; their messages never route through the verse path.
 
-## When a message becomes a verse turn
+`@rp` has no rate-limit keys of its own; it draws on the `ask` bucket.
 
-A message from an opted-in avatar holder routes into the verse only when a verse signal is present. Two signals count:
+## The canon layer and roleplay mode
+
+Canon *retrieval* and roleplay *persona* are two separate things. Retrieval is cheap and happens on any canon mention; the in-character persona is entered explicitly.
+
+### The canon signal
+
+A message carries a canon signal when either of these holds:
 
 - **Entity reference.** The message names a known active entity other than the speaker's own avatar. Matching is whole-word and alias-aware.
-- **Trigger keyword.** The message matches `verseTriggerRegex`, a case-insensitive pattern with default `\bverse\b`. Set a channel-specific phrase to give users a deliberate entry cue. An empty value disables the keyword signal; a malformed pattern is ignored.
+- **Trigger keyword.** The message matches `verseTriggerRegex`, a case-insensitive pattern with default `\bverse\b`. Set a channel-specific phrase to give users a deliberate cue. An empty value disables the keyword signal; a malformed pattern is ignored.
 
-Messages without a signal fall through to normal chat. This keeps ordinary conversation from being narrated at.
+A canon signal pulls a compact facts block (roster, relations, recent events) into the turn. It does **not**, on its own, put the bot in character.
+
+### What a signalled message becomes
+
+The table covers *ambient* messages: the bot addressed by nick, or a bare `vibebot …` line. The `@ask` command is never ambient: it always takes the chat path, canon-grounded when the message signals canon.
+
+| Message | Result |
+|---------|--------|
+| `@rp <text>` | One in-character roleplay turn. Needs an avatar; without one it degrades to a canon-grounded chat reply |
+| Ambient, while `@rp on` is live | Roleplay turn, same as `@rp <text>` |
+| Ambient + canon signal + avatar, asking to *illustrate* (`illustrate`, `comic`, `storybook`, `with pictures`) | Illustrated storybook page, if the `@story` spend gates pass |
+| Ambient + canon signal, asking to *draw* (`draw`, `sketch`, `paint`, `picture of`) | Canon-grounded chat turn that draws a single image |
+| Ambient + canon signal + avatar, anything else, questions included | Multi-paragraph prose tale posted inline, in the avatar's voice. No image, no page |
+| Ambient + canon signal, no avatar | Ordinary chat reply, grounded in the canon facts |
+| Question-shaped message with no canon signal | Straight factual answer. The channel's tall-tale overlay is swapped out so real-world questions get real answers |
+| No canon signal | Ordinary chat |
+
+The inline prose tale is a one-shot promotion: it narrates this turn only and never arms sticky roleplay.
+
+### Sticky roleplay
+
+`@rp on` keeps a caller in character without prefixing every line. Ambient messages become roleplay turns until `@rp off`. The session is keyed by account, falling back to nick, and expires on a sliding `verseRoleplayStickyTtlSeconds` window (default 900 seconds, `0` never expires). Every in-character turn refreshes the window, so a session lapses only after silence. Sessions live in memory and are lost on restart.
+
+### Canon written from chat
+
+By default canon only grows during roleplay turns. Set `verseChatRecordEnabled` to let an opted-in avatar's ordinary chat turn call `verse_record` as well; the model is nudged to save only a genuinely new durable fact. Off by default because chat volume dwarfs roleplay volume, and canon pollution is hard to undo.
 
 ### Going out of character
 
@@ -53,13 +84,15 @@ Users bypass the verse for a single message by wrapping it in double parentheses
 // what's the weather tomorrow?
 ```
 
-The message takes the normal chat path and nothing is recorded to the verse. On verse-enabled channels the marker is stripped before the chat model sees the text.
+The message takes the normal chat path and nothing is recorded to the verse. On verse-enabled channels the marker is stripped before the chat model sees the text. The marker also suppresses the ambient prose tale and the storybook, so `// illustrate the lads` costs nothing.
 
 ## User commands
 
 | Command | Effect |
 |---------|--------|
 | `@verseopt in` / `@verseopt out` | Join the verse with a fresh avatar, or retire it. History is preserved; opting back in creates a new avatar |
+| `@rp <text>` | One in-character roleplay turn |
+| `@rp on` / `@rp off` | Enter or leave sticky roleplay mode |
 | `@verse` | One-line scene summary: where the action is and who is present |
 | `@look [target]` | Describe the current location, or a named entity |
 | `@who` | Roster of active avatars and their locations |
@@ -167,7 +200,9 @@ With `verseStorybookEnabled` on, verse turns gain a `verse_storybook` tool that 
 
 The `@story <brief>` command generates the same illustrated page on request, in two prompt-inferred modes: a story mode for in-character tales and an explainer mode for accurate illustrated explanations. `@story` requires the `llm.draw` capability and an authenticated account, and it works outside verse mode.
 
-Cost controls: `verseStorybookMaxImages` (default 5), `verseStorybookMaxPerTurn` (1), `verseStorybookCooldownSeconds` (300, per account, shared between the tool and `@story`), `verseStorybookDailyImageCap` (30), `verseStorybookMaxChars` (6000), and `verseStorybookImageTimeout` (45 seconds). Illustrations render concurrently; the page is published through the bot's HTTP output.
+The storybook is reserved for pictures people asked for. A plain canon mention produces an inline prose tale instead, so an illustrated page only comes from `@story`, the `verse_storybook` tool, or an ambient mention that carries an explicit illustrate cue.
+
+Cost controls: `verseStorybookMaxImages` (default 5), `verseStorybookMaxPerTurn` (1), `verseStorybookCooldownSeconds` (300, per account, shared between the tool and `@story`), `verseStorybookDailyImageCap` (30), `verseStorybookMaxChars` (6000), and `verseStorybookImageTimeout` (45 seconds). `verseStoryAmbientMaxImages` (default 1) is the tighter budget for a briefer that reaches the storybook without an explicit illustrate cue. Illustrations render concurrently; the page is published through the bot's HTTP output.
 
 ## GM operations
 

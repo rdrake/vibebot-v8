@@ -38,10 +38,12 @@ A count of `0` blocks nothing; it disables the limit for that command and tier. 
 |---------|------------|---------|--------------|
 | `ask` | 15 per 60 s | 15 per 60 s | 15 per 60 s |
 | `code` | 10 per 60 s | Unlimited | 2 per 60 s |
-| `draw` | 2 per 300 s | 5 per 60 s | Blocked |
-| `story` | 2 per 300 s | 5 per 60 s | Blocked |
+| `draw` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
+| `story` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
 
-`draw` and `story` also require an authenticated account regardless of tier, so image generation is always attributable.
+`draw` and `story` also require an authenticated account regardless of tier, so image generation is always attributable and the unregistered tier is unreachable in practice. It stays a small positive number rather than `0`, because `0` means "no limit" and would hand accountless users unlimited access to the most expensive command.
+
+`@rp` has no keys of its own; it draws on the `ask` bucket.
 
 ## Security
 
@@ -54,7 +56,7 @@ Each command surface requires a Limnoria capability:
 | `llm.ask` | `@ask` and general assistant tool access |
 | `llm.code` | `@code` and the code-generation tool |
 | `llm.draw` | `@draw`, `@story`, and the image-generation tool |
-| `llm.verse` | Verse participation: `@verseopt`, `@verse`, `@look`, `@who` |
+| `llm.verse` | Verse participation: `@verseopt`, `@rp`, `@verse`, `@look`, `@who` |
 | `llm.verse.edit` | Canon editing: `@versedit`, `@canon`, the `verse_edit` tool |
 | `llm.verse.gm` | Game-moderator (GM) operations: `@versedump`, `@versepurge`, `@versecompact` |
 

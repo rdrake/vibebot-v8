@@ -48,7 +48,7 @@ Set API keys from IRC (values stay private):
 | `@remind [text \| list \| del \| clear]` | Set and manage reminders |
 | `@usage [nick \| #channel]` | View API usage statistics |
 
-Verse channels add more: `@verseopt`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot-v8/reference/commands/) covers the full list.
+Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot-v8/reference/commands/) covers the full list.
 
 ## Configuration
 

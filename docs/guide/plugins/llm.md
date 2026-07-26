@@ -15,7 +15,7 @@ tools.
 | Memory | `@forget`, `@memories`, `@instruct` | Volatile context, durable facts, persistent instructions. |
 | Reminders | `@remind` | Natural-language reminders with recurring support. |
 | Accounting | `@usage` | Per-account and per-channel API usage. |
-| Verse (user) | `@verseopt`, `@verse`, `@look`, `@who`, `@avatar` | Opt in, inspect the scene, set a persona. |
+| Verse (user) | `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar` | Opt in, roleplay, inspect the scene, set a persona. |
 | Verse (editor) | `@canon`, `@versedit` | Curate durable canon. Requires `llm.verse.edit`. |
 | Verse (GM) | `@versedump`, `@versepurge`, `@versecompact` | Inspect, wipe, and compact a channel's verse. Requires `llm.verse.gm`. |
 
@@ -40,6 +40,8 @@ plugins/llm/src/llm/
 ├── plugin.py          # IRC command surface + Limnoria glue
 ├── service.py         # LiteLLM calls, sanitization, output shaping
 ├── assistant.py       # Tool-using chat profile (function calling)
+├── profile.py         # Route profiles: which tools each entry point sees
+├── prompts.py         # Shared system-prompt fragments
 ├── executor.py        # LLMExecutor: global concurrency cap
 ├── persistence.py     # SQLite store (memories, reminders, schedules, usage)
 ├── limnoria_bridge.py # Allowlisted "Limnoria as tools" surface

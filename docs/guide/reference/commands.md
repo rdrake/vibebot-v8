@@ -140,10 +140,29 @@ the caller to hold the `llm.verse` capability, except `@avatar`.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@verseopt` | `<in \| out>` | Opt your avatar in or out of this channel's verse. |
+| `@rp` | `<text> \| on \| off` | Speak or act as your avatar. Shares the `@ask` rate-limit bucket. |
 | `@verse` | | Show your current scene in one line. |
 | `@look` | `[<target>]` | Describe your scene or a named entity. |
 | `@who` | | List active avatars and their locations. |
 | `@avatar` | `[<persona> \| clear]` | Set the persona that shapes your verse avatar. Independent of `@instruct`. |
+
+### rp
+
+`@rp <text>` takes one in-character turn. `@rp on` makes your plain
+messages roleplay turns until `@rp off` or a spell of silence; a leading
+`//` slips a single message out of character. Without an avatar the
+command still answers, as ordinary chat grounded in canon.
+
+```
+@rp Archie kicks the door open and bellows for the lads
+@rp on
+@rp off
+```
+
+Mentioning canon without `@rp` no longer puts the bot in character. It
+grounds the reply in canon facts, and, for an avatar holder, answers as
+an inline prose tale. See
+[the verse](../operator/forest-verse.md#the-canon-layer-and-roleplay-mode).
 
 ## Verse commands (editor)
 

@@ -4,6 +4,9 @@ The bot can run a future AI task on your behalf. At run time it runs a fresh `@a
 
 There's no `@schedule` command. You create scheduled tasks conversationally: ask the bot, and its scheduler tool does the rest.
 
+!!! note
+    Conversational scheduling is off by default. An operator turns it on per channel with `supybot.plugins.LLM.pendingTasksEnabled`. Where it's off, the bot has no scheduler tool to reach for, and asking it to schedule something gets you a plain answer instead. `@remind` still works, and tasks already scheduled still fire.
+
 ## Task or reminder
 
 A [reminder](reminders-usage.md) fits when:

@@ -64,6 +64,8 @@ Commands carry rate limits to prevent misuse. Your limits depend on your account
 
 Channels with the verse enabled host a persistent, collaborative fiction: a shared world where you play as an avatar. Join with `@verseopt in`, give your avatar a voice with `@avatar <persona>`, and check your surroundings with `@verse`, `@look`, and `@who`.
 
+Mention anyone or anything in the world and the bot answers with a tale. Use `@rp <text>` to act as your avatar for one turn, or `@rp on` to stay in character until `@rp off`.
+
 To speak out of character in a verse channel, start your message with `//` or wrap it in `((...))`.
 
 See [AI commands](ai-commands.md#the-verse) for the verse command list.
@@ -83,6 +85,7 @@ See [AI commands](ai-commands.md#the-verse) for the verse command list.
 | `@remind` | Set reminders with natural language | [Reminders](reminders-usage.md#remind) |
 | `@usage` | View API usage statistics | [AI commands](ai-commands.md#usage) |
 | `@verseopt` | Opt your avatar in or out of the verse | [AI commands](ai-commands.md#the-verse) |
+| `@rp` | Speak or act as your verse avatar | [AI commands](ai-commands.md#the-verse) |
 
 ## Getting help
 

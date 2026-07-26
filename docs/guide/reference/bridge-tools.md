@@ -105,13 +105,24 @@ call these directly; the model picks them from conversation.
 
 | Group | Tools |
 |-------|-------|
-| Instructions | `get_instruction`, `set_instruction`, `clear_instruction` |
+| Instructions | `set_instruction`, `clear_instruction` |
 | Memories | `list_memories`, `save_memory`, `delete_memory`, `update_memory`, `clear_memories`, `cleanup_memories` |
 | Context | `forget_context` |
 | Usage | `get_usage`, `get_channel_usage` |
 | Reminders and tasks | `set_reminder`, `schedule_llm_task`, `list_pending_tasks`, `cancel_pending_task`, `cancel_all_pending_tasks` |
 | Generation | `generate_image`, `generate_code` |
 | Web | `search_web`, `fetch_url` |
+
+The five reminder and scheduled-task tools appear only when
+`pendingTasksEnabled` is on for the channel, and it defaults to off.
+Their schemas and prompt rules cost roughly 1,100 prompt tokens on every
+completion, so channels that never schedule anything should not pay for
+them. The `@remind` command and already-scheduled fires ignore the gate.
+
+Verse mode hides tools with no in-character use (scheduling, reminders,
+usage stats, persistent instructions, and the destructive bulk memory
+operations) to keep the advertised surface small. Some models start
+returning empty completions once it climbs past roughly 25 tools.
 
 On verse-routed turns the model also receives the verse tool set:
 `verse_act`, `verse_move`, `verse_look`, `verse_recall`,
@@ -138,6 +149,7 @@ list and cancel any user's tasks with `@remind admin`.
 | `bridgeAllowedPlugins` | empty (curated default applies) | Space-separated plugin names. A non-empty value replaces the curated set entirely. Names use camel case to match `cb.name()`. |
 | `bridgeAllowMutating` | `False` | Per channel. Exposes commands listed in `MUTATING_COMMANDS`. |
 | `bridgeScheduledTaskLimit` | `5` | Per-creator cap on active `schedule_llm_task` entries. `0` disables scheduling. |
+| `pendingTasksEnabled` | `False` | Per channel. Advertises the five reminder and scheduled-task tools, so the model can create, list, and cancel them from plain language. |
 | `bridgeDebugInChannel` | `False` | Per channel. Appends a one-line debug footer listing every bridge call made during the turn. |
 
 To add a plugin outside the curated default, list every plugin you want

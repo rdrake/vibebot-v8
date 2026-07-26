@@ -155,9 +155,15 @@ In channels with the verse enabled, you can join a persistent shared fiction as 
 | Command | Description |
 |---------|-------------|
 | `@verseopt in` / `@verseopt out` | Opt your avatar in or out of the channel's verse |
+| `@rp <text>` | Speak or act as your avatar for one turn |
+| `@rp on` / `@rp off` | Stay in character without prefixing every line |
 | `@avatar <persona>` | Set the persona that shapes your avatar's voice |
 | `@verse` | Show where your avatar currently is |
 | `@look [<target>]` | Describe your scene, or a named person or place |
 | `@who` | List active avatars and their locations |
 
-Once opted in, your regular channel messages join the story when they reference someone or something in the world, or match the channel's trigger word. Start a message with `//` or wrap it in `((...))` to speak out of character.
+Once opted in, mentioning someone or something in the world, or the channel's trigger word, gets you a tale: the bot answers in your avatar's voice, as a few paragraphs posted straight to the channel. Ask it to "illustrate" and you get a picture book instead; ask it to "draw" and you get a single image.
+
+Use `@rp` when you want a deliberate in-character turn, or `@rp on` for a run of them. Mentions on their own no longer flip the bot into character; they just keep the answer true to the world.
+
+Start a message with `//` or wrap it in `((...))` to speak out of character. Questions with nothing to do with the world get a straight answer, not a tall tale.

@@ -3,7 +3,7 @@
 Set reminders in natural language. When the time comes, the bot either echoes your text back or, if you asked it to *do* something, runs the task at fire time.
 
 !!! tip "Natural language"
-    You can manage reminders by talking to the bot: "VibeBot, remind me in 2 hours to check the build" or "VibeBot, cancel the build reminder." Use the commands when you want direct control.
+    Where an operator has enabled it, you can manage reminders by talking to the bot: "VibeBot, remind me in 2 hours to check the build" or "VibeBot, cancel the build reminder." The channel key is `supybot.plugins.LLM.pendingTasksEnabled`, and it's off by default. `@remind` always works.
 
 ## `remind`
 
@@ -64,6 +64,7 @@ Things to know:
 - **One nested reminder per fire.** An action reminder can schedule at most one follow-up during its run, which prevents fan-out.
 - **Recurring chains cap at 50 fires.** After that, re-arm the reminder.
 - **Scheduled tasks need an authenticated account.** Log in to your network account first.
+- **Conversational scheduling is per channel.** The plain-English forms in this section need `pendingTasksEnabled` on that channel; `@remind` does not.
 
 ## Listing and cancelling
 

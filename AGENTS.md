@@ -48,7 +48,9 @@ For `plugins/llm/src/llm/`:
 
 - `plugin.py`: IRC protocol layer, command routing, and command wrappers
 - `service.py`: LiteLLM integration and business logic
-- `assistant.py`: tool-using chat profile and tool wrappers
+- `assistant.py`: tool-using chat profile, tool schemas, and tool wrappers
+- `profile.py`: route profiles (`chat`, `verse`, `code`, `draw`, `remind_action`) that decide which tools an entry point advertises
+- `prompts.py`: shared system-prompt fragments
 - `executor.py`: `LLMExecutor` (`BoundedSemaphore` + `ThreadPoolExecutor`); every blocking LLM call goes through `permit()` or `submit()`
 - `persistence.py`: SQLite store for memories, reminders, scheduled tasks, and usage; uses the `_write_txn` context manager for atomic writes
 - `limnoria_bridge.py`: allowlisted Limnoria-as-tool surface (mutation gating plus a curated default allowlist)

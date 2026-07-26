@@ -75,7 +75,10 @@ The verse is the per-channel world model. See [The verse](forest-verse.md) for c
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `verseEnabled` | channel | `False` | Main switch. When off, verse commands are unavailable and no events are recorded |
-| `verseTriggerRegex` | channel | `\bverse\b` | Case-insensitive pattern that routes an opted-in user's message into the verse. Empty disables the keyword signal; entity references still trigger |
+| `verseTriggerRegex` | channel | `\bverse\b` | Case-insensitive pattern that marks a message as a canon reference, alongside entity mentions. A match grounds the reply in canon and, for an avatar holder, turns it into a prose tale. It does not enter roleplay mode; that needs `@rp`. Empty disables the keyword signal |
+| `verseRoleplayStickyTtlSeconds` | channel | `900` | Sliding inactivity timeout for sticky `@rp on` roleplay. Each in-character turn refreshes it. `0` never expires |
+| `verseChatRecordEnabled` | channel | `False` | Let an opted-in avatar's ordinary chat turn call `verse_record`. Off keeps canon growing only during roleplay |
+| `verseStoryAmbientMaxImages` | channel | `1` | Image budget for an ambient story that reaches the storybook without an explicit illustrate cue. `0` is text only |
 | `verseEventRetentionDays` | channel | `30` | Events older than this are eligible for compaction |
 | `verseAutoEntityRetireDays` | channel | `14` | Days without a mention before auto-created non-player characters (NPCs) retire. `0` disables the sweep. Pinned entities are exempt |
 | `verseAutoEntityMaxNamesPerCall` | channel | `8` | Cap on the `actors` array in one `verse_record` call |
@@ -160,6 +163,14 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
 
 See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.
+
+## Reminders and scheduled tasks
+
+| Setting | Scope | Default | Description |
+|---------|-------|---------|-------------|
+| `pendingTasksEnabled` | channel | `False` | Advertise the five reminder and scheduled-task tools to the model, so natural-language scheduling works. Off by default: the schemas and their rules cost roughly 1,100 prompt tokens on every completion in the channel |
+
+The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can create, list, and cancel them from plain language.
 
 ## Timeouts and retries
 
