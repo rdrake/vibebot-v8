@@ -2958,9 +2958,10 @@ class LLM(callbacks.Plugin):
         3. OOC messages (wrapped in ((...)) or with a leading //) bypass the
            verse engine.
         4. The caller must have an avatar in the verse.
-        5. Roleplay is entered EXPLICITLY (``force_roleplay=True``, the @verse
-           command) — a bare keyword/entity mention no longer arms roleplay
-           mode. Mentions instead inject canon *facts* into the normal chat
+        5. Roleplay is entered EXPLICITLY (``force_roleplay=True``: the @rp
+           command, a live sticky @rp session, or the one-shot ambient-prose
+           promotion) — a bare keyword/entity mention no longer arms roleplay
+           mode on its own. Mentions instead inject canon *facts* into the chat
            turn (see ``build_verse_context_block`` in
            ``_dispatch_with_verse_routing``). This separates the canon layer
            (read/write, cheap) from the roleplay persona (explicit, heavy).
@@ -2980,7 +2981,7 @@ class LLM(callbacks.Plugin):
         avatar_id = self._find_caller_avatar(store, account, nick)
         if avatar_id is None:
             return None  # User opted into the channel but isn't in the verse → chat path.
-        # Explicit-only: roleplay mode is entered by the @verse command, not by
+        # Explicit-only: roleplay mode is entered by the @rp command, not by
         # a bare mention. Without the explicit signal, fall through to chat
         # (where the mention still injects canon facts).
         if not force_roleplay:
@@ -4374,8 +4375,9 @@ class LLM(callbacks.Plugin):
         message that isn't routed through ``@ask``, so verse_record never
         fires and the canon goes unrecorded.
 
-        ``force_roleplay`` (the @verse command) enters verse roleplay mode
-        explicitly. Otherwise a canon mention only injects facts into the chat
+        ``force_roleplay`` (the @rp command) enters verse roleplay mode
+        explicitly; sticky @rp and the ambient-prose promotion below set it for
+        a turn too. Otherwise a canon mention only injects facts into the chat
         turn (``verse_context`` below) — it no longer arms roleplay."""
         # Fire the typing indicator the moment we know preflight passed —
         # before any DB work (verse route lookup, history fetch, memory
