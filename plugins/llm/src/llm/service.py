@@ -297,6 +297,30 @@ _SAFETY_REFUSAL_PATTERNS = re.compile(
     r"[^.!?]{0,80}?(?:can'?t|cannot|won'?t|will not|decline|refuse|unable)",
     re.IGNORECASE,
 )
+# Stale-image guard. When a generate_image call FAILS, a non-reasoning model
+# will often answer with an image URL copied straight out of its own history —
+# the PREVIOUS image, presented as the one just asked for. Confirmed live on
+# 2026-07-26: xAI returned imagine:content-moderated at 23:49:15 and 23:50:06,
+# and three seconds after each the bot reposted the image from the preceding
+# successful turn. Eleven occurrences in the channel logs going back to April.
+#
+# This is the nastiest member of the self-imitation family because the output
+# looks valid: there is no refusal wording to detect, just a well-formed URL
+# that happens to be the wrong image. So it is caught structurally instead —
+# any image URL the turn did not itself mint is not allowed out.
+_IMAGE_URL_RE = re.compile(r"https?://\S+?/(?:img_)[0-9a-zA-Z_]+\.(?:png|jpe?g|webp|gif)")
+
+
+def _strip_unminted_image_urls(content: str, minted: set[str]) -> bool:
+    """Return True iff ``content`` cites an image URL this turn did not create.
+
+    ``minted`` holds the URLs returned by successful generate_image calls in
+    the current invocation. Anything else in an image-failed reply came from
+    history or was invented.
+    """
+    return any(url not in minted for url in _IMAGE_URL_RE.findall(content or ""))
+
+
 # Image-generation refusals are excluded: they come from the image provider's
 # own filter (or are a legitimate error, e.g. "the tool requires an
 # authenticated account"), and this guard only re-rolls the TEXT completion, so
@@ -4533,6 +4557,11 @@ Examples (echo → action_prompt: ""):
             # Count of verse premise-refusal retries spent this invocation
             # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
             verse_denial_retries = 0
+            # Stale-image guard state (see _strip_unminted_image_urls):
+            # URLs minted by successful generate_image calls this invocation,
+            # and the error from a failed one.
+            minted_image_urls: set[str] = set()
+            image_tool_error: str | None = None
             # Count of policy-refusal retries spent this invocation (see
             # _is_safety_refusal / _MAX_SAFETY_REFUSAL_RETRIES). All routes.
             safety_refusal_retries = 0
@@ -4636,6 +4665,24 @@ Examples (echo → action_prompt: ""):
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
                         continue
+
+                    # Stale-image guard: generate_image failed this turn, yet
+                    # the reply cites an image URL the turn never minted —
+                    # the model lifted the previous image out of its own
+                    # history and is passing it off as the requested one.
+                    # Replace the whole reply with the real reason: a wrong
+                    # image delivered silently is worse than a plain failure,
+                    # because nothing about it looks wrong to the user.
+                    if image_tool_error and _strip_unminted_image_urls(content, minted_image_urls):
+                        self.log.warning(
+                            "assistant_completion: reply cited a stale image URL after a "
+                            "failed generate_image; replacing with the tool error "
+                            "model=%s channel=%s",
+                            model,
+                            channel,
+                        )
+                        content = image_tool_error
+                        last_assistant_text = content
 
                     # Safety-refusal guard (all routes): a policy-shaped
                     # refusal of a request the channel considers in bounds
@@ -4871,6 +4918,15 @@ Examples (echo → action_prompt: ""):
                         last_successful_tool = tc.function.name
                         if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
+                        if tc.function.name == "generate_image":
+                            # Record what this turn actually minted, so the
+                            # stale-image guard below can tell a fresh image
+                            # from one lifted out of history.
+                            minted_image_urls.update(
+                                _IMAGE_URL_RE.findall(str(parsed.get("message", "")))
+                            )
+                    elif isinstance(parsed, dict) and tc.function.name == "generate_image":
+                        image_tool_error = str(parsed.get("error") or "").strip() or None
 
                     messages.append(
                         {

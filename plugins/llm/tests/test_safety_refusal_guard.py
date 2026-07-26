@@ -18,15 +18,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.assistant import ToolCallbackResult
 from llm.service import (
     _MAX_SAFETY_REFUSAL_RETRIES,
     _SAFETY_REFUSAL_RETRY_NUDGE,
     LLMService,
     _is_safety_refusal,
     _strip_safety_refusals,
+    _strip_unminted_image_urls,
 )
 
-from .conftest import make_completion_response
+from .conftest import make_completion_response, make_tool_call
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -244,3 +246,96 @@ class TestSafetyRefusalRetry:
 
         assert result.content == "I can't find that in the logs."
         assert len(calls) == 1
+
+
+class TestStaleImageGuard:
+    """A failed generate_image must never yield the PREVIOUS image.
+
+    Confirmed live on 2026-07-26: xAI returned imagine:content-moderated and
+    three seconds later the bot reposted the image from the preceding
+    successful turn, twice in two minutes. Eleven such reposts sit in the
+    channel logs going back to April. The output looks valid — a well-formed
+    URL, no refusal wording — so it is caught structurally.
+    """
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    def test_detects_url_the_turn_did_not_mint(self) -> None:
+        """A URL absent from the minted set is stale."""
+        assert _strip_unminted_image_urls("https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg", set())
+
+    def test_accepts_url_the_turn_minted(self) -> None:
+        """The image this turn actually generated is not stale."""
+        url = "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg"
+        assert not _strip_unminted_image_urls(f"here you go: {url}", {url})
+
+    def test_plain_reply_is_never_stale(self) -> None:
+        """A reply with no image URL cannot be stale."""
+        assert not _strip_unminted_image_urls("no image for you", set())
+
+    def test_external_host_urls_are_covered(self) -> None:
+        """The external image host is in scope too, not just the local root."""
+        assert _strip_unminted_image_urls(
+            "https://paste.boxlabs.uk/img/img_6a669d1da253b.jpg", set()
+        )
+
+    def test_moderated_image_does_not_repost_previous(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Replays the live failure: moderation rejects, model cites the old URL.
+
+        The reply must become the real error, not the previous image.
+        """
+        stale = "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg"
+        tool_call = make_tool_call("generate_image", {"prompt": "the lads"}, call_id="c1")
+        responses = [
+            make_completion_response(None, tool_calls=[tool_call]),
+            make_completion_response(stale),
+        ]
+        mocker.patch("llm.service.litellm.completion", side_effect=responses)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="draw the lads",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="rdrake",
+            draw_fn=lambda _p: ToolCallbackResult(False, "Error: rejected by content moderation."),
+        )
+
+        assert stale not in (result.content or "")
+        assert "moderation" in (result.content or "").lower()
+
+    def test_successful_image_still_delivered(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """The guard must not touch a genuinely fresh image."""
+        fresh = "https://irc.rdrake.org/llm/img_deadbeef1234.jpg"
+        tool_call = make_tool_call("generate_image", {"prompt": "the lads"}, call_id="c1")
+        responses = [
+            make_completion_response(None, tool_calls=[tool_call]),
+            make_completion_response(f"one lad coming up: {fresh}"),
+        ]
+        mocker.patch("llm.service.litellm.completion", side_effect=responses)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="draw the lads",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="rdrake",
+            draw_fn=lambda _p: ToolCallbackResult(True, fresh),
+        )
+
+        assert fresh in (result.content or "")
