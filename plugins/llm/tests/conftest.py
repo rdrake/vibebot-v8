@@ -40,7 +40,7 @@ FAKE_PROVIDER_KEYS = {
 }
 
 # Duplicated from llm.apikeys (Task 2) rather than imported: that module
-# does not exist yet and this fixture must not depend on it. Task 2 adds a
+# does not exist yet and this fixture must not depend on it. Task 3 adds a
 # test asserting the two copies stay in sync.
 _SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_CREDENTIALS")
 
