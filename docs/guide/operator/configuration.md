@@ -27,7 +27,18 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — is not one of the four managed providers above. It resolves to no key from this plugin, and LiteLLM falls back to that provider's own native credentials (Application Default Credentials, IAM, or its own environment variables). The default `imageModel`, `vertex_ai/imagen-4.0-generate-001`, works this way via ADC and needs nothing from the table above.
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — is not one of the four managed providers above. It resolves to no key from this plugin, and LiteLLM falls back to that provider's own native credentials (Application Default Credentials, IAM, or its own environment variables). The default `imageModel` is `gemini/imagen-4.0-fast-generate-001`, so a fresh install needs only `GEMINI_API_KEY` for chat, `@code`, `@draw`, and search.
+
+### Opting into Vertex AI
+
+Vertex AI is not the default, but it remains a supported `imageModel` (and general model) choice for anyone who wants it — for example to bill image generation to a separate GCP project. Credentials (ADC, IAM) are enough for authentication, but LiteLLM's Vertex Imagen path separately requires the project and region, and it fails closed with `vertex_project and vertex_location are required for Vertex AI` if they are missing:
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `VERTEXAI_PROJECT` | Yes | Your GCP project ID |
+| `VERTEXAI_LOCATION` | Recommended | Region, e.g. `us-central1`. `VERTEX_LOCATION` also works as a fallback name |
+
+There is no `VERTEX_AI_API_KEY` — Vertex AI does not use a bearer key from this plugin; it authenticates through ADC/IAM only.
 
 Set the variables in `.env.example`, copied to the env file the container loads (see [Operations](operations.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
@@ -39,7 +50,7 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `gemini/gemini-flash-latest` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
 | `codeModel` | channel | `gemini/gemini-1.5-flash` | Model for `@code` |
-| `imageModel` | channel | `vertex_ai/imagen-4.0-generate-001` | Model for `@draw` |
+| `imageModel` | channel | `gemini/imagen-4.0-fast-generate-001` | Model for `@draw` |
 | `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 | `verseCompactionModel` | global | `gemini/gemini-flash-lite-latest` | Cheap model for the daily verse compaction job |

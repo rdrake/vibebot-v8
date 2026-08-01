@@ -98,10 +98,10 @@ class TestValidatedModelName:
     def test_default_image_model_passes(self) -> None:
         """GIVEN default imageModel value WHEN validated THEN passes (warn OK)."""
         v = self._make()
-        # vertex_ai/imagen-4.0-generate-001 may not be in model_list but
+        # gemini/imagen-4.0-fast-generate-001 may not be in model_list but
         # provider is valid, so it should be accepted (with warning)
-        v.setValue("vertex_ai/imagen-4.0-generate-001")
-        assert v() == "vertex_ai/imagen-4.0-generate-001"
+        v.setValue("gemini/imagen-4.0-fast-generate-001")
+        assert v() == "gemini/imagen-4.0-fast-generate-001"
 
     def test_suggest_models_returns_close_matches(self) -> None:
         """GIVEN a near-miss model name WHEN _suggest_models THEN returns suggestions."""
@@ -187,7 +187,7 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.assistantModel() == "gemini/gemini-flash-latest"
         assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
-        assert conf.supybot.plugins.LLM.imageModel() == "vertex_ai/imagen-4.0-generate-001"
+        assert conf.supybot.plugins.LLM.imageModel() == "gemini/imagen-4.0-fast-generate-001"
 
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
         """B1: bridgeAllowMutating defaults to False (gate closed).

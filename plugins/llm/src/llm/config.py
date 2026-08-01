@@ -181,7 +181,7 @@ conf.registerChannelValue(
     LLM,
     "imageModel",
     ValidatedModelName(
-        "vertex_ai/imagen-4.0-generate-001",
+        "gemini/imagen-4.0-fast-generate-001",
         _("""Model for image generation"""),
     ),
 )

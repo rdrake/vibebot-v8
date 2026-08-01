@@ -138,6 +138,8 @@ journalctl --user -u vibebot -f      # follow in real time
 tail -f logs/messages.log            # bot message log, from the working directory
 ```
 
+At startup, an `INFO`-level line reports secret redaction coverage: `secret redaction: %d handler(s) filtered, %d variable(s) covered: %s`, naming which environment variable *names* it covers (never their values). That line is the only positive confirmation that redaction is actually installed and live — worth checking after any change that touches logging handlers, given that credentials also sit directly in the container's environment (see [Operations → Credentials in the environment](operations.md#credentials-in-the-environment)).
+
 ### Log level
 
 | Level | Use case |

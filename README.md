@@ -60,7 +60,7 @@ Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`
 ```
 supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest
 supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
-supybot.plugins.LLM.imageModel: vertex_ai/imagen-4.0-generate-001
+supybot.plugins.LLM.imageModel: gemini/imagen-4.0-fast-generate-001
 ```
 
 See the [LiteLLM provider list](https://docs.litellm.ai/docs/providers) for supported models and the [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.
