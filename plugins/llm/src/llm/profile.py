@@ -7,11 +7,12 @@ This module owns:
   ``PROFILE_REMIND_ACTION``) that route requests through
   ``service.assistant_completion``.
 - The :class:`Profile` frozen dataclass that bundles every per-mode fact
-  for one of those routes: which Limnoria registry keys hold the model
-  and API key, which ``prompts.PROMPTS`` key supplies the framework
-  system prompt, which registry key holds the channel-overridable
-  personality overlay, the max-output-tokens cap, and the
-  force-search-on-explicit opt-in.
+  for one of those routes: which Limnoria registry key holds the model,
+  which ``prompts.PROMPTS`` key supplies the framework system prompt,
+  which registry key holds the channel-overridable personality overlay,
+  the max-output-tokens cap, and the force-search-on-explicit opt-in. The
+  API key is not part of a Profile — it is resolved from the model at the
+  outbound call boundary (``apikeys.api_key_for``), not carried per-route.
 - The :data:`PROFILES` registry mapping each identifier to its Profile.
 
 Tools are *not* a field on :class:`Profile`. Tool visibility is a

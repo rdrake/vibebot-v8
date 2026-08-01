@@ -2988,7 +2988,8 @@ class LLMService:
 
             images = self._filter_images(images)
 
-            # Get configuration (channel-specific for model/prompt, global for api key)
+            # Get configuration (channel-specific for model/prompt; the API key
+            # is resolved from the model itself at the completion boundary below)
             channel = msg.args[0] if msg and msg.args else None
             # Map command to capability-based registry keys.
             if command == "code":
@@ -3034,8 +3035,10 @@ class LLMService:
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
 
-            # Call LiteLLM with API key passed directly (thread-safe)
-            # CRITICAL: Never mutate environment variables - prevents race conditions
+            # No API key is threaded through here: _completion_with_tool_fallback
+            # calls _timed_completion, which resolves the key from `model` via
+            # apikeys.api_key_for() on every call, reading os.environ directly
+            # rather than a value captured earlier.
 
             # Build provider-specific kwargs (Gemini tools, safety settings, etc.)
             optional_kwargs = self._get_provider_kwargs(model)
@@ -4280,9 +4283,10 @@ Examples (echo → action_prompt: ""):
             model = model_override or self.plugin.registryValue(profile.model_setting, target)
             key_error = self._missing_key_error(model)
             if key_error:
+                error_content = _("Error: %s") % key_error
                 return AssistantResult(
-                    content=_("Error: %s") % key_error,
-                    error=key_error,
+                    content=error_content,
+                    error=error_content,
                 )
 
             max_steps = self.plugin.registryValue("metaMaxSteps")
@@ -5064,8 +5068,8 @@ Examples (echo → action_prompt: ""):
                 error_content = _("Error: %s") % error_msg
                 return ImageResult(content=error_content, error=error_content)
 
-            # Get configuration (channel-specific for model, global for api key)
-            # Don't store API key in local var to avoid logging in traces
+            # Get configuration (channel-specific for model; the API key is
+            # resolved from the model itself, below, not stored in a local var)
             channel = msg.args[0] if msg and msg.args else None
             model = self.plugin.registryValue("imageModel", channel)
             key_error = self._missing_key_error(model)

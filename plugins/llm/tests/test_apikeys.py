@@ -462,14 +462,21 @@ class TestInstallSecretFilter:
         finally:
             logger.removeHandler(handler)
 
-    @pytest.mark.parametrize("logger_name", ["", "supybot", "llm"])
+    @pytest.mark.parametrize(
+        "logger_name",
+        ["", "supybot", "llm", "LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+    )
     def test_installs_on_each_target_logger(self, logger_name: str) -> None:
         """GIVEN a handler on each real install target WHEN installed THEN it gets a SecretFilter.
 
         Parametrized over every target, not just one: a mutant that shrinks
         `targets` to `["llm"]` alone still passes if only "llm" is checked —
         and per the production leak this module exists to close, "supybot" is
-        the target that actually has a handler attached today.
+        the target that actually has a handler attached today. The three
+        "LiteLLM"/"LiteLLM Proxy"/"LiteLLM Router" entries cover the loggers
+        `import litellm` attaches its own stderr handler to — outside the
+        supybot/llm hierarchy and therefore missed by handlers-on-ancestors
+        reasoning alone.
         """
         logger = logging.getLogger(logger_name)
         handler = logging.StreamHandler(io.StringIO())
@@ -480,6 +487,36 @@ class TestInstallSecretFilter:
             assert any(isinstance(f, apikeys.SecretFilter) for f in handler.filters)
         finally:
             logger.removeHandler(handler)
+
+    def test_litellm_own_stderr_handler_scrubs_a_record(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a record on litellm's own "LiteLLM" logger WHEN installed
+        THEN the key is redacted before reaching that logger's own handler.
+
+        Unlike ``test_installs_on_each_target_logger`` (which adds a fresh
+        throwaway handler and checks a filter attaches to it), this exercises
+        the real ``StreamHandler(stderr)`` that ``import litellm`` attaches
+        directly to the "LiteLLM" logger at import time — the exact handler a
+        raw key reached ``docker logs`` through before "LiteLLM" was added to
+        ``targets``. A logger's own handler runs before propagation, so
+        covering root/supybot/llm alone never touched it.
+        """
+        secret = "xai-fake-value-long-enough"
+        monkeypatch.setenv("XAI_API_KEY", secret)
+        logger = logging.getLogger("LiteLLM")
+        handler = next(h for h in logger.handlers if isinstance(h, logging.StreamHandler))
+        buffer = io.StringIO()
+        original_stream = handler.stream
+        handler.stream = buffer
+        try:
+            apikeys.install_secret_filter()
+            logger.error("litellm auth failure: key=%s", secret)
+        finally:
+            handler.stream = original_stream
+        output = buffer.getvalue()
+        assert secret not in output
+        assert "[REDACTED]" in output
 
     def test_installs_on_last_resort(self) -> None:
         """GIVEN no handler anywhere in the llm.* hierarchy WHEN installed

@@ -1569,7 +1569,9 @@ class TestImageBoundaryKeyResolution:
     def test_unmanaged_image_model_passes_none(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN a vertex_ai image model WHEN drawing THEN api_key is None.
 
-        This is the prod default. None is what makes LiteLLM fall back to ADC;
+        vertex_ai is unmanaged regardless of what imageModel is configured to
+        (shipped default is gemini; prod sets xai/grok-imagine-image
+        explicitly) — None is what makes LiteLLM fall back to ADC for it, and
         a mapped key here would break service-account auth on the draw path.
         """
         service, _ = make_service(

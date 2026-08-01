@@ -4375,12 +4375,14 @@ class TestExecutorCoverageGaps:
 
 
 class TestAssistantCompletionReadsModelKeyFromProfiles:
-    """assistant_completion must read model/api_key via PROFILES[route].
+    """assistant_completion must read the model setting via PROFILES[route].
 
     Swapping the PROFILES entry with a sentinel-keyed Profile and asserting
     the sentinel key flows to plugin.registryValue() pins that the
     migration is wired up — a future regression that hardcodes
-    'assistantModel' would break these tests.
+    'assistantModel' would break these tests. The API key is not part of
+    Profile — it is resolved from the model at the completion boundary, not
+    looked up per-route — so this class covers model_setting only.
     """
 
     @pytest.fixture

@@ -218,6 +218,15 @@ def install_secret_filter() -> int:
     ``logging.lastResort`` here closes that path regardless of whether a real
     handler ever gets attached to ``llm`` later.
 
+    ``import litellm`` additionally creates three loggers of its own —
+    ``LiteLLM``, ``LiteLLM Proxy``, ``LiteLLM Router`` — each with its own
+    ``StreamHandler(stderr)`` attached directly, at effective level WARNING.
+    A logger's own handler runs before propagation to any ancestor, so a
+    record on one of these reaches stderr (and therefore ``docker logs``)
+    through that handler regardless of what is or isn't attached to root,
+    ``supybot`` or ``llm``. They are covered by name below for that reason,
+    not because they sit in either hierarchy.
+
     Handlers created later — supybot adds per-plugin file handlers when
     ``individualLogfiles`` is true; prod has it false — are not covered. Calling
     this again picks them up.
@@ -225,7 +234,14 @@ def install_secret_filter() -> int:
     Returns the number of handlers newly filtered, for the startup log line.
     """
     installed = 0
-    targets = [logging.getLogger(), logging.getLogger("supybot"), logging.getLogger("llm")]
+    targets = [
+        logging.getLogger(),
+        logging.getLogger("supybot"),
+        logging.getLogger("llm"),
+        logging.getLogger("LiteLLM"),
+        logging.getLogger("LiteLLM Proxy"),
+        logging.getLogger("LiteLLM Router"),
+    ]
     handlers = [handler for logger in targets for handler in logger.handlers]
     if logging.lastResort is not None:
         handlers.append(logging.lastResort)

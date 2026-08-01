@@ -791,8 +791,17 @@ class TestMemoryCleanup:
 class TestExtractMemories:
     """Test extract_memories uses the assistant model and that model's key."""
 
-    def test_api_key_uses_assistant_key(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN the assistant model WHEN extract_memories runs THEN its provider key is sent."""
+    def test_api_key_matches_assistant_models_provider(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """GIVEN the assistant model WHEN extract_memories runs THEN its provider's key is sent.
+
+        There is no longer a distinct "assistant key" setting to route
+        through — the key is resolved from whichever model is actually
+        called (apikeys.api_key_for), same as every other completion path.
+        This pins that extract_memories calls litellm.completion with the
+        assistant model's provider key rather than some other provider's.
+        """
         service, mock_plugin = make_service()
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_response = make_completion_response('{"add": ["likes cats"]}')

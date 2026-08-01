@@ -615,12 +615,25 @@ class TestBoundaryKeyResolution:
     def test_error_never_contains_a_key(
         self, make_service, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GIVEN a configured key WHEN building any error THEN the value is absent."""
-        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        """GIVEN the provider's variable is unset WHEN building the error
+        THEN a real message is produced and no configured key value appears in it.
+
+        The previous version of this test set XAI_API_KEY (already the
+        autouse ``_isolate_provider_env`` default), so
+        ``_missing_key_error("xai/grok-4.3")`` returned None, ``or ""``
+        produced ``""``, and ``secret not in ""`` held for any
+        implementation — including one that interpolated the key. Unsetting
+        the variable forces the message-producing branch to actually run,
+        and checking every other provider's configured value (still present
+        in the environment) catches an implementation that dumps configured
+        secrets into the message rather than just naming the missing one.
+        """
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
         service, _ = make_service()
-        assert "xai-fake-key-for-tests-0000" not in (
-            service._missing_key_error("xai/grok-4.3") or ""
-        )
+        message = service._missing_key_error("xai/grok-4.3")
+        assert message is not None
+        for secret in FAKE_PROVIDER_KEYS.values():
+            assert secret not in message
 
 
 class TestGuardsUseTheEffectiveModel:

@@ -69,24 +69,31 @@ def _restore_global_logging_filters() -> Generator[None]:
     """Undo any ``SecretFilter`` installation left on process-global logging state.
 
     ``apikeys.install_secret_filter()`` (installed from ``LLM.__init__`` as of
-    Task 4) attaches to handlers already sitting on root/``supybot``/``llm``,
-    plus ``logging.lastResort`` — real, process-global state, not anything
-    scoped to a single test. Any test that constructs a real plugin
-    (``LLM(mock_irc)``, not just ``make_service()``) triggers this via
-    ``__init__``. pytest reuses one session-scoped ``LogCaptureHandler`` for
-    the whole run, so a filter installed by one test survives into every
-    later test's ``caplog`` — silently turning any of ``FAKE_PROVIDER_KEYS``'s
-    values into ``[REDACTED]`` in unrelated assertions, well after the test
-    that installed the filter has finished. Snapshotting and restoring
+    Task 4) attaches to handlers already sitting on root/``supybot``/``llm``/
+    ``LiteLLM``/``LiteLLM Proxy``/``LiteLLM Router``, plus
+    ``logging.lastResort`` — real, process-global state, not anything scoped
+    to a single test. Any test that constructs a real plugin (``LLM(mock_irc)``,
+    not just ``make_service()``) triggers this via ``__init__``. pytest reuses
+    one session-scoped ``LogCaptureHandler`` for the whole run, so a filter
+    installed by one test survives into every later test's ``caplog`` —
+    silently turning any of ``FAKE_PROVIDER_KEYS``'s values into
+    ``[REDACTED]`` in unrelated assertions, well after the test that
+    installed the filter has finished. Snapshotting and restoring
     ``handler.filters`` here, for every test in the suite, confines
-    installation to the test that triggered it.
+    installation to the test that triggered it. The three ``LiteLLM*`` loggers
+    are covered too — ``import litellm`` gives each its own stderr handler
+    that install_secret_filter() reaches directly; missing them here would
+    leak a filter onto those handlers across the whole remaining test run.
 
     Generalized from the equivalent class-local fixture this module used to
     carry only for ``TestInstallSecretFilter`` in ``test_apikeys.py`` — every
     test that builds a real plugin needs the same protection, not just the
     tests that exercise ``install_secret_filter`` directly.
     """
-    loggers = [logging.getLogger(name) for name in ("", "supybot", "llm")]
+    loggers = [
+        logging.getLogger(name)
+        for name in ("", "supybot", "llm", "LiteLLM", "LiteLLM Proxy", "LiteLLM Router")
+    ]
     handler_snapshot = {
         handler: list(handler.filters) for logger in loggers for handler in logger.handlers
     }
