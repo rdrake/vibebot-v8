@@ -731,7 +731,11 @@ class LLM(callbacks.Plugin):
 
         installed = apikeys.install_secret_filter()
         self.log.info(
-            "secret redaction: %d handler(s) filtered, %d variable(s) covered: %s",
+            # %s only, never %d: supybot routes log args through
+            # utils.str.format, whose mini-language has no %d. A %d is left
+            # literal and the positional args shift into the %s slots, so this
+            # line rendered as "…%d handler(s)… covered: 4" in production.
+            "secret redaction: %s handler(s) filtered, %s variable(s) covered: %s",
             installed,
             len(apikeys.secret_var_names()),
             ", ".join(apikeys.secret_var_names()) or "none",
