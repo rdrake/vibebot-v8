@@ -30,10 +30,8 @@ import pytest
 from llm.assistant import ToolCallbackResult
 from llm.service import (
     _IMAGE_FABRICATION_FALLBACK,
-    _IMAGE_HISTORY_PLACEHOLDER,
     _MAX_IMAGE_FABRICATION_RETRIES,
     LLMService,
-    _placeholder_image_urls,
     _unminted_image_urls,
 )
 
@@ -207,81 +205,3 @@ class TestFabricationForcesTheTool:
         # exactly one completion. Pinning that catches the guard forcing a
         # needless extra step (and another image charge) on a clean turn.
         assert len(calls) == 1
-
-
-class TestHistoryPlaceholder:
-    """Root cause: a bare URL in history is an exemplar the model can copy.
-
-    Measured on prod 2026-08-01, 8 of 27 stored assistant turns were nothing
-    but an image URL and half were fabrications -- the bot learning to fake
-    images from its own fakes. The guard nets that; this removes the lesson.
-    """
-
-    def test_bare_url_reply_becomes_a_placeholder(self) -> None:
-        """The dominant stored shape -- a reply that is only a URL."""
-        history = [{"role": "assistant", "content": REAL_MINTED}]
-        assert _placeholder_image_urls(history, OWN_HOSTS) == [
-            {"role": "assistant", "content": _IMAGE_HISTORY_PLACEHOLDER}
-        ]
-
-    def test_fabricated_url_is_also_replaced(self) -> None:
-        """An invented URL already in the thread stops being copyable."""
-        history = [{"role": "assistant", "content": FABRICATED}]
-        assert _placeholder_image_urls(history, OWN_HOSTS) == [
-            {"role": "assistant", "content": _IMAGE_HISTORY_PLACEHOLDER}
-        ]
-
-    def test_surrounding_prose_is_preserved(self) -> None:
-        """Only the URL goes; the model still knows a picture was produced."""
-        history = [{"role": "assistant", "content": f"one lad coming up: {REAL_MINTED}"}]
-        assert _placeholder_image_urls(history, OWN_HOSTS) == [
-            {"role": "assistant", "content": f"one lad coming up: {_IMAGE_HISTORY_PLACEHOLDER}"}
-        ]
-
-    def test_user_turns_are_untouched(self) -> None:
-        """A user pasting an image link is input, not a model of our output."""
-        history = [{"role": "user", "content": f"what is this {REAL_MINTED}"}]
-        assert _placeholder_image_urls(history, OWN_HOSTS) == history
-
-    def test_third_party_image_links_survive(self) -> None:
-        """Another bot's image is real context and must not be blanked."""
-        other = "https://www.larrystrong.com/img-gen/gi_20260801_picard.jpg"
-        history = [{"role": "assistant", "content": f"look at Larry's: {other}"}]
-        assert _placeholder_image_urls(history, OWN_HOSTS) == history
-
-    def test_none_history_passes_through(self) -> None:
-        """None is returned unchanged, matching the sibling passes."""
-        assert _placeholder_image_urls(None, OWN_HOSTS) is None
-
-    def test_model_never_sees_a_real_url_in_history(
-        self, mocker: MockerFixture, make_service
-    ) -> None:  # type: ignore[no-untyped-def]
-        """End-to-end: the wiring runs, not just the helper."""
-        service, _plugin = make_service(
-            assistantModel="gpt-4", httpUrlBase="https://irc.rdrake.org/llm"
-        )
-        captured: list[list[dict]] = []
-
-        def fake_completion(**kwargs: object) -> object:
-            captured.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
-            return make_completion_response("sure")
-
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
-
-        service.assistant_completion(
-            prompt="another one",
-            nick="rdrake",
-            channel="#afternet",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            history=[
-                {"role": "user", "content": "draw a wizard"},
-                {"role": "assistant", "content": REAL_MINTED},
-            ],
-        )
-
-        blob = " ".join(str(m.get("content", "")) for m in captured[0])
-        assert REAL_MINTED not in blob
-        assert _IMAGE_HISTORY_PLACEHOLDER in blob

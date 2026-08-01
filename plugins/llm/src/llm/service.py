@@ -330,53 +330,6 @@ _IMAGE_URL_RE = re.compile(r"https?://\S+?/(?:img_)[0-9a-zA-Z_]+\.(?:png|jpe?g|w
 _ANY_IMAGE_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
 
 
-# What the model sees in history instead of a literal image URL.
-#
-# This is the root cause the fabrication guard only nets. A successful draw is
-# posted to IRC as a bare URL and stored verbatim as an assistant turn, so the
-# thread teaches "when asked to draw, reply with a URL-shaped string" -- a
-# pattern the model can satisfy perfectly well WITHOUT calling generate_image.
-# Measured on prod 2026-08-01: 8 of 27 stored assistant turns were nothing but
-# a bare image URL, and half of those were URLs the model had invented. It was
-# learning to fake images from its own fakes.
-#
-# Replacing the URL keeps the fact that a picture was produced (which the model
-# legitimately needs for "make it bluer" follow-ups) while removing the literal
-# string it was copying. Applied to what the model is SHOWN, every turn; stored
-# history and what the channel saw are untouched.
-_IMAGE_HISTORY_PLACEHOLDER = "[image posted]"
-
-
-def _placeholder_image_urls(
-    history: list[dict[str, str]] | None,
-    hosts: frozenset[str],
-) -> list[dict[str, str]] | None:
-    """Replace our own image URLs in assistant turns with a placeholder.
-
-    Only assistant turns are rewritten -- a user pasting an image link is
-    giving us input, not modelling our output. Third-party image links are
-    left alone by :func:`_unminted_image_urls`, which is called with an empty
-    minted set here because nothing in history was minted by the current turn.
-    """
-    if not history:
-        return history
-    rewritten: list[dict[str, str]] = []
-    for message in history:
-        content = str(message.get("content", ""))
-        urls = (
-            _unminted_image_urls(content, set(), hosts)
-            if message.get("role") == Role.ASSISTANT
-            else []
-        )
-        if not urls:
-            rewritten.append(message)
-            continue
-        for url in urls:
-            content = content.replace(url, _IMAGE_HISTORY_PLACEHOLDER)
-        rewritten.append({**message, "content": content})
-    return rewritten
-
-
 # One forced retry. If the model writes a URL, is told to call the tool, and
 # still will not, a second nudge will not change that -- deliver the honest
 # failure instead of burning image spend on a loop.
@@ -4531,8 +4484,6 @@ Examples (echo → action_prompt: ""):
             # system prompt cache-stable across users.
             effective_prompt = framework
 
-            own_image_hosts = self.own_image_hosts()
-
             # De-poison history before the model sees it. Both the personal
             # thread AND the shared channel summary carry the bot's own lines;
             # a refusal, collapsed turn, or stuck-record repeat left in either
@@ -4586,12 +4537,6 @@ Examples (echo → action_prompt: ""):
                 history = _trim_history_window(history, _VERSE_HISTORY_MAX_MESSAGES)
             else:
                 channel_history = _strip_repeated_replies(channel_history)
-
-            # Last, after every strip has reasoned over the real text: hide the
-            # literal image URLs. This is the root cause the fabrication guard
-            # only nets — see _IMAGE_HISTORY_PLACEHOLDER.
-            history = _placeholder_image_urls(history, own_image_hosts)
-            channel_history = _placeholder_image_urls(channel_history, own_image_hosts)
 
             messages = self._build_messages(
                 prompt,
@@ -4696,10 +4641,10 @@ Examples (echo → action_prompt: ""):
             # Fabricated/stale-image guard state (see _unminted_image_urls):
             # URLs minted by successful generate_image calls this invocation,
             # the error from a failed one, and whether the tool ran at all.
-            # (own_image_hosts is resolved above, for the history placeholder.)
             minted_image_urls: set[str] = set()
             image_tool_error: str | None = None
             image_tool_called = False
+            own_image_hosts = self.own_image_hosts()
             # Retries spent forcing generate_image after the model wrote an
             # image URL without calling it (see _MAX_IMAGE_FABRICATION_RETRIES).
             image_fabrication_retries = 0
