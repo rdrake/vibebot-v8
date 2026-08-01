@@ -6353,8 +6353,7 @@ class LLM(callbacks.Plugin):
         except (TypeError, ValueError):
             min_keep = 20
         model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
-        api_key = self.registryValue("assistantApiKey") or None
-        client = _compaction.LiteLLMVerseClient(api_key=api_key)
+        client = _compaction.LiteLLMVerseClient()
         return min_keep, model, client
 
     def _channel_retention_days(self, channel: str, default: int = 30) -> int:

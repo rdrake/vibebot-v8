@@ -3455,3 +3455,37 @@ class TestVerseTriggerGate:
         plugin, store, avatar_id = gate_env
         self._set_regex(plugin, mocker, r"[unclosed(")
         assert not plugin._verse_triggered("#afnet", store, avatar_id, "hello there")
+
+
+class TestCompactionKeyResolution:
+    """The key litellm.completion receives follows the compaction call's model.
+
+    LiteLLMVerseClient used to be constructed with assistantApiKey (an xAI
+    key in prod) and pair it unconditionally with whatever model the caller
+    passed to call() — including gemini/ compaction models. Resolving the
+    key from the model inside call() makes that mismatch unrepresentable.
+    """
+
+    def test_key_matches_the_call_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN a gemini compaction model WHEN calling THEN the gemini key is sent."""
+        from llm.verse import compaction
+
+        seen: dict[str, object] = {}
+
+        def fake_completion(**kwargs: object) -> object:
+            seen.update(kwargs)
+            raise RuntimeError("stop here — only the kwargs matter")
+
+        monkeypatch.setattr("litellm.completion", fake_completion)
+        client = compaction.LiteLLMVerseClient()
+        with pytest.raises(RuntimeError):
+            client.call(op="compact", model="gemini/gemini-flash-lite-latest", messages=[])
+        assert seen["api_key"] == "AIza-fake-key-for-tests-0000"
+
+    def test_client_takes_no_api_key_argument(self) -> None:
+        """GIVEN the constructor WHEN inspected THEN no api_key parameter."""
+        import inspect
+
+        from llm.verse import compaction
+
+        assert "api_key" not in inspect.signature(compaction.LiteLLMVerseClient).parameters

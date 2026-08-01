@@ -269,21 +269,19 @@ class LiteLLMVerseClient:
     def __init__(
         self,
         log: logging.Logger | None = None,
-        *,
-        api_key: str | None = None,
     ) -> None:
         self._log = log or logging.getLogger("llm.verse.compaction")
-        self._api_key = api_key or None
 
     def call(
         self, *, op: str, model: str, messages: list[dict[str, str]]
     ) -> tuple[str, VerseCallUsage]:
         import litellm
 
+        from .. import apikeys
+
         t0 = time.monotonic()
         kwargs: dict[str, Any] = {}
-        if self._api_key:
-            kwargs["api_key"] = self._api_key
+        kwargs["api_key"] = apikeys.api_key_for(model)
         response = litellm.completion(model=model, messages=messages, **kwargs)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         try:
