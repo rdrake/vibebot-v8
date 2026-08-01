@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.service import AssistantRequestContext, AssistantResult, CompletionResult, LLMService
 
-from .conftest import make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -114,7 +114,9 @@ class TestSearchCompletionProviderRouting:
         responses_mock.assert_called_once()
         call_kwargs = responses_mock.call_args.kwargs
         assert call_kwargs["model"] == "xai/grok-4.3"
-        assert call_kwargs["api_key"] == "key"
+        # No api_key is threaded any more — _xai_responses_call resolves it
+        # from the model it is about to send.
+        assert "api_key" not in call_kwargs
         assert call_kwargs["timeout"] == 30
         assert call_kwargs["kind"] == "search"
         assert responses_mock.call_args.args[0] == "hi"
@@ -222,7 +224,7 @@ class TestXAIResponsesCall:
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         self.service._xai_responses_call(
-            "what is grok", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "what is grok", model="xai/grok-4.3", timeout=30, kind="search"
         )
 
         responses.assert_called_once()
@@ -230,7 +232,9 @@ class TestXAIResponsesCall:
         assert kwargs["model"] == "xai/grok-4.3"
         assert kwargs["input"] == "what is grok"
         assert kwargs["tools"] == [{"type": "web_search"}]
-        assert kwargs["api_key"] == "k"
+        # xai/ model -> XAI_API_KEY. The Responses path resolves the key from
+        # the model, so a gemini key can never ride an xAI request.
+        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["XAI_API_KEY"]
         assert kwargs["timeout"] == 30
 
     def test_grounding_true_when_web_search_call_in_output(self) -> None:
@@ -240,7 +244,7 @@ class TestXAIResponsesCall:
         )
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "q", model="xai/grok-4.3", timeout=30, kind="search"
         )
         assert result.grounding_used is True
 
@@ -254,7 +258,7 @@ class TestXAIResponsesCall:
         )
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "q", model="xai/grok-4.3", timeout=30, kind="search"
         )
         assert result.grounding_used is True
 
@@ -265,7 +269,7 @@ class TestXAIResponsesCall:
         )
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "q", model="xai/grok-4.3", timeout=30, kind="search"
         )
         assert result.grounding_used is False
 
@@ -281,7 +285,7 @@ class TestXAIResponsesCall:
         )
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "q", model="xai/grok-4.3", timeout=30, kind="search"
         )
         assert result.prompt_tokens == 42
         assert result.completion_tokens == 7
@@ -289,11 +293,11 @@ class TestXAIResponsesCall:
     def test_returns_error_tool_result_on_exception(self) -> None:
         self.mocker.patch("llm.service.litellm.responses", side_effect=RuntimeError("upstream 500"))
         result = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
+            "q", model="xai/grok-4.3", timeout=30, kind="search"
         )
         assert "Search failed" in result.content
         result_url = self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="url"
+            "q", model="xai/grok-4.3", timeout=30, kind="url"
         )
         assert "URL fetch failed" in result_url.content
 
@@ -308,7 +312,6 @@ class TestXAIResponsesCall:
         self.service._xai_responses_call(
             "q",
             model="xai/grok-4.3",
-            api_key="k",
             timeout=30,
             kind="search",
             channel="#dev",
@@ -329,9 +332,7 @@ class TestXAIResponsesCall:
         )
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
-        self.service._xai_responses_call(
-            "q", model="xai/grok-4.3", api_key="k", timeout=30, kind="search"
-        )
+        self.service._xai_responses_call("q", model="xai/grok-4.3", timeout=30, kind="search")
 
         kwargs = responses.call_args.kwargs
         assert "extra_body" not in kwargs
@@ -886,14 +887,19 @@ class TestCompletionValidation:
         assert result.error is not None
         assert "Error" in result.content
 
-    def test_completion_missing_api_key(self) -> None:
-        """GIVEN service with empty assistantApiKey WHEN completion called THEN returns API key error."""
-        service, _ = self.make_service(assistantApiKey="")
+    def test_completion_missing_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN no key for the model's provider WHEN completion called THEN returns error.
+
+        The default assistantModel is TEST_MODEL ("gpt-4") -> openai, so
+        OPENAI_API_KEY is the variable this guard reads.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        service, _ = self.make_service()
 
         result = service.completion("Hello world", command="ask")
 
         assert result.error is not None
-        assert "API key" in result.content
+        assert "OPENAI_API_KEY" in result.content
 
 
 class TestCompletionWithToolFallback:
@@ -926,7 +932,6 @@ class TestCompletionWithToolFallback:
         result = self.service._completion_with_tool_fallback(
             model="gemini/gemini-2.5-flash",
             messages=[{"role": "user", "content": "hello"}],
-            api_key="test-key",
             timeout=30,
             optional_kwargs={"tools": [{"type": "function"}], "safety_settings": "low"},
         )
@@ -1287,9 +1292,7 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
     )
     captured: list[dict] = []
 
-    def fake_call(
-        *, model, messages, api_key, timeout, optional_kwargs, op="completion", channel=None
-    ):
+    def fake_call(*, model, messages, timeout, optional_kwargs, op="completion", channel=None):
         captured.append(optional_kwargs)
         return make_completion_response("result", prompt_tokens=5, completion_tokens=10)
 
@@ -1551,7 +1554,7 @@ class TestRetryCompletion:
         self.mocker = mocker
         self.service, self.mock_plugin = make_service()
 
-    def _make_task(self, *, task_type: str = "ask"):
+    def _make_task(self, *, task_type: str = "ask", model: str = "m"):
         from llm.persistence import PendingTaskRow
 
         return PendingTaskRow(
@@ -1561,7 +1564,7 @@ class TestRetryCompletion:
             reply_target="#test",
             is_channel=1,
             prompt_preview="hi",
-            model="m",
+            model=model,
             request_data='{"messages": [{"role": "user", "content": "hi"}]}',
             submitted_at=100.0,
             expires_at=200.0,
@@ -1584,17 +1587,40 @@ class TestRetryCompletion:
         assert result.status == "failed_terminal"
         assert "Malformed" in result.reason
 
-    def test_retry_completion_code_task_uses_code_api_key(self, mocker: MockerFixture) -> None:
-        """A 'code' task looks up codeApiKey; missing key returns failed_terminal."""
-        from .conftest import make_registry_side_effect
+    def test_retry_completion_key_follows_the_persisted_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry resolves its key from task.model, not from the task type.
 
-        self.mock_plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"codeApiKey": ""})
-        )
-        task = self._make_task(task_type="code")
+        The old ladder paired a 'code' task with codeApiKey regardless of which
+        provider ``task.model`` names. Here the stashed model is xAI, so
+        XAI_API_KEY is what has to be missing for the retry to fail terminally.
+        """
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        task = self._make_task(task_type="code", model="xai/grok-4.3")
         result = self.service._retry_completion(task, {"messages": [{"role": "u", "content": "x"}]})
         assert result.status == "failed_terminal"
-        assert "API key" in result.reason
+        assert "XAI_API_KEY" in result.reason
+
+    def test_retry_completion_unmanaged_model_is_not_a_hard_failure(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A row stashed with a model we supply no key for still gets retried.
+
+        ``task.model`` is a persisted column, so rows queued before a deploy can
+        carry an empty or unrecognised model. Failing those terminally would
+        silently kill in-flight @ask/@code/@draw recoveries across a restart;
+        the call proceeds and LiteLLM reports whatever the real problem is.
+        """
+        fallback = mocker.patch.object(
+            self.service,
+            "_completion_with_tool_fallback",
+            return_value=make_completion_response("recovered"),
+        )
+        task = self._make_task(model="")
+        result = self.service._retry_completion(task, {"messages": [{"role": "u", "content": "x"}]})
+        assert result.status == "completed"
+        assert fallback.called
 
 
 class TestResponsesApiTextAndUsage:

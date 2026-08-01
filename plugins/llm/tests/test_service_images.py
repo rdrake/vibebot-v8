@@ -6,7 +6,6 @@ import threading
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.service import LLMService
 
 from .conftest import make_completion_response
 
@@ -968,12 +967,16 @@ class TestDrawAutoRewrite:
 
         assert "Error" in result.content
 
-    def test_auto_rewrite_skipped_when_ask_key_missing(self) -> None:
-        """GIVEN assistantApiKey not configured WHEN content blocked THEN skips rewrite."""
-        self.config_values["assistantApiKey"] = ""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: self.config_values.get(key)
-        )
+    def test_auto_rewrite_skipped_when_ask_key_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN no key for the rewrite model's provider WHEN blocked THEN skips rewrite.
+
+        The rewriter runs on ``assistantModel`` (gemini/gemini-flash-latest), so
+        GEMINI_API_KEY is the variable that gates it. ``imageModel`` here is a
+        vertex_ai model, which is unmanaged and so unaffected either way.
+        """
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         empty_resp = self._make_empty_response()
 
         self.mocker.patch("llm.service.litellm.image_generation", return_value=empty_resp)
@@ -1142,14 +1145,19 @@ class TestImageGenerationValidation:
         assert result.error is not None
         assert "Error" in result.content
 
-    def test_image_generation_missing_draw_key(self) -> None:
-        """GIVEN service with empty imageApiKey WHEN image_generation called THEN returns API key error."""
-        service, _ = self.make_service(imageApiKey="")
+    def test_image_generation_missing_draw_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN no key for the image model's provider THEN returns an error.
+
+        The default ``imageModel`` is "dall-e-3", which LiteLLM places on
+        openai, so OPENAI_API_KEY is what this guard reads.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        service, _ = self.make_service()
 
         result = service.image_generation("A beautiful sunset")
 
         assert result.error is not None
-        assert "API key" in result.content
+        assert "OPENAI_API_KEY" in result.content
 
 
 class TestImageGenerationPaths:
@@ -1315,20 +1323,19 @@ class TestRetryImage:
         assert result.status == "failed_terminal"
         assert "Malformed" in result.reason
 
-    def test_retry_image_no_api_key(self) -> None:
-        """GIVEN imageApiKey is empty WHEN _retry_image called THEN returns failed_terminal with API key reason."""
-        from .conftest import make_registry_side_effect
+    def test_retry_image_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN no key for the stashed model's provider THEN failed_terminal.
 
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=make_registry_side_effect({"imageApiKey": ""})
-        )
-        service = LLMService(self.mock_plugin)
+        The retry resolves from ``task.model`` ("dall-e-3" -> openai), not from
+        a per-command registry key that could name a different provider.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         task = self._make_task()
 
-        result = service._retry_image(task, {"prompt": "cat"})
+        result = self.service._retry_image(task, {"prompt": "cat"})
 
         assert result.status == "failed_terminal"
-        assert "API key" in result.reason
+        assert "OPENAI_API_KEY" in result.reason
 
     def test_retry_image_content_blocked(self) -> None:
         """GIVEN _attempt_image_generation returns None WHEN _retry_image called THEN returns failed_terminal with blocked reason."""

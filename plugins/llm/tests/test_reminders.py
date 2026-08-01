@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.service import AssistantResult, ReminderParseResult
 
-from .conftest import make_completion_response, make_reminder_row
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response, make_reminder_row
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -683,26 +683,27 @@ class TestParseReminderService:
         result = service.parse_reminder(text)
         assert result.action == "schedule"
 
-    def test_parse_reminder_no_api_key(self, mock_plugin: MagicMock, mocker: MockerFixture) -> None:
-        """GIVEN no API key WHEN parsing THEN returns clarify with error."""
-        from llm.service import LLMService
+    def test_parse_reminder_no_api_key(
+        self, service: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN no key for the reminder model's provider THEN clarify with error.
 
-        mock_plugin.registryValue.side_effect = lambda key, *args: ""
-        mocker.patch("llm.service.log")
-        service = LLMService(mock_plugin)
+        The fixture's assistantModel is ``gemini/gemini-2.0-flash``, so
+        GEMINI_API_KEY — not any other provider variable — is what has to be
+        missing for this guard to fire.
+        """
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
         result = service.parse_reminder("in 30 minutes test")
         assert result.action == "clarify"
-        assert "API key" in result.confirmation
+        assert "GEMINI_API_KEY" in result.confirmation
 
     def test_parse_reminder_uses_assistant_keys_when_set(self, mocker: MockerFixture) -> None:
-        """T5b: parse_reminder uses assistantApiKey/Model directly. Verifies
-        the capability-based settings are the lookup target."""
+        """parse_reminder sends assistantModel with that model's provider key."""
         from llm.service import LLMService
 
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantApiKey": "sk-assistant",
             "assistantModel": "gemini/gemini-flash-latest",
             "timeout": 30,
         }.get(key, "")
@@ -718,7 +719,8 @@ class TestParseReminderService:
 
         kwargs = mock_completion.call_args.kwargs
         assert kwargs["model"] == "gemini/gemini-flash-latest"
-        assert kwargs["api_key"] == "sk-assistant"
+        # gemini/ model -> GEMINI_API_KEY, not whatever the ask path used to hold.
+        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
 
     def test_parse_reminder_schedule_success(
         self, service: MagicMock, mocker: MockerFixture

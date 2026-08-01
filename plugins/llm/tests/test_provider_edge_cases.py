@@ -12,8 +12,15 @@ import litellm
 import pytest
 from llm.service import LLMService
 
+from .conftest import make_completion_response
+
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
+
+
+def _stub_response():
+    """A litellm-shaped chat-completion response, for kwarg-capture stubs."""
+    return make_completion_response()
 
 
 class TestProviderSpecificErrors:
@@ -488,20 +495,35 @@ def fibonacci(n):
 class TestAPIKeyHandling:
     """Test API key handling across different scenarios."""
 
-    def test_missing_ask_key_returns_error(self, make_service) -> None:
-        """GIVEN no ask API key WHEN completing THEN returns error."""
-        service, _ = make_service(assistantApiKey=None)
+    def test_missing_ask_key_returns_error(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN no key for the ask model's provider WHEN completing THEN returns error.
+
+        The default ``assistantModel`` is TEST_MODEL ("gpt-4"), whose provider
+        is openai, so unsetting OPENAI_API_KEY is what makes the key missing.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        service, _ = make_service()
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
-        assert "API key not configured" in result.content
+        assert "OPENAI_API_KEY" in result.content
 
-    def test_empty_ask_key_returns_error(self, make_service) -> None:
-        """GIVEN empty ask API key WHEN completing THEN returns error."""
-        service, _ = make_service(assistantApiKey="")
+    def test_empty_ask_key_returns_error(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an empty key for the ask model's provider THEN returns error.
+
+        An empty value must be treated exactly like an unset one, otherwise ""
+        reaches litellm and the failure surfaces as a provider auth error.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        service, _ = make_service()
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
+        assert "OPENAI_API_KEY" in result.content
 
     def test_api_key_sanitized_in_errors(
         self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
@@ -523,3 +545,85 @@ class TestAPIKeyHandling:
 
         # Key should not appear in result
         assert fake_key not in str(result)
+
+
+class TestBoundaryKeyResolution:
+    """The key litellm receives is the one the model's provider variable holds."""
+
+    def test_xai_model_gets_xai_key(self, make_service, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN an xai model WHEN completing THEN XAI_API_KEY reaches litellm."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        service, _ = make_service(assistantModel="xai/grok-4.3")
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "litellm.completion",
+            lambda **kwargs: seen.update(kwargs) or _stub_response(),
+        )
+        service._timed_completion("ask", model="xai/grok-4.3", messages=[], channel=None)
+        assert seen["api_key"] == "xai-fake-key-for-tests-0000"
+
+    def test_gemini_model_gets_gemini_key(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a gemini model WHEN completing THEN the gemini key, not the xai one."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-fake-key-for-tests-0000")
+        service, _ = make_service()
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "litellm.completion",
+            lambda **kwargs: seen.update(kwargs) or _stub_response(),
+        )
+        service._timed_completion(
+            "ask", model="gemini/gemini-3-flash-preview", messages=[], channel=None
+        )
+        assert seen["api_key"] == "AIza-fake-key-for-tests-0000"
+
+    def test_unmanaged_provider_passes_none(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a vertex_ai model WHEN completing THEN api_key is None.
+
+        None is what makes LiteLLM fall back to ADC. Sending "" or a mapped
+        key here would break service-account auth.
+        """
+        service, _ = make_service()
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "litellm.completion",
+            lambda **kwargs: seen.update(kwargs) or _stub_response(),
+        )
+        service._timed_completion(
+            "ask", model="vertex_ai/gemini-2.0-flash", messages=[], channel=None
+        )
+        assert seen["api_key"] is None
+
+    def test_missing_key_error_names_provider_and_variable(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN no key WHEN building the error THEN it names both."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        service, _ = make_service()
+        message = service._missing_key_error("xai/grok-4.3")
+        assert message is not None
+        assert "xai" in message
+        assert "XAI_API_KEY" in message
+
+    @pytest.mark.parametrize("model", ["vertex_ai/imagen-4.0-generate-001", "", "junk-model"])
+    def test_unmanaged_models_have_no_error(self, make_service, model: str) -> None:
+        """GIVEN an unmanaged model WHEN building the error THEN None.
+
+        Unmanaged is not a failure — it is delegation to LiteLLM.
+        """
+        service, _ = make_service()
+        assert service._missing_key_error(model) is None
+
+    def test_error_never_contains_a_key(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a configured key WHEN building any error THEN the value is absent."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        service, _ = make_service()
+        assert "xai-fake-key-for-tests-0000" not in (
+            service._missing_key_error("xai/grok-4.3") or ""
+        )

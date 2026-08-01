@@ -1203,6 +1203,20 @@ class LLMService:
         """
         return apikeys.scrub(text)
 
+    def _missing_key_error(self, model: str) -> str | None:
+        """Message for a managed provider whose variable is unset, else None.
+
+        None means the provider is not one we supply credentials for, so the key
+        is LiteLLM's problem (ADC, IAM, its own environment variables) and there
+        is nothing to report.
+        """
+        if not apikeys.is_managed(model) or apikeys.api_key_for(model):
+            return None
+        return _("no API key configured for provider '%s' (set %s)") % (
+            apikeys.provider_of(model),
+            apikeys.env_var_for(model),
+        )
+
     def _log_server_headers(self, source: object | None) -> None:
         """Log server-identifying headers from a response or exception at DEBUG level."""
         headers = extract_server_headers(source)
@@ -1831,7 +1845,6 @@ class LLMService:
         self,
         model: str,
         messages: list[dict[str, Any]],
-        api_key: str,
         timeout: int,
         optional_kwargs: dict[str, Any],
         op: str = "completion",
@@ -1846,7 +1859,6 @@ class LLMService:
         Args:
             model: Model identifier
             messages: Messages array
-            api_key: API key
             timeout: Timeout in seconds
             optional_kwargs: Additional kwargs (tools, safety_settings, etc.)
             channel: IRC channel/target — drives xAI prompt-cache sticky
@@ -1864,7 +1876,6 @@ class LLMService:
                 model=model,
                 messages=messages,
                 channel=channel,
-                api_key=api_key,
                 timeout=timeout,
                 **optional_kwargs,
             )
@@ -1882,7 +1893,6 @@ class LLMService:
                     model=model,
                     messages=messages,
                     channel=channel,
-                    api_key=api_key,
                     timeout=timeout,
                     **fallback_kwargs,
                 )
@@ -2322,6 +2332,11 @@ class LLMService:
         **kwargs: Any,
     ) -> Any:
         """Run litellm.completion and emit a completion_timing log line."""
+        # The key is a property of the model being called, resolved here rather
+        # than threaded in, so no caller can pair one provider's model with
+        # another's credential. None means "unmanaged" — LiteLLM resolves it
+        # from its own environment (ADC for vertex_ai, and so on).
+        kwargs["api_key"] = apikeys.api_key_for(model)
         cache_key = self._xai_cache_key(model, channel, op)
         if cache_key:
             existing = kwargs.get("extra_headers") or {}
@@ -2591,15 +2606,12 @@ class LLMService:
                 reason="Malformed request data: missing messages",
             )
 
-        target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
-        if task.task_type == "code":
-            api_key_name = "codeApiKey"
-        elif task.task_type == "draw":
-            api_key_name = "imageApiKey"
-        else:
-            api_key_name = "assistantApiKey"
-        api_key = self.plugin.registryValue(api_key_name, target)
-        if not api_key:
+        # ``task.model`` is a persisted column: a row queued before a deploy can
+        # carry an empty or unknown model, which resolves to unmanaged and lets
+        # the call proceed so LiteLLM reports the real problem. Failing hard here
+        # would silently kill in-flight @ask/@code/@draw recoveries.
+        key_error = self._missing_key_error(task.model)
+        if key_error:
             return PendingTaskResult(
                 status="failed_terminal",
                 task_type=task.task_type,
@@ -2608,7 +2620,7 @@ class LLMService:
                 is_channel=bool(task.is_channel),
                 prompt_preview=task.prompt_preview,
                 model=task.model,
-                reason="API key not configured",
+                reason=_("Error: %s") % key_error,
             )
 
         timeout = self.plugin.registryValue("timeout")
@@ -2631,7 +2643,6 @@ class LLMService:
         response = self._completion_with_tool_fallback(
             model=task.model,
             messages=messages,
-            api_key=api_key,
             timeout=timeout,
             optional_kwargs=optional_kwargs,
             op="pending_retry",
@@ -2679,7 +2690,10 @@ class LLMService:
             )
 
         target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
-        if not self.plugin.registryValue("imageApiKey", target):
+        # Same persisted-column caveat as _retry_completion: unmanaged resolves
+        # to no error and the call proceeds.
+        key_error = self._missing_key_error(task.model)
+        if key_error:
             return PendingTaskResult(
                 status="failed_terminal",
                 task_type=task.task_type,
@@ -2688,7 +2702,7 @@ class LLMService:
                 is_channel=bool(task.is_channel),
                 prompt_preview=task.prompt_preview,
                 model=task.model,
-                reason="API key not configured",
+                reason=_("Error: %s") % key_error,
             )
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
@@ -2982,22 +2996,23 @@ class LLMService:
             channel = msg.args[0] if msg and msg.args else None
             # Map command to capability-based registry keys.
             if command == "code":
-                api_key_name = "codeApiKey"
                 model_name = "codeModel"
                 prompt_name = "codeSystemPrompt"
             else:
-                api_key_name = "assistantApiKey"
                 model_name = "assistantModel"
                 prompt_name = "assistantSystemPrompt"
-            effective_api_key = api_key or self.plugin.registryValue(api_key_name, channel)
-            if not effective_api_key:
-                error_content = _("Error: API key not configured for %s command") % command
+            # Resolve the effective model *before* the key check: an override
+            # can point at a different provider than the registry value, and the
+            # key must match the model actually sent.
+            model = model_override or self.plugin.registryValue(model_name, channel)
+            key_error = self._missing_key_error(model)
+            if key_error:
+                error_content = _("Error: %s") % key_error
                 return CompletionResult(
                     content=error_content,
                     grounding_used=False,
                     error=error_content,
                 )
-            model = model_override or self.plugin.registryValue(model_name, channel)
             if system_prompt is None:
                 base_system_prompt = self.plugin.registryValue(prompt_name, channel)
             else:
@@ -3041,7 +3056,6 @@ class LLMService:
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
-                api_key=effective_api_key,
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op=f"run_completion_{command}",
@@ -3143,16 +3157,12 @@ class LLMService:
             model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
                 "assistantModel", target
             )
-            api_key = self.plugin.registryValue(
-                "searchApiKey", target
-            ) or self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
 
             if self._is_xai_model(model):
                 return self._xai_responses_call(
                     user_content,
                     model=model,
-                    api_key=api_key,
                     timeout=timeout,
                     kind=kind,
                     channel=channel,
@@ -3166,7 +3176,6 @@ class LLMService:
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
-                api_key=api_key,
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op=f"grounded_{kind}",
@@ -3247,7 +3256,6 @@ class LLMService:
         input_text: str,
         *,
         model: str,
-        api_key: str,
         timeout: int,
         kind: str,
         channel: str | None = None,
@@ -3265,7 +3273,6 @@ class LLMService:
             input_text: The user-facing prompt (search query or
                 ``"Summarize the content at this URL: ..."``).
             model: xAI model identifier (e.g. ``xai/grok-4.3``).
-            api_key: xAI API key.
             timeout: Per-request timeout in seconds.
             kind: ``"search"`` or ``"url"`` — only used for log labelling
                 and the failure message.
@@ -3287,7 +3294,7 @@ class LLMService:
                     model=model,
                     input=input_text,
                     tools=[{"type": "web_search"}],
-                    api_key=api_key,
+                    api_key=apikeys.api_key_for(model),
                     timeout=timeout,
                     metadata=self._get_litellm_metadata(),
                     **({"extra_body": extra_body} if extra_body else {}),
@@ -3563,12 +3570,13 @@ class LLMService:
 
         # Get configuration (don't store API key in local var to avoid logging in traces)
         target = self._channel_target(channel)
-        if not self.plugin.registryValue("assistantApiKey", target):
+        model = self.plugin.registryValue("assistantModel", target)
+        key_error = self._missing_key_error(model)
+        if key_error:
             return ReminderParseResult(
                 action="clarify",
-                confirmation=_("Error: API key not configured."),
+                confirmation=_("Error: %s") % key_error,
             )
-        model = self.plugin.registryValue("assistantModel", target)
         timeout = self.plugin.registryValue("timeout")
 
         # Current UTC time for context
@@ -3633,7 +3641,6 @@ Examples (echo → action_prompt: ""):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                api_key=self.plugin.registryValue("assistantApiKey", target),
                 timeout=timeout,
                 optional_kwargs=optional_kwargs,
                 op="reminder_parse",
@@ -3748,10 +3755,9 @@ Examples (echo → action_prompt: ""):
         """Call the configured ``ask`` model with system + user content."""
         try:
             target = self._channel_target(channel)
-            api_key = self.plugin.registryValue("assistantApiKey", target)
-            if not api_key:
-                return None
             model = self.plugin.registryValue("assistantModel", target)
+            if self._missing_key_error(model):
+                return None
             messages = [
                 {"role": Role.SYSTEM, "content": system_prompt},
                 {"role": Role.USER, "content": user_content},
@@ -3761,7 +3767,6 @@ Examples (echo → action_prompt: ""):
                 model=model,
                 messages=messages,
                 channel=channel,
-                api_key=api_key,
                 timeout=self.plugin.registryValue("timeout"),
                 **self._get_provider_kwargs(model, include_tools=False),
             )
@@ -4051,11 +4056,10 @@ Examples (echo → action_prompt: ""):
         """
         try:
             target = self._channel_target(channel)
-            api_key = self.plugin.registryValue("assistantApiKey", target)
-            if not api_key:
+            model = self.plugin.registryValue("assistantModel", target)
+            if self._missing_key_error(model):
                 return None, 0, 0, 0.0
 
-            model = self.plugin.registryValue("assistantModel", target)
             timeout = self.plugin.registryValue("timeout")
 
             system_prompt = (
@@ -4089,7 +4093,6 @@ Examples (echo → action_prompt: ""):
                 model=model,
                 messages=messages,
                 channel=channel,
-                api_key=api_key,
                 timeout=timeout,
                 metadata=self._get_litellm_metadata(),
             )
@@ -4119,7 +4122,7 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
-            channel: Channel for per-channel imageApiKey lookup
+            channel: No longer read — the key now derives from ``model``.
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
@@ -4136,7 +4139,7 @@ Examples (echo → action_prompt: ""):
             response = litellm.image_generation(
                 prompt=prompt,
                 model=model,
-                api_key=self.plugin.registryValue("imageApiKey", channel),
+                api_key=apikeys.api_key_for(model),
                 n=1,
                 timeout=timeout,
                 metadata=self._get_litellm_metadata(),
@@ -4286,13 +4289,11 @@ Examples (echo → action_prompt: ""):
             profile = PROFILES.get(route_profile, PROFILES[PROFILE_CHAT])
             target = self._channel_target(channel)
             model = model_override or self.plugin.registryValue(profile.model_setting, target)
-            effective_api_key = api_key or self.plugin.registryValue(
-                profile.api_key_setting, target
-            )
-            if not effective_api_key:
+            key_error = self._missing_key_error(model)
+            if key_error:
                 return AssistantResult(
-                    content="Error: No API key configured.",
-                    error="No API key configured for assistant backend.",
+                    content=_("Error: %s") % key_error,
+                    error=key_error,
                 )
 
             max_steps = self.plugin.registryValue("metaMaxSteps")
@@ -4560,7 +4561,6 @@ Examples (echo → action_prompt: ""):
                     model=model,
                     messages=messages,
                     channel=channel,
-                    api_key=effective_api_key,
                     timeout=timeout,
                     tools=profile_tools,
                     **completion_kwargs,
@@ -5078,10 +5078,11 @@ Examples (echo → action_prompt: ""):
             # Get configuration (channel-specific for model, global for api key)
             # Don't store API key in local var to avoid logging in traces
             channel = msg.args[0] if msg and msg.args else None
-            if not self.plugin.registryValue("imageApiKey", channel):
-                error_content = _("Error: API key not configured for draw command")
-                return ImageResult(content=error_content, error=error_content)
             model = self.plugin.registryValue("imageModel", channel)
+            key_error = self._missing_key_error(model)
+            if key_error:
+                error_content = _("Error: %s") % key_error
+                return ImageResult(content=error_content, error=error_content)
             timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue(
                 "timeout"
             )
@@ -6085,13 +6086,11 @@ Examples (echo → action_prompt: ""):
         try:
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
-            api_key = self.plugin.registryValue("assistantApiKey", target)
             response = self._timed_completion(
                 "extract_memories",
                 model=model,
                 messages=messages,
                 channel=channel,
-                api_key=api_key,
                 timeout=15,
                 response_format={
                     "type": "json_schema",
@@ -6156,14 +6155,12 @@ Examples (echo → action_prompt: ""):
         try:
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
-            api_key = self.plugin.registryValue("assistantApiKey", target)
             timeout = self.plugin.registryValue("timeout")
             response = self._timed_completion(
                 "cleanup_memories",
                 model=model,
                 messages=messages,
                 channel=channel,
-                api_key=api_key,
                 timeout=timeout,
                 num_retries=2,
                 response_format={"type": "json_object"},

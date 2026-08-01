@@ -4435,10 +4435,10 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
             route_profile=PROFILE_CHAT,
         )
 
+        # The key is no longer a registry read at all — it comes from the
+        # model's provider variable — so only the model setting is asserted.
         assert "SENTINEL_MODEL_KEY" in registry_calls
-        assert "SENTINEL_API_KEY" in registry_calls
         assert "assistantModel" not in registry_calls
-        assert "assistantApiKey" not in registry_calls
 
     def test_model_override_still_wins(
         self, service: LLMService, mocker: MockerFixture, monkeypatch

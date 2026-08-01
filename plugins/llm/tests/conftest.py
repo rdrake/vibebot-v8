@@ -549,7 +549,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "storyUnregRateLimitCount": 0,
         "storyUnregRateLimitWindow": 60,
         # Search/fetch tools
-        "searchApiKey": "",
         "searchModel": "",
         # Assistant tool-calling backend
         "metaMaxSteps": 7,

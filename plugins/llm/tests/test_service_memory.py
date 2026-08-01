@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .conftest import make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -46,33 +46,32 @@ class TestSummarize:
 
         assert result == "Summary with extra spaces and newlines"
 
-    def test_summarize_returns_none_on_missing_api_key(self) -> None:
-        """GIVEN no API key WHEN summarize called THEN returns None."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": None,
-                "assistantModel": "gpt-4",
-                "timeout": 30,
-            }.get(key)
-        )
+    def test_summarize_returns_none_on_missing_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN the model's provider variable is unset WHEN summarize THEN None.
+
+        The fixture's assistantModel is "gpt-4" -> openai, so OPENAI_API_KEY is
+        what has to be missing.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        mock_completion = self.mocker.patch("llm.service.litellm.completion")
 
         result = self.service.summarize("content")
 
         assert result is None
+        # Not merely None — the guard must short-circuit before the provider call.
+        mock_completion.assert_not_called()
 
-    def test_summarize_returns_none_on_empty_api_key(self) -> None:
-        """GIVEN empty API key WHEN summarize called THEN returns None."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": "",
-                "assistantModel": "gpt-4",
-                "timeout": 30,
-            }.get(key)
-        )
+    def test_summarize_returns_none_on_empty_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN an empty provider variable WHEN summarize called THEN returns None."""
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        mock_completion = self.mocker.patch("llm.service.litellm.completion")
 
         result = self.service.summarize("content")
 
         assert result is None
+        mock_completion.assert_not_called()
 
     def test_summarize_returns_none_on_exception(self) -> None:
         """GIVEN API error WHEN summarize called THEN returns None gracefully."""
@@ -102,7 +101,8 @@ class TestSummarize:
         self.service.summarize("content")
 
         assert completion_kwargs["model"] == "gpt-4"
-        assert completion_kwargs["api_key"] == "test-api-key"
+        # "gpt-4" is an openai model, so the openai variable is the one sent.
+        assert completion_kwargs["api_key"] == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
 
     def test_summarize_uses_channel_for_model_lookup(self) -> None:
         """GIVEN channel WHEN summarize called THEN passes channel for model config."""
@@ -192,19 +192,17 @@ class TestSummarize:
         assert "one sentence" in messages[0]["content"]
         assert "no Markdown" in messages[0]["content"]
 
-    def test_summarize_for_irc_returns_none_on_missing_api_key(self) -> None:
-        """GIVEN no ask key WHEN IRC teaser requested THEN returns None."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": "",
-                "assistantModel": "gpt-4",
-                "timeout": 30,
-            }.get(key)
-        )
+    def test_summarize_for_irc_returns_none_on_missing_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN no key for the ask model's provider WHEN teaser requested THEN None."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        mock_completion = self.mocker.patch("llm.service.litellm.completion")
 
         result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=80)
 
         assert result is None
+        mock_completion.assert_not_called()
 
 
 class TestMemoryInjection:
@@ -718,11 +716,11 @@ class TestMemoryCleanup:
         service.cleanup_memories("user1", "#test", rows)
 
         call_kwargs = mock_litellm.completion.call_args.kwargs
-        # T5b: cleanup uses assistantModel/assistantApiKey directly.
-        from .conftest import TEST_API_KEY, TEST_MODEL
+        # Cleanup runs on assistantModel; the key follows that model's provider.
+        from .conftest import TEST_MODEL
 
-        assert call_kwargs["model"] == TEST_MODEL
-        assert call_kwargs["api_key"] == TEST_API_KEY
+        assert call_kwargs["model"] == TEST_MODEL  # "gpt-4" -> openai
+        assert call_kwargs["api_key"] == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
 
     def test_cleanup_uses_registry_timeout(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN custom timeout WHEN cleanup runs THEN LLM call uses registry value."""
@@ -739,13 +737,17 @@ class TestMemoryCleanup:
         call_kwargs = mock_litellm.completion.call_args.kwargs
         assert call_kwargs["timeout"] == 123
 
-    def test_cleanup_uses_memory_api_key_when_set(
+    def test_cleanup_key_follows_the_configured_model(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """GIVEN assistantApiKey set WHEN cleanup THEN uses assistantApiKey over assistantApiKey."""
+        """GIVEN a gemini assistantModel WHEN cleanup runs THEN the gemini key is sent.
+
+        Changing the model changes the credential with it — there is no separate
+        per-command key left that could stay pointed at the previous provider.
+        """
         from llm.persistence import MemoryRow
 
-        service, mock_plugin = make_service(assistantApiKey="memory-specific-key")
+        service, mock_plugin = make_service(assistantModel="gemini/gemini-flash-latest")
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_response = make_completion_response('{"drop": [], "merge": []}')
         mock_litellm.completion.return_value = mock_response
@@ -754,7 +756,7 @@ class TestMemoryCleanup:
         service.cleanup_memories("user1", "#test", rows)
 
         call_kwargs = mock_litellm.completion.call_args.kwargs
-        assert call_kwargs["api_key"] == "memory-specific-key"
+        assert call_kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
 
     def test_cleanup_result_has_no_keep_field(self) -> None:
         """GIVEN CleanupResult WHEN inspected THEN has no keep field."""
@@ -789,10 +791,10 @@ class TestMemoryCleanup:
 
 
 class TestExtractMemories:
-    """Test extract_memories uses the assistant key/model."""
+    """Test extract_memories uses the assistant model and that model's key."""
 
     def test_api_key_uses_assistant_key(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN assistantApiKey set WHEN extract_memories called THEN it is used."""
+        """GIVEN the assistant model WHEN extract_memories runs THEN its provider key is sent."""
         service, mock_plugin = make_service()
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_response = make_completion_response('{"add": ["likes cats"]}')
@@ -801,9 +803,10 @@ class TestExtractMemories:
         result = service.extract_memories("nick", "#chan", "I like cats", "Cool!", [])
 
         assert result.add == ["likes cats"]
-        from .conftest import TEST_API_KEY
-
-        assert mock_completion.call_args.kwargs.get("api_key") == TEST_API_KEY
+        # TEST_MODEL is "gpt-4" -> openai.
+        assert (
+            mock_completion.call_args.kwargs.get("api_key") == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
+        )
 
 
 class TestCleanupMemoriesValidation:

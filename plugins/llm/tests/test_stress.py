@@ -14,6 +14,8 @@ import pytest
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
 
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
+
 if TYPE_CHECKING:
     from unittest.mock import Mock
 
@@ -261,57 +263,47 @@ class TestRapidRequestHandling:
 class TestConcurrentAPIKeyIsolation:
     """Test that API keys are isolated in concurrent requests."""
 
-    def test_completion_api_key_isolation(self, mocker: MockerFixture) -> None:
-        """GIVEN concurrent completion requests WHEN different keys THEN proper isolation."""
-        api_keys_used: list[str] = []
+    def test_completion_key_isolation_across_providers(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN concurrent requests on different providers THEN no key bleeds.
+
+        Keys are no longer per-request state, so the interesting contamination
+        is now cross-provider: 20 threads interleaving three providers must each
+        see their own model's variable, never a neighbour's.
+        """
+        models = ["xai/grok-4.3", "gemini/gemini-3-flash-preview", "openai/gpt-5.2"]
+        expected = {
+            "xai/grok-4.3": FAKE_PROVIDER_KEYS["XAI_API_KEY"],
+            "gemini/gemini-3-flash-preview": FAKE_PROVIDER_KEYS["GEMINI_API_KEY"],
+            "openai/gpt-5.2": FAKE_PROVIDER_KEYS["OPENAI_API_KEY"],
+        }
+        observed: list[tuple[str, object]] = []
         lock = threading.Lock()
 
-        def mock_completion(**kwargs) -> Mock:
+        def record(**kwargs: object) -> object:
             with lock:
-                api_keys_used.append(kwargs.get("api_key", "MISSING"))
-            time.sleep(0.01)  # Simulate latency
+                observed.append((kwargs["model"], kwargs.get("api_key")))
+            time.sleep(0.01)  # widen the interleaving window
+            return make_completion_response()
 
-            response = mocker.Mock()
-            response.choices = [mocker.Mock()]
-            response.choices[0].message = mocker.Mock()
-            response.choices[
-                0
-            ].message.content = f"Response for key {kwargs.get('api_key', '')[:10]}"
-            return response
+        monkeypatch.setattr("litellm.completion", record)
+        service, _ = make_service()
 
-        def make_request(user_id: int) -> None:
-            mock_plugin = mocker.Mock()
-            mock_plugin.log = mocker.Mock()
-            unique_key = f"key_{user_id}_{'x' * 30}"
+        def worker(index: int) -> None:
+            model = models[index % len(models)]
+            service._timed_completion("ask", model=model, messages=[], channel=None)
 
-            mock_plugin.registryValue = mocker.Mock(
-                side_effect=lambda key, channel=None: {
-                    "maxPromptLength": 10000,
-                    "commandPrefixes": ["."],
-                    "assistantApiKey": unique_key,
-                    "assistantModel": "gpt-4",
-                    "assistantSystemPrompt": "You are helpful.",
-                    "timeout": 30,
-                }.get(key)
-            )
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
-            service = LLMService(mock_plugin)
-            service.completion(f"Request from user {user_id}", command="ask")
-
-        mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
-        threads = []
-        for i in range(20):
-            t = threading.Thread(target=make_request, args=(i,))
-            threads.append(t)
-            t.start()
-
-        for t in threads:
-            t.join()
-
-        # All keys should be unique
-        assert len(api_keys_used) == 20
-        unique_keys = set(api_keys_used)
-        assert len(unique_keys) == 20, "API key contamination detected!"
+        assert len(observed) == 20
+        assert len({key for _model, key in observed}) == 3
+        for model, key in observed:
+            assert key == expected[model], f"key bleed: {model} received another provider's key"
 
 
 class TestOverlappingContextScenarios:
