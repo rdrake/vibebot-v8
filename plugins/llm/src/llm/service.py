@@ -482,6 +482,112 @@ def _strip_image_failures(
     return _strip_assistant_turns(history, _is_image_failure)
 
 
+# Tool-complaint guard. The image-failure guard above fixed one sentence; this
+# one fixes the behaviour behind it. _IMAGE_FAILURE_RE is keyed on an image noun
+# next to a failure verb, and the model drifted out of that vocabulary within
+# hours while keeping the loop running. #afternet on 2026-08-01, same thread:
+#
+#   20:07  Image generation failed.        <- the only line the sibling catches
+#   20:36  The image tool's broken.
+#   21:59  Tool spat back nothing but silence this time.
+#   22:13  Tool refused. 420.
+#   22:29  Tool's still choking on the request.
+#
+# By the end "vibebot give Jordan some bacon" — a request involving no tool at
+# all — was answered with a tool complaint at tool_calls=0. Each restatement
+# stayed in history, so each one seeded the next: the failure mode is not the
+# wording, it is that a complaint about the machinery survives the turn that
+# earned it.
+#
+# So this predicate is keyed on SHAPE rather than vocabulary, which is what
+# stops the arms race: a SHORT reply, LEADING with a complaint about the
+# machinery, is a failure report whatever words it picks this time. Three
+# conditions have to hold together, and it is the conjunction that keeps it
+# safe — a long answer discussing a genuinely broken third-party API is prose,
+# not a report, and survives on the word cap alone.
+_TOOL_COMPLAINT_OPENING_CHARS = 160
+# A failure report is a one-liner. Every observed line ran under fourteen
+# words; a substantive reply that happens to mention a broken service runs
+# far longer. This cap is the main false-positive defence.
+_TOOL_COMPLAINT_MAX_WORDS = 30
+# The machinery, as the model refers to it. Deliberately excludes bare "image"
+# and "picture": those belong to the sibling guard, and a reply about a picture
+# is usually about a picture.
+_TOOL_NOUN_RE = re.compile(
+    r"\b(?:tool|tools|api|apis|endpoint|backend|generator|image gen|imagegen)\b",
+    re.IGNORECASE,
+)
+# Failure vocabulary. Bare HTTP-ish status codes are included because the model
+# quoted them raw ("Tool refused. 420.", "Tool still giving 420.").
+#
+# Measured against 22,968 real bot lines from #afternet, which is also where
+# the exclusions come from — each of these cost a substantive answer and buys
+# no observed complaint, so none of them are here:
+#
+#   dead     "pipe Gemini's draft into Grok's prompt, dead easy ... via API chaining"
+#   nothing  "Nothing specific — no standard nodeTML exists ... via tools like ..."
+#   unable   "Unable to get real-time results ... it's a torrent indexer tool"
+#   down, empty, stuck, couldn't — same shape, generic enough to recur
+#
+# "unable"/"couldn't" are excluded for the stronger reason as well: they are the
+# vocabulary of an honest capability gap, which _MAX_SAFETY_REFUSAL_RETRIES
+# already argues must survive untouched, because retrying an admitted gap pushes
+# the model toward inventing an answer instead.
+_TOOL_FAILURE_RE = re.compile(
+    r"\b(?:fail(?:ed|ure|s|ing)?|error|errors|broken|borked|busted|fucked|"
+    r"hosed|glitch(?:ed|ing)?|useless|refus(?:e|ed|es|ing|al)|"
+    r"reject(?:s|ed|ing)?|chok(?:e|ed|es|ing)|silen(?:ce|t)|"
+    r"time[ds]? out|timeout|won'?t work|not working|"
+    r"[45]\d\d)\b",
+    re.IGNORECASE,
+)
+
+_MAX_TOOL_COMPLAINT_RETRIES = 1
+# The nudge states the evidence rather than scolding the model: it is being
+# told a verifiable fact about THIS turn (no tool ran), which is what makes the
+# retry land. Telling it "stop complaining" would leave it free to complain in
+# fresh words, which is exactly how the spiral kept moving.
+_TOOL_COMPLAINT_RETRY_NUDGE = (
+    "Stop — you reported that a tool failed, but no tool ran on this turn and "
+    "nothing failed. That line is copied from an earlier turn, not something "
+    "that just happened. Answer what was actually asked: if it needs a tool, "
+    "call the tool; if it does not, just answer in voice."
+)
+
+
+def _is_tool_complaint(content: str) -> bool:
+    """Return True iff a short reply leads with a complaint about the machinery.
+
+    A reply carrying an image URL is never flagged, matching
+    :func:`_is_image_failure` — that turn delivered, so it is not a report.
+    Only the opening is scanned, for the same reason as
+    ``_VERSE_DENIAL_OPENING_CHARS``: reports lead with the failure.
+    """
+    if not content:
+        return False
+    if _IMAGE_URL_RE.search(content) or _ANY_IMAGE_URL_RE.search(content):
+        return False
+    if len(content.split()) > _TOOL_COMPLAINT_MAX_WORDS:
+        return False
+    opening = content[:_TOOL_COMPLAINT_OPENING_CHARS]
+    return (
+        _TOOL_NOUN_RE.search(opening) is not None and _TOOL_FAILURE_RE.search(opening) is not None
+    )
+
+
+def _strip_tool_complaints(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop the model's own past tool complaints from history.
+
+    Mirrors :func:`_strip_image_failures`, and runs every turn on every route
+    for the same reason: the complaint is only ever true of the turn that
+    produced it, and leaving it in place is what turned one moderated prompt
+    into five hours of "the tool is broken" on requests that used no tool.
+    """
+    return _strip_assistant_turns(history, _is_tool_complaint)
+
+
 # Quality-collapse guard. Distinct from the denial guard above (which is
 # verse-only): a non-reasoning model treats its own recent prose as the style
 # exemplar, so one degraded reply (a 200-word run-on, or text that loops the
@@ -4506,6 +4612,12 @@ Examples (echo → action_prompt: ""):
             # failure line instead of calling the tool.
             history = _strip_image_failures(history)
             channel_history = _strip_image_failures(channel_history)
+            # Tool complaints in any wording, on every route. The image strip
+            # above only recognises the first phrasing the model reaches for;
+            # this catches the paraphrases it drifts into once that one is in
+            # the thread, which is what let the spiral outlive its own cause.
+            history = _strip_tool_complaints(history)
+            channel_history = _strip_tool_complaints(channel_history)
             if route_profile == PROFILE_VERSE:
                 history = _strip_verse_denials(history)
                 history = _strip_degraded(history)
@@ -4656,6 +4768,17 @@ Examples (echo → action_prompt: ""):
             # Count of quality-collapse retries spent this invocation (see
             # _is_degraded_reply / _MAX_DEGRADED_RETRIES). All routes.
             degraded_retries = 0
+            # Whether ANY tool was dispatched at any step of this invocation.
+            # This is what makes the tool-complaint guard evidence-driven
+            # rather than a second opinion on the model's wording: if nothing
+            # ran, a reply reporting that something failed cannot be about
+            # this turn. Distinct from last_successful_tool, which is None
+            # both when no tool ran and when every tool errored — only the
+            # first of those is an invented complaint.
+            any_tool_ran = False
+            # Count of invented-tool-complaint retries spent this invocation
+            # (see _is_tool_complaint / _MAX_TOOL_COMPLAINT_RETRIES).
+            tool_complaint_retries = 0
             # Count of self-repetition retries spent this invocation (see
             # _replies_repetitive / _MAX_REPEAT_RETRIES). All routes.
             repeat_retries = 0
@@ -4814,6 +4937,36 @@ Examples (echo → action_prompt: ""):
                         content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
                         last_assistant_text = content
 
+                    # Invented-tool-complaint guard (all routes). A reply that
+                    # reports the machinery failed, on an invocation that
+                    # never dispatched a tool, is not reporting anything — it
+                    # is reciting a line from an older turn. Gated on
+                    # any_tool_ran rather than on the wording, so a HONEST
+                    # complaint (a tool did run and did fail) is always
+                    # delivered untouched; only the provably baseless one is
+                    # re-rolled. After the budget, fall through and deliver
+                    # the best effort — the every-turn _strip_tool_complaints
+                    # pass keeps it out of future prompts regardless.
+                    if (
+                        not any_tool_ran
+                        and _is_tool_complaint(content)
+                        and tool_complaint_retries < _MAX_TOOL_COMPLAINT_RETRIES
+                    ):
+                        tool_complaint_retries += 1
+                        self.log.warning(
+                            "assistant_completion: reply blamed a tool that "
+                            "never ran, nudging and retrying (%i/%i) "
+                            "model=%s channel=%s route=%s",
+                            tool_complaint_retries,
+                            _MAX_TOOL_COMPLAINT_RETRIES,
+                            model,
+                            channel,
+                            route_profile,
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _TOOL_COMPLAINT_RETRY_NUDGE})
+                        continue
+
                     # Safety-refusal guard (all routes): a policy-shaped
                     # refusal of a request the channel considers in bounds
                     # ("I can't help with that", "I'm not comfortable
@@ -4962,6 +5115,10 @@ Examples (echo → action_prompt: ""):
 
                 # Execute each tool call and append results
                 storybook_ok = False
+                # Recorded before dispatch, not after: a call that raises or
+                # errors still means the model reached for a tool, and only a
+                # turn that reached for none can be complaining about nothing.
+                any_tool_ran = True
                 for tc in message.tool_calls:
                     try:
                         args = json.loads(tc.function.arguments)
