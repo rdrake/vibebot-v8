@@ -365,6 +365,66 @@ def _strip_safety_refusals(
     return _strip_assistant_turns(history, _is_safety_refusal)
 
 
+# Image-failure guard. A third failure mode, and the one the two guards above
+# are each blind to by construction. When image generation errors (the
+# provider's own content filter, or a transient API fault) the model reports it
+# in a short line — "Image generation failed." — which is correct for that
+# turn. But the line then sits in history, and a non-reasoning model reproduces
+# it VERBATIM on the next draw request without ever calling the tool. Observed
+# in #afternet on 2026-08-01: "draw a tit" was content-moderated by xAI
+# (legitimate), and the very next message, "draw a cat", came back with the
+# same sentence at tool_calls=0 — the tool was never invoked, so the user sees
+# image generation as broken when only one prompt ever was.
+#
+# Nothing existing catches it. _is_safety_refusal deliberately EXCLUDES image
+# refusals (re-rolling the text cannot change a provider filter's verdict, so
+# retrying would just burn a call) and _strip_safety_refusals shares that
+# predicate; _strip_repeated_replies never judges a reply under
+# _REPEAT_MIN_WORDS distinct words and this one has three; _strip_degraded
+# needs a 150+ word passage. So strip it explicitly.
+#
+# Strip-only, with no retry sibling: the original exclusion's reasoning still
+# holds for the turn that fails. This guard is about the turns AFTER it.
+_IMAGE_FAILURE_OPENING_CHARS = 160
+_IMAGE_FAILURE_RE = re.compile(
+    r"\b(?:image|picture|photo|illustration|drawing)\b[^.!?]{0,60}?"
+    r"\b(?:fail(?:ed|ure|s)?|error|rejected|blocked|moderated|unable|couldn't)\b"
+    r"|\b(?:fail(?:ed|s)?|error|unable|couldn't)\b[^.!?]{0,60}?"
+    r"\b(?:image|picture|photo|illustration|drawing)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_image_failure(content: str) -> bool:
+    """Return True iff a reply reports that image generation failed.
+
+    A reply that actually carries an image URL is never flagged, however it
+    is worded — that turn delivered, so it is not a failure report and must
+    stay in history. Only the opening is scanned, for the same reason as
+    ``_VERSE_DENIAL_OPENING_CHARS``: a failure report leads with the
+    failure, so this avoids flagging a real reply that mentions a picture
+    and a mistake in passing further down.
+    """
+    if not content:
+        return False
+    if _IMAGE_URL_RE.search(content):
+        return False
+    return _IMAGE_FAILURE_RE.search(content[:_IMAGE_FAILURE_OPENING_CHARS]) is not None
+
+
+def _strip_image_failures(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop the model's own past image-failure reports from history.
+
+    Mirrors :func:`_strip_safety_refusals`. Run every turn, on every route,
+    before the model sees the thread: the report is only ever true of the
+    turn that produced it, and leaving it in place is what turns one
+    moderated prompt into an unbroken run of refusals to draw anything.
+    """
+    return _strip_assistant_turns(history, _is_image_failure)
+
+
 # Quality-collapse guard. Distinct from the denial guard above (which is
 # verse-only): a non-reasoning model treats its own recent prose as the style
 # exemplar, so one degraded reply (a 200-word run-on, or text that loops the
@@ -4383,6 +4443,12 @@ Examples (echo → action_prompt: ""):
             # carries the bot's own lines too.
             history = _strip_safety_refusals(history)
             channel_history = _strip_safety_refusals(channel_history)
+            # Image-failure reports are stripped on every route too, and for
+            # the same reason: one moderated prompt otherwise teaches the
+            # model to answer every later draw request with the same canned
+            # failure line instead of calling the tool.
+            history = _strip_image_failures(history)
+            channel_history = _strip_image_failures(channel_history)
             if route_profile == PROFILE_VERSE:
                 history = _strip_verse_denials(history)
                 history = _strip_degraded(history)
