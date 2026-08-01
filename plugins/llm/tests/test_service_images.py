@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .conftest import make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -1539,3 +1539,58 @@ class TestExternalImageUpload:
         html = '<img src="https://paste.example.com/img/img_abc.png">'
 
         assert self.service._restrict_img_srcs(html, "https://example.com/llm") == ""
+
+
+class TestImageBoundaryKeyResolution:
+    """The key litellm.image_generation receives follows the image model.
+
+    Draw is the one outbound boundary whose kwargs nothing else asserts on:
+    before these tests, deleting ``api_key=apikeys.api_key_for(model)`` from the
+    ``litellm.image_generation`` call left the whole suite green.
+    """
+
+    @pytest.mark.parametrize(
+        ("image_model", "expected_env"),
+        [
+            ("xai/grok-2-image", "XAI_API_KEY"),
+            ("dall-e-3", "OPENAI_API_KEY"),
+            ("gemini/imagen-4.0-generate-001", "GEMINI_API_KEY"),
+        ],
+    )
+    def test_managed_image_model_gets_its_own_provider_key(
+        self, make_service, mocker: MockerFixture, image_model: str, expected_env: str
+    ) -> None:
+        """GIVEN an image model WHEN drawing THEN that provider's variable is sent."""
+        service, _ = make_service(imageModel=image_model, drawAutoRewriteMax=0)
+        response = mocker.Mock()
+        response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        image_generation = mocker.patch(
+            "llm.service.litellm.image_generation", return_value=response
+        )
+        mocker.patch.object(service, "_download_and_save_image", return_value=None)
+
+        service.image_generation("a cat")
+
+        kwargs = image_generation.call_args.kwargs
+        assert kwargs["model"] == image_model
+        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS[expected_env]
+
+    def test_unmanaged_image_model_passes_none(self, make_service, mocker: MockerFixture) -> None:
+        """GIVEN a vertex_ai image model WHEN drawing THEN api_key is None.
+
+        This is the prod default. None is what makes LiteLLM fall back to ADC;
+        a mapped key here would break service-account auth on the draw path.
+        """
+        service, _ = make_service(
+            imageModel="vertex_ai/imagen-4.0-generate-001", drawAutoRewriteMax=0
+        )
+        response = mocker.Mock()
+        response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        image_generation = mocker.patch(
+            "llm.service.litellm.image_generation", return_value=response
+        )
+        mocker.patch.object(service, "_download_and_save_image", return_value=None)
+
+        service.image_generation("a cat")
+
+        assert image_generation.call_args.kwargs["api_key"] is None

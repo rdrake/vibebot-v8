@@ -12,7 +12,7 @@ import litellm
 import pytest
 from llm.service import LLMService
 
-from .conftest import make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -627,3 +627,100 @@ class TestBoundaryKeyResolution:
         assert "xai-fake-key-for-tests-0000" not in (
             service._missing_key_error("xai/grok-4.3") or ""
         )
+
+
+class TestGuardsUseTheEffectiveModel:
+    """A pre-flight key check must read the model the call will actually send.
+
+    ``model_override`` can name a different provider than the channel's registry
+    model. Checking the registry value alone produces the wrong verdict in both
+    directions: a false block when the override's provider is configured and the
+    registry model's is not, and a missed error the other way round. The key
+    itself is always right — it comes from ``_timed_completion`` — so the damage
+    is entirely in the guard, which is why nothing else in the suite notices.
+    """
+
+    def test_completion_override_provider_is_what_is_checked(
+        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an override on an unconfigured provider THEN the error names it."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        # The registry model's provider IS configured — only the override's is not.
+        service, _ = make_service(assistantModel="gemini/gemini-flash-latest")
+        completion = mocker.patch("llm.service.litellm.completion")
+
+        result = service.completion("hi", command="ask", model_override="xai/grok-4.3")
+
+        assert result.error is not None
+        assert "XAI_API_KEY" in result.content
+        completion.assert_not_called()
+
+    def test_completion_override_is_not_blocked_by_the_registry_model(
+        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a configured override THEN an unconfigured registry model cannot block it."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        service, _ = make_service(assistantModel="xai/grok-4.3")
+        completion = mocker.patch("llm.service.litellm.completion", return_value=_stub_response())
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.completion(
+            "hi", command="ask", model_override="gemini/gemini-3-flash-preview"
+        )
+
+        assert result.error is None
+        kwargs = completion.call_args.kwargs
+        assert kwargs["model"] == "gemini/gemini-3-flash-preview"
+        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+
+    def test_assistant_override_provider_is_what_is_checked(
+        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an override on an unconfigured provider THEN assistant_completion errors."""
+        from llm.profile import PROFILE_CHAT
+
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        service, _ = make_service(assistantModel="gemini/gemini-flash-latest")
+        completion = mocker.patch("llm.service.litellm.completion")
+
+        result = service.assistant_completion(
+            prompt="hi",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+            model_override="xai/grok-4.3",
+        )
+
+        assert result.error is not None
+        assert "XAI_API_KEY" in result.content
+        completion.assert_not_called()
+
+    def test_assistant_override_is_not_blocked_by_the_registry_model(
+        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN a configured override THEN an unconfigured registry model cannot block it."""
+        from llm.profile import PROFILE_CHAT
+
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        service, _ = make_service(assistantModel="xai/grok-4.3")
+        completion = mocker.patch("llm.service.litellm.completion", return_value=_stub_response())
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="hi",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+            model_override="gemini/gemini-3-flash-preview",
+        )
+
+        assert result.error is None
+        kwargs = completion.call_args.kwargs
+        assert kwargs["model"] == "gemini/gemini-3-flash-preview"
+        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
