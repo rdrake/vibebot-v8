@@ -21,7 +21,6 @@ class TestSummarize:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            assistantApiKey="test-api-key",
             assistantModel="gpt-4",
             timeout=30,
         )
@@ -110,7 +109,7 @@ class TestSummarize:
 
         def track_registry(key, channel=None):
             registry_calls.append((key, channel))
-            return {"assistantApiKey": "key", "assistantModel": "gpt-4", "timeout": 30}.get(key)
+            return {"assistantModel": "gpt-4", "timeout": 30}.get(key)
 
         self.mock_plugin.registryValue = self.mocker.Mock(side_effect=track_registry)
 
@@ -145,7 +144,6 @@ class TestSummarize:
         """GIVEN gemini model WHEN summarize called THEN includes safety settings."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "assistantApiKey": "key",
                 "assistantModel": "gemini/gemini-2.0-flash",
                 "timeout": 30,
             }.get(key)
@@ -387,7 +385,7 @@ class TestMemoryExtraction:
         self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
         """GIVEN _ask_completion raises THEN logs at INFO and returns None."""
-        service, mock_plugin = make_service(assistantApiKey="sk-test")
+        service, mock_plugin = make_service()
         mock_litellm = mocker.patch("llm.service.litellm")
         mock_litellm.completion.side_effect = RuntimeError("nope")
 

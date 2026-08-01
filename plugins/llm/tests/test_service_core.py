@@ -282,7 +282,6 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "assistantApiKey": "test-key",
                 "assistantModel": "gpt-4",
                 "assistantSystemPrompt": "You are a helpful IRC bot.",
                 "timeout": 30,
@@ -311,7 +310,6 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "assistantApiKey": "test-key",
                 "assistantModel": "gpt-4",
                 "assistantSystemPrompt": "",  # Empty base prompt
                 "timeout": 30,
@@ -339,7 +337,6 @@ class TestLLMService:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "assistantApiKey": "test-key",
                 "assistantModel": "gpt-4",
                 "assistantSystemPrompt": "You are helpful.",
                 "timeout": 30,

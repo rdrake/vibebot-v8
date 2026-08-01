@@ -412,7 +412,6 @@ class TestImageGenerationWithBase64:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageApiKey="test-api-key",
             imageModel="gemini/imagen-4.0-generate-001",
             timeout=30,
             maxPromptLength=10000,
@@ -470,7 +469,6 @@ class TestImageGenerationWithBase64:
 
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "imageApiKey": "test-api-key",
                 "imageModel": "gemini/imagen",
                 "timeout": 30,
                 "maxPromptLength": 10000,
@@ -727,7 +725,6 @@ class TestDrawContext:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageApiKey="test-api-key",
             imageModel="gemini/imagen",
             timeout=30,
             maxPromptLength=10000,
@@ -801,9 +798,7 @@ class TestDrawAutoRewrite:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageApiKey="test-draw-key",
             imageModel="vertex_ai/imagen-4.0-generate-001",
-            assistantApiKey="test-ask-key",
             assistantModel="gemini/gemini-flash-latest",
             timeout=30,
             maxPromptLength=10000,
@@ -812,9 +807,7 @@ class TestDrawAutoRewrite:
             drawAutoRewriteMax=3,
         )
         self.config_values = {
-            "imageApiKey": "test-draw-key",
             "imageModel": "vertex_ai/imagen-4.0-generate-001",
-            "assistantApiKey": "test-ask-key",
             "assistantModel": "gemini/gemini-flash-latest",
             "timeout": 30,
             "maxPromptLength": 10000,
@@ -1168,9 +1161,7 @@ class TestImageGenerationPaths:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageApiKey="test-draw-key",
             imageModel="dall-e-3",
-            assistantApiKey="test-ask-key",
             assistantModel="gemini/gemini-flash-latest",
             timeout=30,
             drawTimeout=30,

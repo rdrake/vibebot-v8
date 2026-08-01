@@ -157,9 +157,7 @@ class TestImageGenerationErrors:
     @pytest.fixture
     def service(self, make_service) -> LLMService:
         """Create service with draw config."""
-        service, _ = make_service(
-            imageApiKey="test-key", imageModel="dall-e-3", drawAutoRewriteMax=0
-        )
+        service, _ = make_service(imageModel="dall-e-3", drawAutoRewriteMax=0)
         return service
 
     def test_handles_empty_response_data(self, service: LLMService, mocker: MockerFixture) -> None:
@@ -295,9 +293,7 @@ class TestGeminiSpecificBehaviors:
     @pytest.fixture
     def gemini_service(self, make_service) -> LLMService:
         """Create service configured for Gemini."""
-        service, _ = make_service(
-            assistantApiKey="AIza-test-key", assistantModel="gemini/gemini-2.0-flash"
-        )
+        service, _ = make_service(assistantModel="gemini/gemini-2.0-flash")
         return service
 
     def test_gemini_tools_included_for_2x_models(self, gemini_service: LLMService) -> None:
@@ -370,7 +366,7 @@ class TestOpenAISpecificBehaviors:
     @pytest.fixture
     def openai_service(self, make_service) -> LLMService:
         """Create service configured for OpenAI."""
-        service, _ = make_service(assistantApiKey="sk-test-key")
+        service, _ = make_service()
         return service
 
     def test_no_gemini_tools_for_openai(self, openai_service: LLMService) -> None:
@@ -404,9 +400,7 @@ class TestAnthropicSpecificBehaviors:
     @pytest.fixture
     def anthropic_service(self, make_service) -> LLMService:
         """Create service configured for Anthropic."""
-        service, _ = make_service(
-            assistantApiKey="sk-ant-test-key", assistantModel="anthropic/claude-3-opus"
-        )
+        service, _ = make_service(assistantModel="anthropic/claude-3-opus")
         return service
 
     def test_no_gemini_tools_for_anthropic(self, anthropic_service: LLMService) -> None:

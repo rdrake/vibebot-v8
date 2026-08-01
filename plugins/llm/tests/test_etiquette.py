@@ -123,7 +123,6 @@ class TestResponseLengthHandling:
 
         self.mock_plugin.registryValue = mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "imageApiKey": "test-key",
                 "imageModel": "imagen",
                 "timeout": 30,
                 "maxPromptLength": 10000,

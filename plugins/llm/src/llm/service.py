@@ -2689,7 +2689,6 @@ class LLMService:
                 reason="Malformed request data: missing prompt",
             )
 
-        target = task.reply_target if task.reply_target.startswith(("#", "&")) else None
         # Same persisted-column caveat as _retry_completion: unmanaged resolves
         # to no error and the call proceeds.
         key_error = self._missing_key_error(task.model)
@@ -2706,7 +2705,7 @@ class LLMService:
             )
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
-        result = self._attempt_image_generation(prompt, task.model, timeout, channel=target)
+        result = self._attempt_image_generation(prompt, task.model, timeout)
         if result is None:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -2944,7 +2943,6 @@ class LLMService:
         system_prompt: str | None = None,
         memories: list[str] | None = None,
         user_instruction: str | None = None,
-        api_key: str | None = None,
         model_override: str | None = None,
     ) -> CompletionResult:
         """Generate text completion with optional vision and conversation history.
@@ -2953,7 +2951,7 @@ class LLMService:
         - Prompt validation
         - Image URL validation
         - API key retrieval from config
-        - Thread-safe API calls (api_key passed directly)
+        - Thread-safe API calls
         - Error handling with sanitized messages
 
         Args:
@@ -2969,7 +2967,6 @@ class LLMService:
             memories: Optional list of remembered facts about the user.
                 When provided and non-empty, these are appended to the system
                 prompt so the LLM can personalize its responses.
-            api_key: Optional API key override.
             model_override: Optional model override. When provided, this is used
                 instead of the registry ``{command}Model`` value.
 
@@ -3467,7 +3464,6 @@ class LLMService:
         system_prompt: str | None = None,
         memories: list[str] | None = None,
         user_instruction: str | None = None,
-        api_key: str | None = None,
         model_override: str | None = None,
         cleanup_fn: Callable[[str], ToolCallbackResult] | None = None,
         set_reminder_fn: Callable[[str], ToolCallbackResult] | None = None,
@@ -3511,7 +3507,6 @@ class LLMService:
             db=db,
             context=context,
             bot_nick=bot_nick,
-            api_key=api_key,
             model_override=model_override,
             route_profile=profile,
             capabilities=request_context.capabilities,
@@ -3914,7 +3909,7 @@ Examples (echo → action_prompt: ""):
             raises, so one failed draw can't sink the whole batch."""
             try:
                 styled = f"{style_prefix}: {it['image_prompt']}"
-                return it, self._attempt_image_generation(styled, model, timeout, channel=channel)
+                return it, self._attempt_image_generation(styled, model, timeout)
             except Exception as e:  # noqa: BLE001 — isolate per-image failures
                 self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
                 return it, None
@@ -4112,8 +4107,6 @@ Examples (echo → action_prompt: ""):
         prompt: str,
         model: str,
         timeout: int,
-        *,
-        channel: str | None = None,
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -4121,7 +4114,6 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
-            channel: No longer read — the key now derives from ``model``.
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
@@ -4205,7 +4197,6 @@ Examples (echo → action_prompt: ""):
         db: LLMDatabase,
         context: ConversationContext,
         bot_nick: str,
-        api_key: str | None = None,
         model_override: str | None = None,
         is_owner: bool = False,
         route_profile: str = PROFILE_CHAT,
@@ -4249,7 +4240,6 @@ Examples (echo → action_prompt: ""):
             db: Database instance for persistence operations
             context: Conversation context instance
             bot_nick: Bot's IRC nick for system prompt personalization
-            api_key: Optional API key override
             model_override: Optional model override
             cleanup_fn: Optional callable that runs memory cleanup
             set_reminder_fn: Optional callable that sets a reminder
@@ -5100,7 +5090,7 @@ Examples (echo → action_prompt: ""):
             block_reason = ""
 
             try:
-                result = self._attempt_image_generation(prompt, model, timeout, channel=channel)
+                result = self._attempt_image_generation(prompt, model, timeout)
                 if result is not None:
                     return result
                 # Empty data = content blocked (Google Imagen)
@@ -5176,9 +5166,7 @@ Examples (echo → action_prompt: ""):
 
                 # Retry image generation with rewritten prompt
                 try:
-                    result = self._attempt_image_generation(
-                        current_prompt, model, timeout, channel=channel
-                    )
+                    result = self._attempt_image_generation(current_prompt, model, timeout)
                     if result is not None:
                         # Success! Aggregate costs and set rewritten_prompt
                         return ImageResult(

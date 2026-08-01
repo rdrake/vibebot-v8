@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 # =============================================================================
 
 TEST_MODEL = "gpt-4"
-TEST_API_KEY = "test-key"
 TEST_URL_BASE = "https://example.com/llm"
 
 # Fake values, each comfortably over apikeys.MIN_REDACTABLE_LEN.

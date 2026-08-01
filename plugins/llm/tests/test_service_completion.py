@@ -81,13 +81,7 @@ class TestSearchCompletionProviderRouting:
 
     def test_gemini_search_keeps_google_search_tool(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "gemini/gemini-2.5-flash"
-            if k == "searchModel"
-            else "key"
-            if k == "searchApiKey"
-            else 30
-            if k == "timeout"
-            else ""
+            "gemini/gemini-2.5-flash" if k == "searchModel" else 30 if k == "timeout" else ""
         )
         self.service.search_completion("hi", channel="#t")
         kwargs = self._captured_kwargs()
@@ -101,13 +95,7 @@ class TestSearchCompletionProviderRouting:
         responses_mock = mocker.patch.object(self.service, "_xai_responses_call")
         responses_mock.return_value = mocker.MagicMock()
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "xai/grok-4.3"
-            if k == "searchModel"
-            else "key"
-            if k == "searchApiKey"
-            else 30
-            if k == "timeout"
-            else ""
+            "xai/grok-4.3" if k == "searchModel" else 30 if k == "timeout" else ""
         )
         self.service.search_completion("hi", channel="#t")
         self._completion_mock.assert_not_called()
@@ -123,13 +111,7 @@ class TestSearchCompletionProviderRouting:
 
     def test_gemini_url_uses_url_context(self) -> None:
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "gemini/gemini-2.5-flash"
-            if k == "searchModel"
-            else "key"
-            if k == "searchApiKey"
-            else 30
-            if k == "timeout"
-            else ""
+            "gemini/gemini-2.5-flash" if k == "searchModel" else 30 if k == "timeout" else ""
         )
         self.service.url_completion("https://example.com", channel="#t")
         kwargs = self._captured_kwargs()
@@ -143,13 +125,7 @@ class TestSearchCompletionProviderRouting:
         responses_mock = mocker.patch.object(self.service, "_xai_responses_call")
         responses_mock.return_value = mocker.MagicMock()
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "xai/grok-4.3"
-            if k == "searchModel"
-            else "key"
-            if k == "searchApiKey"
-            else 30
-            if k == "timeout"
-            else ""
+            "xai/grok-4.3" if k == "searchModel" else 30 if k == "timeout" else ""
         )
         self.service.url_completion("https://example.com", channel="#t")
         self._completion_mock.assert_not_called()
@@ -166,13 +142,7 @@ class TestSearchCompletionProviderRouting:
         # ToolResult must carry "" rather than None.
         self._completion_mock.return_value.choices[0].message.content = None
         self.plugin.registryValue.side_effect = lambda k, ch=None: (
-            "gemini/gemini-2.5-flash"
-            if k == "searchModel"
-            else "key"
-            if k == "searchApiKey"
-            else 30
-            if k == "timeout"
-            else ""
+            "gemini/gemini-2.5-flash" if k == "searchModel" else 30 if k == "timeout" else ""
         )
         result = self.service.url_completion("https://example.com", channel="#t")
         assert result.content == ""
@@ -347,7 +317,6 @@ class TestGroundingDetection:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            assistantApiKey="test-key",
             assistantModel="gemini/gemini-2.0-flash",
             assistantSystemPrompt="You are helpful.",
             timeout=30,
@@ -1108,9 +1077,7 @@ class TestSearchCompletion:
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
             assistantModel="gemini/gemini-2.5-flash",
-            assistantApiKey="test-ask-key",
             searchModel="",
-            searchApiKey="",
         )
         return service
 
@@ -1139,8 +1106,6 @@ class TestSearchCompletion:
             side_effect=lambda key, *a: {
                 "searchModel": "gemini/gemini-2.5-pro",
                 "assistantModel": "gemini/gemini-2.5-flash",
-                "searchApiKey": "search-key",
-                "assistantApiKey": "ask-key",
                 "timeout": 30,
             }.get(key, "")
         )
@@ -1210,9 +1175,7 @@ class TestUrlCompletion:
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
             assistantModel="gemini/gemini-2.5-flash",
-            assistantApiKey="test-ask-key",
             searchModel="",
-            searchApiKey="",
         )
         return service
 
@@ -1286,9 +1249,7 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
     """search_completion and url_completion produce identical optional_kwargs key sets."""
     service, plugin = make_service(
         assistantModel="gemini/gemini-2.5-flash",
-        assistantApiKey="test-key",
         searchModel="",
-        searchApiKey="",
     )
     captured: list[dict] = []
 

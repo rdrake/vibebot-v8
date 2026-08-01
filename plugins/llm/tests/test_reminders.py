@@ -637,7 +637,6 @@ class TestParseReminderService:
         """Create a mock plugin for service tests."""
         plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantApiKey": "test-api-key",
             "assistantModel": "gemini/gemini-2.0-flash",
             "timeout": 30,
         }.get(key, "")
@@ -891,7 +890,6 @@ class TestParseReminderService:
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantApiKey": "test-api-key",
             "assistantModel": "openai/gpt-4",  # Non-Gemini model
             "timeout": 30,
         }.get(key, "")
