@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.assistant import (
+    _BOOKKEEPING_TOOLS,
     ASSISTANT_TOOL_SPECS,
     ASSISTANT_TOOLS,
     PENDING_TASK_TOOLS,
@@ -15,6 +16,7 @@ from llm.assistant import (
     get_tools_for_profile,
 )
 from llm.plugin import LLM, Identity
+from llm.profile import PROFILE_REMIND_ACTION
 from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
     _REPEAT_RETRY_NUDGE,
@@ -43,6 +45,20 @@ if TYPE_CHECKING:
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
+
+
+def make_executor(*args, **kwargs) -> AssistantToolExecutor:
+    """Build an executor for handler-behaviour tests.
+
+    Defaults to ``remind_action`` -- the profile that still advertises the
+    whole tool surface. Chat deliberately hides the bookkeeping tools
+    (``_BOOKKEEPING_TOOLS``), and these cases are about what a handler does
+    once invoked, not about the visibility gate, which has its own tests.
+    Callers that ARE testing visibility pass ``route_profile`` explicitly and
+    keep whatever they pass.
+    """
+    kwargs.setdefault("route_profile", PROFILE_REMIND_ACTION)
+    return AssistantToolExecutor(*args, **kwargs)
 
 
 class TestMetaTools:
@@ -152,7 +168,7 @@ class TestAssistantToolExecutor:
         mock_cancel_pending_task_fn: MagicMock,
         mock_cancel_all_pending_tasks_fn: MagicMock,
     ) -> AssistantToolExecutor:
-        return AssistantToolExecutor(
+        return make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -162,6 +178,10 @@ class TestAssistantToolExecutor:
             set_reminder_fn=mock_set_reminder_fn,
             cancel_pending_task_fn=mock_cancel_pending_task_fn,
             cancel_all_pending_tasks_fn=mock_cancel_all_pending_tasks_fn,
+            # These cases exercise handler behaviour, not the visibility gate
+            # (which has its own test). remind_action is the profile that still
+            # advertises the whole surface; chat deliberately no longer does.
+            route_profile=PROFILE_REMIND_ACTION,
         )
 
     def test_get_instruction_tool_is_gone(self, executor: AssistantToolExecutor) -> None:
@@ -248,7 +268,7 @@ class TestAssistantToolExecutor:
         mock_cancel_pending_task_fn: MagicMock,
     ) -> None:
         """GIVEN missing tool capability WHEN executed THEN dispatch denies it server-side."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -275,7 +295,7 @@ class TestAssistantToolExecutor:
         mock_cancel_pending_task_fn: MagicMock,
     ) -> None:
         """GIVEN a hidden route profile WHEN executed THEN dispatch denies it server-side."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -334,9 +354,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN no cleanup_fn WHEN cleanup_memories called THEN returns error."""
-        executor = AssistantToolExecutor(
-            db=mock_db, context=mock_context, nick="testuser", channel="#test"
-        )
+        executor = make_executor(db=mock_db, context=mock_context, nick="testuser", channel="#test")
         result = executor.execute("cleanup_memories", {})
         assert "not available" in result.content.lower() or "error" in result.content.lower()
 
@@ -344,7 +362,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
     ) -> None:
         """GIVEN owner WHEN listing another user's memories THEN allowed."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -360,7 +378,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN non-owner WHEN listing another user's memories THEN denied."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="regular",
@@ -374,7 +392,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN owner WHEN deleting another user's memory THEN allowed."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -388,7 +406,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """GIVEN non-owner WHEN clearing another user's memories THEN denied."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="regular",
@@ -402,7 +420,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
     ) -> None:
         """GIVEN owner WHEN cleaning up another user's memories THEN allowed."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="owner",
@@ -479,7 +497,7 @@ class TestAssistantToolExecutor:
         mock_context: MagicMock,
     ) -> None:
         """GIVEN no callable WHEN cancel_all_pending_tasks THEN returns error."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -495,7 +513,7 @@ class TestAssistantToolExecutor:
     ) -> None:
         """AssistantToolExecutor accepts search_fn callable."""
         search_fn = mocker.MagicMock(return_value=ToolResult(content="results"))
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -509,7 +527,7 @@ class TestAssistantToolExecutor:
     ) -> None:
         """AssistantToolExecutor accepts fetch_fn callable."""
         fetch_fn = mocker.MagicMock(return_value=ToolResult(content="page"))
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -523,7 +541,7 @@ class TestAssistantToolExecutor:
     ) -> None:
         """AssistantToolExecutor accepts code_fn callable."""
         code_fn = mocker.MagicMock(return_value=ToolResult(content="code"))
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -542,7 +560,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """execute() returns ToolResult for denied tools."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -560,7 +578,7 @@ class TestAssistantToolExecutor:
         search_fn = mocker.MagicMock(
             return_value=ToolResult(content="web results", grounding_used=True),
         )
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -584,7 +602,7 @@ class TestAssistantToolExecutor:
                 cost=0.01,
             ),
         )
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -607,7 +625,7 @@ class TestAssistantToolExecutor:
         search_fn = mocker.MagicMock(
             return_value=ToolResult(content="web results"),
         )
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -623,7 +641,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """search_web returns error when search_fn is None."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -640,7 +658,7 @@ class TestAssistantToolExecutor:
         fetch_fn = mocker.MagicMock(
             return_value=ToolResult(content="page content"),
         )
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -656,7 +674,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """fetch_url returns error when fetch_fn is None."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -673,7 +691,7 @@ class TestAssistantToolExecutor:
         code_fn = mocker.MagicMock(
             return_value=ToolResult(content="https://paste.example/abc"),
         )
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -690,7 +708,7 @@ class TestAssistantToolExecutor:
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:
         """generate_code returns error when code_fn is None."""
-        executor = AssistantToolExecutor(
+        executor = make_executor(
             db=mock_db,
             context=mock_context,
             nick="testuser",
@@ -760,6 +778,7 @@ class TestMetaCompletion:
         db.save_instruction.return_value = None
 
         result = service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="always respond in haiku",
             nick="testuser",
             channel="#test",
@@ -786,6 +805,7 @@ class TestMetaCompletion:
         db.get_memories.return_value = []
 
         result = service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="do something",
             nick="testuser",
             channel="#test",
@@ -814,6 +834,7 @@ class TestMetaCompletion:
         )
 
         result = service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="list my memories",
             nick="testuser",
             channel="#test",
@@ -841,6 +862,7 @@ class TestMetaCompletion:
         db.delete_memory.return_value = True
 
         result = service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="delete memories 14 and 27",
             nick="testuser",
             channel="#test",
@@ -3499,6 +3521,7 @@ class TestMetaIntegration:
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = svc.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="always respond in haiku",
             nick="testuser",
             channel="#test",
@@ -3547,6 +3570,7 @@ class TestMetaIntegration:
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = svc.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="delete any memories about cats",
             nick="testuser",
             channel="#test",
@@ -3640,6 +3664,7 @@ class TestMetaIntegration:
         cleanup_fn = mocker.MagicMock(return_value="Before: 5 | dropped: 1 | after: 4")
 
         svc.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
             prompt="clean up my memories",
             nick="testuser",
             channel="#test",
@@ -3738,6 +3763,45 @@ class TestToolResult:
             result.content = "changed"  # type: ignore[misc]
 
 
+class TestChatToolSurfaceStaysSmall:
+    """The advertised chat surface is a correctness budget, not housekeeping.
+
+    grok-4-1-fast-reasoning starts returning empty completions past ~25 tools,
+    and a non-reasoning model picking one tool out of twenty sometimes picks
+    none and invents an answer instead -- the 2026-08-01 fabricated image URL.
+    Verse was trimmed for this reason long ago; chat kept all twenty until the
+    bookkeeping tools were hidden.
+    """
+
+    def test_no_bookkeeping_tool_is_offered_in_chat(self) -> None:
+        """Each of these duplicates a command the user can type directly."""
+        names = {t["function"]["name"] for t in get_tools_for_profile("chat")}
+        offered = sorted(names & _BOOKKEEPING_TOOLS)
+        assert not offered, f"bookkeeping tools leaked back into chat: {offered}"
+
+    def test_chat_keeps_the_tools_that_do_real_work(self) -> None:
+        """Generation and research must survive any future trimming."""
+        names = {t["function"]["name"] for t in get_tools_for_profile("chat")}
+        for tool in ("search_web", "fetch_url", "generate_image", "generate_code"):
+            assert tool in names, f"{tool} missing from chat profile"
+
+    def test_save_memory_survives_but_the_readers_do_not(self) -> None:
+        """Memories are learned automatically; they are not administered by chat.
+
+        save_memory is the one write the background extractor cannot stand in
+        for, because an explicit "remember this" should stick immediately
+        rather than wait for candidate reinforcement.
+        """
+        names = {t["function"]["name"] for t in get_tools_for_profile("chat")}
+        assert "save_memory" in names
+        assert not names & {"list_memories", "update_memory", "delete_memory"}
+
+    def test_chat_surface_stays_under_budget(self) -> None:
+        """A ceiling, so the surface cannot creep back one tool at a time."""
+        count = len(get_tools_for_profile("chat"))
+        assert count <= 10, f"chat advertises {count} tools; keep the surface small"
+
+
 class TestToolSpecVisibility:
     """GIVEN tool specs WHEN inspected THEN visibility and capability are correct."""
 
@@ -3808,9 +3872,15 @@ class TestToolSpecVisibility:
         ):
             assert tool not in names, f"{tool} should not be visible in verse profile"
 
-    def test_verse_profile_keeps_research_and_memory_tools(self) -> None:
-        """Verse keeps tools the bot still uses in-character: research,
-        non-destructive memory, and creative output."""
+    def test_verse_profile_keeps_research_and_creative_tools(self) -> None:
+        """Verse keeps what the bot uses in-character: research, creative
+        output, and the one memory WRITE.
+
+        Memory management (list/delete/update) is not in-character and is
+        reachable via @memories, so it is hidden along with the rest of
+        ``_BOOKKEEPING_TOOLS``. save_memory stays because the extractor
+        cannot substitute for an explicit "remember this".
+        """
         names = {t["function"]["name"] for t in get_tools_for_profile("verse")}
         for tool in (
             "search_web",
@@ -3818,11 +3888,10 @@ class TestToolSpecVisibility:
             "generate_image",
             "generate_code",
             "save_memory",
-            "list_memories",
-            "delete_memory",
-            "update_memory",
         ):
             assert tool in names, f"{tool} missing from verse profile"
+        for tool in ("list_memories", "delete_memory", "update_memory"):
+            assert tool not in names, f"{tool} should be hidden from verse"
 
     def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
         """Action reminders need the union of @ask + @draw tool surfaces."""
@@ -3922,7 +3991,8 @@ class TestScheduleLlmTaskFamily:
     def test_schedule_llm_task_specs_overrides_applied(self) -> None:
         """C2: ToolSpec overrides give schedule_llm_task require_account=True;
         list/cancel inherit defaults (llm.ask, no account). All three are
-        hidden from verse mode — see _VERSE_EXCLUDED_TOOLS."""
+        hidden from verse; list/cancel are also hidden from chat as
+        bookkeeping duplicates of @remind — see _PROFILE_EXCLUDED_TOOLS."""
         from llm.assistant import ASSISTANT_TOOL_REGISTRY
 
         sch = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
@@ -3933,12 +4003,12 @@ class TestScheduleLlmTaskFamily:
         lst = ASSISTANT_TOOL_REGISTRY["list_pending_tasks"]
         assert lst.capability == "llm.ask"
         assert lst.require_account is False
-        assert lst.visible_in == frozenset({"chat", "remind_action"})
+        assert lst.visible_in == frozenset({"remind_action"})
 
         can = ASSISTANT_TOOL_REGISTRY["cancel_pending_task"]
         assert can.capability == "llm.ask"
         assert can.require_account is False
-        assert can.visible_in == frozenset({"chat", "remind_action"})
+        assert can.visible_in == frozenset({"remind_action"})
 
     def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
         """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""
@@ -3947,7 +4017,7 @@ class TestScheduleLlmTaskFamily:
         cancel_fn = mocker.MagicMock()
         cancel_all_fn = mocker.MagicMock()
 
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -3978,7 +4048,7 @@ class TestScheduleLlmTaskFamily:
             }
         )
 
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4020,7 +4090,7 @@ class TestScheduleLlmTaskFamily:
                 },
             ]
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4044,7 +4114,7 @@ class TestScheduleLlmTaskFamily:
                 "message": "Cancelled.",
             }
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4088,7 +4158,7 @@ class TestExecutorCoverageGaps:
         )
         monkeypatch.setitem(ASSISTANT_TOOL_REGISTRY, "bogus_handler_tool", bogus)
 
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4114,7 +4184,7 @@ class TestExecutorCoverageGaps:
         args: dict,
     ) -> None:
         """Non-owner targeting another nick is denied for owner-gated tools."""
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="regular",
@@ -4127,7 +4197,7 @@ class TestExecutorCoverageGaps:
         """forget_context returns the no-op message when context.clear() returns False."""
         ctx = mocker.MagicMock()
         ctx.clear.return_value = False
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=ctx,
             nick="n",
@@ -4141,7 +4211,7 @@ class TestExecutorCoverageGaps:
         cleanup_fn = mocker.MagicMock(
             return_value=ToolCallbackResult(False, "Cleanup failed: db error")
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4163,7 +4233,7 @@ class TestExecutorCoverageGaps:
         cleanup_fn = mocker.MagicMock(
             return_value=ToolCallbackResult(True, "Removed 3 errors from your memories")
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4186,7 +4256,7 @@ class TestExecutorCoverageGaps:
         self, mocker: MockerFixture, tool_name: str, args: dict
     ) -> None:
         """Pending-task tools return 'not available' when their callback is None."""
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4198,7 +4268,7 @@ class TestExecutorCoverageGaps:
     def test_set_reminder_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
         """set_reminder_fn returning ok=False becomes an error envelope."""
         set_fn = mocker.MagicMock(return_value=ToolCallbackResult(False, "Could not parse time."))
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4218,7 +4288,7 @@ class TestExecutorCoverageGaps:
         set_fn = mocker.MagicMock(
             return_value=ToolCallbackResult(True, "Reminder set; previous failed reminders cleared")
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4230,7 +4300,7 @@ class TestExecutorCoverageGaps:
 
     def test_schedule_llm_task_unconfigured(self, mocker: MockerFixture) -> None:
         """schedule_llm_task without a callback returns 'not configured'."""
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4259,7 +4329,7 @@ class TestExecutorCoverageGaps:
     ) -> None:
         """schedule_llm_task rejects empty when_natural / prompt before calling fn."""
         schedule_fn = mocker.MagicMock()
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4275,7 +4345,7 @@ class TestExecutorCoverageGaps:
     def test_cancel_pending_task_requires_id(self, mocker: MockerFixture) -> None:
         """cancel_pending_task rejects empty id before calling fn."""
         cancel_fn = mocker.MagicMock()
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4289,7 +4359,7 @@ class TestExecutorCoverageGaps:
 
     def test_generate_image_unavailable_when_no_draw_fn(self, mocker: MockerFixture) -> None:
         """generate_image without a draw_fn returns 'not available'."""
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4303,7 +4373,7 @@ class TestExecutorCoverageGaps:
     def test_generate_image_rejects_empty_prompt(self, mocker: MockerFixture) -> None:
         """generate_image rejects whitespace-only prompts before calling draw_fn."""
         draw_fn = mocker.MagicMock()
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4319,7 +4389,7 @@ class TestExecutorCoverageGaps:
     def test_generate_image_propagates_draw_fn_error(self, mocker: MockerFixture) -> None:
         """draw_fn returning ok=False is mapped to an error envelope."""
         draw_fn = mocker.MagicMock(return_value=ToolCallbackResult(False, "Error: quota exceeded"))
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4337,7 +4407,7 @@ class TestExecutorCoverageGaps:
         draw_fn = mocker.MagicMock(
             return_value=ToolCallbackResult(True, "https://example.com/cat.png")
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",
@@ -4361,7 +4431,7 @@ class TestExecutorCoverageGaps:
         draw_fn = mocker.MagicMock(
             return_value=ToolCallbackResult(True, "Error-free image at https://x/y.png")
         )
-        ex = AssistantToolExecutor(
+        ex = make_executor(
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             nick="n",

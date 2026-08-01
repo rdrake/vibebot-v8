@@ -591,28 +591,69 @@ PENDING_TASK_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Verse mode hides tools with no in-character use to keep the
-# advertised tool surface small. xai/grok-4-1-fast-reasoning starts
-# emitting empty completions once the surface climbs past ~25 tools (4
-# empty-response incidents on 2026-05-10, more than any prior day in
-# 30d). Scheduling, reminders, usage stats, persistent instructions,
-# and the destructive memory-bulk ops have no role in storytelling.
-_VERSE_EXCLUDED_TOOLS: frozenset[str] = frozenset(
+# Tools hidden from a route because they have no use on it. Keeping the
+# advertised surface small is a correctness measure, not tidiness:
+# xai/grok-4-1-fast-reasoning starts emitting empty completions once the
+# surface climbs past ~25 tools (4 empty-response incidents on 2026-05-10,
+# more than any prior day in 30d), and a non-reasoning model asked to pick
+# one tool out of twenty will sometimes pick none and answer from its own
+# invention instead — which is how a draw request came back with a
+# fabricated image URL on 2026-08-01.
+# Tools that let the model administer stored state through conversation.
+# Every one duplicates a command the user can already type:
+#
+#   list/update/delete/clear/cleanup_memories -> @memories [del|edit|clear|cleanup]
+#   set_instruction, clear_instruction        -> @instruct [<text>|clear]
+#   get_usage, get_channel_usage              -> @usage [nick|#channel]
+#   forget_context                            -> @forget [channel]
+#   list/cancel/cancel_all_pending_tasks      -> @remind [list|del|clear]
+#
+# Spending two thirds of the tool budget on self-administration is backwards:
+# memories are meant to be learned automatically by the background
+# extract_memories pass, not negotiated turn by turn. Hiding these costs no
+# capability — extraction is untouched, the handlers still exist, and every
+# command above still works.
+#
+# save_memory is deliberately NOT here: it is the one write the extractor
+# cannot replace, because an explicit "remember this" should stick at once
+# rather than wait for the candidate-reinforcement threshold.
+_BOOKKEEPING_TOOLS: frozenset[str] = frozenset(
     {
         "cancel_all_pending_tasks",
         "cancel_pending_task",
         "cleanup_memories",
         "clear_instruction",
         "clear_memories",
+        "delete_memory",
         "forget_context",
         "get_channel_usage",
         "get_usage",
+        "list_memories",
         "list_pending_tasks",
-        "schedule_llm_task",
         "set_instruction",
-        "set_reminder",
+        "update_memory",
     }
 )
+
+# Tools hidden from a route because they have no use on it. Keeping the
+# advertised surface small is a correctness measure, not tidiness:
+# xai/grok-4-1-fast-reasoning starts emitting empty completions once the
+# surface climbs past ~25 tools (4 empty-response incidents on 2026-05-10,
+# more than any prior day in 30d), and a non-reasoning model asked to pick one
+# tool out of twenty will sometimes pick none and answer from its own
+# invention instead — which is how a draw request came back with a fabricated
+# image URL on 2026-08-01.
+#
+# remind_action keeps everything: a scheduled task fires "as you" and may
+# legitimately need to tidy up after itself with no user present to type a
+# command.
+_PROFILE_EXCLUDED_TOOLS: dict[str, frozenset[str]] = {
+    PROFILE_CHAT: _BOOKKEEPING_TOOLS,
+    # Everything chat hides, plus scheduling and reminders, which have no role
+    # in storytelling. Verse must stay a subset of chat — see
+    # test_verse_profile_is_strict_subset_of_chat.
+    PROFILE_VERSE: _BOOKKEEPING_TOOLS | {"schedule_llm_task", "set_reminder"},
+}
 
 
 def _build_tool_specs() -> tuple[ToolSpec, ...]:
@@ -622,12 +663,15 @@ def _build_tool_specs() -> tuple[ToolSpec, ...]:
         fn = tool["function"]
         name = fn["name"]
         overrides = dict(_TOOL_SPEC_OVERRIDES.get(name, {}))
-        if name in _VERSE_EXCLUDED_TOOLS:
+        hidden_from = {
+            profile for profile, names in _PROFILE_EXCLUDED_TOOLS.items() if name in names
+        }
+        if hidden_from:
             base_visible: frozenset[str] = overrides.get(
                 "visible_in",
                 frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION}),
             )
-            overrides["visible_in"] = base_visible - {PROFILE_VERSE}
+            overrides["visible_in"] = base_visible - hidden_from
         specs.append(
             ToolSpec(
                 name=name,
