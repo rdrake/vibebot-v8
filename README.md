@@ -28,10 +28,13 @@ make install-hooks  # prek git hooks
 make run            # start Limnoria with bot.conf
 ```
 
-Set API keys from IRC (values stay private):
+Set API keys as environment variables, one per provider (see `.env.example`):
 
-```
-@config plugins.LLM.assistantApiKey YOUR_KEY
+```bash
+export XAI_API_KEY=...
+export GEMINI_API_KEY=...
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
 ```
 
 ## Commands
@@ -52,7 +55,7 @@ Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar
 
 ## Configuration
 
-Models, keys, and behaviour all live in the Limnoria registry under `supybot.plugins.LLM.*`. Most keys support per-channel overrides.
+Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`. Most keys support per-channel overrides. API keys are the exception: they come from environment variables, not the registry (see [Quick start](#quick-start)).
 
 ```
 supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest

@@ -85,7 +85,7 @@ The candidate path applies only to automatic extraction. Anything the assistant 
 
 | Setting | Interaction |
 |---------|-------------|
-| `assistantApiKey` | Memory extraction uses the assistant key. Without one, extraction fails silently and no candidates accumulate |
+| `assistantModel` | Memory extraction calls this model, so it needs that model provider's environment variable set (see [Configuration](configuration.md#api-keys)). Without it, extraction fails silently and no candidates accumulate |
 | `memoryEnabled` | Channel-scoped. `False` blocks both candidate insertion and durable promotion for that channel's traffic |
 
 ## Operational notes

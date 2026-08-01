@@ -18,20 +18,18 @@ View a current value by omitting the value. Channel-overridable settings also ac
 
 ## API keys
 
-API keys are stored as private values; Limnoria never displays or logs them.
+API keys are **not** part of the Limnoria registry. They come from environment variables, one per provider, read at the point each provider call is made and selected by the provider of the model being called — not by which command or channel triggered the call. There is no `@config` setting for a key anymore; the old `assistantApiKey` / `codeApiKey` / `imageApiKey` / `searchApiKey` registry settings were removed, not deprecated, and `@config` on them now errors.
 
-| Setting | Scope | Description |
-|---------|-------|-------------|
-| `assistantApiKey` | channel | Key for all assistant work: `@ask`, the planner loop, memory, reminder parsing, scheduled tasks |
-| `codeApiKey` | channel | Key for `@code` |
-| `imageApiKey` | channel | Key for `@draw`. Does not fall back to `assistantApiKey`, because image providers tend to bill a separate account |
-| `searchApiKey` | channel | Key for web search and URL fetch tools. Falls back to `assistantApiKey` when empty |
+| Variable | Provider |
+|----------|----------|
+| `XAI_API_KEY` | xAI (Grok) |
+| `GEMINI_API_KEY` | Google Gemini |
+| `OPENAI_API_KEY` | OpenAI |
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-Set a key from IRC as the bot owner:
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — is not one of the four managed providers above. It resolves to no key from this plugin, and LiteLLM falls back to that provider's own native credentials (Application Default Credentials, IAM, or its own environment variables). The default `imageModel`, `vertex_ai/imagen-4.0-generate-001`, works this way via ADC and needs nothing from the table above.
 
-```
-@config plugins.LLM.assistantApiKey sk-your-key-here
-```
+Set the variables in `.env.example`, copied to the env file the container loads (see [Operations](operations.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
 ## Model selection
 

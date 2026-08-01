@@ -125,6 +125,55 @@ Restart the service after editing configuration, and remember the stop-edit-star
 systemctl --user restart vibebot
 ```
 
+## Rolling back a deploy
+
+There is no automatic rollback. A revert push through CI takes 10-20 minutes end to end, and `docker.yml` only builds after `CI` succeeds across a three-version Python matrix (3.12, 3.13, 3.14) — one flaky test blocks the image from ever publishing. When production needs to go back to a known-good build now, pin the previous image directly rather than waiting on a revert.
+
+Every image build is tagged with the commit SHA (`type=sha` in `docker.yml`, alongside `:latest`), so a previous build stays pullable by digest-adjacent tag even after `:latest` moves past it.
+
+1. **Find the previous image tag.** Either read it off the host before the bad deploy:
+
+   ```bash
+   docker inspect vibebot --format '{{.Config.Image}}'
+   ```
+
+   or from the GitHub Actions run summary for the last known-good `Build and Push Docker Image` workflow run.
+
+2. **Stop the updater first.** `vibebot-updater.service` hardcodes `IMAGE=ghcr.io/rdrake/vibebot-v8:latest` (not the pin) and runs every 15 minutes; left running, it restarts `vibebot` back onto `:latest` the next time it fires, undoing the rollback.
+
+   ```bash
+   systemctl --user stop vibebot-updater.timer
+   ```
+
+3. **Pin the image with a systemd drop-in.** Overriding `Environment=IMAGE=...` for the `vibebot.service` unit points `ExecStartPre`'s `docker pull ${IMAGE}` and the `docker run` at the pinned tag instead of `:latest`.
+
+   ```bash
+   mkdir -p ~/.config/systemd/user/vibebot.service.d
+   printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot-v8:sha-<PREV>\n' \
+     > ~/.config/systemd/user/vibebot.service.d/override.conf
+   systemctl --user daemon-reload && systemctl --user restart vibebot
+   ```
+
+   Replace `<PREV>` with the short SHA found in step 1.
+
+4. **Roll forward again once the fix ships.** Remove the drop-in and restart the updater timer:
+
+   ```bash
+   rm ~/.config/systemd/user/vibebot.service.d/override.conf
+   systemctl --user daemon-reload && systemctl --user restart vibebot
+   systemctl --user start vibebot-updater.timer
+   ```
+
+## Credentials in the environment
+
+API keys live in environment variables passed to the container via `--env-file` (see [Configuration → API keys](configuration.md#api-keys)). That is simpler than the old registry-based keys, but it changes where the credential is visible on the host — worth knowing plainly rather than discovering it during an incident:
+
+- `docker inspect vibebot --format '{{.Config.Env}}'` prints every variable, values included, to anyone in the `docker` group — and that output gets pasted into tickets more often than people expect.
+- `/proc/<pid>/environ` for the container's process exposes the same values to anything with host-level access to that PID.
+- Every child process the container spawns inherits the full environment, key values included, whether or not that process needs them.
+
+None of this is unique to this design — registry-stored keys were also readable by anyone with `@config` access at owner level — but the exposure surface moves from "Limnoria owner capability" to "docker group and host process access." Scope access to the host and the `docker` group accordingly.
+
 ## Uninstalling
 
 Remove the service and timer:

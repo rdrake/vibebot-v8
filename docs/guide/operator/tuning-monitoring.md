@@ -19,10 +19,9 @@ Guidance from operating this surface:
 - Reasoning models make terse, flat narrators. If the assistant model is a reasoning model, point `verseModel` at a non-reasoning model for verse prose.
 - Compaction is a cheap summarization job; leave `verseCompactionModel` on a flash-lite class model.
 
-Each model has a matching key setting (`assistantApiKey`, `codeApiKey`, `imageApiKey`, `searchApiKey`). `searchApiKey` falls back to `assistantApiKey`; `imageApiKey` deliberately does not, because image providers tend to bill a separate account.
+Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.
 
 ```
-@config channel #yourchan plugins.LLM.assistantApiKey <your-key>
 @config channel #yourchan plugins.LLM.assistantModel gemini/gemini-flash-latest
 ```
 
@@ -163,8 +162,15 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 
 **API key not working.**
 
-- Confirm the key is set: `@config plugins.LLM.assistantApiKey` shows a masked value.
-- Check the key matches the model's provider; a Google key does not work with an `anthropic/` model.
+- The error names the missing variable: `no API key configured for provider 'xai' (set XAI_API_KEY)`. Grep logs for `no API key configured` rather than the old "API key not configured" wording, which no longer appears anywhere.
+- Confirm the key is set in the container, without printing it, by comparing a hash rather than a prefix:
+
+  ```bash
+  docker exec vibebot python3 -c "import hashlib,os;k=os.environ.get('XAI_API_KEY','');print(len(k), hashlib.sha256(k.encode()).hexdigest()[:12])"
+  ```
+
+  A length of `0` means the variable is unset or empty. Compare the hash against a known-good value computed the same way, rather than eyeballing the key itself.
+- Check the key matches the model's provider; a Gemini key does not work with an `anthropic/` model.
 - Set `logLevel` to `DEBUG` and retry to see the full provider error.
 
 **Bot does not remember previous messages.**
