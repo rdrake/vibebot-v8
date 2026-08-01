@@ -116,59 +116,13 @@ def configure(advanced: bool) -> None:
     print("=" * 60)
     print("\nThis plugin provides AI-powered commands using LiteLLM.")
     print("You'll need API keys for the models you want to use.")
-    print("\nYou can configure API keys now or later using:")
-    print("  config plugins.LLM.assistantApiKey YOUR_KEY")
+    print("\nAPI keys come from the environment, one per provider:")
+    print("  XAI_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY")
     print("\nFor more info, see the README.md")
     print("=" * 60)
 
 
 LLM = conf.registerPlugin("LLM")
-
-# ============================================================================
-# API Keys (private - never logged)
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "assistantApiKey",
-    registry.String(
-        "",
-        _("""API key for assistant text+tool work (chat, planner loop, memory
-        extraction/cleanup, reminder parsing,
-        image-prompt rewrite, scheduled tasks)."""),
-        private=True,
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageApiKey",
-    registry.String(
-        "",
-        _("""API key for image generation. Does not auto-fall-back to
-        assistantApiKey because image providers usually use a separate
-        account."""),
-        private=True,
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "codeApiKey",
-    registry.String("", _("""API key for code command (channel-overridable)."""), private=True),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "searchApiKey",
-    registry.String(
-        "",
-        _(
-            """API key for search/fetch tools (channel-overridable). Falls back to assistantApiKey."""
-        ),
-        private=True,
-    ),
-)
 
 # ============================================================================
 # System Prompts (channel-specific with global defaults)

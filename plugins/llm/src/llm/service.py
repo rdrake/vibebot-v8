@@ -2969,8 +2969,7 @@ class LLMService:
             memories: Optional list of remembered facts about the user.
                 When provided and non-empty, these are appended to the system
                 prompt so the LLM can personalize its responses.
-            api_key: Optional API key override. When provided, this is used
-                instead of the registry ``{command}ApiKey`` value.
+            api_key: Optional API key override.
             model_override: Optional model override. When provided, this is used
                 instead of the registry ``{command}Model`` value.
 

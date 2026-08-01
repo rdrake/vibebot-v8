@@ -2803,8 +2803,6 @@ class TestVersecompactCommand:
                 raise RuntimeError("registry not loaded")
             if key == "verseCompactionModel":
                 return "gemini/gemini-flash-lite-latest"
-            if key == "assistantApiKey":
-                return ""
             return ""
 
         plugin.registryValue = mocker.MagicMock(side_effect=_flaky_registry)
@@ -2852,8 +2850,6 @@ class TestVersecompactCommand:
                 return 0
             if key == "verseCompactionModel":
                 return "gemini/gemini-flash-lite-latest"
-            if key == "assistantApiKey":
-                return ""
             return ""
 
         plugin.registryValue = mocker.MagicMock(side_effect=_zero_registry)

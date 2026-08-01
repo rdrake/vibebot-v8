@@ -478,10 +478,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
     """
     defaults: dict[str, Any] = {
         # Capability-based settings (Phase 2 Task 5a/5b — sole surface).
-        "assistantApiKey": TEST_API_KEY,
         "assistantModel": TEST_MODEL,
         "assistantSystemPrompt": "You are helpful.",
-        "imageApiKey": TEST_API_KEY,
         "imageModel": "dall-e-3",
         # Plugin-level init config
         "httpRoot": "",
@@ -492,7 +490,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "channelContextMaxMessages": 10,
         "contextTrackAllMessages": False,
         # Code command
-        "codeApiKey": TEST_API_KEY,
         "codeModel": TEST_MODEL,
         "codeSystemPrompt": "You write code.",
         # Draw command

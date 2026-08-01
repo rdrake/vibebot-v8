@@ -134,7 +134,7 @@ class TestConfigure:
         result = output.getvalue()
         assert "LLM Plugin Configuration" in result
         assert "API keys" in result
-        assert "config plugins.LLM.assistantApiKey" in result
+        assert "XAI_API_KEY" in result
 
     def test_configure_registers_plugin(self, mocker: MockerFixture) -> None:
         """GIVEN configure function WHEN called THEN registers plugin."""
@@ -155,14 +155,6 @@ class TestConfigValues:
         from llm import config
 
         assert hasattr(config, "LLM")
-
-    def test_code_api_key_is_private(self) -> None:
-        """GIVEN codeApiKey config WHEN accessed THEN marked as private."""
-        import supybot.conf as conf
-        from llm import config  # noqa: F401
-
-        code_key_value = conf.supybot.plugins.LLM.codeApiKey
-        assert code_key_value._private is True
 
     def test_database_path_registered(self) -> None:
         """GIVEN LLM config WHEN checking databasePath THEN exists with empty default."""
@@ -189,24 +181,13 @@ class TestConfigValues:
 
     def test_capability_settings_registered_with_defaults(self) -> None:
         """T5b: capability-based registry values are the sole surface for
-        assistant/image model+key after the command-era keys were removed."""
+        assistant/image model after the command-era keys were removed."""
         import llm.config  # noqa: F401 — import side effect registers values
         import supybot.conf as conf
 
-        assert conf.supybot.plugins.LLM.assistantApiKey() == ""
         assert conf.supybot.plugins.LLM.assistantModel() == "gemini/gemini-flash-latest"
         assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
-        assert conf.supybot.plugins.LLM.imageApiKey() == ""
         assert conf.supybot.plugins.LLM.imageModel() == "vertex_ai/imagen-4.0-generate-001"
-
-    def test_capability_api_keys_are_private(self) -> None:
-        """T5a: assistantApiKey and imageApiKey must be marked private so
-        Limnoria never logs their values."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.assistantApiKey._private is True
-        assert conf.supybot.plugins.LLM.imageApiKey._private is True
 
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
         """B1: bridgeAllowMutating defaults to False (gate closed).
