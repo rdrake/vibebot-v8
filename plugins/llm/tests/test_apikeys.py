@@ -266,31 +266,6 @@ class TestScrub:
         assert apikeys.scrub("nothing to hide here") == "nothing to hide here"
 
 
-class TestEnvSnapshot:
-    """Covers the retry-exhaustion fallback that ``known_secret_values`` tests
-    (via genuine thread churn) can't reliably force on demand."""
-
-    def test_falls_back_to_empty_after_repeated_races(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN dict(os.environ) races on every retry WHEN snapshotting THEN {}, not a raise.
-
-        Simulates the pathological case where every one of the bounded retries
-        hits the setenv/delenv race. Patches the module-level ``dict`` name
-        (function globals resolve it before falling back to builtins) rather
-        than swapping out ``os.environ`` itself — pytest's own runner writes
-        ``PYTEST_CURRENT_TEST`` into the real ``os.environ`` around every
-        test's setup/teardown, so replacing it wholesale, even temporarily,
-        collides with pytest's own internals.
-        """
-
-        def _always_races(*_args: object, **_kwargs: object) -> dict[str, str]:
-            raise KeyError("ANY_API_KEY")
-
-        monkeypatch.setattr(apikeys, "dict", _always_races, raising=False)
-        assert apikeys._env_snapshot() == {}
-
-
 class TestSecretFilter:
     SECRET = "xai-fake-value-long-enough"
 
@@ -470,6 +445,29 @@ class TestInstallSecretFilter:
     """install_secret_filter is Task 4's job to call; this module only owns
     correctness of the function itself (target loggers, idempotency, count)."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_global_filter_state(self) -> Generator[None]:
+        """install_secret_filter mutates real, process-global logging state:
+        the handlers already sitting on root/supybot/llm, plus
+        logging.lastResort. That state outlives this test and is shared with
+        every other test file in the suite (caplog included) — without this,
+        a SecretFilter this test adds to a *pre-existing* handler (e.g.
+        pytest's own root handler) is never removed, and every later test
+        silently has its FAKE_PROVIDER_KEYS scrubbed out of caplog.
+        """
+        loggers = [logging.getLogger(name) for name in ("", "supybot", "llm")]
+        handler_snapshot = {
+            handler: list(handler.filters) for logger in loggers for handler in logger.handlers
+        }
+        last_resort_snapshot = (
+            list(logging.lastResort.filters) if logging.lastResort is not None else None
+        )
+        yield
+        for handler, filters in handler_snapshot.items():
+            handler.filters = filters
+        if logging.lastResort is not None and last_resort_snapshot is not None:
+            logging.lastResort.filters = last_resort_snapshot
+
     @pytest.fixture
     def target_handler(self) -> Generator[logging.Handler]:
         """A handler on one of install_secret_filter's real targets ("llm")."""
@@ -481,11 +479,50 @@ class TestInstallSecretFilter:
         finally:
             logger.removeHandler(handler)
 
-    def test_installs_on_target_logger_handlers(self, target_handler: logging.Handler) -> None:
-        """GIVEN a handler on a target logger WHEN installed THEN it gets a SecretFilter."""
+    @pytest.mark.parametrize("logger_name", ["", "supybot", "llm"])
+    def test_installs_on_each_target_logger(self, logger_name: str) -> None:
+        """GIVEN a handler on each real install target WHEN installed THEN it gets a SecretFilter.
+
+        Parametrized over every target, not just one: a mutant that shrinks
+        `targets` to `["llm"]` alone still passes if only "llm" is checked —
+        and per the production leak this module exists to close, "supybot" is
+        the target that actually has a handler attached today.
+        """
+        logger = logging.getLogger(logger_name)
+        handler = logging.StreamHandler(io.StringIO())
+        logger.addHandler(handler)
+        try:
+            installed = apikeys.install_secret_filter()
+            assert installed >= 1
+            assert any(isinstance(f, apikeys.SecretFilter) for f in handler.filters)
+        finally:
+            logger.removeHandler(handler)
+
+    def test_installs_on_last_resort(self) -> None:
+        """GIVEN no handler anywhere in the llm.* hierarchy WHEN installed
+        THEN logging.lastResort still gets a SecretFilter.
+
+        This is the actual fallback production hits today: nothing in this
+        repo attaches a handler to root or to "llm", so an "llm.verse.*"
+        record with no handler anywhere in its ancestry is handled by
+        logging.lastResort — a bare stderr handler owned by no logger, which
+        install_secret_filter must filter directly rather than assuming some
+        logger's handler will always be there to catch it.
+        """
+        assert logging.lastResort is not None
         installed = apikeys.install_secret_filter()
         assert installed >= 1
-        assert any(isinstance(f, apikeys.SecretFilter) for f in target_handler.filters)
+        assert any(isinstance(f, apikeys.SecretFilter) for f in logging.lastResort.filters)
+
+    def test_handles_missing_last_resort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN logging.lastResort is None WHEN installed THEN no raise.
+
+        Something else in the process (a test, a library) could set
+        logging.lastResort = None, disabling Python's own fallback handler.
+        install_secret_filter must not assume it's always present.
+        """
+        monkeypatch.setattr(logging, "lastResort", None)
+        apikeys.install_secret_filter()
 
     def test_idempotent_does_not_double_install(self, target_handler: logging.Handler) -> None:
         """GIVEN it already ran WHEN run again THEN no duplicate filter, 0 newly installed.

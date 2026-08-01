@@ -93,35 +93,22 @@ MIN_REDACTABLE_LEN = 16
 REDACTED = "[REDACTED]"
 
 
-def _env_snapshot() -> dict[str, str]:
-    """Best-effort atomic-ish snapshot of ``os.environ``.
-
-    ``os.environ`` is a ``MutableMapping``, not a real dict: enumerating it
-    snapshots the keys (``list(self._data)``, genuinely atomic) but then looks
-    each one up in a *separate* step. A concurrent ``setenv``/``delenv``
-    between those two steps raises ``KeyError`` — ``list(os.environ.items())``
-    does not protect against this, because the race is in the per-key lookup,
-    not in the outer iteration. Production never mutates the environment, but
-    the test suite does constantly, and this filter runs on every log record,
-    so it must not raise. The race window is a handful of bytecodes; a few
-    retries resolve it in practice, and falling back to ``{}`` after that
-    keeps the "never raise" guarantee even under pathological contention.
-    """
-    for _ in range(5):
-        try:
-            return dict(os.environ)
-        except KeyError:
-            continue
-    return {}
-
-
 def _secret_items() -> list[tuple[str, str]]:
-    """(name, stripped value) for every environment secret worth redacting."""
+    """(name, stripped value) for every environment secret worth redacting.
+
+    Enumerates *names* only (``list(os.environ)``, a genuinely atomic key
+    snapshot) and then reads each one with ``.get()``, which is
+    ``try: return self[key] except KeyError: return default`` — so a
+    concurrent ``setenv``/``delenv`` between the enumeration and the read
+    just yields the default rather than raising. That makes this race-free by
+    construction: no retry loop, no fallback, no window where redaction goes
+    quiet because the environment happened to change underneath it.
+    """
     items = []
-    for name, raw in _env_snapshot().items():
+    for name in list(os.environ):
         if not name.upper().endswith(SECRET_SUFFIXES):
             continue
-        value = raw.strip()
+        value = os.environ.get(name, "").strip()
         if len(value) >= MIN_REDACTABLE_LEN:
             items.append((name, value))
     return items
@@ -139,10 +126,21 @@ def secret_var_names() -> list[str]:
 
 def scrub(text: str | None) -> str:
     """Replace every known secret value in ``text`` with ``[REDACTED]``."""
+    return _scrub_with(text, known_secret_values())
+
+
+def _scrub_with(text: str | None, secrets: set[str]) -> str:
+    """Same replacement as :func:`scrub`, against an already-collected secret set.
+
+    :class:`SecretFilter` scrubs up to four fields per record (message, args,
+    traceback, stack info); calling :func:`scrub` for each would recompute
+    ``known_secret_values()`` — an environment scan — every time. Filter
+    collects the set once per record and threads it through this instead.
+    """
     if not text:
         return ""
     result = str(text)
-    for secret in known_secret_values():
+    for secret in secrets:
         result = result.replace(secret, REDACTED)
     return result
 
@@ -165,33 +163,40 @@ class SecretFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not known_secret_values():
+        secrets = known_secret_values()
+        if not secrets:
             return True
-        record.msg = scrub(str(record.msg)) if record.msg is not None else record.msg
-        record.args = self._scrub_args(record.args)
+        record.msg = _scrub_with(str(record.msg), secrets) if record.msg is not None else record.msg
+        record.args = self._scrub_args(record.args, secrets)
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:
-            record.exc_text = scrub(record.exc_text)
+            record.exc_text = _scrub_with(record.exc_text, secrets)
         if record.stack_info:
-            record.stack_info = scrub(record.stack_info)
+            record.stack_info = _scrub_with(record.stack_info, secrets)
         return True
 
     @staticmethod
     def _scrub_args(
         args: tuple[object, ...] | Mapping[str, object] | None,
+        secrets: set[str],
     ) -> tuple[object, ...] | Mapping[str, object] | None:
         """Scrub arguments without changing their shape.
 
         A lone Mapping must stay a Mapping: logging unwraps it into ``args``,
         and turning it into a tuple of keys makes ``getMessage()`` raise
-        "format requires a mapping".
+        "format requires a mapping". Keys are coerced to ``str`` because
+        ``%(name)s``-style formatting requires string keys regardless of what
+        the caller passed in.
         """
         if not args:
             return args
         if isinstance(args, Mapping):
-            return {str(key): scrub(str(value)) for key, value in args.items()}
-        return tuple(scrub(str(arg)) if not isinstance(arg, (int, float)) else arg for arg in args)
+            return {str(key): _scrub_with(str(value), secrets) for key, value in args.items()}
+        return tuple(
+            _scrub_with(str(arg), secrets) if not isinstance(arg, (int, float)) else arg
+            for arg in args
+        )
 
 
 def install_secret_filter() -> int:
@@ -203,6 +208,16 @@ def install_secret_filter() -> int:
     across two hierarchies (``supybot.plugins.LLM.*`` and ``llm.verse.*``), so
     per-logger installation would cover whichever two we happened to name.
 
+    In this deployment, only the ``supybot`` hierarchy actually has a handler
+    attached anywhere (supybot's own startup does that); nothing in this repo
+    attaches one to root or to ``llm`` (``grep addHandler plugins/llm/src/`` —
+    no hits). So an ``llm.verse.*`` record propagates all the way up without
+    finding a single handler, and Python's fallback path takes over:
+    ``logging.lastResort`` — a bare stderr handler that belongs to no logger —
+    handles it instead, unfiltered, straight into ``docker logs``. Filtering
+    ``logging.lastResort`` here closes that path regardless of whether a real
+    handler ever gets attached to ``llm`` later.
+
     Handlers created later — supybot adds per-plugin file handlers when
     ``individualLogfiles`` is true; prod has it false — are not covered. Calling
     this again picks them up.
@@ -211,9 +226,11 @@ def install_secret_filter() -> int:
     """
     installed = 0
     targets = [logging.getLogger(), logging.getLogger("supybot"), logging.getLogger("llm")]
-    for logger in targets:
-        for handler in logger.handlers:
-            if not any(isinstance(existing, SecretFilter) for existing in handler.filters):
-                handler.addFilter(SecretFilter())
-                installed += 1
+    handlers = [handler for logger in targets for handler in logger.handlers]
+    if logging.lastResort is not None:
+        handlers.append(logging.lastResort)
+    for handler in handlers:
+        if not any(isinstance(existing, SecretFilter) for existing in handler.filters):
+            handler.addFilter(SecretFilter())
+            installed += 1
     return installed
