@@ -503,10 +503,17 @@ class TestAPIKeyHandling:
 
         assert "Error" in result.content
 
-    def test_api_key_sanitized_in_errors(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN API error containing key WHEN handling THEN key sanitized."""
+    def test_api_key_sanitized_in_errors(
+        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN API error containing key WHEN handling THEN key sanitized.
+
+        TEST_MODEL is "gpt-4", whose provider is openai, so `_sanitize` (now
+        environment-backed) needs the key in OPENAI_API_KEY, not the registry.
+        """
         fake_key = "sk-" + "x" * 25  # noqa: S105
-        service, _ = make_service(assistantApiKey=fake_key)
+        monkeypatch.setenv("OPENAI_API_KEY", fake_key)
+        service, _ = make_service()
 
         mocker.patch(
             "llm.service.litellm.completion",

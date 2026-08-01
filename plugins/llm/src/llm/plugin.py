@@ -31,7 +31,7 @@ from supybot import world
 from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import limnoria_bridge
+from . import apikeys, limnoria_bridge
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -728,6 +728,14 @@ class LLM(callbacks.Plugin):
         self.llm_service = LLMService(self)
         self.log = log.getPluginLogger("LLM")
         self.log.addFilter(TraceFilter())
+
+        installed = apikeys.install_secret_filter()
+        self.log.info(
+            "secret redaction: %d handler(s) filtered, %d variable(s) covered: %s",
+            installed,
+            len(apikeys.secret_var_names()),
+            ", ".join(apikeys.secret_var_names()) or "none",
+        )
 
         # Apply configured log level to plugin and service loggers
         self._apply_log_level()

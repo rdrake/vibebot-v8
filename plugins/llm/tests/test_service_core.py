@@ -9,7 +9,7 @@ from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
 from llm.service import AssistantRequestContext, AssistantResult, LLMService, validate_external_url
 
-from .conftest import make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -216,30 +216,21 @@ class TestLLMService:
         assert self.service.validate_image_url(url) is True
 
     def test_api_key_sanitization_sk_format(self) -> None:
-        """GIVEN text with configured sk-* API key WHEN sanitized THEN key redacted."""
-        api_key = "sk-test-fake"  # noqa: S105
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": api_key,
-                "codeApiKey": "",
-                "imageApiKey": "",
-            }.get(key, "")
-        )
+        """GIVEN text with a configured sk-* API key WHEN sanitized THEN key redacted.
+
+        Sourced from FAKE_PROVIDER_KEYS, which the autouse `_isolate_provider_env`
+        fixture already sets in the environment for every test — `_sanitize` is
+        now backed by the environment, not the registry.
+        """
+        api_key = FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
         text_with_key = f"Error: Invalid API key {api_key}"
         sanitized = self.service._sanitize(text_with_key)
         assert api_key not in sanitized
         assert "[REDACTED]" in sanitized
 
     def test_api_key_sanitization_aiza_format(self) -> None:
-        """GIVEN text with configured AIza* API key WHEN sanitized THEN key redacted."""
-        api_key = "AIzaSyFAKE_TEST_KEY_FOR_SANITIZE_TEST"
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": "",
-                "codeApiKey": "",
-                "imageApiKey": api_key,
-            }.get(key, "")
-        )
+        """GIVEN text with a configured AIza* API key WHEN sanitized THEN key redacted."""
+        api_key = FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
         text_with_key = f"Error with key {api_key}"
         sanitized = self.service._sanitize(text_with_key)
         assert api_key not in sanitized
@@ -252,49 +243,31 @@ class TestLLMService:
 
     def test_api_key_sanitization_multiple_keys(self) -> None:
         """GIVEN text with multiple configured keys WHEN sanitized THEN all redacted."""
-        ask_key = "sk-ask-key-12345"
-        code_key = "sk-code-key-67890"
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": ask_key,
-                "codeApiKey": code_key,
-                "imageApiKey": "",
-            }.get(key, "")
-        )
+        ask_key = FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
+        code_key = FAKE_PROVIDER_KEYS["XAI_API_KEY"]
         text = f"Error with {ask_key} and also {code_key}"
         sanitized = self.service._sanitize(text)
         assert ask_key not in sanitized
         assert code_key not in sanitized
         assert sanitized.count("[REDACTED]") == 2
 
-    def test_api_key_sanitization_channel_specific_key(self) -> None:
-        """GIVEN a channel-scoped API key override (registerChannelValue) and a
-        global lookup that does not return it WHEN sanitized THEN the channel
-        key is still redacted."""
-        import supybot.conf as conf
+    def test_sanitize_sources_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GIVEN a key only in the environment WHEN sanitizing THEN redacted.
 
-        chan_key = "sk-channel-override-secret-xyz"  # noqa: S105
-        val = conf.supybot.plugins.LLM.get("assistantApiKey")
-        val.get("#forest").setValue(chan_key)
-        # Global lookups return nothing — only the channel override holds the key.
-        self.mock_plugin.registryValue = self.mocker.Mock(side_effect=lambda key, channel=None: "")
-        try:
-            text = f"401 Unauthorized: key {chan_key} rejected"
-            sanitized = self.service._sanitize(text)
-            assert chan_key not in sanitized
-            assert "[REDACTED]" in sanitized
-        finally:
-            val.get("#forest").setValue("")
+        Asserts both directions in one test: unset first (not redacted), then
+        set (redacted). Either half alone can pass for the wrong reason.
+        """
+        text = "AuthenticationError: key xai-fake-key-for-tests-0000 rejected"
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        assert "xai-fake-key-for-tests-0000" in self.service._sanitize(text)
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        assert "xai-fake-key-for-tests-0000" not in self.service._sanitize(text)
+        assert "[REDACTED]" in self.service._sanitize(text)
 
-    def test_api_key_sanitization_no_keys_configured(self) -> None:
+    def test_api_key_sanitization_no_keys_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN no API keys configured WHEN sanitized THEN text unchanged."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantApiKey": "",
-                "codeApiKey": "",
-                "imageApiKey": "",
-            }.get(key, "")
-        )
+        for name in FAKE_PROVIDER_KEYS:
+            monkeypatch.delenv(name, raising=False)
         text = "Error: some random text with no keys"
         sanitized = self.service._sanitize(text)
         assert sanitized == text

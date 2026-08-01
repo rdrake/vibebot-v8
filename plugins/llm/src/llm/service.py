@@ -33,6 +33,7 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
+from . import apikeys
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
 from .profile import (
@@ -1183,48 +1184,16 @@ class LLMService:
         rid = request_id.get()
         return {"trace_id": rid} if rid else {}
 
-    _API_KEY_NAMES = (
-        "assistantApiKey",
-        "codeApiKey",
-        "imageApiKey",
-        "searchApiKey",
-    )
-
-    def _configured_api_keys(self) -> set[str]:
-        """Every configured API-key value across all scopes.
-
-        The four key settings are ``registerChannelValue`` (channel-overridable,
-        ``private=True``). A bare ``registryValue(name)`` only yields the global
-        default, so channel-specific keys would slip through redaction. Collect
-        the global value AND every channel override so ``_sanitize`` scrubs them
-        regardless of which channel's request produced the error.
-        """
-        keys: set[str] = set()
-        for name in self._API_KEY_NAMES:
-            try:
-                global_value = self.plugin.registryValue(name)
-            except Exception:  # noqa: BLE001 — redaction must never crash logging
-                global_value = None
-            if global_value:
-                keys.add(global_value)
-        try:
-            group = conf.supybot.plugins.LLM
-            for name in self._API_KEY_NAMES:
-                value = group.get(name)
-                for _child_name, child in value.getValues(getChildren=True):
-                    override = child()
-                    if override:
-                        keys.add(override)
-        except Exception:  # noqa: BLE001 — never let registry introspection break logging
-            pass
-        return keys
-
     def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
 
-        Collects actual configured API keys (global + per-channel overrides) and
-        replaces them with [REDACTED]. This is more reliable than regex patterns
-        because it catches every key format regardless of structure.
+        Delegates to :func:`apikeys.scrub`, which collects every environment
+        value that looks like a secret and replaces it with [REDACTED]. This is
+        more reliable than regex patterns because it catches every key format
+        regardless of structure. The environment is the source of truth for
+        provider credentials (see ``apikeys.py``), not the registry — a key
+        that only lives in ``conf`` is no longer something this method can see,
+        by design.
 
         Args:
             text: Text that may contain API keys
@@ -1232,12 +1201,7 @@ class LLMService:
         Returns:
             Text with API keys replaced by [REDACTED]
         """
-        if not text:
-            return ""
-        result = str(text)
-        for key in self._configured_api_keys():
-            result = result.replace(key, "[REDACTED]")
-        return result
+        return apikeys.scrub(text)
 
     def _log_server_headers(self, source: object | None) -> None:
         """Log server-identifying headers from a response or exception at DEBUG level."""
