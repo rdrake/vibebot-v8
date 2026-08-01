@@ -59,15 +59,6 @@ class TestProfileResolution:
         "pid",
         ["chat", "code", "draw", "verse", "remind_action"],
     )
-    def test_api_key_setting_is_a_known_registry_key(self, pid):
-        """profile.api_key_setting matches a registerChannelValue in config.py."""
-        valid_key_keys = {"assistantApiKey", "codeApiKey", "imageApiKey", "searchApiKey"}
-        assert profile.PROFILES[pid].api_key_setting in valid_key_keys
-
-    @pytest.mark.parametrize(
-        "pid",
-        ["chat", "code", "draw", "verse", "remind_action"],
-    )
     def test_overlay_setting_is_known_or_none(self, pid):
         """profile.overlay_setting is None or a known overlay key."""
         s = profile.PROFILES[pid].overlay_setting
@@ -118,13 +109,11 @@ class TestBehaviorPreservation:
         "remind_action": "assistantSystemPrompt",
     }
     # Every chat-loop profile's assistant_completion fallback is
-    # assistantModel/assistantApiKey. codeModel/codeApiKey belong to the
-    # inner _code_for_assistant one-shot, not the @code planner. verseModel
-    # is a caller-side override passed via model_override= rather than read
-    # by assistant_completion.
+    # assistantModel. codeModel belongs to the inner _code_for_assistant
+    # one-shot, not the @code planner. verseModel is a caller-side override
+    # passed via model_override= rather than read by assistant_completion.
     _PROFILE_IDS = ("chat", "code", "draw", "verse", "remind_action")
     EXPECTED_MODEL = dict.fromkeys(_PROFILE_IDS, "assistantModel")
-    EXPECTED_API_KEY = dict.fromkeys(_PROFILE_IDS, "assistantApiKey")
 
     @pytest.mark.parametrize(
         "pid",
@@ -174,13 +163,6 @@ class TestBehaviorPreservation:
     )
     def test_model_setting_value(self, pid):
         assert profile.PROFILES[pid].model_setting == self.EXPECTED_MODEL[pid]
-
-    @pytest.mark.parametrize(
-        "pid",
-        ["chat", "code", "draw", "verse", "remind_action"],
-    )
-    def test_api_key_setting_value(self, pid):
-        assert profile.PROFILES[pid].api_key_setting == self.EXPECTED_API_KEY[pid]
 
 
 class TestProfileImmutability:

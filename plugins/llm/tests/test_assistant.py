@@ -4399,7 +4399,6 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
         sentinel = Profile(
             id=PROFILE_CHAT,
             model_setting="SENTINEL_MODEL_KEY",
-            api_key_setting="SENTINEL_API_KEY",
             prompt_id="chat",
             overlay_setting=None,
             max_output_tokens=None,
@@ -4451,7 +4450,6 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
         sentinel = Profile(
             id=PROFILE_CHAT,
             model_setting="SENTINEL_MODEL_KEY",
-            api_key_setting="assistantApiKey",
             prompt_id="chat",
             overlay_setting=None,
             max_output_tokens=None,
@@ -4515,7 +4513,6 @@ class TestOverlayReadsViaProfiles:
         sentinel = Profile(
             id=PROFILE_REMIND_ACTION,
             model_setting="assistantModel",
-            api_key_setting="assistantApiKey",
             prompt_id="remind_action",
             overlay_setting="SENTINEL_REMIND_OVERLAY",
             max_output_tokens=400,
@@ -4596,7 +4593,6 @@ class TestOverlayReadsViaProfiles:
         sentinel_verse = Profile(
             id=PROFILE_VERSE,
             model_setting="assistantModel",
-            api_key_setting="assistantApiKey",
             prompt_id="verse",
             overlay_setting="SENTINEL_VERSE_OVERLAY",
             max_output_tokens=None,
@@ -4658,7 +4654,6 @@ class TestOverlayReadsViaProfiles:
         sentinel = Profile(
             id=PROFILE_REMIND_ACTION,
             model_setting="assistantModel",
-            api_key_setting="assistantApiKey",
             prompt_id="remind_action",
             overlay_setting="SENTINEL_SCHED_OVERLAY",
             max_output_tokens=400,

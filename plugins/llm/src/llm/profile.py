@@ -57,8 +57,6 @@ class Profile:
             and a key in ``prompts.PROMPTS``.
         model_setting: Limnoria registry key for the model name
             (e.g. ``"assistantModel"``).
-        api_key_setting: Limnoria registry key for the API key
-            (e.g. ``"assistantApiKey"``).
         prompt_id: Key into ``prompts.PROMPTS`` for the framework system
             prompt.
         overlay_setting: Limnoria registry key for the channel-overridable
@@ -77,7 +75,6 @@ class Profile:
 
     id: str
     model_setting: str
-    api_key_setting: str
     prompt_id: str
     overlay_setting: str | None
     max_output_tokens: int | None
@@ -90,7 +87,6 @@ PROFILES: dict[str, Profile] = {
     PROFILE_CHAT: Profile(
         id=PROFILE_CHAT,
         model_setting="assistantModel",
-        api_key_setting="assistantApiKey",
         prompt_id="chat",
         overlay_setting="assistantSystemPrompt",
         max_output_tokens=2000,
@@ -98,12 +94,11 @@ PROFILES: dict[str, Profile] = {
     ),
     PROFILE_CODE: Profile(
         id=PROFILE_CODE,
-        # The @code chat-loop planner uses assistantModel/assistantApiKey;
-        # the codeModel/codeApiKey/codeSystemPrompt registry keys belong to
-        # the *inner* _code_for_assistant one-shot (plugin.py:2547), which
-        # is a tool callback, not a Profile dispatch.
+        # The @code chat-loop planner uses assistantModel; the
+        # codeModel/codeSystemPrompt registry keys belong to the *inner*
+        # _code_for_assistant one-shot (plugin.py:2547), which is a tool
+        # callback, not a Profile dispatch.
         model_setting="assistantModel",
-        api_key_setting="assistantApiKey",
         prompt_id="code",
         # The @code planner builds system_prompt from
         # user_instruction + CODE_SYSTEM_PROMPT and never reads a channel
@@ -115,7 +110,6 @@ PROFILES: dict[str, Profile] = {
     PROFILE_DRAW: Profile(
         id=PROFILE_DRAW,
         model_setting="assistantModel",
-        api_key_setting="assistantApiKey",
         prompt_id="draw",
         # Same pattern as PROFILE_CODE: planner constructs its system_prompt
         # without reading a channel overlay key.
@@ -129,7 +123,6 @@ PROFILES: dict[str, Profile] = {
         # registry key, threaded through as model_override at the dispatch
         # site (plugin.py) — same pattern as PROFILE_CODE's inner one-shot.
         model_setting="assistantModel",
-        api_key_setting="assistantApiKey",
         prompt_id="verse",
         overlay_setting="assistantSystemPrompt",
         # Bounded (was None/unbounded). Verse is long-form, but a
@@ -154,7 +147,6 @@ PROFILES: dict[str, Profile] = {
     PROFILE_REMIND_ACTION: Profile(
         id=PROFILE_REMIND_ACTION,
         model_setting="assistantModel",
-        api_key_setting="assistantApiKey",
         prompt_id="remind_action",
         overlay_setting="assistantSystemPrompt",
         max_output_tokens=400,
