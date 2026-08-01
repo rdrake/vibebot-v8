@@ -856,11 +856,40 @@ REPLY_GUARDS: dict[str, _ReplyGuard] = {
 # bad output, so the order between them does not matter; what matters is that
 # they run before the model sees the thread, since all three exist because a
 # non-reasoning model imitates whatever is already in it.
-_EVERY_ROUTE_STRIPS: tuple[Callable[..., Any], ...] = (
-    _strip_safety_refusals,
-    _strip_image_failures,
-    _strip_tool_complaints,
+# Keyed so the strip ledger can name what it removed — the keys become fields
+# on the history_strip log line and must stay stable, since they are what any
+# analysis groups by.
+_EVERY_ROUTE_STRIPS: tuple[tuple[str, Callable[..., Any]], ...] = (
+    ("safety_refusal", _strip_safety_refusals),
+    ("image_failure", _strip_image_failures),
+    ("tool_complaint", _strip_tool_complaints),
 )
+
+
+def _counted_strip(
+    key: str,
+    strip: Callable[..., Any],
+    history: list[dict[str, str]] | None,
+    ledger: dict[str, int],
+) -> list[dict[str, str]] | None:
+    """Apply ``strip``, recording how many turns it dropped under ``key``.
+
+    Pure bookkeeping: the history returned is exactly what ``strip`` returned,
+    so wrapping a strip in this cannot change what the model sees.
+
+    This exists because the strips were the unmeasured half of the guard
+    stack. Retries log a line each; strips ran silently on every turn, so the
+    only visible evidence of self-imitation was the fraction that survived to
+    the retry path. On 2026-08-01 a five-hour run of poisoned replies produced
+    exactly ONE guard-fire line, which made the load look negligible when it
+    was not.
+    """
+    before = len(history) if history else 0
+    result = strip(history)
+    after = len(result) if result else 0
+    if after < before:
+        ledger[key] = ledger.get(key, 0) + (before - after)
+    return result
 
 
 # Verse history is trimmed to this many of the most recent messages before
@@ -4533,6 +4562,42 @@ Examples (echo → action_prompt: ""):
         # No image data — content was blocked
         return None
 
+    def _log_history_strip(
+        self,
+        *,
+        model: str,
+        channel: str | None,
+        route: str,
+        assistant_turns: int,
+        counts: dict[str, int],
+    ) -> None:
+        """One structured line per invocation that removed poisoned history.
+
+        Fields:
+          assistant_turns — the bot's own turns visible across both windows
+                            BEFORE stripping, i.e. the denominator for "how
+                            much of what I was about to imitate was bad"
+          removed         — total turns dropped
+          <guard>=<n>     — per-guard breakdown, keyed by _EVERY_ROUTE_STRIPS
+
+        Silent when nothing was stripped. The per-model turn denominator comes
+        from the matching ``op=assistant_step_1`` line, so a rate is still
+        computable without emitting a row for every clean turn.
+
+        f-string rather than %-args on purpose: supybot's logger drops ``%d``
+        and shifts the remaining arguments left, which silently corrupted the
+        guard-fire lines for months (fixed in 1b64332). ``completion_timing``
+        avoids it the same way.
+        """
+        total = sum(counts.values())
+        if not total:
+            return
+        detail = " ".join(f"{key}={counts[key]}" for key in sorted(counts))
+        self.log.warning(
+            f"history_strip model={model} channel={channel} route={route} "
+            f"assistant_turns={assistant_turns} removed={total} {detail}"
+        )
+
     def _run_reply_guards(
         self,
         guards: tuple[_ReplyGuard, ...],
@@ -4764,12 +4829,24 @@ Examples (echo → action_prompt: ""):
             # refusals, image-failure reports and tool complaints all breed
             # their own kind by self-imitation regardless of profile. The
             # route-specific passes below then add what only matters per route.
-            for strip in _EVERY_ROUTE_STRIPS:
-                history = strip(history)
-                channel_history = strip(channel_history)
+            #
+            # Every strip below is counted into strip_counts and reported once
+            # at the end as history_strip. The denominator is captured here,
+            # before anything is dropped.
+            strip_counts: dict[str, int] = {}
+            assistant_turns_seen = sum(
+                1
+                for m in [*(history or []), *(channel_history or [])]
+                if m.get("role") == Role.ASSISTANT
+            )
+            for key, strip in _EVERY_ROUTE_STRIPS:
+                history = _counted_strip(key, strip, history, strip_counts)
+                channel_history = _counted_strip(key, strip, channel_history, strip_counts)
             if route_profile == PROFILE_VERSE:
-                history = _strip_verse_denials(history)
-                history = _strip_degraded(history)
+                history = _counted_strip(
+                    "verse_denial", _strip_verse_denials, history, strip_counts
+                )
+                history = _counted_strip("degraded", _strip_degraded, history, strip_counts)
                 # A verse turn is a scene between the user and their avatar;
                 # the shared channel group chatter is NOT part of the story.
                 # Feeding it in (a) bleeds unrelated regular messages into the
@@ -4780,8 +4857,10 @@ Examples (echo → action_prompt: ""):
                 # drop the channel window entirely for verse.
                 channel_history = None
             else:
-                history = _strip_degraded(history)
-                channel_history = _strip_degraded(channel_history)
+                history = _counted_strip("degraded", _strip_degraded, history, strip_counts)
+                channel_history = _counted_strip(
+                    "degraded", _strip_degraded, channel_history, strip_counts
+                )
 
             # The bot's own non-degraded past replies, used by the in-loop
             # repetition guard: a fresh reply that near-duplicates any of
@@ -4793,11 +4872,20 @@ Examples (echo → action_prompt: ""):
                 if m.get("role") == Role.ASSISTANT
             ]
 
-            history = _strip_repeated_replies(history)
+            history = _counted_strip("repeat", _strip_repeated_replies, history, strip_counts)
             if route_profile == PROFILE_VERSE:
                 history = _trim_history_window(history, _VERSE_HISTORY_MAX_MESSAGES)
             else:
-                channel_history = _strip_repeated_replies(channel_history)
+                channel_history = _counted_strip(
+                    "repeat", _strip_repeated_replies, channel_history, strip_counts
+                )
+            self._log_history_strip(
+                model=model,
+                channel=channel,
+                route=route_profile,
+                assistant_turns=assistant_turns_seen,
+                counts=strip_counts,
+            )
 
             messages = self._build_messages(
                 prompt,
