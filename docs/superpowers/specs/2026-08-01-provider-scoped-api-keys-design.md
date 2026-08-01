@@ -63,8 +63,9 @@ api_key_for("xai/grok-4.3")  ->  os.environ["XAI_API_KEY"]
 
 The provider comes from `litellm.get_llm_provider(model)[1]`, **not** from
 splitting on `/`. Unprefixed model names are legal — `config.py:40` validates
-models through litellm, which resolves `gpt-4` to openai and `claude-3-opus` to
-anthropic — and the test suite uses unprefixed names in roughly 100 places. A
+models through litellm, which resolves `gpt-4` and `dall-e-3` to openai (verified;
+note it *raises* on bare `claude-3-opus`, so the wrapper must catch) — and the
+test suite uses unprefixed names in roughly 100 places. A
 `split("/")` implementation would return `None` for all of them and report
 "API key not configured" for a configuration that is actually valid.
 
