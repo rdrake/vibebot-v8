@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
+from urllib.parse import urlparse
 
 import litellm
 import markdown
@@ -311,15 +312,71 @@ _SAFETY_REFUSAL_PATTERNS = re.compile(
 # any image URL the turn did not itself mint is not allowed out.
 _IMAGE_URL_RE = re.compile(r"https?://\S+?/(?:img_)[0-9a-zA-Z_]+\.(?:png|jpe?g|webp|gif)")
 
+# The mint-shaped pattern above recognises a URL generate_image actually
+# produced, which is what `minted` is collected with. It is the WRONG tool for
+# deciding whether a reply invented one: a fabricated URL does not look minted,
+# so it simply fails to match and the reply reads as clean. Observed in
+# #afternet on 2026-08-01 -- "draw rdrake dismantling you" came back in two
+# seconds with
+#     https://irc.rdrake.org/llm/image/9c8e7f4b-rdrake-dismantling-vibebot.png
+# against a real mint format of paste.boxlabs.uk/img/img_<hex>.jpg, with no
+# op=image_generation in the log at all. The model skipped the tool and wrote a
+# plausible URL, and every structural check passed it through.
+#
+# So detection matches ANY image URL and filters by host instead. A link to
+# somebody else's image (another bot's paste, a URL the user supplied) is
+# legitimate and must pass; a link to an image on OUR OWN host that this turn
+# did not mint cannot be anything but stale or invented, whatever its shape.
+_ANY_IMAGE_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
 
-def _strip_unminted_image_urls(content: str, minted: set[str]) -> bool:
-    """Return True iff ``content`` cites an image URL this turn did not create.
+
+# One forced retry. If the model writes a URL, is told to call the tool, and
+# still will not, a second nudge will not change that -- deliver the honest
+# failure instead of burning image spend on a loop.
+_MAX_IMAGE_FABRICATION_RETRIES = 1
+_IMAGE_FABRICATION_RETRY_NUDGE = (
+    "Stop — you wrote an image link without generating an image, so that link "
+    "does not exist. Call the generate_image tool now and use only the URL it "
+    "returns. Never write an image URL yourself."
+)
+# Used when the tool was never called and the forced retry did not rescue it,
+# so there is no tool error to report. Deliberately plain: an invented link is
+# worse than an admitted failure, because nothing about it looks wrong.
+_IMAGE_FABRICATION_FALLBACK = "I couldn't generate that image."
+
+
+def _image_url_host(url: str) -> str:
+    """Lowercased host of ``url``, or "" when it will not parse."""
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _unminted_image_urls(content: str, minted: set[str], hosts: frozenset[str]) -> list[str]:
+    """Image URLs this turn did not mint but presented as its own.
 
     ``minted`` holds the URLs returned by successful generate_image calls in
-    the current invocation. Anything else in an image-failed reply came from
-    history or was invented.
+    the current invocation. A URL is ours-but-unminted when EITHER:
+
+    * it carries the mint filename shape (``img_<alnum>.<ext>``), whatever
+      host it names -- the original host-independent check; or
+    * it points at one of ``hosts``, whatever shape it has -- which is what
+      catches an invented URL, since a fabrication does not look minted.
+
+    Keeping both matters: ``hosts`` is derived from configuration, and an
+    unset ``httpUrlBase`` would otherwise leave the guard matching nothing at
+    all. This way the union degrades to the original behaviour instead of to
+    silence. Returns the offending URLs so the caller can log what it caught.
     """
-    return any(url not in minted for url in _IMAGE_URL_RE.findall(content or ""))
+    if not content:
+        return []
+    mint_shaped = set(_IMAGE_URL_RE.findall(content))
+    return [
+        url
+        for url in _ANY_IMAGE_URL_RE.findall(content)
+        if url not in minted and (url in mint_shaped or _image_url_host(url) in hosts)
+    ]
 
 
 # Image-generation refusals are excluded: they come from the image provider's
@@ -4581,11 +4638,18 @@ Examples (echo → action_prompt: ""):
             # Count of verse premise-refusal retries spent this invocation
             # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
             verse_denial_retries = 0
-            # Stale-image guard state (see _strip_unminted_image_urls):
+            # Fabricated/stale-image guard state (see _unminted_image_urls):
             # URLs minted by successful generate_image calls this invocation,
-            # and the error from a failed one.
+            # the error from a failed one, and whether the tool ran at all.
             minted_image_urls: set[str] = set()
             image_tool_error: str | None = None
+            image_tool_called = False
+            own_image_hosts = self.own_image_hosts()
+            # Retries spent forcing generate_image after the model wrote an
+            # image URL without calling it (see _MAX_IMAGE_FABRICATION_RETRIES).
+            image_fabrication_retries = 0
+            # Set by the guard to force generate_image on the next step.
+            force_image_next_step = False
             # Count of policy-refusal retries spent this invocation (see
             # _is_safety_refusal / _MAX_SAFETY_REFUSAL_RETRIES). All routes.
             safety_refusal_retries = 0
@@ -4604,7 +4668,16 @@ Examples (echo → action_prompt: ""):
                 )
 
                 completion_kwargs: dict[str, Any] = dict(optional_kwargs)
-                if _step == 0 and force_initial_storybook:
+                if force_image_next_step:
+                    # Evidence-driven, not intent-guessed: the previous step
+                    # wrote an image URL without calling the tool, so this one
+                    # has no choice about it.
+                    force_image_next_step = False
+                    completion_kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": "generate_image"},
+                    }
+                elif _step == 0 and force_initial_storybook:
                     completion_kwargs["tool_choice"] = {
                         "type": "function",
                         "function": {"name": "verse_storybook"},
@@ -4689,22 +4762,56 @@ Examples (echo → action_prompt: ""):
                         messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
                         continue
 
-                    # Stale-image guard: generate_image failed this turn, yet
-                    # the reply cites an image URL the turn never minted —
-                    # the model lifted the previous image out of its own
-                    # history and is passing it off as the requested one.
-                    # Replace the whole reply with the real reason: a wrong
-                    # image delivered silently is worse than a plain failure,
-                    # because nothing about it looks wrong to the user.
-                    if image_tool_error and _strip_unminted_image_urls(content, minted_image_urls):
+                    # Fabricated/stale-image guard. The reply cites an image on
+                    # a host only we publish to, but this turn did not mint it.
+                    # Two ways that happens, and the response differs:
+                    #
+                    #  * the tool ran and failed, and the model lifted the
+                    #    previous image out of history to cover for it; or
+                    #  * the tool never ran at all and the model wrote a
+                    #    plausible URL from nothing.
+                    #
+                    # The second is the one that looks like an outage to users
+                    # -- the link 404s, and nothing about the reply looks
+                    # wrong. It is recoverable, though: force generate_image
+                    # and let the turn continue, so the user gets the picture
+                    # they asked for instead of an apology.
+                    #
+                    # Runs unconditionally. The previous version was gated on
+                    # the tool having FAILED, which is exactly the case that
+                    # does not arise when the model skips the tool entirely.
+                    unminted = _unminted_image_urls(content, minted_image_urls, own_image_hosts)
+                    if (
+                        unminted
+                        and not image_tool_called
+                        and image_fabrication_retries < _MAX_IMAGE_FABRICATION_RETRIES
+                    ):
+                        image_fabrication_retries += 1
                         self.log.warning(
-                            "assistant_completion: reply cited a stale image URL after a "
-                            "failed generate_image; replacing with the tool error "
-                            "model=%s channel=%s",
+                            "assistant_completion: reply invented image URL %s without "
+                            "calling generate_image; forcing the tool and retrying "
+                            "(%i/%i) model=%s channel=%s",
+                            unminted[0],
+                            image_fabrication_retries,
+                            _MAX_IMAGE_FABRICATION_RETRIES,
                             model,
                             channel,
                         )
-                        content = image_tool_error
+                        force_image_next_step = True
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _IMAGE_FABRICATION_RETRY_NUDGE})
+                        continue
+                    if unminted:
+                        self.log.warning(
+                            "assistant_completion: reply cited an unminted image URL %s "
+                            "(tool_called=%s); replacing with the real outcome "
+                            "model=%s channel=%s",
+                            unminted[0],
+                            image_tool_called,
+                            model,
+                            channel,
+                        )
+                        content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
                         last_assistant_text = content
 
                     # Safety-refusal guard (all routes): a policy-shaped
@@ -4945,10 +5052,12 @@ Examples (echo → action_prompt: ""):
                             # Record what this turn actually minted, so the
                             # stale-image guard below can tell a fresh image
                             # from one lifted out of history.
+                            image_tool_called = True
                             minted_image_urls.update(
                                 _IMAGE_URL_RE.findall(str(parsed.get("message", "")))
                             )
                     elif isinstance(parsed, dict) and tc.function.name == "generate_image":
+                        image_tool_called = True
                         image_tool_error = str(parsed.get("error") or "").strip() or None
 
                     messages.append(
@@ -5288,6 +5397,21 @@ Examples (echo → action_prompt: ""):
             return ImageResult(content=error_content, error=error_content)
         finally:
             stop_typing()
+
+    def own_image_hosts(self) -> frozenset[str]:
+        """Hosts that only this bot can legitimately publish images to.
+
+        Both destinations `_save_image_bytes` can return: the configured
+        upload service (``imageUploadUrl``) and the local HTTP root it falls
+        back to (``httpUrlBase``). An image URL on one of these that the
+        current turn did not mint is stale or invented -- see
+        :func:`_unminted_image_urls`. A URL anywhere else is somebody else's
+        image and is none of our business.
+        """
+        candidates = [self.get_http_paths()[1]]
+        with contextlib.suppress(Exception):
+            candidates.append(str(self.plugin.registryValue("imageUploadUrl") or ""))
+        return frozenset(h for c in candidates if (h := _image_url_host(c)))
 
     def get_http_paths(self) -> tuple[str, str]:
         """Get HTTP root directory and URL base for file storage.

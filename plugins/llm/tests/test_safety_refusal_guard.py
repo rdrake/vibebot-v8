@@ -25,10 +25,14 @@ from llm.service import (
     LLMService,
     _is_safety_refusal,
     _strip_safety_refusals,
-    _strip_unminted_image_urls,
+    _unminted_image_urls,
 )
 
 from .conftest import make_completion_response, make_tool_call
+
+# The two hosts _save_image_bytes can publish to: the upload service and the
+# local HTTP root it falls back to.
+OWN_HOSTS = frozenset({"irc.rdrake.org", "paste.boxlabs.uk"})
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -265,21 +269,23 @@ class TestStaleImageGuard:
 
     def test_detects_url_the_turn_did_not_mint(self) -> None:
         """A URL absent from the minted set is stale."""
-        assert _strip_unminted_image_urls("https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg", set())
+        assert _unminted_image_urls(
+            "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg", set(), OWN_HOSTS
+        )
 
     def test_accepts_url_the_turn_minted(self) -> None:
         """The image this turn actually generated is not stale."""
         url = "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg"
-        assert not _strip_unminted_image_urls(f"here you go: {url}", {url})
+        assert not _unminted_image_urls(f"here you go: {url}", {url}, OWN_HOSTS)
 
     def test_plain_reply_is_never_stale(self) -> None:
         """A reply with no image URL cannot be stale."""
-        assert not _strip_unminted_image_urls("no image for you", set())
+        assert not _unminted_image_urls("no image for you", set(), OWN_HOSTS)
 
     def test_external_host_urls_are_covered(self) -> None:
         """The external image host is in scope too, not just the local root."""
-        assert _strip_unminted_image_urls(
-            "https://paste.boxlabs.uk/img/img_6a669d1da253b.jpg", set()
+        assert _unminted_image_urls(
+            "https://paste.boxlabs.uk/img/img_6a669d1da253b.jpg", set(), OWN_HOSTS
         )
 
     def test_moderated_image_does_not_repost_previous(
