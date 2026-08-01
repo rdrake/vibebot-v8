@@ -1670,6 +1670,62 @@ class TestPluginInit:
         plugin = LLM(mock_irc)
         assert plugin.log.level == logging.DEBUG
 
+    def test_init_installs_secret_filter(self, mock_irc: MagicMock, mocker: MockerFixture) -> None:
+        """GIVEN plugin initialized WHEN __init__ runs THEN install_secret_filter is called.
+
+        Regression guard: deleting the install_secret_filter() call from
+        __init__ entirely is otherwise caught by no test — the six
+        environment-backed _sanitize tests only exercise apikeys.scrub
+        directly and never construct a real plugin, so a mutant that drops
+        the call still leaves _sanitize apparently working while
+        llm.verse.* records go out unfiltered via logging.lastResort.
+        """
+        from llm import apikeys
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        install_spy = mocker.spy(apikeys, "install_secret_filter")
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        LLM(mock_irc)
+
+        install_spy.assert_called_once_with()
+
+    def test_init_startup_log_reports_names_not_values(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN configured provider keys WHEN plugin initialized THEN the
+        startup redaction log line reports variable *names*, never values.
+
+        Regression guard for the hard "names and counts only, never values"
+        constraint: a mutant that logs os.environ.get(name) per variable
+        instead of apikeys.secret_var_names() would still produce a
+        plausible-looking log line, but would leak FAKE_PROVIDER_KEYS values
+        into logs/CI output. Asserts the exact argument passed to
+        self.log.info, not just that *some* log call happened.
+        """
+        from llm import apikeys
+        from llm.plugin import LLM
+
+        from .conftest import FAKE_PROVIDER_KEYS, make_registry_side_effect, plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        mocks = plugin_init_patches(mocker)
+        LLM(mock_irc)
+
+        log_mock = mocks["log"].getPluginLogger.return_value
+        redaction_calls = [
+            call for call in log_mock.info.call_args_list if "secret redaction" in call.args[0]
+        ]
+        assert len(redaction_calls) == 1
+        installed, covered, names_arg = redaction_calls[0].args[1:4]
+        assert covered == len(apikeys.secret_var_names())
+        assert names_arg == ", ".join(apikeys.secret_var_names())
+        assert isinstance(installed, int)
+        for value in FAKE_PROVIDER_KEYS.values():
+            assert value not in names_arg
+
 
 class TestPluginDatabaseWiring:
     """Test database persistence wiring in plugin lifecycle."""

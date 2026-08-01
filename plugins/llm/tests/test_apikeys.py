@@ -443,30 +443,13 @@ class TestEndToEndRedaction:
 
 class TestInstallSecretFilter:
     """install_secret_filter is Task 4's job to call; this module only owns
-    correctness of the function itself (target loggers, idempotency, count)."""
+    correctness of the function itself (target loggers, idempotency, count).
 
-    @pytest.fixture(autouse=True)
-    def _restore_global_filter_state(self) -> Generator[None]:
-        """install_secret_filter mutates real, process-global logging state:
-        the handlers already sitting on root/supybot/llm, plus
-        logging.lastResort. That state outlives this test and is shared with
-        every other test file in the suite (caplog included) — without this,
-        a SecretFilter this test adds to a *pre-existing* handler (e.g.
-        pytest's own root handler) is never removed, and every later test
-        silently has its FAKE_PROVIDER_KEYS scrubbed out of caplog.
-        """
-        loggers = [logging.getLogger(name) for name in ("", "supybot", "llm")]
-        handler_snapshot = {
-            handler: list(handler.filters) for logger in loggers for handler in logger.handlers
-        }
-        last_resort_snapshot = (
-            list(logging.lastResort.filters) if logging.lastResort is not None else None
-        )
-        yield
-        for handler, filters in handler_snapshot.items():
-            handler.filters = filters
-        if logging.lastResort is not None and last_resort_snapshot is not None:
-            logging.lastResort.filters = last_resort_snapshot
+    Global logging-filter state (root/supybot/llm handlers, logging.lastResort)
+    mutated by install_secret_filter() is snapshotted and restored by the
+    suite-wide autouse fixture in the top-level conftest.py — this class no
+    longer needs a class-local copy of that protection.
+    """
 
     @pytest.fixture
     def target_handler(self) -> Generator[logging.Handler]:

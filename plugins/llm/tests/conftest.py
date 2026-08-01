@@ -66,6 +66,42 @@ def _isolate_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _restore_global_logging_filters() -> Generator[None]:
+    """Undo any ``SecretFilter`` installation left on process-global logging state.
+
+    ``apikeys.install_secret_filter()`` (installed from ``LLM.__init__`` as of
+    Task 4) attaches to handlers already sitting on root/``supybot``/``llm``,
+    plus ``logging.lastResort`` — real, process-global state, not anything
+    scoped to a single test. Any test that constructs a real plugin
+    (``LLM(mock_irc)``, not just ``make_service()``) triggers this via
+    ``__init__``. pytest reuses one session-scoped ``LogCaptureHandler`` for
+    the whole run, so a filter installed by one test survives into every
+    later test's ``caplog`` — silently turning any of ``FAKE_PROVIDER_KEYS``'s
+    values into ``[REDACTED]`` in unrelated assertions, well after the test
+    that installed the filter has finished. Snapshotting and restoring
+    ``handler.filters`` here, for every test in the suite, confines
+    installation to the test that triggered it.
+
+    Generalized from the equivalent class-local fixture this module used to
+    carry only for ``TestInstallSecretFilter`` in ``test_apikeys.py`` — every
+    test that builds a real plugin needs the same protection, not just the
+    tests that exercise ``install_secret_filter`` directly.
+    """
+    loggers = [logging.getLogger(name) for name in ("", "supybot", "llm")]
+    handler_snapshot = {
+        handler: list(handler.filters) for logger in loggers for handler in logger.handlers
+    }
+    last_resort_snapshot = (
+        list(logging.lastResort.filters) if logging.lastResort is not None else None
+    )
+    yield
+    for handler, filters in handler_snapshot.items():
+        handler.filters = filters
+    if logging.lastResort is not None and last_resort_snapshot is not None:
+        logging.lastResort.filters = last_resort_snapshot
+
+
+@pytest.fixture(autouse=True)
 def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail loudly instead of making a real request from a test."""
 
