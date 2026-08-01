@@ -112,7 +112,7 @@ class ConversationContext:
             self._conversations[key] = Conversation(messages=messages, last_activity=last_activity)
             loaded += 1
         if loaded:
-            log.info("Loaded %d conversation(s) from database", loaded)
+            log.info("Loaded %i conversation(s) from database", loaded)
 
     def update_config(self, config: ContextConfig) -> None:
         """Update default configuration without losing conversation data.

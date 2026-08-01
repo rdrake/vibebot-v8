@@ -2279,12 +2279,12 @@ class LLM(callbacks.Plugin):
             usage_count = self.db.migrate_nick(old_nick, account)
             if usage_count > 0:
                 self.log.info(
-                    "Migrated %d usage row(s) from %s to %s", usage_count, old_nick, account
+                    "Migrated %i usage row(s) from %s to %s", usage_count, old_nick, account
                 )
             convo_count = self.db.migrate_conversations(old_nick, account)
             if convo_count > 0:
                 self.log.info(
-                    "Migrated %d conversation row(s) from %s to %s",
+                    "Migrated %i conversation row(s) from %s to %s",
                     convo_count,
                     old_nick,
                     account,
@@ -2294,7 +2294,7 @@ class LLM(callbacks.Plugin):
             data_count = self.db.migrate_user_data(old_nick, account)
             if data_count > 0:
                 self.log.info(
-                    "Migrated %d memory/instruction row(s) from %s to %s",
+                    "Migrated %i memory/instruction row(s) from %s to %s",
                     data_count,
                     old_nick,
                     account,
@@ -3827,7 +3827,7 @@ class LLM(callbacks.Plugin):
 
         if enforce:
             self.log.info(
-                "rate_limited command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+                "rate_limited command=%s account=%s tier=%s count=%i limit=%i window=%ss",
                 command,
                 account,
                 tier,
@@ -3853,7 +3853,7 @@ class LLM(callbacks.Plugin):
             return True
 
         self.log.info(
-            "rate_limit_shadow command=%s account=%s tier=%s count=%d limit=%d window=%ss",
+            "rate_limit_shadow command=%s account=%s tier=%s count=%i limit=%i window=%ss",
             command,
             account,
             tier,
@@ -5735,7 +5735,7 @@ class LLM(callbacks.Plugin):
         next_position = chain_position + 1
         if next_position > self._REMINDER_MAX_CHAIN_POSITION:
             self.log.info(
-                "reminder_reschedule_skipped reason=cap event=%s position=%d/%d",
+                "reminder_reschedule_skipped reason=cap event=%s position=%i/%i",
                 event_name,
                 next_position,
                 self._REMINDER_MAX_CHAIN_POSITION,
@@ -5816,7 +5816,7 @@ class LLM(callbacks.Plugin):
             )
             self.log.info(
                 "reminder_reschedule path=mechanical kind=%s event=%s "
-                "position=%d/%d next_fire_at=%.3f",
+                "position=%i/%i next_fire_at=%.3f",
                 "seconds" if recurrence_seconds is not None else "rrule",
                 new_event_name,
                 next_position,

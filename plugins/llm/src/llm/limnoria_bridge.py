@@ -358,7 +358,7 @@ def dispatch(
     # key). Never log its content at INFO — only its length. Full content goes
     # to DEBUG (off in production), mirroring the reply logging below.
     _log.info(
-        "bridge call: %s.%s args=%d chars nick=%s channel=%s allow_mutating=%s",
+        "bridge call: %s.%s args=%i chars nick=%s channel=%s allow_mutating=%s",
         plugin,
         command,
         len(arg_string),
@@ -419,5 +419,5 @@ def dispatch(
         return envelope
     reply = "\n".join(proxy.buffer)
     _log.debug("bridge result: %s.%s -> ok reply=%r", plugin, command, reply)
-    _log.info("bridge result: %s.%s -> ok (%d chars)", plugin, command, len(reply))
+    _log.info("bridge result: %s.%s -> ok (%i chars)", plugin, command, len(reply))
     return {"status": "ok", "reply": reply}

@@ -127,7 +127,7 @@ def compact_verse(
             pairs.pop()
         bullets = "\n".join(b for _, b in pairs)
         _LOG.info(
-            "verse compaction: bullet block trimmed to %d chars over %d-event batch",
+            "verse compaction: bullet block trimmed to %i chars over %i-event batch",
             len(bullets),
             len(pairs),
         )
@@ -161,8 +161,8 @@ def compact_verse(
 
     if len(union_ids) > _MAX_DIGEST_ENTITY_IDS:
         _LOG.info(
-            "verse compaction: digest entity_ids truncated %d → %d "
-            "(union over %d events); rest dropped",
+            "verse compaction: digest entity_ids truncated %i → %i "
+            "(union over %i events); rest dropped",
             len(union_ids),
             _MAX_DIGEST_ENTITY_IDS,
             len(kept_events),

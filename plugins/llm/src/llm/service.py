@@ -2630,7 +2630,7 @@ class LLMService:
             return False
 
         self.log.info(
-            "Stashed timed-out %s request as pending_task id=%d (expires in %ds)",
+            "Stashed timed-out %s request as pending_task id=%i (expires in %is)",
             task_type,
             task_id,
             expiry,
@@ -3288,7 +3288,7 @@ class LLMService:
             optional_kwargs = self._get_provider_kwargs(model)
             optional_kwargs.update(self._resolve_grounding_kwargs(model, kind))
 
-            self.log.info("%s start model=%s content_len=%d", log_label, model, len(user_content))
+            self.log.info("%s start model=%s content_len=%i", log_label, model, len(user_content))
             response = self._completion_with_tool_fallback(
                 model=model,
                 messages=messages,
@@ -3301,8 +3301,8 @@ class LLMService:
             grounding_used = self._check_grounding_used(response)
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
             self.log.info(
-                "%s ok model=%s grounding_used=%s content_len=%d "
-                "prompt_tokens=%d completion_tokens=%d",
+                "%s ok model=%s grounding_used=%s content_len=%i "
+                "prompt_tokens=%i completion_tokens=%i",
                 log_label,
                 model,
                 grounding_used,
@@ -3397,7 +3397,7 @@ class LLMService:
 
         try:
             self.log.info(
-                "xai_responses_%s start model=%s input_len=%d",
+                "xai_responses_%s start model=%s input_len=%i",
                 kind,
                 model,
                 len(input_text),
@@ -3439,8 +3439,8 @@ class LLMService:
             )
 
             self.log.info(
-                "xai_responses_%s ok model=%s grounding_used=%s content_len=%d "
-                "input_tokens=%d output_tokens=%d",
+                "xai_responses_%s ok model=%s grounding_used=%s content_len=%i "
+                "input_tokens=%i output_tokens=%i",
                 kind,
                 model,
                 grounding_used,
@@ -4001,7 +4001,7 @@ Examples (echo → action_prompt: ""):
             self.log.info("storybook: story generation returned nothing (brief=%r)", brief)
             return None
         self.log.info(
-            "storybook: title=%r illustrations_requested=%d",
+            "storybook: title=%r illustrations_requested=%i",
             story["title"],
             len(story["illustrations"]),
         )
@@ -4012,7 +4012,7 @@ Examples (echo → action_prompt: ""):
         wanted = story["illustrations"][:max_images]
         dropped = len(story["illustrations"]) - len(wanted)
         if dropped:
-            self.log.info("storybook: dropped %d illustrations over cap", dropped)
+            self.log.info("storybook: dropped %i illustrations over cap", dropped)
 
         # One shared style anchor for the whole page, prepended to EVERY image so
         # the stateless image model keeps art + recurring characters consistent
@@ -4060,7 +4060,7 @@ Examples (echo → action_prompt: ""):
                             it["id"],
                             (res.error if res else "no result"),
                         )
-        self.log.info("storybook: drew %d/%d illustrations", len(drawn), len(wanted))
+        self.log.info("storybook: drew %i/%i illustrations", len(drawn), len(wanted))
 
         body = self._strip_untrusted_markup(story["story_markdown"])[:max_chars]
         embedded, used = self._embed_illustrations(body, drawn)
@@ -4661,7 +4661,7 @@ Examples (echo → action_prompt: ""):
             repeat_retries = 0
             for _step in range(max_steps):
                 self.log.info(
-                    "assistant_completion step %d: model=%s messages=%d",
+                    "assistant_completion step %i: model=%s messages=%i",
                     _step + 1,
                     model,
                     len(messages),
@@ -4722,7 +4722,7 @@ Examples (echo → action_prompt: ""):
                         echo_retries += 1
                         self.log.warning(
                             "assistant_completion: model echoed the prompt "
-                            "verbatim, nudging and retrying (%d/%d) model=%s "
+                            "verbatim, nudging and retrying (%i/%i) model=%s "
                             "channel=%s",
                             echo_retries,
                             _MAX_ECHO_RETRIES,
@@ -4751,7 +4751,7 @@ Examples (echo → action_prompt: ""):
                         verse_denial_retries += 1
                         self.log.warning(
                             "assistant_completion: verse reply refused the "
-                            "premise, nudging and retrying (%d/%d) model=%s "
+                            "premise, nudging and retrying (%i/%i) model=%s "
                             "channel=%s",
                             verse_denial_retries,
                             _MAX_VERSE_DENIAL_RETRIES,
@@ -4831,7 +4831,7 @@ Examples (echo → action_prompt: ""):
                         safety_refusal_retries += 1
                         self.log.warning(
                             "assistant_completion: reply refused the request "
-                            "on policy grounds, nudging and retrying (%d/%d) "
+                            "on policy grounds, nudging and retrying (%i/%i) "
                             "model=%s channel=%s route=%s",
                             safety_refusal_retries,
                             _MAX_SAFETY_REFUSAL_RETRIES,
@@ -4858,7 +4858,7 @@ Examples (echo → action_prompt: ""):
                         degraded_retries += 1
                         self.log.warning(
                             "assistant_completion: reply collapsed into "
-                            "run-on/looping text, nudging and retrying (%d/%d) "
+                            "run-on/looping text, nudging and retrying (%i/%i) "
                             "model=%s channel=%s route=%s",
                             degraded_retries,
                             _MAX_DEGRADED_RETRIES,
@@ -4887,7 +4887,7 @@ Examples (echo → action_prompt: ""):
                         repeat_retries += 1
                         self.log.warning(
                             "assistant_completion: reply near-duplicates a "
-                            "past reply, nudging and retrying (%d/%d) "
+                            "past reply, nudging and retrying (%i/%i) "
                             "model=%s channel=%s route=%s",
                             repeat_retries,
                             _MAX_REPEAT_RETRIES,
@@ -5080,7 +5080,7 @@ Examples (echo → action_prompt: ""):
                     total_cost += executor.accumulated_cost
                     self.log.info(
                         "assistant_completion: short-circuit after verse_storybook, "
-                        "skipping step_%d",
+                        "skipping step_%i",
                         _step + 2,
                     )
                     return AssistantResult(
@@ -5119,7 +5119,7 @@ Examples (echo → action_prompt: ""):
                         total_cost += executor.accumulated_cost
                         self.log.info(
                             "assistant_completion: short-circuit after generate_image, "
-                            "skipping step_%d",
+                            "skipping step_%i",
                             _step + 2,
                         )
                         return AssistantResult(
@@ -5721,7 +5721,7 @@ Examples (echo → action_prompt: ""):
             return None
         if len(image_bytes) > self._IMAGE_UPLOAD_MAX_BYTES:
             self.log.info(
-                "Image is %d bytes, over the %d upload limit; storing locally",
+                "Image is %i bytes, over the %i upload limit; storing locally",
                 len(image_bytes),
                 self._IMAGE_UPLOAD_MAX_BYTES,
             )
@@ -5970,7 +5970,7 @@ Examples (echo → action_prompt: ""):
             return None
         valid = [url for url in images if self.validate_image_url(url)]
         if len(valid) != len(images):
-            self.log.warning("Filtered out %d invalid image URLs", len(images) - len(valid))
+            self.log.warning("Filtered out %i invalid image URLs", len(images) - len(valid))
         return valid or None
 
     def _build_messages(
@@ -6737,7 +6737,7 @@ Examples (echo → action_prompt: ""):
         next_position = row.chain_position + 1
         if next_position > self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION:
             self.log.info(
-                "scheduled_llm_task reschedule skipped: %s reached cap %d/%d",
+                "scheduled_llm_task reschedule skipped: %s reached cap %i/%i",
                 row.event_name,
                 next_position,
                 self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION,

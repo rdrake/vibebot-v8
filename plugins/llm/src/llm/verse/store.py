@@ -1394,7 +1394,7 @@ class VerseStore:
                 ).fetchone()[0]
                 if homonyms:
                     _log.warning(
-                        "verse update_entity: renamed place %r->%r left %d active "
+                        "verse update_entity: renamed place %r->%r left %i active "
                         "homonym place(s); skipping ambiguous location rewrite",
                         old_name,
                         payload["name"],
