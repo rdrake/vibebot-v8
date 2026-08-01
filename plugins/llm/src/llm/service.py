@@ -744,6 +744,125 @@ def _strip_repeated_replies(
     return [m for i, m in enumerate(history) if i not in doomed]
 
 
+# --------------------------------------------------------------------------
+# The guard stack
+#
+# The predicates above are the interesting part; the plumbing around them was
+# not. Six of the seven reply guards share one shape — judge the finished
+# reply, tell the model what was wrong with it, re-roll once — and written out
+# longhand that was ~110 lines of near-identical increment/log/append/append/
+# continue, in which the detector and the nudge were the hardest things to
+# find. They are a table instead, so adding a guard is adding an entry.
+#
+# ORDER IS BEHAVIOUR. The first guard that fires wins the turn, so entries run
+# in the order written, and an exhausted guard falls through to the next one.
+#
+# The stack is split in two on purpose. The fabricated-image guard sits between
+# these halves and REWRITES ``content`` on its fallthrough path (to
+# ``_IMAGE_FABRICATION_FALLBACK`` or the real tool error), so everything after
+# it must judge the rewritten text rather than the model's original. It also
+# forces a tool call on the next step, which no other guard does. One entry
+# needing a content-mutation column and a side-effect column is not a table —
+# it stays hand-written below, and this split is what keeps the order honest.
+
+
+class _ReplyGuardContext(NamedTuple):
+    """Everything a guard's detector is allowed to look at.
+
+    One object rather than a per-guard argument list, so every ``detect`` in
+    the table has the same signature and the driver can stay a plain loop.
+    """
+
+    content: str
+    prompt: str
+    route_profile: str
+    any_tool_ran: bool
+    prior_replies: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ReplyGuard:
+    """One detect-nudge-retry guard over a finished reply."""
+
+    key: str
+    # Fills "assistant_completion: <summary>, nudging and retrying (n/m)".
+    summary: str
+    detect: Callable[[_ReplyGuardContext], bool]
+    nudge: str
+    # Every guard here allows exactly one retry, and that is a decision rather
+    # than an oversight: each fires because the model imitated something, and a
+    # model that ignores a direct correction once will ignore it twice. The
+    # second call buys nothing and spends a round trip of the user's latency.
+    max_retries: int
+
+
+_PRE_IMAGE_REPLY_GUARDS: tuple[_ReplyGuard, ...] = (
+    _ReplyGuard(
+        key="echo",
+        summary="model echoed the prompt verbatim",
+        detect=lambda g: _is_echo_reply(g.prompt, g.content),
+        nudge=_ECHO_RETRY_NUDGE,
+        max_retries=_MAX_ECHO_RETRIES,
+    ),
+    _ReplyGuard(
+        key="verse_denial",
+        summary="verse reply refused the premise",
+        detect=lambda g: g.route_profile == PROFILE_VERSE and _is_verse_denial(g.content),
+        nudge=_VERSE_DENIAL_RETRY_NUDGE,
+        max_retries=_MAX_VERSE_DENIAL_RETRIES,
+    ),
+)
+
+_POST_IMAGE_REPLY_GUARDS: tuple[_ReplyGuard, ...] = (
+    _ReplyGuard(
+        key="tool_complaint",
+        summary="reply blamed a tool that never ran",
+        detect=lambda g: not g.any_tool_ran and _is_tool_complaint(g.content),
+        nudge=_TOOL_COMPLAINT_RETRY_NUDGE,
+        max_retries=_MAX_TOOL_COMPLAINT_RETRIES,
+    ),
+    _ReplyGuard(
+        key="safety_refusal",
+        summary="reply refused the request on policy grounds",
+        detect=lambda g: _is_safety_refusal(g.content),
+        nudge=_SAFETY_REFUSAL_RETRY_NUDGE,
+        max_retries=_MAX_SAFETY_REFUSAL_RETRIES,
+    ),
+    _ReplyGuard(
+        key="degraded",
+        summary="reply collapsed into run-on/looping text",
+        detect=lambda g: _is_degraded_reply(g.content),
+        nudge=_DEGRADED_RETRY_NUDGE,
+        max_retries=_MAX_DEGRADED_RETRIES,
+    ),
+    _ReplyGuard(
+        key="repeat",
+        summary="reply near-duplicates a past reply",
+        detect=lambda g: any(_replies_repetitive(g.content, prior) for prior in g.prior_replies),
+        nudge=_REPEAT_RETRY_NUDGE,
+        max_retries=_MAX_REPEAT_RETRIES,
+    ),
+)
+
+# Keyed view of both halves, for the per-invocation retry ledger and for tests
+# that need to assert a specific guard's budget.
+REPLY_GUARDS: dict[str, _ReplyGuard] = {
+    guard.key: guard for guard in _PRE_IMAGE_REPLY_GUARDS + _POST_IMAGE_REPLY_GUARDS
+}
+
+
+# History de-poisoning that runs on EVERY route, over both the personal thread
+# and the shared channel window. Each drops a disjoint class of the model's own
+# bad output, so the order between them does not matter; what matters is that
+# they run before the model sees the thread, since all three exist because a
+# non-reasoning model imitates whatever is already in it.
+_EVERY_ROUTE_STRIPS: tuple[Callable[..., Any], ...] = (
+    _strip_safety_refusals,
+    _strip_image_failures,
+    _strip_tool_complaints,
+)
+
+
 # Verse history is trimmed to this many of the most recent messages before
 # the model sees it — tighter than the 20-deep personal context window. A
 # non-reasoning model anchors on its own recent prose, so a shorter window
@@ -4414,6 +4533,47 @@ Examples (echo → action_prompt: ""):
         # No image data — content was blocked
         return None
 
+    def _run_reply_guards(
+        self,
+        guards: tuple[_ReplyGuard, ...],
+        ctx: _ReplyGuardContext,
+        spent: dict[str, int],
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        channel: str | None,
+    ) -> bool:
+        """Run ``guards`` in order; on the first that fires, nudge and report.
+
+        Returns True when the caller must re-roll the step (``continue``): the
+        rejected reply and its nudge have already been appended to ``messages``.
+        False means the reply survived every guard in ``guards``.
+
+        Budget is checked before the detector, so an exhausted guard costs
+        nothing and falls through to the next one.
+        """
+        guard = next(
+            (g for g in guards if spent[g.key] < g.max_retries and g.detect(ctx)),
+            None,
+        )
+        if guard is None:
+            return False
+        spent[guard.key] += 1
+        self.log.warning(
+            "assistant_completion: %s, nudging and retrying (%i/%i) model=%s channel=%s route=%s",
+            guard.summary,
+            spent[guard.key],
+            guard.max_retries,
+            model,
+            channel,
+            ctx.route_profile,
+        )
+        # The rejected reply goes back as the assistant turn so the model sees
+        # what it is being corrected about; the nudge follows as a user turn.
+        messages.append({"role": "assistant", "content": ctx.content})
+        messages.append({"role": "user", "content": guard.nudge})
+        return True
+
     def assistant_completion(
         self,
         prompt: str,
@@ -4600,24 +4760,13 @@ Examples (echo → action_prompt: ""):
             # anchors are captured. Duplicate clusters remain anchors for the
             # in-loop retry guard, but are excluded from the model prompt.
             #
-            # Policy-refusals are stripped on EVERY route, before the
-            # route-specific passes below: a refusal breeds refusals by
-            # self-imitation regardless of profile, and the channel window
-            # carries the bot's own lines too.
-            history = _strip_safety_refusals(history)
-            channel_history = _strip_safety_refusals(channel_history)
-            # Image-failure reports are stripped on every route too, and for
-            # the same reason: one moderated prompt otherwise teaches the
-            # model to answer every later draw request with the same canned
-            # failure line instead of calling the tool.
-            history = _strip_image_failures(history)
-            channel_history = _strip_image_failures(channel_history)
-            # Tool complaints in any wording, on every route. The image strip
-            # above only recognises the first phrasing the model reaches for;
-            # this catches the paraphrases it drifts into once that one is in
-            # the thread, which is what let the spiral outlive its own cause.
-            history = _strip_tool_complaints(history)
-            channel_history = _strip_tool_complaints(channel_history)
+            # _EVERY_ROUTE_STRIPS runs first and unconditionally: policy
+            # refusals, image-failure reports and tool complaints all breed
+            # their own kind by self-imitation regardless of profile. The
+            # route-specific passes below then add what only matters per route.
+            for strip in _EVERY_ROUTE_STRIPS:
+                history = strip(history)
+                channel_history = strip(channel_history)
             if route_profile == PROFILE_VERSE:
                 history = _strip_verse_denials(history)
                 history = _strip_degraded(history)
@@ -4744,12 +4893,10 @@ Examples (echo → action_prompt: ""):
             # encode errors as JSON {"error": ...}; success uses
             # {"status": "ok", ...}.
             last_successful_tool: str | None = None
-            # Count of degenerate-echo retries spent this invocation (see
-            # _is_echo_reply / _MAX_ECHO_RETRIES).
-            echo_retries = 0
-            # Count of verse premise-refusal retries spent this invocation
-            # (see _is_verse_denial / _MAX_VERSE_DENIAL_RETRIES). Verse only.
-            verse_denial_retries = 0
+            # Retries spent per reply guard this invocation, keyed by
+            # _ReplyGuard.key. One ledger rather than six counters, so a new
+            # guard needs no new local.
+            guard_retries: dict[str, int] = dict.fromkeys(REPLY_GUARDS, 0)
             # Fabricated/stale-image guard state (see _unminted_image_urls):
             # URLs minted by successful generate_image calls this invocation,
             # the error from a failed one, and whether the tool ran at all.
@@ -4762,12 +4909,6 @@ Examples (echo → action_prompt: ""):
             image_fabrication_retries = 0
             # Set by the guard to force generate_image on the next step.
             force_image_next_step = False
-            # Count of policy-refusal retries spent this invocation (see
-            # _is_safety_refusal / _MAX_SAFETY_REFUSAL_RETRIES). All routes.
-            safety_refusal_retries = 0
-            # Count of quality-collapse retries spent this invocation (see
-            # _is_degraded_reply / _MAX_DEGRADED_RETRIES). All routes.
-            degraded_retries = 0
             # Whether ANY tool was dispatched at any step of this invocation.
             # This is what makes the tool-complaint guard evidence-driven
             # rather than a second opinion on the model's wording: if nothing
@@ -4776,12 +4917,6 @@ Examples (echo → action_prompt: ""):
             # both when no tool ran and when every tool errored — only the
             # first of those is an invented complaint.
             any_tool_ran = False
-            # Count of invented-tool-complaint retries spent this invocation
-            # (see _is_tool_complaint / _MAX_TOOL_COMPLAINT_RETRIES).
-            tool_complaint_retries = 0
-            # Count of self-repetition retries spent this invocation (see
-            # _replies_repetitive / _MAX_REPEAT_RETRIES). All routes.
-            repeat_retries = 0
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %i: model=%s messages=%i",
@@ -4837,52 +4972,27 @@ Examples (echo → action_prompt: ""):
                 if not message.tool_calls:
                     content = message.content or ""
 
-                    # Degenerate-echo guard: a reply that just parrots the
-                    # user's message back is never valid. Nudge and retry
-                    # once within the loop; the post-retry occurrence falls
-                    # through to the error return below.
-                    if _is_echo_reply(prompt, content) and echo_retries < _MAX_ECHO_RETRIES:
-                        echo_retries += 1
-                        self.log.warning(
-                            "assistant_completion: model echoed the prompt "
-                            "verbatim, nudging and retrying (%i/%i) model=%s "
-                            "channel=%s",
-                            echo_retries,
-                            _MAX_ECHO_RETRIES,
-                            model,
-                            channel,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _ECHO_RETRY_NUDGE})
-                        continue
-
-                    # Verse denial guard: in verse mode a reply that breaks
-                    # frame to refuse the premise ("that never happened",
-                    # "pure fiction, not in the canon") is invalid — the
-                    # premise is always canon. A history-poisoned thread makes
-                    # the model parrot its own past refusals despite the
-                    # system prompt, so nudge (telling it to disregard the
-                    # earlier denials) and retry once. The corrected reply is
-                    # delivered AND stored, so the refusal stops polluting the
-                    # thread. After the budget, fall through and deliver the
-                    # best effort — a story attempt beats erroring out.
-                    if (
-                        route_profile == PROFILE_VERSE
-                        and _is_verse_denial(content)
-                        and verse_denial_retries < _MAX_VERSE_DENIAL_RETRIES
+                    # Reply guards, first half — see _PRE_IMAGE_REPLY_GUARDS.
+                    # These judge the model's own words, so they run before the
+                    # image guard below rewrites them. In each case the
+                    # corrected reply is delivered AND stored, so the bad turn
+                    # neither reaches the channel nor seeds the next one; after
+                    # the budget the chain falls through and delivers the best
+                    # effort, because a flawed answer beats erroring out.
+                    if self._run_reply_guards(
+                        _PRE_IMAGE_REPLY_GUARDS,
+                        _ReplyGuardContext(
+                            content=content,
+                            prompt=prompt,
+                            route_profile=route_profile,
+                            any_tool_ran=any_tool_ran,
+                            prior_replies=tuple(prior_replies),
+                        ),
+                        guard_retries,
+                        messages,
+                        model=model,
+                        channel=channel,
                     ):
-                        verse_denial_retries += 1
-                        self.log.warning(
-                            "assistant_completion: verse reply refused the "
-                            "premise, nudging and retrying (%i/%i) model=%s "
-                            "channel=%s",
-                            verse_denial_retries,
-                            _MAX_VERSE_DENIAL_RETRIES,
-                            model,
-                            channel,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _VERSE_DENIAL_RETRY_NUDGE})
                         continue
 
                     # Fabricated/stale-image guard. The reply cites an image on
@@ -4937,119 +5047,24 @@ Examples (echo → action_prompt: ""):
                         content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
                         last_assistant_text = content
 
-                    # Invented-tool-complaint guard (all routes). A reply that
-                    # reports the machinery failed, on an invocation that
-                    # never dispatched a tool, is not reporting anything — it
-                    # is reciting a line from an older turn. Gated on
-                    # any_tool_ran rather than on the wording, so a HONEST
-                    # complaint (a tool did run and did fail) is always
-                    # delivered untouched; only the provably baseless one is
-                    # re-rolled. After the budget, fall through and deliver
-                    # the best effort — the every-turn _strip_tool_complaints
-                    # pass keeps it out of future prompts regardless.
-                    if (
-                        not any_tool_ran
-                        and _is_tool_complaint(content)
-                        and tool_complaint_retries < _MAX_TOOL_COMPLAINT_RETRIES
+                    # Reply guards, second half — see _POST_IMAGE_REPLY_GUARDS.
+                    # The context is rebuilt because the image guard above may
+                    # have REPLACED content with the real tool outcome, and
+                    # these must judge what the user will actually receive.
+                    if self._run_reply_guards(
+                        _POST_IMAGE_REPLY_GUARDS,
+                        _ReplyGuardContext(
+                            content=content,
+                            prompt=prompt,
+                            route_profile=route_profile,
+                            any_tool_ran=any_tool_ran,
+                            prior_replies=tuple(prior_replies),
+                        ),
+                        guard_retries,
+                        messages,
+                        model=model,
+                        channel=channel,
                     ):
-                        tool_complaint_retries += 1
-                        self.log.warning(
-                            "assistant_completion: reply blamed a tool that "
-                            "never ran, nudging and retrying (%i/%i) "
-                            "model=%s channel=%s route=%s",
-                            tool_complaint_retries,
-                            _MAX_TOOL_COMPLAINT_RETRIES,
-                            model,
-                            channel,
-                            route_profile,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _TOOL_COMPLAINT_RETRY_NUDGE})
-                        continue
-
-                    # Safety-refusal guard (all routes): a policy-shaped
-                    # refusal of a request the channel considers in bounds
-                    # ("I can't help with that", "I'm not comfortable
-                    # writing that"). Nudge with the channel context and
-                    # retry once; the corrected reply is delivered AND
-                    # stored, so the refusal neither reaches the channel nor
-                    # seeds the next turn. After the budget, fall through and
-                    # deliver the refusal — an honest no beats an error, and
-                    # the every-turn _strip_safety_refusals pass keeps it out
-                    # of future prompts regardless.
-                    if (
-                        _is_safety_refusal(content)
-                        and safety_refusal_retries < _MAX_SAFETY_REFUSAL_RETRIES
-                    ):
-                        safety_refusal_retries += 1
-                        self.log.warning(
-                            "assistant_completion: reply refused the request "
-                            "on policy grounds, nudging and retrying (%i/%i) "
-                            "model=%s channel=%s route=%s",
-                            safety_refusal_retries,
-                            _MAX_SAFETY_REFUSAL_RETRIES,
-                            model,
-                            channel,
-                            route_profile,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _SAFETY_REFUSAL_RETRY_NUDGE})
-                        continue
-
-                    # Quality-collapse guard (all routes): a reply that has
-                    # degraded into run-on or token-looping gibberish is
-                    # invalid even though it never refused the premise. This
-                    # hits long-form replies on any profile — verse scenes and
-                    # @ask long answers alike (@ask falls back to chat). Nudge
-                    # (asking for clean, well-formed prose) and retry once; the
-                    # corrected reply is delivered AND stored so the collapse
-                    # doesn't seed the next turn. After the budget, fall
-                    # through and deliver the best effort — the every-turn
-                    # _strip_degraded pass keeps it out of future history
-                    # regardless.
-                    if _is_degraded_reply(content) and degraded_retries < _MAX_DEGRADED_RETRIES:
-                        degraded_retries += 1
-                        self.log.warning(
-                            "assistant_completion: reply collapsed into "
-                            "run-on/looping text, nudging and retrying (%i/%i) "
-                            "model=%s channel=%s route=%s",
-                            degraded_retries,
-                            _MAX_DEGRADED_RETRIES,
-                            model,
-                            channel,
-                            route_profile,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _DEGRADED_RETRY_NUDGE})
-                        continue
-
-                    # Self-repetition guard (all routes): a reply that
-                    # near-duplicates one of the bot's own cleaned comparison
-                    # anchors is the stuck record playing again. Those anchors
-                    # may include duplicate-cluster replies excluded from the
-                    # prompt-visible history, because persisted history can
-                    # otherwise re-seed the same cheese-comet line for days.
-                    # Nudge (asking for genuinely fresh phrasing) and retry
-                    # once; the fresh reply is delivered AND stored. After the
-                    # budget, fall through and deliver the best effort — the
-                    # repeated pair remains persisted but is excluded from
-                    # future prompts by _strip_repeated_replies.
-                    if repeat_retries < _MAX_REPEAT_RETRIES and any(
-                        _replies_repetitive(content, prior) for prior in prior_replies
-                    ):
-                        repeat_retries += 1
-                        self.log.warning(
-                            "assistant_completion: reply near-duplicates a "
-                            "past reply, nudging and retrying (%i/%i) "
-                            "model=%s channel=%s route=%s",
-                            repeat_retries,
-                            _MAX_REPEAT_RETRIES,
-                            model,
-                            channel,
-                            route_profile,
-                        )
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": _REPEAT_RETRY_NUDGE})
                         continue
 
                     # Fold in any costs accumulated by leaf tool calls

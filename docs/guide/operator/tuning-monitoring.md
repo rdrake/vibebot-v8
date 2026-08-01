@@ -220,6 +220,12 @@ Seeing that line means the guard worked and the user received a real image. If t
 
 **The bot repeats a stock failure line instead of retrying.**
 
-The model imitates its own recent output, so a message like "Image generation failed." left in the conversation history teaches it to answer the *next* request the same way, without calling the tool at all. The bot strips its own past refusals, policy-refusals, collapsed replies, repeated replies, and image-failure reports from the history before each turn, precisely so they cannot seed the next one.
+The model imitates its own recent output, so a message like "Image generation failed." left in the conversation history teaches it to answer the *next* request the same way, without calling the tool at all. The bot strips its own past refusals, policy-refusals, collapsed replies, repeated replies, image-failure reports, and tool complaints in any wording from the history before each turn, precisely so they cannot seed the next one.
+
+The last of those is the general case, and it also catches a reply that blames a tool the turn never called at all — the wording drifts ("the tool's broken", "tool refused", "still choking on the request") long after the failure that started it. When one is caught mid-turn the bot re-rolls the reply once and logs:
+
+```
+assistant_completion: reply blamed a tool that never ran, nudging and retrying (1/1)
+```
 
 If a stock phrase does get stuck, `@forget` clears the affected user's stored conversation. Note that a bot reply is itself stored as history, so a bad reply persists until it is cleared or ages out.
