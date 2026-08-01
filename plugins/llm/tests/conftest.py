@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -29,9 +31,49 @@ TEST_MODEL = "gpt-4"
 TEST_API_KEY = "test-key"
 TEST_URL_BASE = "https://example.com/llm"
 
+# Fake values, each comfortably over apikeys.MIN_REDACTABLE_LEN.
+FAKE_PROVIDER_KEYS = {
+    "XAI_API_KEY": "xai-fake-key-for-tests-0000",
+    "GEMINI_API_KEY": "AIza-fake-key-for-tests-0000",
+    "OPENAI_API_KEY": "sk-fake-key-for-tests-0000",
+    "ANTHROPIC_API_KEY": "sk-ant-fake-key-for-tests-0000",
+}
+
+# Duplicated from llm.apikeys (Task 2) rather than imported: that module
+# does not exist yet and this fixture must not depend on it. Task 2 adds a
+# test asserting the two copies stay in sync.
+_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_CREDENTIALS")
+
 # =============================================================================
 # Autouse fixtures
 # =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a known, fake set of provider credentials.
+
+    LiteLLM calls load_dotenv() at import, so a developer's real .env is in
+    os.environ before collection. Without this, tests can pass locally against
+    real keys, fail in CI, print real keys into a failure diff, or reach the
+    network.
+    """
+    for name in list(os.environ):
+        if name.upper().endswith(_SECRET_SUFFIXES):
+            monkeypatch.delenv(name, raising=False)
+    for name, value in FAKE_PROVIDER_KEYS.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail loudly instead of making a real request from a test."""
+
+    def _refuse(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("test attempted a real network connection — mock the provider call")
+
+    monkeypatch.setattr(socket.socket, "connect", _refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
 
 
 @pytest.fixture(autouse=True)
