@@ -8,6 +8,16 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Sweep %d out of every log call (`logging`)
+- Catch invented image URLs, force the tool, stop lying (`assistant`)
+- %d never renders in supybot log lines (`logging`)
+- Stop one moderated image poisoning every later draw (`assistant`)
+- Cover litellm's own loggers, close a vacuous key-leak test (`apikeys`)
+- Default @draw to Gemini Imagen, correct Vertex env vars (`assistant`)
+- Resolve the compaction key from the compaction model (`verse`)
+- Cover logging.lastResort, drop fail-open, isolate test global state (`apikeys`)
+- Harden provider_of against non-BadRequestError failures and non-string input (`apikeys`)
+- Stop reposting the previous image when generation fails (`assistant`)
 - Make the cache diagnostics answer the question they were added for (`cache`)
 - Wire-structural bytes reached IRC; one raising tool handler killed the turn
 - OOC opt-out leaked into the storybook; disabled rate tiers leaked memory
@@ -372,6 +382,12 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Describe provider environment variables and add a rollback runbook
+- Restructure the API key change around outbound boundaries
+- Add the provider-scoped API key implementation plan (`plans`)
+- Fold red-team findings into the API key design (`specs`)
+- Finalize provider-scoped API key design (`specs`)
+- Sketch provider-scoped API key design (`specs`)
 - Correct @verse/@rp drift in the routing docstrings (`verse`)
 - Resync the guide with the canon-layer codebase
 - Verse canon-layer design (decouple retrieval from roleplay mode)
@@ -509,6 +525,11 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Delete the four API-key registry settings (`config`)
+- Redact secrets from env at the handler layer (`logging`)
+- Scrub secrets from log records at the handler layer (`apikeys`)
+- Resolve API keys from the model's provider (`apikeys`)
+- Retry policy-refusals on the chat path (`assistant`)
 - Optional external image host (thanks Eck for paste.boxlabs.uk) (`images`)
 - Any canon mention is a story — stop guessing reply length (`verse`)
 - Straight answers for real-world questions, tales for canon (`verse`)
@@ -889,6 +910,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Delete key-plumbing that reconciled per-role keys (`service`)
+- Drop api_key_setting, identical on every profile (`profile`)
+- Resolve API keys at the outbound boundaries (`service`)
 - Drop redundant get_instruction tool (`assistant`)
 - Consolidate long-reply finishing and action-fire plumbing
 - Collapse inline pairs, heartbeat/lookup fixes, look/recall payloads (`verse`)
@@ -991,6 +1015,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- Pin the image key boundary and the effective-model guards (`service`)
+- Confine SecretFilter install to the test that triggers it (`logging`)
+- Isolate provider credentials and block network from tests
 - Pin retry anchor exclusions (`assistant`)
 - Mock migrate_user_data default alongside its siblings
 - Pin thin-sample OR, win-truncation boundary, distinct-date active_days (`verse`)
@@ -1091,6 +1118,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Changelog
 
+- Catch up on the cache/leak fixes and the docs resync
 - External image host + recent verse work
 - Verse_record + auto-NPC aging
 

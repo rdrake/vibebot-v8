@@ -138,7 +138,17 @@ journalctl --user -u vibebot -f      # follow in real time
 tail -f logs/messages.log            # bot message log, from the working directory
 ```
 
-At startup, an `INFO`-level line reports secret redaction coverage: `secret redaction: %d handler(s) filtered, %d variable(s) covered: %s`, naming which environment variable *names* it covers (never their values). That line is the only positive confirmation that redaction is actually installed and live — worth checking after any change that touches logging handlers, given that credentials also sit directly in the container's environment (see [Operations → Credentials in the environment](operations.md#credentials-in-the-environment)).
+At startup, an `INFO`-level line reports secret redaction coverage, naming which environment variable *names* it covers (never their values):
+
+```
+secret redaction: 4 handler(s) filtered, 2 variable(s) covered: GEMINI_API_KEY, XAI_API_KEY
+```
+
+That line is the only positive confirmation that redaction is actually installed and live — worth checking after any change that touches logging handlers, given that credentials also sit directly in the container's environment (see [Operations → Credentials in the environment](operations.md#credentials-in-the-environment)).
+
+!!! warning "Use `%i`, never `%d`, in log format strings"
+
+    Supybot routes log arguments through `supybot.utils.str.format`, which is not printf. It supports `%s`, `%r`, `%i`, `%f` and `%.3f` — but has **no `%d`**. An unsupported `%d` is left in the output literally and the remaining arguments shift left into whichever slots *are* supported, silently producing a wrong line with no exception and no warning. Because `supybot.log` calls `logging.setLoggerClass` at import, this affects every logger in the process, not just Supybot's own. `test_log_format_specifiers.py` fails the suite on any `%d` in a logging call.
 
 ### Log level
 
@@ -186,3 +196,30 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 - Built-in server: confirm Limnoria's HTTP server is enabled and its public URL is set.
 - External server: confirm the bot can write to `httpRoot` and that `httpUrlBase` matches what your web server serves.
 - Check `DEBUG` logs for file-save errors.
+
+**A drawn image link 404s, or shows the wrong picture.**
+
+The image was never generated. A non-reasoning model will sometimes answer a draw request by writing a plausible image URL instead of calling the `generate_image` tool — either inventing a path outright, or reusing a real URL from an earlier turn, which is harder to spot because the link works and only the picture is wrong.
+
+The reliable tell is latency against the logs. A genuine image takes roughly 15–20 seconds and always leaves a matching line:
+
+```bash
+docker logs vibebot 2>&1 | grep "op=image_generation"
+```
+
+A reply that arrived in two or three seconds with no corresponding `op=image_generation` entry was fabricated.
+
+The bot detects this itself and recovers: any image URL on a host only the bot publishes to (`httpUrlBase` or `imageUploadUrl`) that the current turn did not generate is rejected, the `generate_image` tool is forced, and the turn is retried once. Links to other hosts are left alone, so quoting somebody else's image still works. Look for:
+
+```
+assistant_completion: reply invented image URL <url> without calling generate_image;
+forcing the tool and retrying (1/1)
+```
+
+Seeing that line means the guard worked and the user received a real image. If the model still refuses to call the tool on the forced retry, the reply is replaced with a plain failure message rather than a link that does not work.
+
+**The bot repeats a stock failure line instead of retrying.**
+
+The model imitates its own recent output, so a message like "Image generation failed." left in the conversation history teaches it to answer the *next* request the same way, without calling the tool at all. The bot strips its own past refusals, policy-refusals, collapsed replies, repeated replies, and image-failure reports from the history before each turn, precisely so they cannot seed the next one.
+
+If a stock phrase does get stuck, `@forget` clears the affected user's stored conversation. Note that a bot reply is itself stored as history, so a bad reply persists until it is cleared or ages out.
