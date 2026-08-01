@@ -61,6 +61,28 @@ class TestProviderOf:
         """
         assert apikeys.provider_of("XAI/grok-4.3") == ""
 
+    def test_non_bad_request_exception_is_still_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN litellm.get_llm_provider raises something other than
+        BadRequestError WHEN provider_of THEN "" and no raise.
+
+        provider_of runs inside failure handlers, so any exception type escaping
+        it — not just the BadRequestError LiteLLM happens to raise today — would
+        surface as an unhandled crash instead of a configuration error. This
+        pins the ``except Exception`` clause broad: narrowing it to
+        ``except litellm.exceptions.BadRequestError`` would still pass every
+        other test in this file (LiteLLM 1.93.0 wraps all its internal failures
+        into BadRequestError before they escape) while silently reintroducing
+        exactly the crash this module exists to prevent.
+        """
+
+        def _raise(_model: str) -> tuple[str, str, str, str]:
+            raise TypeError("not a BadRequestError")
+
+        monkeypatch.setattr(apikeys.litellm, "get_llm_provider", _raise)
+        assert apikeys.provider_of("xai/grok-4.3") == ""
+
 
 class TestEnvVarFor:
     def test_managed_provider(self) -> None:

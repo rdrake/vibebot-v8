@@ -41,9 +41,9 @@ def provider_of(model: str) -> str:
     and callers sit inside failure handlers where a new exception type would
     surface as an unhandled crash rather than a configuration error.
     """
-    if not model or not model.strip():
-        return ""
     try:
+        if not model or not model.strip():
+            return ""
         return str(litellm.get_llm_provider(model)[1])
     except Exception:  # noqa: BLE001 — an unplaceable model is a config error, not a crash
         return ""
