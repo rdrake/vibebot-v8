@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
+import pytest
 from llm import statuspage
+from llm.service import LLMService
+
+from .conftest import make_completion_response
 
 
-def incident() -> statuspage.IncidentView:
+def incident(*, name: str = "Elevated error rates on Claude Opus 4.5") -> statuspage.IncidentView:
     return statuspage.IncidentView(
         id="inc1",
-        name="Elevated error rates on Claude Opus 4.5",
+        name=name,
         status="investigating",
         impact="minor",
         affected_components=("Claude API (api.anthropic.com)",),
@@ -84,9 +89,10 @@ class TestSendPipeline:
 
     def test_line_is_truncated(self, announcing_plugin):
         plugin = announcing_plugin
-        plugin._status_rewrite = MagicMock(return_value="x" * 900)
+        plugin._status_rewrite = MagicMock(return_value="Claude " + "x" * 900)
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
-        assert len(plugin._sent_text[0]) <= 400
+        assert len(plugin._sent_text[0]) == 400
+        assert plugin._sent_text[0].startswith("Claude")
 
 
 class TestMarkingAndBudget:
@@ -138,3 +144,81 @@ class TestChannelSelection:
         targets = [c.args[1].args[0] for c in plugin._safe_queue.call_args_list]
         assert "#c" not in targets, "iteration must use a snapshot, not live state"
         assert sorted(targets) == ["#a", "#b"]
+
+
+class TestStatusRewrite:
+    def test_completion_failure_returns_none_and_template_still_sends(self, announcing_plugin):
+        """The announcer must survive a provider outage — it exists to report one."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin.llm_service.status_announce_completion.side_effect = RuntimeError("provider down")
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert plugin._safe_queue.call_count == 1
+        assert "Elevated error rates" in plugin._sent_text[0]
+
+    def test_rewrite_passes_only_sanitised_fields_to_the_completion(self, announcing_plugin):
+        """Raw third-party prose must never reach the completion's user block."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(incident(name="bad\x01name <|tok|>"), "#test")
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert "\x01" not in facts["name"]
+        assert "<|" not in facts["name"]
+
+
+class TestIrcForChannel:
+    def test_returns_none_when_no_connection_holds_the_channel(self, announcing_plugin, mocker):
+        from llm.plugin import LLM
+
+        mocker.patch("llm.plugin.world").ircs = []
+        assert LLM._irc_for_channel.__get__(announcing_plugin)("#nowhere") is None
+
+
+class TestStatusAnnounceCompletion:
+    """LLMService.status_announce_completion: tool-less one-shot rewrite.
+
+    Mirrors TestParseReminderService's mock_plugin/service fixture pair
+    (test_reminders.py) — the established shape for unit-testing a one-shot
+    completion method with litellm.completion mocked out.
+    """
+
+    @pytest.fixture
+    def mock_plugin(self, mocker):
+        plugin = mocker.MagicMock()
+        plugin.registryValue.side_effect = lambda key, *args, **kwargs: {
+            "assistantModel": "gemini/gemini-2.0-flash",
+            "timeout": 30,
+            "assistantSystemPrompt": "",
+        }.get(key, "")
+        return plugin
+
+    @pytest.fixture
+    def service(self, mock_plugin, mocker):
+        mocker.patch("llm.service.log")
+        return LLMService(mock_plugin)
+
+    def test_no_tools_key_in_optional_kwargs(self, service, mocker):
+        """include_tools=False is what makes this tool-less."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response("Claude API is degraded.")
+        service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert "tools" not in mock_completion.call_args.kwargs
+
+    def test_facts_arrive_as_the_json_user_block(self, service, mocker):
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response("Claude API is degraded.")
+        facts = {"name": "Elevated errors", "service": "Claude", "url": "https://status.claude.com"}
+        service.status_announce_completion(facts=facts, channel="#test")
+        messages = mock_completion.call_args.kwargs["messages"]
+        user_msg = next(m for m in messages if m["role"] == "user")
+        assert json.loads(user_msg["content"]) == facts
+
+    def test_none_content_returns_none(self, service, mocker):
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(None)
+        result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert result is None

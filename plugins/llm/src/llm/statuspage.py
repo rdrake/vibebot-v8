@@ -417,11 +417,33 @@ def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
     }
 
 
+# Clickable link shapes. Deliberately does NOT match a bare hostname:
+# component names legitimately contain "api.anthropic.com", and rejecting
+# those would make every rewrite fall back to the template.
+URL_LIKE_RE = re.compile(
+    r"[a-z][a-z0-9+.-]*://\S+"
+    r"|\bwww\.[^\s<>\"']+"
+    r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
+    r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+/[^\s<>\"']*",
+    re.IGNORECASE,
+)
+
+
+def strip_urls(text: str) -> str:
+    """Remove clickable link shapes from third-party prose."""
+    return " ".join(URL_LIKE_RE.sub("", text).split())
+
+
 def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str:
-    """Deterministic one-line announcement. Always available, never fails."""
+    """Deterministic one-line announcement. Always available, never fails.
+
+    ``incident.name`` is third-party prose; a link inside it is stripped
+    before composing, since the line already appends the one authoritative
+    URL (``page_url``) at the end.
+    """
     label = page_name or "Status"
     return sanitise_text(
-        f"{label} status: {incident.name} ({incident.status}) — {page_url}",
+        f"{label} status: {strip_urls(incident.name)} ({incident.status}) — {page_url}",
         limit=400,
     )
 

@@ -1211,21 +1211,32 @@ class LLM(callbacks.Plugin):
         self._status_announce_times = [t for t in self._status_announce_times if now - t < 3600]
         return len(self._status_announce_times) < self._STATUS_ANNOUNCE_MAX_PER_HOUR
 
-    def _status_rewrite_ok(self, text: str, snapshot: statuspage.Snapshot) -> bool:
+    def _status_rewrite_ok(self, text: str, *, allowed_host: str, label: str) -> bool:
         """Post-check an LLM rewrite before it reaches an unprompted channel line.
 
         tools=[] stops tool calls; it does not stop the bot repeating a
         phishing link in its own voice with nobody having asked. The URL host
         check is the highest-value filter on this path.
+
+        ``allowed_host`` and ``label`` are caller-derived from operator
+        config, never from the fetched payload — a hostile status page could
+        otherwise set its own ``page_url``/``page_name`` and become the only
+        host this gate permits. An empty ``label`` fails closed (rejects)
+        rather than skipping the service-name check. Never raises: a
+        malformed URL in the rewrite is treated as a rejection, not an
+        exception that would abort the rest of the announce pass.
         """
         if not text or not text.strip():
             return False
-        label = (snapshot.page_name or "").lower()
-        if label and label not in text.lower():
+        if not label or label.lower() not in text.lower():
             return False
-        allowed_host = urlparse(snapshot.page_url or "").hostname or ""
-        for found in re.findall(r"https?://[^\s<>\"']+", text):
-            host = urlparse(found).hostname or ""
+        for match in statuspage.URL_LIKE_RE.finditer(text):
+            token = match.group(0)
+            candidate = token if "://" in token else f"//{token}"
+            try:
+                host = urlparse(candidate).hostname or ""
+            except ValueError:
+                return False
             if host.lower() != allowed_host.lower():
                 return False
         return True
@@ -1288,18 +1299,30 @@ class LLM(callbacks.Plugin):
         if not channels:
             return
 
+        # allowed_host/label are derived from OPERATOR CONFIG (statusPageUrl),
+        # never from the fetched payload: page_name/page_url in the snapshot
+        # are third-party data, and trusting them here would let a hostile
+        # status page nominate its own phishing host as the only one this
+        # gate permits.
+        configured = self.registryValue("statusPageUrl") or ""
+        try:
+            configured_host = urlparse(configured).hostname or ""
+        except ValueError:
+            configured_host = ""
+        label = snapshot.page_name or configured_host or "Status"
+
         for incident in delta.opened:
-            template = statuspage.render_line(
-                incident, page_name=snapshot.page_name, page_url=snapshot.page_url
-            )
+            template = statuspage.render_line(incident, page_name=label, page_url=configured)
             delivered = False
             for channel in channels:
                 text = template
                 if self._status_announce_budget_ok():
                     rewrite = self._status_rewrite(incident, channel)
-                    if rewrite and self._status_rewrite_ok(rewrite, snapshot):
+                    self._status_announce_times.append(self._status_now())
+                    if rewrite and self._status_rewrite_ok(
+                        rewrite, allowed_host=configured_host, label=label
+                    ):
                         text = rewrite
-                        self._status_announce_times.append(self._status_now())
 
                 safe = self.llm_service.sanitize_output(text)
                 safe = self._collapse_for_irc(safe) or safe

@@ -134,6 +134,46 @@ class TestRenderLine:
         assert "\x01" not in line
         assert "\n" not in line
 
+    def test_render_line_strips_a_url_from_the_incident_name(self):
+        """The template appends the one authoritative URL itself; a link
+        inside third-party incident prose is never wanted."""
+        line = statuspage.render_line(
+            view(name="Outage — see https://evil.example/fix for details"),
+            page_name="Claude",
+            page_url="https://status.claude.com",
+        )
+        assert "evil.example" not in line
+        assert "https://status.claude.com" in line
+
+
+class TestStripUrls:
+    def test_strips_scheme_urls_case_insensitively(self):
+        assert "evil.example" not in statuspage.strip_urls("see HTTPS://evil.example/fix")
+
+    def test_strips_bare_host_slash_path(self):
+        assert "evil.example" not in statuspage.strip_urls("see evil.example/fix now")
+
+    def test_strips_www_host(self):
+        assert "evil.example" not in statuspage.strip_urls("see www.evil.example now")
+
+    def test_strips_non_http_schemes(self):
+        """irc:// links are clickable and can auto-join a channel."""
+        assert "evil.example" not in statuspage.strip_urls("join irc://evil.example/#chan")
+
+    def test_strips_bare_ipv4(self):
+        assert "169.254.169.254" not in statuspage.strip_urls("fetch 169.254.169.254 now")
+
+    def test_leaves_a_bare_hostname_with_no_path_alone(self):
+        """Component names legitimately contain a bare hostname (e.g.
+        'Claude API (api.anthropic.com)'); rejecting those would make every
+        rewrite mentioning a component fall back to the template."""
+        assert "api.anthropic.com" in statuspage.strip_urls("Claude API (api.anthropic.com)")
+
+    def test_leaves_plain_prose_untouched(self):
+        assert statuspage.strip_urls("Elevated error rates on Opus 4.5") == (
+            "Elevated error rates on Opus 4.5"
+        )
+
 
 class TestSanitisationIdempotence:
     def test_nested_control_tokens_do_not_reconstruct(self):
