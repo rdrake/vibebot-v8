@@ -4999,6 +4999,13 @@ Examples (echo → action_prompt: ""):
                 ),
             )
 
+            # check_service_status must not occupy a chat-surface slot when
+            # the feature is unconfigured — status_fn above is already None
+            # in that case, but the schema itself still shipped and cost
+            # ~150 prompt tokens per completion for a tool that could only
+            # ever answer "not configured".
+            if not self.plugin.registryValue("statusPageUrl"):
+                exclude_tools = exclude_tools | {"check_service_status"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)

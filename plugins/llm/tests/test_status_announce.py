@@ -314,6 +314,49 @@ class TestSkipBeforeSpend:
         assert plugin._status_rewrite.call_count == 1
 
 
+class TestOverlaySharing:
+    """The rewrite varies only with a channel's assistantSystemPrompt
+    overlay, so channels sharing an overlay must share one completion —
+    this both cuts cost and removes the deterministic starvation of
+    alphabetically-later channels once the hourly budget runs out."""
+
+    def test_channels_sharing_an_overlay_consume_only_one_completion(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._announce_channels = {"#a": True, "#b": True, "#c": True}
+        overlays = {"#a": "pirate voice", "#b": "pirate voice", "#c": "formal voice"}
+        plugin.registryValue = lambda key, channel=None, *a, **k: (
+            plugin._announce_channels.get(channel, False)
+            if key == "statusAnnounce"
+            else overlays.get(channel, "")
+            if key == "assistantSystemPrompt"
+            else plugin._registry.get(key)
+        )
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        # "#a"/"#b" share an overlay (one completion); "#c" is its own group
+        # (a second completion) — three channels, two completions.
+        assert plugin._status_rewrite.call_count == 2
+        assert plugin._safe_queue.call_count == 3
+
+    def test_all_deliverable_channels_in_a_shared_group_get_the_same_text(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._announce_channels = {"#a": True, "#b": True}
+        plugin.registryValue = lambda key, channel=None, *a, **k: (
+            plugin._announce_channels.get(channel, False)
+            if key == "statusAnnounce"
+            else ""
+            if key == "assistantSystemPrompt"
+            else plugin._registry.get(key)
+        )
+        plugin._status_rewrite = MagicMock(return_value="Claude API is degraded right now.")
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert plugin._status_rewrite.call_count == 1
+        assert plugin._sent_text == [
+            "Claude API is degraded right now.",
+            "Claude API is degraded right now.",
+        ]
+
+
 class TestIrcForChannel:
     def test_returns_none_when_no_connection_holds_the_channel(self, announcing_plugin, mocker):
         from llm.plugin import LLM

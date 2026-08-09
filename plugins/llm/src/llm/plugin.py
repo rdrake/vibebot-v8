@@ -1341,21 +1341,41 @@ class LLM(callbacks.Plugin):
             or "Status"
         )
 
+        # The rewrite varies only with the channel's assistantSystemPrompt
+        # overlay, so channels sharing one share a completion. This both cuts
+        # cost and removes the deterministic starvation of alphabetically-
+        # later channels once the hourly budget is exhausted.
+        by_overlay: dict[str, list[str]] = {}
+        for channel in channels:
+            overlay = self.registryValue("assistantSystemPrompt", channel) or ""
+            by_overlay.setdefault(overlay, []).append(channel)
+
         for incident in delta.opened:
             template = statuspage.render_line(incident, page_name=label, page_url=configured)
             delivered = False
-            for channel in channels:
+
+            for group_channels in by_overlay.values():
                 # Look up deliverability BEFORE spending a completion or the
                 # hourly budget: a channel the bot has since parted cannot be
                 # delivered to regardless of what the rewrite produces.
-                irc_conn = self._irc_for_channel(channel)
-                if irc_conn is None:
+                deliverable = [
+                    (channel, irc_conn)
+                    for channel in group_channels
+                    if (irc_conn := self._irc_for_channel(channel)) is not None
+                ]
+                if not deliverable:
                     continue
 
                 text = template
                 if self._status_announce_budget_ok():
+                    # First deliverable channel drives provider cache routing;
+                    # the rewrite itself is shared across the whole group.
                     rewrite = self._status_rewrite(
-                        incident, channel, snapshot=snapshot, url=configured, label=label
+                        incident,
+                        deliverable[0][0],
+                        snapshot=snapshot,
+                        url=configured,
+                        label=label,
                     )
                     self._status_announce_times.append(self._status_now())
                     if rewrite and self._status_rewrite_ok(
@@ -1373,8 +1393,10 @@ class LLM(callbacks.Plugin):
                     # rather than queue "PRIVMSG #chan :" — and leave the incident
                     # unmarked so the next poll retries it.
                     continue
-                if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
-                    delivered = True
+
+                for channel, irc_conn in deliverable:
+                    if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
+                        delivered = True
 
             if delivered:
                 self._status_state = statuspage.mark_announced(

@@ -153,6 +153,44 @@ class TestToolWiringGate:
         assert kwargs["status_fn"] is None
 
 
+class TestToolSchemaGateOnConfig:
+    """The schema itself, not just status_fn, must not occupy a chat-surface
+    slot when the feature is unconfigured — an offered tool that can only
+    answer 'not configured' still costs prompt tokens on every completion."""
+
+    def _tool_names(self, mocker, make_service, *, status_page_url: str) -> set[str]:
+        from llm.profile import PROFILE_CHAT
+
+        service, plugin = make_service(statusPageUrl=status_page_url)
+        plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
+        completion = mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("hi"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hi",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        tools = completion.call_args.kwargs.get("tools") or []
+        return {(t.get("function", t) or {}).get("name") for t in tools}
+
+    def test_absent_from_tool_list_when_status_page_url_is_empty(self, mocker, make_service):
+        names = self._tool_names(mocker, make_service, status_page_url="")
+        assert "check_service_status" not in names
+
+    def test_present_in_tool_list_when_status_page_url_is_set(self, mocker, make_service):
+        names = self._tool_names(mocker, make_service, status_page_url="https://status.claude.com")
+        assert "check_service_status" in names
+
+
 class TestToolPayloadOwnership:
     def test_tool_payload_does_not_advance_lifecycle_state(self, status_plugin):
         """The tool path is a NEW writer to shared state; Task 5's tests do
