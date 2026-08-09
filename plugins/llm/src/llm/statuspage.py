@@ -13,7 +13,7 @@ that take a base URL, rather than in the config or the tool schema.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -225,3 +225,106 @@ def parse_summary(
         etag=etag,
         modified=modified,
     )
+
+
+# Bound on the announced map. Pruning always retains currently-active ids
+# regardless of age — dropping an active id would re-announce a live outage.
+MAX_ANNOUNCED_RETAINED = 200
+
+
+@dataclass(frozen=True)
+class StatusState:
+    """Lifecycle state for one status page. Advanced by the poller only."""
+
+    active: dict[str, IncidentView] = field(default_factory=dict)
+    announced: dict[str, float] = field(default_factory=dict)
+    seeded: bool = False
+
+
+@dataclass(frozen=True)
+class Delta:
+    """What changed between the retained state and a new snapshot."""
+
+    opened: tuple[IncidentView, ...] = ()
+    changed: tuple[IncidentView, ...] = ()
+    disappeared: tuple[IncidentView, ...] = ()
+    discarded: int = 0
+
+
+def _sort_key(view: IncidentView) -> float:
+    """Newest-first ordering key; undated incidents sort oldest."""
+    stamp = view.started_at or view.created_at
+    return stamp.timestamp() if stamp else float("-inf")
+
+
+def _prune(announced: dict[str, float], active_ids: set[str]) -> dict[str, float]:
+    if len(announced) <= MAX_ANNOUNCED_RETAINED:
+        return announced
+    keep = {k: v for k, v in announced.items() if k in active_ids}
+    remainder = sorted(
+        ((k, v) for k, v in announced.items() if k not in active_ids),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    for key, value in remainder[:MAX_ANNOUNCED_RETAINED]:
+        keep[key] = value
+    return keep
+
+
+def classify(
+    state: StatusState,
+    snapshot: Snapshot,
+    *,
+    max_opened: int = 3,
+) -> tuple[Delta, StatusState]:
+    """Classify a snapshot against retained state. Pure — mutates nothing.
+
+    On a cold start (``state.seeded`` False) every current incident is
+    recorded as already-announced and an empty Delta is returned, so a restart
+    during an outage does not re-announce it. This mirrors stock RSS's
+    ``initial`` flag.
+
+    ``opened`` is NOT written into ``announced`` — the caller does that via
+    ``mark_announced`` after a successful send, so a dropped delivery is
+    retried on the next poll.
+    """
+    current = snapshot.incidents
+
+    if not state.seeded:
+        return Delta(), StatusState(
+            active=dict(current),
+            announced=dict.fromkeys(current, snapshot.fetched_at),
+            seeded=True,
+        )
+
+    opened = [v for cid, v in current.items() if cid not in state.announced]
+    opened.sort(key=_sort_key, reverse=True)
+    discarded = max(0, len(opened) - max_opened)
+
+    changed = tuple(
+        v
+        for cid, v in current.items()
+        if cid in state.active and state.active[cid].status != v.status
+    )
+    disappeared = tuple(v for cid, v in state.active.items() if cid not in current)
+
+    return (
+        Delta(
+            opened=tuple(opened[:max_opened]),
+            changed=changed,
+            disappeared=disappeared,
+            discarded=discarded,
+        ),
+        StatusState(
+            active=dict(current),
+            announced=_prune(dict(state.announced), set(current)),
+            seeded=True,
+        ),
+    )
+
+
+def mark_announced(state: StatusState, incident_id: str, *, now: float) -> StatusState:
+    """Record that ``incident_id`` was successfully announced."""
+    announced = dict(state.announced)
+    announced[incident_id] = now
+    return StatusState(active=state.active, announced=announced, seeded=state.seeded)
