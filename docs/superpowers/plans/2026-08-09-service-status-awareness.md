@@ -322,6 +322,12 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def _ts_key(value: Any) -> float:
+    """Sortable float for a possibly-missing timestamp; undated sorts oldest."""
+    stamp = _parse_ts(value)
+    return stamp.timestamp() if stamp else float("-inf")
+
+
 def _parse_incident(raw: Any) -> IncidentView:
     obj = _require_mapping(raw, "incident")
 
@@ -347,10 +353,10 @@ def _parse_incident(raw: Any) -> IncidentView:
     update_at: datetime | None = None
     if isinstance(updates, list) and updates:
         parsed = [u for u in updates if isinstance(u, dict)]
-        parsed.sort(
-            key=lambda u: (_parse_ts(u.get("display_at")) or datetime.min.replace(tzinfo=None)),
-            reverse=True,
-        )
+        # Sort on a float, never on datetime: a payload mixing dated and
+        # undated updates would otherwise compare aware against naive
+        # datetimes and raise TypeError mid-parse.
+        parsed.sort(key=lambda u: _ts_key(u.get("display_at")), reverse=True)
         if parsed:
             newest = parsed[0]
             body = newest.get("body") if isinstance(newest.get("body"), str) else ""
@@ -1406,6 +1412,7 @@ class TestOwnershipSplit:
         assert plugin._status_state.seeded is True
 
         plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
+        plugin._now = 2000.0                           # clear the 30s fetch floor
         plugin._status_fetch_now()                     # the tool's inline path
 
         assert plugin._status_read_cache.incidents, "read cache refreshed"
@@ -1415,6 +1422,7 @@ class TestOwnershipSplit:
         plugin = status_plugin
         plugin._run_status_poll()
         plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
+        plugin._now = 2000.0                           # clear the 30s fetch floor
         plugin._status_fetch_now()
         plugin._run_status_poll()
         assert plugin._announce_status.call_count == 1
@@ -2144,7 +2152,10 @@ class TestChannelSelection:
             return result
 
         plugin._all_known_channels = mutating
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))  # must not raise
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        targets = [c.args[1].args[0] for c in plugin._safe_queue.call_args_list]
+        assert "#c" not in targets, "iteration must use a snapshot, not live state"
+        assert sorted(targets) == ["#a", "#b"]
 ```
 
 Add the fixture to `plugins/llm/tests/conftest.py`:
