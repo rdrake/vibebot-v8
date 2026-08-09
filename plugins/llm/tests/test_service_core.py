@@ -2513,6 +2513,11 @@ class TestValidateExternalUrl:
         assert validate_external_url("") is False
         assert validate_external_url("example.com") is False
 
+    def test_returns_false_rather_than_raising_on_malformed_authority(self) -> None:
+        # "http://[" makes urlparse(...).hostname raise ValueError (invalid
+        # IPv6 URL) rather than return. Must fail closed, not propagate.
+        assert validate_external_url("http://[") is False
+
 
 class TestStashTimeoutCapturesAccount:
     def test_passes_account_to_save_pending_task(self, make_service, mocker: MockerFixture):

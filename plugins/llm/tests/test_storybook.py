@@ -436,6 +436,18 @@ def test_resolves_to_public(make_service, mocker):
     assert service._resolves_to_public("not-a-url") is False
 
 
+def test_resolves_to_public_false_on_unicode_encode_error(make_service, mocker):
+    """getaddrinfo raises UnicodeEncodeError (not an OSError subclass) on a
+    hostname that fails IDNA encoding; the guard must fail closed rather than
+    let the exception escape."""
+    service, plugin = make_service()
+    mocker.patch(
+        "socket.getaddrinfo",
+        side_effect=UnicodeEncodeError("idna", "x", 0, 1, "label empty or too long"),
+    )
+    assert service._resolves_to_public("http://example.com/x.png") is False
+
+
 def test_make_verse_tool_specs_includes_storybook_when_enabled():
     from llm.verse.avatar import make_verse_tool_specs
 

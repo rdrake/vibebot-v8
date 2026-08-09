@@ -1374,10 +1374,9 @@ def validate_external_url(url: str) -> bool:
 
     try:
         parsed = urlparse(url)
-    except ValueError:
+        hostname = parsed.hostname
+    except Exception:  # noqa: BLE001 — urlparse/hostname can raise on malformed input, not just ValueError
         return False
-
-    hostname = parsed.hostname
     if not hostname:
         return False
 
@@ -6178,7 +6177,9 @@ Examples (echo → action_prompt: ""):
             return False
         try:
             infos = socket.getaddrinfo(host, None)
-        except OSError:
+        except Exception:  # noqa: BLE001 — getaddrinfo raises UnicodeEncodeError on IDNA
+            # encoding failure, which is not an OSError subclass and would
+            # otherwise escape as a bare exception.
             return False
         for info in infos:
             try:
@@ -6201,8 +6202,16 @@ Examples (echo → action_prompt: ""):
         import urllib.request
 
         # SSRF guard: provider-returned URLs are untrusted input. Apply the
-        # same scheme + private-host policy as user-supplied URLs.
-        if not validate_external_url(url):
+        # same scheme + private-host policy as user-supplied URLs. Both
+        # guards are wrapped: a raising guard must fail closed (return None)
+        # rather than let a bare exception escape past this method's
+        # documented `str | None` contract.
+        try:
+            valid = validate_external_url(url)
+        except Exception:  # noqa: BLE001 — fail closed, see comment above
+            self.log.warning("URL validation raised for provider URL: %s", url[:200])
+            return None
+        if not valid:
             self.log.warning("Refusing to fetch unsafe provider URL: %s", url[:200])
             return None
 
@@ -6223,7 +6232,12 @@ Examples (echo → action_prompt: ""):
         # hostnames without resolving them, so a rebinding attack could slip
         # through that check.  We do this after build_opener so the no-redirect
         # handler is already in place before we exit early.
-        if not self._resolves_to_public(url):
+        try:
+            resolves_public = self._resolves_to_public(url)
+        except Exception:  # noqa: BLE001 — fail closed, see comment above
+            self.log.warning("Host resolution raised for provider URL: %s", url[:200])
+            return None
+        if not resolves_public:
             self.log.warning("Refusing image download: host did not resolve to a public IP")
             return None
 
