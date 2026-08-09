@@ -146,8 +146,8 @@ user-facing behaviour.
     plugin, remove that first, or every incident is reported twice:
 
     ```
-    @rss announce remove #channel <feedname>
-    @config channel #channel plugins.LLM.statusAnnounce True
+    @rss announce remove #yourchan <feedname>
+    @config channel #yourchan plugins.LLM.statusAnnounce True
     ```
 
 ## Monitoring

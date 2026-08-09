@@ -7,6 +7,8 @@ import json
 from llm import assistant, statuspage
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION, PROFILE_VERSE
 
+from .conftest import make_completion_response
+
 
 def green_snapshot(fetched_at: float = 1000.0, *, incidents=()) -> statuspage.Snapshot:
     """Mirrors test_status_poller.py's helper of the same name."""
@@ -101,6 +103,54 @@ def incident(incident_id="inc1") -> statuspage.IncidentView:
         latest_update_body="We are investigating.",
         latest_update_at=None,
     )
+
+
+class TestToolWiringGate:
+    """service.py ~4996: status_fn must be wired only when statusPageUrl is
+    configured — with it empty, config.py says status awareness is fully
+    disabled, so the tool must not occupy a chat-surface slot at all."""
+
+    def _run(self, mocker, make_service, *, status_page_url: str):
+        from llm.assistant import AssistantToolExecutor
+        from llm.profile import PROFILE_CHAT
+
+        service, plugin = make_service(statusPageUrl=status_page_url)
+        plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("hi"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        # AssistantToolExecutor is imported locally inside assistant_completion
+        # (service.py ~4744), so the patch target is the defining module, not
+        # llm.service's (nonexistent) module-level attribute.
+        executor_spy = mocker.patch(
+            "llm.assistant.AssistantToolExecutor", wraps=AssistantToolExecutor
+        )
+
+        service.assistant_completion(
+            prompt="hi",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        return executor_spy, plugin
+
+    def test_wired_when_status_page_url_is_configured(self, mocker, make_service):
+        executor_spy, plugin = self._run(
+            mocker, make_service, status_page_url="https://status.claude.com"
+        )
+        kwargs = executor_spy.call_args.kwargs
+        assert kwargs["status_fn"] is plugin._status_tool_payload
+
+    def test_absent_when_status_page_url_is_empty(self, mocker, make_service):
+        executor_spy, _plugin = self._run(mocker, make_service, status_page_url="")
+        kwargs = executor_spy.call_args.kwargs
+        assert kwargs["status_fn"] is None
 
 
 class TestToolPayloadOwnership:

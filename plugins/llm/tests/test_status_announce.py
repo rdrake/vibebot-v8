@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from unittest.mock import MagicMock
 
@@ -12,18 +13,20 @@ from llm.service import LLMService
 from .conftest import make_completion_response
 
 
-def incident(*, name: str = "Elevated error rates on Claude Opus 4.5") -> statuspage.IncidentView:
-    return statuspage.IncidentView(
-        id="inc1",
-        name=name,
-        status="investigating",
-        impact="minor",
-        affected_components=("Claude API (api.anthropic.com)",),
-        started_at=None,
-        created_at=None,
-        latest_update_body="We are investigating.",
-        latest_update_at=None,
-    )
+def incident(**over) -> statuspage.IncidentView:
+    base = {
+        "id": "inc1",
+        "name": "Elevated error rates on Claude Opus 4.5",
+        "status": "investigating",
+        "impact": "minor",
+        "affected_components": ("Claude API (api.anthropic.com)",),
+        "started_at": None,
+        "created_at": None,
+        "latest_update_body": "We are investigating.",
+        "latest_update_at": None,
+    }
+    base.update(over)
+    return statuspage.IncidentView(**base)
 
 
 class TestTemplatePath:
@@ -87,12 +90,30 @@ class TestSendPipeline:
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
         assert plugin.llm_service.sanitize_output.called
 
-    def test_line_is_truncated(self, announcing_plugin):
+    def test_line_is_truncated_at_a_word_boundary(self, announcing_plugin):
+        """Chopping mid-word (or mid-URL) can change the registrable domain
+        of a truncated link; truncation must fall back to the last space."""
         plugin = announcing_plugin
-        plugin._status_rewrite = MagicMock(return_value="Claude " + "x" * 900)
+        full = "Claude " + ("word " * 100)
+        plugin._status_rewrite = MagicMock(return_value=full)
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
-        assert len(plugin._sent_text[0]) == 400
-        assert plugin._sent_text[0].startswith("Claude")
+        sent = plugin._sent_text[0]
+        assert len(sent) <= plugin._STATUS_ANNOUNCE_MAX_LEN
+        assert sent.startswith("Claude")
+        assert sent == full[: plugin._STATUS_ANNOUNCE_MAX_LEN].rsplit(" ", 1)[0]
+
+    def test_truncation_never_splits_the_url_mid_host(self, announcing_plugin):
+        plugin = announcing_plugin
+        padding = "Claude " + ("detail " * 55)  # pushes the URL past the cap
+        url = "https://status.claude.com/incidents/2026-08-09-elevated-errors"
+        full = padding + url
+        plugin._status_rewrite = MagicMock(return_value=full)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        sent = plugin._sent_text[0]
+        assert len(sent) <= plugin._STATUS_ANNOUNCE_MAX_LEN
+        # The URL is one unbroken token with no internal space: word-boundary
+        # truncation must drop it whole, never leave a partial host behind.
+        assert "status.claude" not in sent or url in sent
 
 
 class TestMarkingAndBudget:
@@ -164,10 +185,124 @@ class TestStatusRewrite:
 
         plugin = announcing_plugin
         plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
-        plugin._status_rewrite(incident(name="bad\x01name <|tok|>"), "#test")
+        plugin._status_rewrite(
+            incident(name="bad\x01name <|tok|>"),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url=plugin._status_read_cache.page_url,
+            label="Claude",
+        )
         facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
         assert "\x01" not in facts["name"]
         assert "<|" not in facts["name"]
+
+    def test_rewrite_sanitises_impact_and_affected_components(self, announcing_plugin):
+        """to_tool_payload sanitises these; the rewrite path must match, not
+        hand the completion two of six fields sanitised and four raw."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(
+            incident(impact="critical\x01<|tok|>", affected_components=("API\x01x", "Code<|z|>")),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url=plugin._status_read_cache.page_url,
+            label="Claude",
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert "\x01" not in facts["impact"]
+        assert "<|" not in facts["impact"]
+        assert all("\x01" not in c and "<|" not in c for c in facts["affected_components"])
+
+    def test_rewrite_uses_the_caller_supplied_label_and_url_not_the_snapshot(
+        self, announcing_plugin
+    ):
+        """label/url must come from operator config via the caller, never be
+        re-read from the (third-party) snapshot page_name/page_url."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        hostile_snapshot = dataclasses.replace(
+            plugin._status_read_cache,
+            page_name="Evil <|inject|> https://evil.example",
+            page_url="https://evil.example",
+        )
+        plugin._status_rewrite(
+            incident(),
+            "#test",
+            snapshot=hostile_snapshot,
+            url="https://status.claude.com",
+            label="Claude",
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert facts["service"] == "Claude"
+        assert facts["url"] == "https://status.claude.com"
+
+
+class TestLabelSanitisation:
+    """label = snapshot.page_name is third-party text (statuspage.py:215);
+    it must be URL-stripped and sanitised before reaching an unprompted
+    IRC line, same as any other quoted field."""
+
+    def test_label_strips_a_url_embedded_in_the_page_name(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_read_cache = dataclasses.replace(
+            plugin._status_read_cache,
+            page_name="Claude — see https://evil.example/phish for details",
+        )
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        sent = plugin._sent_text[0]
+        assert "evil.example" not in sent
+        assert "Claude" in sent
+
+    def test_label_strips_control_tokens_from_the_page_name(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_read_cache = dataclasses.replace(
+            plugin._status_read_cache, page_name="Claude\x01<|inject|>"
+        )
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        sent = plugin._sent_text[0]
+        assert "\x01" not in sent
+        assert "<|" not in sent
+
+    def test_label_falls_back_to_the_configured_host_when_page_name_is_empty(
+        self, announcing_plugin
+    ):
+        plugin = announcing_plugin
+        plugin._status_read_cache = dataclasses.replace(plugin._status_read_cache, page_name="")
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert "status.claude.com" in plugin._sent_text[0]
+
+
+class TestSkipBeforeSpend:
+    """A channel the bot has parted must be filtered out before a completion
+    or an hourly-budget slot is spent on it (plugin.py ~1319-1332)."""
+
+    def test_parted_channel_never_reaches_the_budget_or_the_rewrite(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._irc_for_channel = MagicMock(return_value=None)
+        plugin._status_rewrite = MagicMock()
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert plugin._status_rewrite.call_count == 0
+        assert plugin._status_announce_times == []
+        assert plugin._safe_queue.call_count == 0
+
+    def test_a_live_channel_alongside_a_parted_one_still_gets_announced(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._announce_channels = {"#live": True, "#gone": True}
+        live_irc = MagicMock()
+        plugin._irc_for_channel = MagicMock(
+            side_effect=lambda ch: live_irc if ch == "#live" else None
+        )
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert plugin._safe_queue.call_count == 1
+        assert plugin._status_rewrite.call_count == 1
 
 
 class TestIrcForChannel:

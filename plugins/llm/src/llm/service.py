@@ -4993,7 +4993,11 @@ Examples (echo → action_prompt: ""):
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
                 schedule_llm_task_fn=schedule_llm_task_fn,
-                status_fn=self.plugin._status_tool_payload,
+                status_fn=(
+                    self.plugin._status_tool_payload
+                    if self.plugin.registryValue("statusPageUrl")
+                    else None
+                ),
             )
 
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)

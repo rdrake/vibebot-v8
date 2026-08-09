@@ -1112,7 +1112,12 @@ class LLM(callbacks.Plugin):
         cached = self._status_read_cache
         result = statuspage.fetch_summary(
             base,
-            timeout=self.registryValue("timeout"),
+            # min(...30): this borrows the LLM `timeout` registry key, which
+            # is documented for LLM calls and may be raised by an operator
+            # for a slow model. A poll must not hold an executor permit for
+            # that long — 30s is the developer-tuned ceiling for one small
+            # status endpoint.
+            timeout=min(self.registryValue("timeout"), 30),
             etag=cached.etag if cached else None,
             modified=cached.modified if cached else None,
             validate=validate_external_url,
@@ -1197,8 +1202,6 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Status poll raised: %s", e)
 
-    _STATUS_ANNOUNCE_MAX_LEN = 400
-
     def _status_announce_budget_ok(self) -> bool:
         """Token bucket for announcement completions.
 
@@ -1218,13 +1221,17 @@ class LLM(callbacks.Plugin):
         phishing link in its own voice with nobody having asked. The URL host
         check is the highest-value filter on this path.
 
-        ``allowed_host`` and ``label`` are caller-derived from operator
-        config, never from the fetched payload — a hostile status page could
-        otherwise set its own ``page_url``/``page_name`` and become the only
-        host this gate permits. An empty ``label`` fails closed (rejects)
-        rather than skipping the service-name check. Never raises: a
-        malformed URL in the rewrite is treated as a rejection, not an
-        exception that would abort the rest of the announce pass.
+        ``allowed_host`` is caller-derived from operator config
+        (``statusPageUrl``) only, never from the fetched payload — a hostile
+        status page could otherwise set its own ``page_url`` and become the
+        only host this gate permits. ``label`` MAY be quoted from the fetched
+        payload (``page_name``), but only after the caller has stripped URLs
+        and sanitised it (see ``_announce_status``) — this check only
+        confirms the label appears in the text, so it never on its own
+        authorizes a URL. An empty ``label`` fails closed (rejects) rather
+        than skipping the service-name check. Never raises: a malformed URL
+        in the rewrite is treated as a rejection, not an exception that would
+        abort the rest of the announce pass.
         """
         if not text or not text.strip():
             return False
@@ -1241,25 +1248,40 @@ class LLM(callbacks.Plugin):
                 return False
         return True
 
-    def _status_rewrite(self, incident, channel: str) -> str | None:
+    def _status_rewrite(
+        self,
+        incident: statuspage.IncidentView,
+        channel: str,
+        *,
+        snapshot: statuspage.Snapshot,
+        url: str,
+        label: str,
+    ) -> str | None:
         """One-shot rewrite of the sanitised incident facts in channel voice.
 
         Runs INLINE in the poll worker's existing permit — no submit (raises
         RecursiveSubmitError from worker context, executor.py:102-106) and no
         nested permit (double acquire; self-deadlock at
         maxConcurrentLLMCalls=1).
+
+        ``url`` and ``label`` are caller-derived from OPERATOR CONFIG
+        (``statusPageUrl``), never re-read from the fetched snapshot: the
+        page's own ``page_url``/``page_name`` are third-party data, and
+        handing the model a hostile page's own URL would make
+        ``_status_rewrite_ok`` reject every rewrite against the wrong host.
         """
-        snapshot = self._status_read_cache
         if snapshot is None:
             return None
         facts = {
             "name": statuspage.sanitise_text(incident.name),
             "status": incident.status,
-            "impact": incident.impact,
-            "affected_components": list(incident.affected_components),
+            "impact": statuspage.sanitise_text(incident.impact),
+            "affected_components": [
+                statuspage.sanitise_text(c) for c in incident.affected_components
+            ],
             "latest_update": statuspage.sanitise_text(incident.latest_update_body),
-            "service": snapshot.page_name,
-            "url": snapshot.page_url,
+            "service": label,
+            "url": url,
         }
         try:
             return self.llm_service.status_announce_completion(facts=facts, channel=channel)
@@ -1303,21 +1325,36 @@ class LLM(callbacks.Plugin):
         # never from the fetched payload: page_name/page_url in the snapshot
         # are third-party data, and trusting them here would let a hostile
         # status page nominate its own phishing host as the only one this
-        # gate permits.
+        # gate permits. label itself IS quoted from the payload (page_name),
+        # so it is URL-stripped and sanitised before use — a link in the
+        # page's own name must not reach an unprompted IRC line verbatim.
         configured = self.registryValue("statusPageUrl") or ""
         try:
             configured_host = urlparse(configured).hostname or ""
         except ValueError:
             configured_host = ""
-        label = snapshot.page_name or configured_host or "Status"
+        label = (
+            statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
+            or configured_host
+            or "Status"
+        )
 
         for incident in delta.opened:
             template = statuspage.render_line(incident, page_name=label, page_url=configured)
             delivered = False
             for channel in channels:
+                # Look up deliverability BEFORE spending a completion or the
+                # hourly budget: a channel the bot has since parted cannot be
+                # delivered to regardless of what the rewrite produces.
+                irc_conn = self._irc_for_channel(channel)
+                if irc_conn is None:
+                    continue
+
                 text = template
                 if self._status_announce_budget_ok():
-                    rewrite = self._status_rewrite(incident, channel)
+                    rewrite = self._status_rewrite(
+                        incident, channel, snapshot=snapshot, url=configured, label=label
+                    )
                     self._status_announce_times.append(self._status_now())
                     if rewrite and self._status_rewrite_ok(
                         rewrite, allowed_host=configured_host, label=label
@@ -1326,10 +1363,8 @@ class LLM(callbacks.Plugin):
 
                 safe = self.llm_service.sanitize_output(text)
                 safe = self._collapse_for_irc(safe) or safe
-                safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN]
-                irc_conn = self._irc_for_channel(channel)
-                if irc_conn is None:
-                    continue
+                if len(safe) > self._STATUS_ANNOUNCE_MAX_LEN:
+                    safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN].rsplit(" ", 1)[0]
                 if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
                     delivered = True
 
@@ -1347,6 +1382,7 @@ class LLM(callbacks.Plugin):
     _STATUS_MAX_ANNOUNCE_PER_POLL = 3
     _STATUS_ANNOUNCE_MAX_PER_HOUR = 6
     _STATUS_FETCH_FLOOR = 30
+    _STATUS_ANNOUNCE_MAX_LEN = 400
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15

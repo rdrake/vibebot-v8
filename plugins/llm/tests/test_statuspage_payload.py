@@ -66,6 +66,30 @@ class TestComponentSlimming:
         ]
 
 
+class TestDescriptionAndImpactAreSanitised:
+    """description/impact reach the model tool-loop; both were unsanitised
+    third-party text prior to the fix (statuspage.py ~396-397, 407)."""
+
+    def test_description_is_sanitised(self):
+        dirty = statuspage.Snapshot(
+            page_name="Claude",
+            page_url="https://status.claude.com",
+            indicator="minor",
+            description="bad\x01name <|tok|> https://evil.example",
+            components={},
+            incidents={},
+            fetched_at=1000.0,
+        )
+        payload = statuspage.to_tool_payload(dirty, now=1000.0)
+        assert "\x01" not in payload["description"]
+        assert "<|" not in payload["description"]
+
+    def test_impact_is_sanitised(self):
+        payload = statuspage.to_tool_payload(snap(view(impact="critical\x01<|tok|>")), now=1000.0)
+        assert "\x01" not in payload["incidents"][0]["impact"]
+        assert "<|" not in payload["incidents"][0]["impact"]
+
+
 class TestSanitisation:
     def test_free_text_is_capped(self):
         payload = statuspage.to_tool_payload(snap(view(name="x" * 500)), now=1000.0)
@@ -191,6 +215,24 @@ class TestSanitisationIdempotence:
         for raw in ("<|endoftext<|Y|>|>", "!<|CUT|>[x](http://bad/h)", "<|<|foo|>|>"):
             once = statuspage.sanitise_text(raw)
             assert statuspage.sanitise_text(once) == once
+
+    def test_deeply_nested_tokens_fail_closed_instead_of_leaking_a_live_token(self):
+        """Each pass strips exactly one nesting level. At depth > 5 the
+        5-iteration budget exits before convergence; pre-fix this returned a
+        mangled-but-live '<|...|>'-shaped fragment instead of failing closed.
+        """
+        text = "safe"
+        for _ in range(6):  # one level past the 5-pass budget
+            text = f"<|{text}|>"
+        assert statuspage.sanitise_text(text) == ""
+
+    def test_five_levels_of_nesting_still_converge_normally(self):
+        """The fail-closed path must not fire on input the 5-pass budget can
+        actually finish — that would be a regression, not a fix."""
+        text = "safe"
+        for _ in range(5):
+            text = f"<|{text}|>"
+        assert statuspage.sanitise_text(text) == ""
 
 
 class TestComponentNamesAreSanitised:

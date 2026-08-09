@@ -256,7 +256,7 @@ Zero parameters. **[RT-YAGNI-1]**
 ```
 check_service_status() -> {
   indicator, description,
-  degraded: {"Claude API (api.anthropic.com)": "degraded_performance"},
+  degraded: [{"name": "Claude API (api.anthropic.com)", "status": "degraded_performance"}],
   incidents: [{name, status, impact, affected_components,
                incident_age_sec, latest_update, latest_update_age_sec}],
   snapshot_age_sec: 47,
