@@ -349,13 +349,26 @@ UNTRUSTED_NOTE = (
 RECENT_THRESHOLD_SEC = 3600
 
 
+def _strip_once(text: str) -> str:
+    """Single pass of all regex stripping operations."""
+    text = _MARKDOWN_IMAGE_RE.sub("", text)
+    text = _CONTROL_TOKEN_PATTERN.sub("", text)
+    text = _IRC_STRUCTURAL_CONTROL_RE.sub("", text)
+    return text
+
+
 def sanitise_text(text: str, *, limit: int = MAX_FREE_TEXT) -> str:
     """Neutralise third-party prose for both the model and the wire."""
     if not text:
         return ""
-    text = _MARKDOWN_IMAGE_RE.sub("", text)
-    text = _CONTROL_TOKEN_PATTERN.sub("", text)
-    text = _IRC_STRUCTURAL_CONTROL_RE.sub("", text)
+    # Iterate to a fixed point: a single pass is not idempotent, and
+    # nested syntax reconstructs the very pattern each regex removes.
+    # Bounded so pathological input cannot spin.
+    for _ in range(5):
+        stripped = _strip_once(text)
+        if stripped == text:
+            break
+        text = stripped
     text = " ".join(text.split())
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
@@ -382,14 +395,16 @@ def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
         "indicator": snapshot.indicator,
         "description": snapshot.description,
         "degraded": {
-            name: status for name, status in snapshot.components.items() if status != "operational"
+            sanitise_text(name): status
+            for name, status in snapshot.components.items()
+            if status != "operational"
         },
         "incidents": [
             {
                 "name": sanitise_text(view.name),
                 "status": view.status,
                 "impact": view.impact,
-                "affected_components": list(view.affected_components),
+                "affected_components": [sanitise_text(c) for c in view.affected_components],
                 "incident_age_sec": _age_sec(view.started_at or view.created_at, now),
                 "latest_update": sanitise_text(view.latest_update_body),
                 "latest_update_age_sec": _age_sec(view.latest_update_at, now),
