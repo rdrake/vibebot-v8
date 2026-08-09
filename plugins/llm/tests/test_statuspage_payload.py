@@ -228,11 +228,11 @@ class TestSanitisationIdempotence:
 
     def test_five_levels_of_nesting_still_converge_normally(self):
         """The fail-closed path must not fire on input the 5-pass budget can
-        actually finish — that would be a regression, not a fix."""
-        text = "safe"
-        for _ in range(5):
-            text = f"<|{text}|>"
-        assert statuspage.sanitise_text(text) == ""
+        actually finish — that would be a regression, not a fix. Bare nesting
+        sanitises to "" down both the converged and fail-closed paths, so it
+        can't distinguish them; "AB" is only reachable by a converged strip."""
+        text = "A" + "<|" * 5 + "x" + "|>" * 5 + "B"
+        assert statuspage.sanitise_text(text) == "AB"
 
 
 class TestComponentNamesAreSanitised:

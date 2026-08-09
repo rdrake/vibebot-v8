@@ -1264,11 +1264,13 @@ class LLM(callbacks.Plugin):
         nested permit (double acquire; self-deadlock at
         maxConcurrentLLMCalls=1).
 
-        ``url`` and ``label`` are caller-derived from OPERATOR CONFIG
-        (``statusPageUrl``), never re-read from the fetched snapshot: the
-        page's own ``page_url``/``page_name`` are third-party data, and
-        handing the model a hostile page's own URL would make
-        ``_status_rewrite_ok`` reject every rewrite against the wrong host.
+        ``url`` IS the operator-configured value (``statusPageUrl``), never
+        re-read from the fetched snapshot: the page's own ``page_url`` is
+        third-party data, and handing the model a hostile page's own URL
+        would make ``_status_rewrite_ok`` reject every rewrite against the
+        wrong host. ``label`` is derived from the third-party ``page_name``
+        (sanitised and URL-stripped, falling back to the configured host)
+        — it is quoted from the payload, not caller-derived.
         """
         if snapshot is None:
             return None
@@ -1365,6 +1367,12 @@ class LLM(callbacks.Plugin):
                 safe = self._collapse_for_irc(safe) or safe
                 if len(safe) > self._STATUS_ANNOUNCE_MAX_LEN:
                     safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN].rsplit(" ", 1)[0]
+                if not safe:
+                    # render_line fails closed to "" on pathological input, and the
+                    # whitespace truncation above can empty a single-token line. Skip
+                    # rather than queue "PRIVMSG #chan :" — and leave the incident
+                    # unmarked so the next poll retries it.
+                    continue
                 if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
                     delivered = True
 

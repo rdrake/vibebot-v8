@@ -129,6 +129,15 @@ class TestMarkingAndBudget:
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
         assert "inc1" not in plugin._status_state.announced, "must retry next poll"
 
+    def test_empty_rendered_line_is_skipped_and_not_marked(self, announcing_plugin, mocker):
+        """An empty line must never be queued, and must stay unmarked so the
+        next poll retries it — otherwise a lost announcement is permanent."""
+        mocker.patch("llm.plugin.statuspage.render_line", return_value="")
+        announcing_plugin._status_rewrite = mocker.MagicMock(return_value=None)
+        announcing_plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        assert announcing_plugin._safe_queue.call_count == 0
+        assert "inc1" not in announcing_plugin._status_state.announced
+
     def test_over_budget_skips_the_rewrite_but_still_announces(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_announce_times = [plugin._now] * plugin._STATUS_ANNOUNCE_MAX_PER_HOUR
