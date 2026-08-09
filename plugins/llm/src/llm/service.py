@@ -6179,7 +6179,12 @@ Examples (echo → action_prompt: ""):
         import socket
         from urllib.parse import urlparse
 
-        host = urlparse(url).hostname
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            # urlparse raises on malformed authorities (e.g. "http://[").
+            # Inside the try so this helper never raises for any caller.
+            return False
         if not host:
             return False
         try:

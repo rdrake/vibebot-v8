@@ -530,6 +530,7 @@ def fetch_summary(
         parsed.scheme not in ("http", "https")
         or not parsed.netloc
         or parsed.path.rstrip("/")
+        or parsed.params
         or parsed.query
         or parsed.fragment
     ):
