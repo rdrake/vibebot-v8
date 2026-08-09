@@ -117,6 +117,30 @@ class TestHandler:
         ex._tool_check_service_status({"include_history": True})
         assert captured["include_history"] is True
 
+    def _captured_include_history(self, raw):
+        captured = {}
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return {"indicator": "none"}
+
+        ex = self._executor(spy)
+        ex._tool_check_service_status({"include_history": raw})
+        return captured["include_history"]
+
+    def test_stringified_true_values_parse_as_true(self):
+        """Models sometimes emit stringified tool arguments (documented gap);
+        bool("false") is truthy in Python, so this must be parsed, not cast."""
+        for raw in ("true", "True", "TRUE", "1", "yes", "Yes"):
+            assert self._captured_include_history(raw) is True, raw
+
+    def test_stringified_false_values_parse_as_false(self):
+        for raw in ("false", "False", "0", "", "no"):
+            assert self._captured_include_history(raw) is False, raw
+
+    def test_none_and_absent_parse_as_false(self):
+        assert self._captured_include_history(None) is False
+
 
 def incident(incident_id="inc1") -> statuspage.IncidentView:
     return statuspage.IncidentView(
@@ -382,6 +406,65 @@ class TestStatusHistoryPayload:
 
         assert plugin._status_state is before_state
         assert plugin._status_read_cache is before_read_cache
+
+    def test_failure_stamps_backoff_and_a_second_immediate_call_does_not_refetch(
+        self, status_plugin, mocker
+    ):
+        """Without this, three 'when did it last go down' questions during an
+        outage each pay a 30s-timeout fetch while holding an executor permit."""
+        plugin = self._bind(status_plugin)
+        fetch = mocker.patch(
+            "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
+        )
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        plugin._status_history_failed_at = 0.0
+        plugin._now = 1000.0
+
+        first = plugin._status_history_payload()
+        assert first == []
+        assert plugin._status_history_failed_at == 1000.0
+        fetch.assert_called_once()
+
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_RETRY - 1
+        second = plugin._status_history_payload()
+
+        # Still just the one call: the backoff window has not elapsed.
+        fetch.assert_called_once()
+        assert second == []
+
+    def test_retries_after_the_backoff_window_elapses(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        fetch = mocker.patch(
+            "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
+        )
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        plugin._status_history_failed_at = 0.0
+        plugin._now = 1000.0
+
+        plugin._status_history_payload()
+        fetch.assert_called_once()
+
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_RETRY + 1
+        plugin._status_history_payload()
+
+        assert fetch.call_count == 2
+
+    def test_success_clears_the_failure_stamp(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
+        mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        # Past the backoff window (retry=120), or this call would itself be
+        # skipped as still-backing-off and never reach the fetch.
+        plugin._status_history_failed_at = 1000.0 - plugin._STATUS_HISTORY_RETRY - 1
+        plugin._now = 1000.0
+
+        plugin._status_history_payload()
+
+        assert plugin._status_history_failed_at == 0.0
 
 
 class TestStatusToolPayloadIncludeHistory:

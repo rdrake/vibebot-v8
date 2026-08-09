@@ -112,10 +112,27 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def _epoch(stamp: datetime | None) -> float | None:
+    """Epoch seconds, or None if the datetime cannot be converted.
+
+    datetime.timestamp() raises ValueError/OverflowError/OSError for
+    out-of-range dates. A broken or hostile status page can emit one, and
+    an uncaught raise here escapes every caller's error handling — on the
+    poll path it escapes into supybot's scheduler.
+    """
+    if stamp is None:
+        return None
+    try:
+        return stamp.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def _ts_key(value: Any) -> float:
     """Sortable float for a possibly-missing timestamp; undated sorts oldest."""
     stamp = _parse_ts(value)
-    return stamp.timestamp() if stamp else float("-inf")
+    epoch = _epoch(stamp)
+    return epoch if epoch is not None else float("-inf")
 
 
 def _parse_incident(raw: Any) -> IncidentView:
@@ -251,7 +268,8 @@ def _history_sort_key(entry: HistoryEntry) -> float:
     Mirrors ``_sort_key``/``_ts_key``: always a float comparison, never a
     datetime one — mixing aware and naive datetimes in ``sort`` raises.
     """
-    return entry.started_at.timestamp() if entry.started_at else float("-inf")
+    epoch = _epoch(entry.started_at)
+    return epoch if epoch is not None else float("-inf")
 
 
 def parse_incidents(payload: Any, *, limit: int = 50) -> tuple[HistoryEntry, ...]:
@@ -327,7 +345,8 @@ class Delta:
 def _sort_key(view: IncidentView) -> float:
     """Newest-first ordering key; undated incidents sort oldest."""
     stamp = view.started_at or view.created_at
-    return stamp.timestamp() if stamp else float("-inf")
+    epoch = _epoch(stamp)
+    return epoch if epoch is not None else float("-inf")
 
 
 def _prune(announced: dict[str, float], active_ids: set[str]) -> dict[str, float]:
@@ -452,9 +471,10 @@ def sanitise_text(text: str, *, limit: int = MAX_FREE_TEXT) -> str:
 
 
 def _age_sec(stamp: datetime | None, now: float) -> int | None:
-    if stamp is None:
+    epoch = _epoch(stamp)
+    if epoch is None:
         return None
-    return int(now - stamp.timestamp())
+    return int(now - epoch)
 
 
 def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
@@ -507,8 +527,10 @@ def to_history_payload(
     result: list[dict[str, Any]] = []
     for entry in entries[:limit]:
         duration_sec = None
-        if entry.started_at is not None and entry.resolved_at is not None:
-            duration_sec = int(entry.resolved_at.timestamp() - entry.started_at.timestamp())
+        started_epoch = _epoch(entry.started_at)
+        resolved_epoch = _epoch(entry.resolved_at)
+        if started_epoch is not None and resolved_epoch is not None:
+            duration_sec = int(resolved_epoch - started_epoch)
         result.append(
             {
                 "name": sanitise_text(entry.name),

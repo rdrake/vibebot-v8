@@ -295,3 +295,40 @@ class TestRegexesMatchService:
             statuspage._IRC_STRUCTURAL_CONTROL_RE.pattern
             == service._IRC_STRUCTURAL_CONTROL_RE.pattern
         )
+
+
+# A naive datetime(1, 1, 1) reliably raises ValueError out of .timestamp() on
+# this platform (mktime computes a year-0 intermediate and rejects it) — see
+# _epoch's docstring for why this must never propagate uncaught.
+UNREPRESENTABLE_DATETIME = datetime(1, 1, 1)
+
+
+class TestEpochGuardsUnrepresentableDatetimes:
+    def test_epoch_returns_none_instead_of_raising(self):
+        assert statuspage._epoch(UNREPRESENTABLE_DATETIME) is None
+
+    def test_epoch_returns_none_for_none(self):
+        assert statuspage._epoch(None) is None
+
+    def test_epoch_returns_a_float_for_a_normal_datetime(self):
+        assert (
+            statuspage._epoch(datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+            == datetime(2026, 8, 9, 12, 0, tzinfo=UTC).timestamp()
+        )
+
+    def test_to_tool_payload_does_not_raise_for_unrepresentable_started_at(self):
+        bad = view(started_at=UNREPRESENTABLE_DATETIME, created_at=None)
+        payload = statuspage.to_tool_payload(snap(bad), now=1000.0)
+        assert payload["incidents"][0]["incident_age_sec"] is None
+
+    def test_to_history_payload_does_not_raise_for_unrepresentable_resolved_at(self):
+        entry = statuspage.HistoryEntry(
+            id="inc1",
+            name="Elevated error rates",
+            status="resolved",
+            impact="minor",
+            started_at=datetime(2026, 8, 5, 13, 55, tzinfo=UTC),
+            resolved_at=UNREPRESENTABLE_DATETIME,
+        )
+        payload = statuspage.to_history_payload((entry,), now=1000.0)
+        assert payload[0]["duration_sec"] is None

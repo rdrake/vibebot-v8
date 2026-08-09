@@ -1098,9 +1098,11 @@ class AssistantToolExecutor:
         if self._status_fn is None:
             return json.dumps({"error": "Service status checking is not configured."})
         try:
-            return json.dumps(
-                self._status_fn(include_history=bool(_arguments.get("include_history")))
+            raw = _arguments.get("include_history")
+            include_history = raw is True or (
+                isinstance(raw, str) and raw.strip().lower() in {"true", "1", "yes"}
             )
+            return json.dumps(self._status_fn(include_history=include_history))
         except Exception as e:
             _log.info("check_service_status failed: %s", e)
             return json.dumps({"error": "Could not read the service status page."})

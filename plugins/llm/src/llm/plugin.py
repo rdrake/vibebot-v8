@@ -872,6 +872,7 @@ class LLM(callbacks.Plugin):
         self._status_announce_times: list[float] = []
         self._status_history_cache: tuple[statuspage.HistoryEntry, ...] | None = None
         self._status_history_at = 0.0
+        self._status_history_failed_at = 0.0
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
         self._schedule_status_poll()
@@ -1161,6 +1162,11 @@ class LLM(callbacks.Plugin):
         path, and never touching _status_state or _status_read_cache. Cached
         for _STATUS_HISTORY_TTL because resolved history changes rarely.
         Returns [] on any failure; the caller reports current status regardless.
+
+        A failed fetch is backed off for _STATUS_HISTORY_RETRY seconds: without
+        this, every subsequent "when did it last go down" question during an
+        outage retries a 30s-timeout fetch while holding an executor permit,
+        even though the answer (still broken) hasn't changed.
         """
         now = self._status_now()
         if (
@@ -1170,6 +1176,12 @@ class LLM(callbacks.Plugin):
             return statuspage.to_history_payload(
                 self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
             )
+        if now - self._status_history_failed_at < self._STATUS_HISTORY_RETRY:
+            if self._status_history_cache is not None:
+                return statuspage.to_history_payload(
+                    self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
+                )
+            return []
         try:
             base = self.registryValue("statusPageUrl")
             result = statuspage.fetch_incidents(
@@ -1184,6 +1196,7 @@ class LLM(callbacks.Plugin):
             entries = statuspage.parse_incidents(result.payload)
         except Exception as e:
             self.log.info("Status history fetch failed: %s", e)
+            self._status_history_failed_at = now
             if self._status_history_cache is not None:
                 return statuspage.to_history_payload(
                     self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
@@ -1191,6 +1204,7 @@ class LLM(callbacks.Plugin):
             return []
         self._status_history_cache = entries
         self._status_history_at = now
+        self._status_history_failed_at = 0.0
         return statuspage.to_history_payload(entries, now=now, limit=self._STATUS_HISTORY_LIMIT)
 
     def _status_tool_payload(self, *, include_history: bool = False) -> dict[str, Any]:
@@ -1459,6 +1473,7 @@ class LLM(callbacks.Plugin):
     _STATUS_ANNOUNCE_MAX_LEN = 400
     _STATUS_HISTORY_TTL = 3600  # history changes rarely; 1 hour is plenty
     _STATUS_HISTORY_LIMIT = 5
+    _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15

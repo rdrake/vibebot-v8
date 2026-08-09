@@ -786,8 +786,10 @@ def status_plugin():
     obj._now = 1000.0
     obj._STATUS_HISTORY_TTL = LLM._STATUS_HISTORY_TTL
     obj._STATUS_HISTORY_LIMIT = LLM._STATUS_HISTORY_LIMIT
+    obj._STATUS_HISTORY_RETRY = LLM._STATUS_HISTORY_RETRY
     obj._status_history_cache = None
     obj._status_history_at = 0.0
+    obj._status_history_failed_at = 0.0
 
     def fake_fetch():
         obj._fetch_calls += 1
