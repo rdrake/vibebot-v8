@@ -176,49 +176,6 @@ class TestConditionalGet:
         assert result.payload["page"]["name"] == "Claude"
 
 
-@pytest.fixture
-def _allow_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Allow socket connections to localhost for real opener tests."""
-    import socket as _socket
-
-    # Get the real socket class from the _socket C extension
-    try:
-        import _socket as _socket_c  # type: ignore[import]
-
-        _real_socket_class = _socket_c.socket
-        _real_connect = _real_socket_class.connect
-        _real_connect_ex = _real_socket_class.connect_ex
-    except (ImportError, AttributeError):
-        # Fallback: use the socket module's socket.socket
-        _real_connect = None
-        _real_connect_ex = None
-
-    def _allow_localhost_connect(self, addr):  # type: ignore[no-untyped-def]
-        host = addr[0] if isinstance(addr, tuple) else None
-        if host and host in ("127.0.0.1", "localhost"):
-            if _real_connect is not None:
-                return _real_connect(self, addr)
-            # Fallback to the socket module's default
-            import socket as _socket_mod
-
-            return _socket_mod.socket.connect(self, addr)
-        raise RuntimeError("test attempted a real network connection — mock the provider call")
-
-    def _allow_localhost_connect_ex(self, addr):  # type: ignore[no-untyped-def]
-        host = addr[0] if isinstance(addr, tuple) else None
-        if host and host in ("127.0.0.1", "localhost"):
-            if _real_connect_ex is not None:
-                return _real_connect_ex(self, addr)
-            # Fallback to the socket module's default
-            import socket as _socket_mod
-
-            return _socket_mod.socket.connect_ex(self, addr)
-        raise RuntimeError("test attempted a real network connection — mock the provider call")
-
-    monkeypatch.setattr(_socket.socket, "connect", _allow_localhost_connect)
-    monkeypatch.setattr(_socket.socket, "connect_ex", _allow_localhost_connect_ex)
-
-
 class TestRealOpenerRefusesRedirects:
     """Exercises _default_opener_factory itself, not a FakeOpener.
 
@@ -237,7 +194,7 @@ class TestRealOpenerRefusesRedirects:
         thread.start()
         return srv, srv.server_address[1]
 
-    def test_302_to_link_local_raises_fetch_error(self, _allow_localhost):  # noqa: ARG002
+    def test_302_to_link_local_raises_fetch_error(self):
         import http.server
 
         class Redirector(http.server.BaseHTTPRequestHandler):
@@ -264,7 +221,7 @@ class TestRealOpenerRefusesRedirects:
             srv.shutdown()
             srv.server_close()
 
-    def test_real_opener_still_fetches_a_normal_200(self, _allow_localhost):  # noqa: ARG002
+    def test_real_opener_still_fetches_a_normal_200(self):
         """Proves the redirect test above is not just 'everything fails'."""
         import http.server
 

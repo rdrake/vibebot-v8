@@ -109,13 +109,28 @@ def _restore_global_logging_filters() -> Generator[None]:
 
 @pytest.fixture(autouse=True)
 def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail loudly instead of making a real request from a test."""
+    """Refuse outbound network, but permit loopback.
 
-    def _refuse(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("test attempted a real network connection — mock the provider call")
+    The guard exists to stop tests reaching real providers. A test-local
+    HTTP server on 127.0.0.1 is not a provider call, and blocking it would
+    make the redirect-refusal tests in test_statuspage_fetch.py impossible
+    to write without duplicating this fixture.
+    """
+    loopback = {"127.0.0.1", "::1", "localhost"}
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
 
-    monkeypatch.setattr(socket.socket, "connect", _refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
+    def _guard(real):
+        def _inner(self, addr, *args, **kwargs):
+            host = addr[0] if isinstance(addr, tuple) else None
+            if host in loopback:
+                return real(self, addr, *args, **kwargs)
+            raise RuntimeError("test attempted a real network connection — mock the provider call")
+
+        return _inner
+
+    monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
 
 
 @pytest.fixture(autouse=True)
