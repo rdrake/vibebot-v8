@@ -756,3 +756,56 @@ class _SyncLLMExecutor:
 
     def shutdown(self) -> None:
         self.closing = True
+
+
+@pytest.fixture
+def status_plugin():
+    """A minimal stand-in exercising the status poller logic in isolation.
+
+    Builds the real methods onto a bare object rather than constructing the
+    whole LLM plugin, which needs an IRC connection, a database, and an
+    executor pool. The methods under test only touch attributes defined here.
+    """
+    from unittest.mock import MagicMock
+
+    from llm import statuspage
+    from llm.plugin import LLM
+
+    obj = MagicMock()
+    obj._registry = {"statusPageUrl": "https://status.claude.com"}
+    obj.registryValue = lambda key, *a, **k: obj._registry.get(key)
+    obj._STATUS_POLL_INTERVAL = LLM._STATUS_POLL_INTERVAL
+    obj._STATUS_MAX_ANNOUNCE_PER_POLL = LLM._STATUS_MAX_ANNOUNCE_PER_POLL
+    obj._STATUS_FETCH_FLOOR = LLM._STATUS_FETCH_FLOOR
+    obj._status_state = statuspage.StatusState()
+    obj._status_read_cache = None
+    obj._status_last_fetch = 0.0
+    obj._fetch_calls = 0
+    obj._fake_snapshot = None
+    obj._fake_error = None
+    obj._now = 1000.0
+
+    def fake_fetch():
+        obj._fetch_calls += 1
+        if obj._fake_error:
+            err, obj._fake_error = obj._fake_error, None
+            raise err
+        snap = obj._fake_snapshot
+        if snap is None:
+            snap = statuspage.Snapshot(
+                page_name="Claude",
+                page_url="https://status.claude.com",
+                indicator="none",
+                description="All Systems Operational",
+                components={},
+                incidents={},
+                fetched_at=obj._now,
+            )
+        return snap
+
+    obj._status_fetch_snapshot = fake_fetch
+    obj._status_now = lambda: obj._now
+    obj._announce_status = MagicMock()
+    obj._run_status_poll = LLM._run_status_poll.__get__(obj)
+    obj._status_fetch_now = LLM._status_fetch_now.__get__(obj)
+    return obj

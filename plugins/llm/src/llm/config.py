@@ -982,3 +982,27 @@ conf.registerChannelValue(
         using bridged commands."""),
     ),
 )
+
+conf.registerGlobalValue(
+    LLM,
+    "statusPageUrl",
+    registry.String(
+        "https://status.claude.com",
+        _("""Base URL of an Atlassian Statuspage-hosted service status page
+        (no trailing path). The bot polls {url}/api/v2/summary.json to answer
+        status questions and to announce new incidents. Set to the empty
+        string to disable status awareness entirely."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "statusAnnounce",
+    registry.Boolean(
+        False,
+        _("""Announce newly opened status-page incidents in this channel.
+        Off by default. When enabling this, remove the equivalent RSS feed
+        announcement for the channel first, or every incident is reported
+        twice."""),
+    ),
+)

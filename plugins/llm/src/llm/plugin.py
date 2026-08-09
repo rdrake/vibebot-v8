@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -31,7 +31,7 @@ from supybot import world
 from supybot.commands import optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import apikeys, limnoria_bridge
+from . import apikeys, limnoria_bridge, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -53,6 +53,7 @@ from .service import (
     account_from_server_tags,
     irc_has_caps,
     truncate_to_word_boundary,
+    validate_external_url,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
 from .verse import reactions
@@ -861,6 +862,17 @@ class LLM(callbacks.Plugin):
             now=False,
         )
 
+        # Status page poller. Lifecycle state is advanced here and nowhere
+        # else; the tool's inline fetch writes only _status_read_cache.
+        self._status_poll_inflight = threading.Event()
+        self._status_state = statuspage.StatusState()
+        self._status_read_cache: statuspage.Snapshot | None = None
+        self._status_last_fetch = 0.0
+        self._status_announce_times: list[float] = []
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_status_poll")
+        self._schedule_status_poll()
+
         # Event-driven queue wakeup state
         self._next_wakeup_time: float | None = None
         self._schedule_queue_wakeup()  # rebuild from DB on startup
@@ -911,6 +923,8 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_file_cleanup")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_pending_tasks")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_status_poll")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
@@ -1034,8 +1048,141 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Pending task check failed: %s", e)
 
+    def _status_now(self) -> float:
+        """Indirection point so tests can pin the clock."""
+        return time.time()
+
+    def _schedule_status_poll(self) -> None:
+        """Arm the next status poll as a one-shot.
+
+        A self-rescheduling one-shot rather than addPeriodicEvent: the
+        periodic wrapper re-adds itself under the same name after every
+        firing, so a missing die() teardown makes the next plugin load trip
+        ``assert name not in self.events`` (schedule.py:88). The one-shot also
+        re-reads its interval each tick. Same pattern as _schedule_queue_wakeup.
+        """
+        if self._llm_executor.closing:
+            return
+        if not self.registryValue("statusPageUrl"):
+            return
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_status_poll")
+        schedule.addEvent(
+            self._enqueue_status_poll,
+            self._status_now() + self._STATUS_POLL_INTERVAL,
+            name="llm_status_poll",
+        )
+
+    def _enqueue_status_poll(self) -> None:
+        """Submit one status-poll worker, deduped by ``_status_poll_inflight``.
+
+        Mirrors _enqueue_safety_poll: never more than one inflight, and the
+        flag is cleared by a done-callback so a hung poll cannot wedge it.
+        """
+        if self._llm_executor.closing:
+            return
+        if self._status_poll_inflight.is_set():
+            self._schedule_status_poll()
+            return
+        self._status_poll_inflight.set()
+        try:
+            fut = self._llm_executor.submit("status_poll", self._run_status_poll)
+        except Exception:
+            self._status_poll_inflight.clear()
+            self._schedule_status_poll()
+            raise
+        fut.add_done_callback(lambda _f: self._status_poll_inflight.clear())
+        fut.add_done_callback(lambda _f: self._schedule_status_poll())
+
+    def _status_fetch_snapshot(self) -> statuspage.Snapshot:
+        """Fetch and strictly parse the configured status page.
+
+        Raises statuspage.FetchError or statuspage.InvalidPayload.
+        """
+        base = self.registryValue("statusPageUrl")
+        cached = self._status_read_cache
+        result = statuspage.fetch_summary(
+            base,
+            timeout=self.registryValue("timeout"),
+            etag=cached.etag if cached else None,
+            modified=cached.modified if cached else None,
+            validate=validate_external_url,
+            resolves_public=self.llm_service._resolves_to_public,
+        )
+        now = self._status_now()
+        if result.not_modified:
+            if cached is None:
+                raise statuspage.FetchError("304 with no cached snapshot")
+            return replace(cached, fetched_at=now)
+        return statuspage.parse_summary(
+            result.payload, fetched_at=now, etag=result.etag, modified=result.modified
+        )
+
+    def _status_fetch_now(self) -> statuspage.Snapshot | None:
+        """Refresh the READ CACHE ONLY. Never touches lifecycle state.
+
+        Called from the tool handler when the cache is cold or stale. Writing
+        lifecycle state here would let a user's question consume an
+        announcement: the poller would diff against a baseline that already
+        contained the incident.
+        """
+        now = self._status_now()
+        if now - self._status_last_fetch < self._STATUS_FETCH_FLOOR:
+            return self._status_read_cache
+        self._status_last_fetch = now
+        try:
+            snapshot = self._status_fetch_snapshot()
+        except Exception as e:
+            self.log.info("Status inline fetch failed: %s", e)
+            return self._status_read_cache
+        self._status_read_cache = snapshot
+        return snapshot
+
+    def _run_status_poll(self) -> None:
+        """Poll the status page, advance lifecycle state, announce what opened.
+
+        The try/except is for log control only — schedule.py already catches
+        and re-arms (schedule.py:118-122, :150-153).
+        """
+        try:
+            if not self.registryValue("statusPageUrl"):
+                return
+            self._status_last_fetch = self._status_now()
+            snapshot = self._status_fetch_snapshot()
+            self._status_read_cache = snapshot
+            delta, new_state = statuspage.classify(
+                self._status_state,
+                snapshot,
+                max_opened=self._STATUS_MAX_ANNOUNCE_PER_POLL,
+            )
+            self._status_state = new_state
+            if delta.discarded:
+                self.log.warning(
+                    "Status poll discarded %i opened incidents past the per-poll cap",
+                    delta.discarded,
+                )
+            if delta.opened:
+                self._announce_status(delta)
+        except (statuspage.FetchError, statuspage.InvalidPayload) as e:
+            self.log.info("Status poll failed, retaining last good state: %s", e)
+        except Exception as e:
+            self.log.error("Status poll raised: %s", e)
+
+    def _announce_status(self, delta: statuspage.Delta) -> None:
+        """Announce newly opened incidents to subscribed channels.
+
+        Stub in this task — Task 7 fills this in.
+        """
+
     # Safety poll interval (seconds) — fallback for event-driven wakeups
     _SAFETY_POLL_INTERVAL = 300  # 5 minutes
+
+    # Status page polling. Constants rather than registry keys, matching
+    # _SAFETY_POLL_INTERVAL: one small endpoint, tuned by the developer.
+    _STATUS_POLL_INTERVAL = 120
+    _STATUS_MAX_ANNOUNCE_PER_POLL = 3
+    _STATUS_ANNOUNCE_MAX_PER_HOUR = 6
+    _STATUS_FETCH_FLOOR = 30
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15
