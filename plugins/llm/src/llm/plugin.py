@@ -1153,14 +1153,15 @@ class LLM(callbacks.Plugin):
         poller's alone.
         """
         now = self._status_now()
+        max_age = 2 * self._STATUS_POLL_INTERVAL
         snapshot = self._status_read_cache
-        stale = snapshot is None or (now - snapshot.fetched_at) > (2 * self._STATUS_POLL_INTERVAL)
+        stale = snapshot is None or (now - snapshot.fetched_at) > max_age
         if stale:
             snapshot = self._status_fetch_now() or snapshot
         if snapshot is None:
             return {"error": "The status page has not been read yet."}
         payload = statuspage.to_tool_payload(snapshot, now=now)
-        if (now - snapshot.fetched_at) > (2 * self._STATUS_POLL_INTERVAL):
+        if (now - snapshot.fetched_at) > max_age:
             payload["stale"] = True
             payload["error"] = "The status page is currently unreachable; this is the last reading."
         return payload
