@@ -385,20 +385,21 @@ def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
     """Build the slim, sanitised dict the model receives.
 
     Only non-operational components are included: on a green page the full
-    map is six repetitions of ``description``, and on a red page
-    ``incidents[].affected_components`` names the surfaces anyway. ``degraded``
-    still carries the one signal the map uniquely held — a component flipped
-    with no incident posted.
+    list is empty, and on a red page ``incidents[].affected_components``
+    names the surfaces anyway. ``degraded`` as a list preserves all
+    non-operational components even when sanitisation causes names to collide,
+    and still carries the one signal the map uniquely held — a component
+    flipped with no incident posted.
     """
     incidents = sorted(snapshot.incidents.values(), key=_sort_key, reverse=True)
     return {
         "indicator": snapshot.indicator,
         "description": snapshot.description,
-        "degraded": {
-            sanitise_text(name): status
+        "degraded": [
+            {"name": sanitise_text(name), "status": status}
             for name, status in snapshot.components.items()
             if status != "operational"
-        },
+        ],
         "incidents": [
             {
                 "name": sanitise_text(view.name),

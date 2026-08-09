@@ -49,7 +49,7 @@ class TestComponentSlimming:
         """Six 'operational' strings repeat what description already says and
         cost ~76 of the payload's ~111 tokens."""
         payload = statuspage.to_tool_payload(snap(), now=1000.0)
-        assert payload["degraded"] == {}
+        assert payload["degraded"] == []
 
     def test_non_operational_components_are_kept(self):
         payload = statuspage.to_tool_payload(
@@ -61,7 +61,9 @@ class TestComponentSlimming:
             ),
             now=1000.0,
         )
-        assert payload["degraded"] == {"Claude API (api.anthropic.com)": "degraded_performance"}
+        assert payload["degraded"] == [
+            {"name": "Claude API (api.anthropic.com)", "status": "degraded_performance"}
+        ]
 
 
 class TestSanitisation:
@@ -152,11 +154,11 @@ class TestSanitisationIdempotence:
 
 
 class TestComponentNamesAreSanitised:
-    def test_degraded_keys_are_sanitised(self):
+    def test_degraded_names_are_sanitised(self):
         payload = statuspage.to_tool_payload(
             snap(components={"API\x01ACTION": "degraded_performance"}), now=1000.0
         )
-        assert all("\x01" not in k for k in payload["degraded"])
+        assert all("\x01" not in d["name"] for d in payload["degraded"])
 
     def test_affected_components_are_sanitised(self):
         payload = statuspage.to_tool_payload(
@@ -164,6 +166,22 @@ class TestComponentNamesAreSanitised:
         )
         entries = payload["incidents"][0]["affected_components"]
         assert all("\x01" not in e and "<|" not in e for e in entries)
+
+    def test_components_colliding_after_sanitisation_are_both_kept(self):
+        payload = statuspage.to_tool_payload(
+            snap(
+                components={
+                    "API<|x|>": "degraded_performance",
+                    "API<|y|>": "major_outage",
+                }
+            ),
+            now=1000.0,
+        )
+        assert len(payload["degraded"]) == 2, "sanitisation must not merge distinct components"
+        assert {d["status"] for d in payload["degraded"]} == {
+            "degraded_performance",
+            "major_outage",
+        }
 
 
 class TestRegexesMatchService:
