@@ -150,6 +150,24 @@ class TestParseSummaryRejects:
         snap = statuspage.parse_summary(payload, fetched_at=1.0)
         assert snap.components == {}
 
+    def test_rejects_unhashable_indicator(self):
+        payload = green_payload()
+        payload["status"]["indicator"] = ["none"]
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1.0)
+
+    def test_rejects_unhashable_component_status(self):
+        payload = green_payload()
+        payload["components"][0]["status"] = ["operational"]
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1.0)
+
+    def test_rejects_unhashable_incident_status(self):
+        payload = incident_payload()
+        payload["incidents"][0]["status"] = {"x": 1}
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1.0)
+
 
 class TestFieldWhitelisting:
     def test_unknown_incident_keys_are_dropped(self):

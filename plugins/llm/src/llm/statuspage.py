@@ -125,7 +125,7 @@ def _parse_incident(raw: Any) -> IncidentView:
         raise InvalidPayload("incident has no usable id")
 
     status = obj.get("status")
-    if status not in INCIDENT_STATUSES:
+    if not isinstance(status, str) or status not in INCIDENT_STATUSES:
         raise InvalidPayload(f"unknown incident status: {status!r}")
 
     components = obj.get("components")
@@ -182,7 +182,7 @@ def parse_summary(
 
     status = _require_mapping(root.get("status"), "status")
     indicator = status.get("indicator")
-    if indicator not in INDICATORS:
+    if not isinstance(indicator, str) or indicator not in INDICATORS:
         raise InvalidPayload(f"unknown indicator: {indicator!r}")
     description = _require_str(status.get("description"), "status.description")
 
@@ -196,7 +196,11 @@ def parse_summary(
             raise InvalidPayload("component is not an object")
         name = item.get("name")
         comp_status = item.get("status")
-        if not isinstance(name, str) or comp_status not in COMPONENT_STATUSES:
+        if (
+            not isinstance(name, str)
+            or not isinstance(comp_status, str)
+            or comp_status not in COMPONENT_STATUSES
+        ):
             raise InvalidPayload(f"bad component entry: {name!r}/{comp_status!r}")
         components[name] = comp_status
 
