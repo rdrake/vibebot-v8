@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import supybot.callbacks as callbacks
 import supybot.conf as conf
@@ -1145,6 +1145,25 @@ class LLM(callbacks.Plugin):
             return self._status_read_cache
         self._status_read_cache = snapshot
         return snapshot
+
+    def _status_tool_payload(self) -> dict[str, Any]:
+        """Build the model-facing status payload, refreshing if stale.
+
+        Reads (and may refresh) the read cache only. Lifecycle state is the
+        poller's alone.
+        """
+        now = self._status_now()
+        snapshot = self._status_read_cache
+        stale = snapshot is None or (now - snapshot.fetched_at) > (2 * self._STATUS_POLL_INTERVAL)
+        if stale:
+            snapshot = self._status_fetch_now() or snapshot
+        if snapshot is None:
+            return {"error": "The status page has not been read yet."}
+        payload = statuspage.to_tool_payload(snapshot, now=now)
+        if (now - snapshot.fetched_at) > (2 * self._STATUS_POLL_INTERVAL):
+            payload["stale"] = True
+            payload["error"] = "The status page is currently unreachable; this is the last reading."
+        return payload
 
     def _run_status_poll(self) -> None:
         """Poll the status page, advance lifecycle state, announce what opened.
