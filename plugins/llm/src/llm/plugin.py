@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import urlparse
 
 import supybot.callbacks as callbacks
 import supybot.conf as conf
@@ -1196,11 +1197,123 @@ class LLM(callbacks.Plugin):
         except Exception as e:
             self.log.error("Status poll raised: %s", e)
 
-    def _announce_status(self, delta: statuspage.Delta) -> None:
-        """Announce newly opened incidents to subscribed channels.
+    _STATUS_ANNOUNCE_MAX_LEN = 400
 
-        Stub in this task — Task 7 fills this in.
+    def _status_announce_budget_ok(self) -> bool:
+        """Token bucket for announcement completions.
+
+        Every other unattended fire in this repo is metered
+        (_unattended_ask_rate_limited); the announcer has no user and so
+        inherits no bucket. Over budget falls through to the template, which
+        costs no completion — the channel still hears about the outage.
         """
+        now = self._status_now()
+        self._status_announce_times = [t for t in self._status_announce_times if now - t < 3600]
+        return len(self._status_announce_times) < self._STATUS_ANNOUNCE_MAX_PER_HOUR
+
+    def _status_rewrite_ok(self, text: str, snapshot: statuspage.Snapshot) -> bool:
+        """Post-check an LLM rewrite before it reaches an unprompted channel line.
+
+        tools=[] stops tool calls; it does not stop the bot repeating a
+        phishing link in its own voice with nobody having asked. The URL host
+        check is the highest-value filter on this path.
+        """
+        if not text or not text.strip():
+            return False
+        label = (snapshot.page_name or "").lower()
+        if label and label not in text.lower():
+            return False
+        allowed_host = urlparse(snapshot.page_url or "").hostname or ""
+        for found in re.findall(r"https?://[^\s<>\"']+", text):
+            host = urlparse(found).hostname or ""
+            if host.lower() != allowed_host.lower():
+                return False
+        return True
+
+    def _status_rewrite(self, incident, channel: str) -> str | None:
+        """One-shot rewrite of the sanitised incident facts in channel voice.
+
+        Runs INLINE in the poll worker's existing permit — no submit (raises
+        RecursiveSubmitError from worker context, executor.py:102-106) and no
+        nested permit (double acquire; self-deadlock at
+        maxConcurrentLLMCalls=1).
+        """
+        snapshot = self._status_read_cache
+        if snapshot is None:
+            return None
+        facts = {
+            "name": statuspage.sanitise_text(incident.name),
+            "status": incident.status,
+            "impact": incident.impact,
+            "affected_components": list(incident.affected_components),
+            "latest_update": statuspage.sanitise_text(incident.latest_update_body),
+            "service": snapshot.page_name,
+            "url": snapshot.page_url,
+        }
+        try:
+            return self.llm_service.status_announce_completion(facts=facts, channel=channel)
+        except Exception as e:
+            self.log.info("Status rewrite failed, using template: %s", e)
+            return None
+
+    def _irc_for_channel(self, channel: str):
+        """Return the Irc whose state currently holds *channel*, else None."""
+        for irc_conn in list(world.ircs):
+            if channel in list(irc_conn.state.channels):
+                return irc_conn
+        return None
+
+    def _announce_status(self, delta: statuspage.Delta) -> None:
+        """Announce newly opened incidents to opted-in channels.
+
+        Template-primary: the deterministic line is built first and is always
+        available. The rewrite is an upgrade, applied only when the budget
+        allows and every post-check passes.
+
+        An incident is marked announced only after a successful queue, so a
+        drop during shutdown is retried on the next poll.
+        """
+        snapshot = self._status_read_cache
+        if snapshot is None:
+            return
+
+        # Copy before iterating: stock RSS copies (RSS/plugin.py:405) because
+        # channel state mutates under JOIN/PART on the IRC thread, and outages
+        # are exactly when churn peaks.
+        channels = [
+            channel
+            for channel in sorted(self._all_known_channels())
+            if self.registryValue("statusAnnounce", channel)
+        ]
+        if not channels:
+            return
+
+        for incident in delta.opened:
+            template = statuspage.render_line(
+                incident, page_name=snapshot.page_name, page_url=snapshot.page_url
+            )
+            delivered = False
+            for channel in channels:
+                text = template
+                if self._status_announce_budget_ok():
+                    rewrite = self._status_rewrite(incident, channel)
+                    if rewrite and self._status_rewrite_ok(rewrite, snapshot):
+                        text = rewrite
+                        self._status_announce_times.append(self._status_now())
+
+                safe = self.llm_service.sanitize_output(text)
+                safe = self._collapse_for_irc(safe) or safe
+                safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN]
+                irc_conn = self._irc_for_channel(channel)
+                if irc_conn is None:
+                    continue
+                if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
+                    delivered = True
+
+            if delivered:
+                self._status_state = statuspage.mark_announced(
+                    self._status_state, incident.id, now=self._status_now()
+                )
 
     # Safety poll interval (seconds) — fallback for event-driven wakeups
     _SAFETY_POLL_INTERVAL = 300  # 5 minutes

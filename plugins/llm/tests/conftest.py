@@ -824,3 +824,54 @@ def status_plugin():
     obj.llm_service._resolves_to_public = MagicMock(return_value=True)
 
     return obj
+
+
+@pytest.fixture
+def announcing_plugin(status_plugin):
+    """status_plugin plus the announcer's collaborators."""
+    from unittest.mock import MagicMock
+
+    from llm import statuspage
+    from llm.plugin import LLM
+
+    plugin = status_plugin
+    plugin._STATUS_ANNOUNCE_MAX_PER_HOUR = LLM._STATUS_ANNOUNCE_MAX_PER_HOUR
+    plugin._STATUS_ANNOUNCE_MAX_LEN = LLM._STATUS_ANNOUNCE_MAX_LEN
+    plugin._status_state = statuspage.StatusState(seeded=True)
+    plugin._status_read_cache = statuspage.Snapshot(
+        page_name="Claude",
+        page_url="https://status.claude.com",
+        indicator="minor",
+        description="Partial System Outage",
+        components={"Claude API (api.anthropic.com)": "degraded_performance"},
+        incidents={},
+        fetched_at=plugin._now,
+    )
+    plugin._status_announce_times = []
+    plugin._announce_channels = {"#test": True}
+    plugin._all_known_channels = lambda: set(plugin._announce_channels)
+    plugin.registryValue = lambda key, channel=None, *a, **k: (
+        plugin._announce_channels.get(channel, False)
+        if key == "statusAnnounce"
+        else plugin._registry.get(key)
+    )
+    plugin._sent_text = []
+
+    plugin.llm_service = MagicMock()
+    plugin.llm_service.sanitize_output = MagicMock(side_effect=lambda t: t or "")
+    plugin._collapse_for_irc = MagicMock(side_effect=lambda t: t)
+
+    def fake_privmsg(target, text):
+        plugin._sent_text.append(text)
+        msg = MagicMock()
+        msg.args = (target, text)
+        return msg
+
+    plugin._safe_privmsg = MagicMock(side_effect=fake_privmsg)
+    plugin._safe_queue = MagicMock(return_value=True)
+    plugin._irc_for_channel = MagicMock(return_value=MagicMock())
+    plugin._status_rewrite = MagicMock(return_value=None)
+    plugin._announce_status = LLM._announce_status.__get__(plugin)
+    plugin._status_rewrite_ok = LLM._status_rewrite_ok.__get__(plugin)
+    plugin._status_announce_budget_ok = LLM._status_announce_budget_ok.__get__(plugin)
+    return plugin
