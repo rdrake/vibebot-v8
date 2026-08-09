@@ -50,6 +50,7 @@ nav:
     - Memory and instructions: user/memory.md
     - Reminders: user/reminders-usage.md
     - Scheduled tasks: user/scheduled-tasks.md
+    - Service status: user/service-status.md
   - Plugins:
     - Overview: plugins/index.md
     - LLM: plugins/llm.md

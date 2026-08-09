@@ -8,7 +8,15 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Close announcer trust and budget gaps from review (`status`)
+- Arm the poller unconditionally, drop redundant re-arm race (`status`)
+- Wrap guard callables and test redirect refusal (`statuspage`)
+- Change degraded from dict to list to prevent key collision (`statuspage`)
+- Idempotent sanitisation and sanitise component names (`statuspage`)
+- Guard enum membership checks against unhashable types (`statuspage`)
+- Stop the bot blaming tools that never ran (`assistant`)
 - Sweep %d out of every log call (`logging`)
+- Stop showing the model its own image URLs (`assistant`)
 - Catch invented image URLs, force the tool, stop lying (`assistant`)
 - %d never renders in supybot log lines (`logging`)
 - Stop one moderated image poisoning every later draw (`assistant`)
@@ -382,6 +390,10 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Fix four defects found in pre-flight scan (`plans`)
+- Service status awareness implementation plan (`plans`)
+- Service status awareness design (`specs`)
+- Cover the image guards, correct the redaction line, refresh changelog
 - Describe provider environment variables and add a rollback runbook
 - Restructure the API key change around outbound boundaries
 - Add the provider-scoped API key implementation plan (`plans`)
@@ -525,6 +537,14 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Template-primary incident announcer (`status`)
+- Add the check_service_status tool (`status`)
+- Poller, config keys, and read-cache split (`status`)
+- Guarded conditional GET (`statuspage`)
+- Sanitised tool payload and template line (`statuspage`)
+- Incident lifecycle classification (`statuspage`)
+- Strict Statuspage v2 summary parser (`statuspage`)
+- Instrument the history strips (`assistant`)
 - Delete the four API-key registry settings (`config`)
 - Redact secrets from env at the handler layer (`logging`)
 - Scrub secrets from log records at the handler layer (`apikeys`)
@@ -910,6 +930,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Move loopback allowance to conftest (`tests`)
+- Make the reply-guard stack a table (`assistant`)
+- Cut the chat tool surface from 20 to 7 (`tools`)
 - Delete key-plumbing that reconciled per-role keys (`service`)
 - Drop api_key_setting, identical on every profile (`profile`)
 - Resolve API keys at the outbound boundaries (`service`)
@@ -1015,6 +1038,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- Cover _status_tool_payload's stale/refresh branches (`status`)
 - Pin the image key boundary and the effective-model guards (`service`)
 - Confine SecretFilter install to the test that triggers it (`logging`)
 - Isolate provider credentials and block network from tests

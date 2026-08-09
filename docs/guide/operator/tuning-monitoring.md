@@ -128,6 +128,28 @@ Every outbound LLM call, foreground or background, runs through one bounded exec
 
 Lower it on small hosts or when a provider rate-limits aggressively. The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field; sustained queueing with `running` at the cap means the executor is the bottleneck.
 
+## Status page
+
+The bot polls an Atlassian Statuspage-hosted status page and can answer
+questions about it in conversation, and optionally announce newly opened
+incidents on its own. See [Service status](../user/service-status.md) for the
+user-facing behaviour.
+
+| Setting | Default | Scope | Description |
+|---------|---------|-------|-------------|
+| `statusPageUrl` | `https://status.claude.com` | global | Base URL of a Statuspage-hosted status page (no trailing path). The bot polls `{url}/api/v2/summary.json` every two minutes to answer status questions and to announce new incidents. Empty disables status awareness entirely. |
+| `statusAnnounce` | `False` | channel | Announce newly opened status-page incidents in this channel. |
+
+!!! warning "Turn off the RSS feed first"
+
+    If the channel already announces the same status page through the RSS
+    plugin, remove that first, or every incident is reported twice:
+
+    ```
+    @rss announce remove #channel <feedname>
+    @config channel #channel plugins.LLM.statusAnnounce True
+    ```
+
 ## Monitoring
 
 ### Logs
