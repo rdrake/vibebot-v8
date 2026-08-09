@@ -146,6 +146,10 @@ class TestPendingTaskScheduler:
         mocker.patch("llm.plugin.httpserver.hook")
         mock_add = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
         mocker.patch("llm.plugin.schedule.removeEvent")
+        # Also patch addEvent: the status poller (and the daily compaction
+        # timer) call it unconditionally from __init__, and a real call
+        # would collide with the real supybot schedule between tests.
+        mocker.patch("llm.plugin.schedule.addEvent")
 
         LLM(mock_irc)
 

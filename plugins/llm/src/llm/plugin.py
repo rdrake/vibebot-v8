@@ -1060,10 +1060,14 @@ class LLM(callbacks.Plugin):
         firing, so a missing die() teardown makes the next plugin load trip
         ``assert name not in self.events`` (schedule.py:88). The one-shot also
         re-reads its interval each tick. Same pattern as _schedule_queue_wakeup.
+
+        Arms unconditionally even when ``statusPageUrl`` is empty:
+        ``_run_status_poll`` already no-ops on an empty URL, and this is the
+        only re-arm site besides a poll's own done-callback. Disarming here
+        would mean re-enabling the key at runtime does nothing until the
+        plugin reloads.
         """
         if self._llm_executor.closing:
-            return
-        if not self.registryValue("statusPageUrl"):
             return
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
@@ -1078,11 +1082,15 @@ class LLM(callbacks.Plugin):
 
         Mirrors _enqueue_safety_poll: never more than one inflight, and the
         flag is cleared by a done-callback so a hung poll cannot wedge it.
+
+        When a poll is already inflight this returns without re-arming: the
+        inflight poll's own done-callback re-arms unconditionally, so a
+        second call here would race it (``schedule.addEvent`` asserts the
+        name isn't already present, outside its own lock).
         """
         if self._llm_executor.closing:
             return
         if self._status_poll_inflight.is_set():
-            self._schedule_status_poll()
             return
         self._status_poll_inflight.set()
         try:

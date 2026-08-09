@@ -808,4 +808,19 @@ def status_plugin():
     obj._announce_status = MagicMock()
     obj._run_status_poll = LLM._run_status_poll.__get__(obj)
     obj._status_fetch_now = LLM._status_fetch_now.__get__(obj)
+
+    # Arming/dedup tests bind the real _schedule_status_poll /
+    # _enqueue_status_poll. Both traps below matter: `closing` on a bare
+    # MagicMock is a truthy Mock (the guard would always fire), and the
+    # inflight flag must be a real Event for is_set()/set() to behave.
+    obj._llm_executor.closing = False
+    obj._status_poll_inflight = threading.Event()
+    obj._schedule_status_poll = LLM._schedule_status_poll.__get__(obj)
+    obj._enqueue_status_poll = LLM._enqueue_status_poll.__get__(obj)
+
+    # For tests that bind the real _status_fetch_snapshot directly (the
+    # 304/replace branch): a numeric timeout and a resolves-public stub.
+    obj._registry["timeout"] = 30
+    obj.llm_service._resolves_to_public = MagicMock(return_value=True)
+
     return obj

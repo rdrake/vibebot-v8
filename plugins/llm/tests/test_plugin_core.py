@@ -1004,6 +1004,10 @@ class TestPluginInitialization:
         mock_hook = mocker.patch("llm.plugin.httpserver.hook")
         mocker.patch("llm.plugin.schedule.addPeriodicEvent")
         mocker.patch("llm.plugin.schedule.removeEvent")
+        # Also patch addEvent: the status poller (and the daily compaction
+        # timer) call it unconditionally from __init__, and a real call
+        # would collide with the real supybot schedule between tests.
+        mocker.patch("llm.plugin.schedule.addEvent")
         plugin = LLM(mock_irc)
 
         # Should NOT hook HTTP callback when httpRoot is set
@@ -1024,6 +1028,10 @@ class TestPluginInitialization:
         mock_hook = mocker.patch("llm.plugin.httpserver.hook")
         mocker.patch("llm.plugin.schedule.addPeriodicEvent")
         mocker.patch("llm.plugin.schedule.removeEvent")
+        # Also patch addEvent: the status poller (and the daily compaction
+        # timer) call it unconditionally from __init__, and a real call
+        # would collide with the real supybot schedule between tests.
+        mocker.patch("llm.plugin.schedule.addEvent")
         plugin = LLM(mock_irc)
 
         # Should hook HTTP callback when httpRoot is not set

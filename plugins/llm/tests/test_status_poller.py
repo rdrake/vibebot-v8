@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
 from llm import statuspage
+from llm.plugin import LLM
 
 
 def green_snapshot(fetched_at: float = 1000.0, *, incidents=()) -> statuspage.Snapshot:
@@ -77,7 +79,7 @@ class TestFailureHandling:
         plugin._run_status_poll()
         assert plugin._status_state.seeded is False, "a bad body is not a cold start"
 
-    def test_poll_swallows_errors_so_the_schedule_survives(self, status_plugin):
+    def test_poll_swallows_unexpected_errors(self, status_plugin):
         plugin = status_plugin
         plugin._fake_error = RuntimeError("unexpected")
         plugin._run_status_poll()  # must not raise
@@ -108,3 +110,54 @@ class TestDisabled:
         before = plugin._fetch_calls
         plugin._run_status_poll()
         assert plugin._fetch_calls == before
+
+
+class TestArming:
+    def test_arms_even_when_url_is_empty(self, status_plugin, mocker):
+        """Re-enabling statusPageUrl must resume polling without a reload."""
+        sched = mocker.patch("llm.plugin.schedule")
+        status_plugin._registry["statusPageUrl"] = ""
+        status_plugin._schedule_status_poll()
+        assert sched.addEvent.called, "an empty URL must not disarm the timer forever"
+
+    def test_does_not_arm_when_closing(self, status_plugin, mocker):
+        sched = mocker.patch("llm.plugin.schedule")
+        status_plugin._llm_executor.closing = True
+        status_plugin._schedule_status_poll()
+        assert not sched.addEvent.called
+
+
+class TestInflightDedup:
+    def test_second_enqueue_while_inflight_submits_nothing(self, status_plugin, mocker):
+        mocker.patch("llm.plugin.schedule")
+        status_plugin._status_poll_inflight.set()
+        status_plugin._enqueue_status_poll()
+        assert not status_plugin._llm_executor.submit.called
+
+
+class TestNotModified:
+    def test_304_with_cache_returns_cached_snapshot_with_new_timestamp(self, status_plugin, mocker):
+        cached = green_snapshot(1000.0)
+        status_plugin._status_read_cache = cached
+        status_plugin._now = 2000.0
+        mocker.patch(
+            "llm.plugin.statuspage.fetch_summary",
+            return_value=statuspage.FetchResult(
+                not_modified=True, payload=None, etag='W/"a"', modified=None
+            ),
+        )
+        snap = LLM._status_fetch_snapshot.__get__(status_plugin)()
+        assert snap.fetched_at == 2000.0
+        assert snap.incidents == cached.incidents
+        assert snap.etag == cached.etag
+
+    def test_304_with_no_cache_raises_fetch_error(self, status_plugin, mocker):
+        status_plugin._status_read_cache = None
+        mocker.patch(
+            "llm.plugin.statuspage.fetch_summary",
+            return_value=statuspage.FetchResult(
+                not_modified=True, payload=None, etag=None, modified=None
+            ),
+        )
+        with pytest.raises(statuspage.FetchError):
+            LLM._status_fetch_snapshot.__get__(status_plugin)()
