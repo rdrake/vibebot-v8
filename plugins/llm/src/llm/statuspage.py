@@ -489,9 +489,18 @@ def fetch_summary(
 
     url = base_url.rstrip("/") + SUMMARY_PATH
 
-    if not validate(url):
+    try:
+        allowed = validate(url)
+    except Exception as exc:  # noqa: BLE001 — translating to one error type
+        raise FetchError(f"URL validation raised: {exc}") from exc
+    if not allowed:
         raise FetchError(f"rejected by URL validation: {url[:200]}")
-    if not resolves_public(url):
+
+    try:
+        public = resolves_public(url)
+    except Exception as exc:  # noqa: BLE001 — translating to one error type
+        raise FetchError(f"host resolution raised: {exc}") from exc
+    if not public:
         raise FetchError("host did not resolve to a public IP")
 
     opener = (opener_factory or _default_opener_factory)()
