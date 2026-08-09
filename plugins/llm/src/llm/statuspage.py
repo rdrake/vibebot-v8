@@ -228,6 +228,73 @@ def parse_summary(
     )
 
 
+@dataclass(frozen=True)
+class HistoryEntry:
+    """One incident from ``/api/v2/incidents.json``, field-whitelisted.
+
+    Unlike ``IncidentView`` (unresolved incidents from summary.json), this
+    carries only what a "when did it last go down" answer needs: no
+    components, no update bodies — see ``to_history_payload``.
+    """
+
+    id: str
+    name: str
+    status: str
+    impact: str
+    started_at: datetime | None
+    resolved_at: datetime | None
+
+
+def _history_sort_key(entry: HistoryEntry) -> float:
+    """Newest-first ordering key; undated entries sort oldest.
+
+    Mirrors ``_sort_key``/``_ts_key``: always a float comparison, never a
+    datetime one — mixing aware and naive datetimes in ``sort`` raises.
+    """
+    return entry.started_at.timestamp() if entry.started_at else float("-inf")
+
+
+def parse_incidents(payload: Any, *, limit: int = 50) -> tuple[HistoryEntry, ...]:
+    """Strictly parse an ``/api/v2/incidents.json`` body into history entries.
+
+    Mirrors ``parse_summary``'s discipline: structurally wrong input raises
+    ``InvalidPayload`` rather than degrading to an empty history (silently
+    losing history is less dangerous than losing active-incident state, but
+    still not something to guess through).
+    """
+    root = _require_mapping(payload, "payload")
+    raw_incidents = _require_list(root.get("incidents"), "incidents")
+
+    entries: list[HistoryEntry] = []
+    for item in raw_incidents:
+        obj = _require_mapping(item, "incident")
+
+        incident_id = obj.get("id")
+        if not isinstance(incident_id, str) or not incident_id:
+            raise InvalidPayload("incident has no usable id")
+
+        status = obj.get("status")
+        if not isinstance(status, str) or status not in INCIDENT_STATUSES:
+            raise InvalidPayload(f"unknown incident status: {status!r}")
+
+        name = obj.get("name")
+        impact = obj.get("impact")
+
+        entries.append(
+            HistoryEntry(
+                id=incident_id,
+                name=name if isinstance(name, str) else "",
+                status=status,
+                impact=impact if isinstance(impact, str) else "",
+                started_at=_parse_ts(obj.get("started_at")) or _parse_ts(obj.get("created_at")),
+                resolved_at=_parse_ts(obj.get("resolved_at")),
+            )
+        )
+
+    entries.sort(key=_history_sort_key, reverse=True)
+    return tuple(entries[:limit])
+
+
 # Bound on the announced map. Pruning always retains currently-active ids
 # regardless of age — dropping an active id would re-announce a live outage.
 MAX_ANNOUNCED_RETAINED = 200
@@ -426,6 +493,34 @@ def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
     }
 
 
+def to_history_payload(
+    entries: tuple[HistoryEntry, ...] | list[HistoryEntry], *, now: float, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Build the slim, sanitised resolved-incident history for the model.
+
+    Deliberately excludes update bodies, component lists, and URLs: a
+    resolved incident's ``incident_updates[0].body`` is always "This
+    incident has been resolved." — useless padding, not signal. ``entries``
+    is expected newest-first already (``parse_incidents`` sorts); this just
+    slims and caps.
+    """
+    result: list[dict[str, Any]] = []
+    for entry in entries[:limit]:
+        duration_sec = None
+        if entry.started_at is not None and entry.resolved_at is not None:
+            duration_sec = int(entry.resolved_at.timestamp() - entry.started_at.timestamp())
+        result.append(
+            {
+                "name": sanitise_text(entry.name),
+                "impact": sanitise_text(entry.impact),
+                "status": entry.status,
+                "started_ago_sec": _age_sec(entry.started_at, now),
+                "duration_sec": duration_sec,
+            }
+        )
+    return result
+
+
 # Clickable link shapes. Deliberately does NOT match a bare hostname:
 # component names legitimately contain "api.anthropic.com", and rejecting
 # those would make every rewrite fall back to the template.
@@ -466,6 +561,12 @@ SUMMARY_PATH = "/api/v2/summary.json"
 # hostile or broken endpoint, mirroring the 20 MB cap on the image path.
 MAX_RESPONSE_BYTES = 262144
 
+INCIDENTS_PATH = "/api/v2/incidents.json"
+
+# incidents.json measured at 223 KB for 50 incidents and grows over time,
+# so it needs a larger cap than summary.json's 256 KB. Still bounded.
+MAX_HISTORY_BYTES = 4 * 1024 * 1024
+
 
 class FetchError(RuntimeError):
     """The status page could not be fetched safely or at all."""
@@ -497,17 +598,26 @@ def _default_opener_factory():
     return urllib.request.build_opener(_NoRedirect())
 
 
-def fetch_summary(
+def _fetch_json(
     base_url: str,
+    path: str,
     *,
     timeout: float,
+    max_bytes: int,
     etag: str | None = None,
     modified: str | None = None,
     validate: Any,
     resolves_public: Any,
     opener_factory: Any = None,
 ) -> FetchResult:
-    """Conditional GET of ``{base_url}/api/v2/summary.json`` with SSRF guards.
+    """Conditional GET of ``{base_url}{path}`` with SSRF guards.
+
+    Shared by ``fetch_summary`` and ``fetch_incidents`` — both endpoints live
+    on the same tenant host and need the same guard stack (base-URL origin
+    validation, ``validate``, ``resolves_public``, no-redirect opener, a read
+    cap, content-type check, conditional GET, JSON decode). ``max_bytes``
+    lets callers size the cap to the endpoint: summary.json is ~2.3 KB,
+    incidents.json is measured at 223 KB and grows.
 
     ``validate`` and ``resolves_public`` are injected so this function stays
     testable without network; the plugin passes ``validate_external_url`` and
@@ -538,7 +648,7 @@ def fetch_summary(
             f"statusPageUrl must be a bare scheme://host[:port], got {base_url[:100]!r}"
         )
 
-    url = base_url.rstrip("/") + SUMMARY_PATH
+    url = base_url.rstrip("/") + path
 
     try:
         allowed = validate(url)
@@ -569,8 +679,8 @@ def fetch_summary(
             content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if content_type != "application/json":
                 raise FetchError(f"unexpected content-type: {content_type!r}")
-            data = resp.read(MAX_RESPONSE_BYTES + 1)
-            if len(data) > MAX_RESPONSE_BYTES:
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
                 raise FetchError("response body too large")
             resp_etag = resp.headers.get("ETag")
             resp_modified = resp.headers.get("Last-Modified")
@@ -593,4 +703,60 @@ def fetch_summary(
         payload=payload,
         etag=resp_etag or etag,
         modified=resp_modified or modified,
+    )
+
+
+def fetch_summary(
+    base_url: str,
+    *,
+    timeout: float,
+    etag: str | None = None,
+    modified: str | None = None,
+    validate: Any,
+    resolves_public: Any,
+    opener_factory: Any = None,
+) -> FetchResult:
+    """Conditional GET of ``{base_url}/api/v2/summary.json`` with SSRF guards.
+
+    Thin wrapper over ``_fetch_json``. See that function for the guard stack.
+    """
+    return _fetch_json(
+        base_url,
+        SUMMARY_PATH,
+        timeout=timeout,
+        max_bytes=MAX_RESPONSE_BYTES,
+        etag=etag,
+        modified=modified,
+        validate=validate,
+        resolves_public=resolves_public,
+        opener_factory=opener_factory,
+    )
+
+
+def fetch_incidents(
+    base_url: str,
+    *,
+    timeout: float,
+    etag: str | None = None,
+    modified: str | None = None,
+    validate: Any,
+    resolves_public: Any,
+    opener_factory: Any = None,
+) -> FetchResult:
+    """Conditional GET of ``{base_url}/api/v2/incidents.json`` with SSRF guards.
+
+    Carries resolved-incident history (summary.json only carries unresolved
+    incidents). Thin wrapper over ``_fetch_json`` — same guard stack, larger
+    cap.
+    """
+    return _fetch_json(
+        base_url,
+        INCIDENTS_PATH,
+        timeout=timeout,
+        max_bytes=MAX_HISTORY_BYTES,
+        etag=etag,
+        modified=modified,
+        validate=validate,
+        resolves_public=resolves_public,
+        opener_factory=opener_factory,
     )

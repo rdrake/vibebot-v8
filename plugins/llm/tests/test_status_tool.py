@@ -27,10 +27,15 @@ class TestToolSchema:
     def test_tool_is_registered(self):
         assert "check_service_status" in assistant.ASSISTANT_TOOL_REGISTRY
 
-    def test_tool_takes_no_parameters(self):
+    def test_tool_parameters_are_exactly_include_history(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert spec.schema["parameters"]["properties"] == {}
+        assert set(spec.schema["parameters"]["properties"]) == {"include_history"}
         assert spec.schema["parameters"].get("required", []) == []
+
+    def test_include_history_description_mentions_past_or_resolved(self):
+        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
+        desc = spec.schema["parameters"]["properties"]["include_history"]["description"]
+        assert "past" in desc.lower() or "resolved" in desc.lower()
 
     def test_visible_in_chat_and_remind_action_only(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
@@ -68,7 +73,7 @@ class TestHandler:
 
     def test_returns_the_payload_as_json(self):
         payload = {"indicator": "none", "description": "All Systems Operational"}
-        ex = self._executor(lambda: payload)
+        ex = self._executor(lambda **_: payload)
         assert json.loads(ex._tool_check_service_status({})) == payload
 
     def test_unavailable_when_not_wired(self):
@@ -77,7 +82,7 @@ class TestHandler:
         assert "error" in result
 
     def test_callback_failure_becomes_an_error_envelope(self):
-        def boom():
+        def boom(**_):
             raise RuntimeError("no cache")
 
         ex = self._executor(boom)
@@ -85,10 +90,32 @@ class TestHandler:
         assert "error" in result
 
     def test_ignores_hallucinated_arguments(self):
-        """The schema takes none, but a model may still send some."""
+        """Only include_history is defined, but a model may still send extras."""
         payload = {"indicator": "none"}
-        ex = self._executor(lambda: payload)
+        ex = self._executor(lambda **_: payload)
         assert json.loads(ex._tool_check_service_status({"service": "anthropic"})) == payload
+
+    def test_defaults_include_history_to_false(self):
+        captured = {}
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return {"indicator": "none"}
+
+        ex = self._executor(spy)
+        ex._tool_check_service_status({})
+        assert captured["include_history"] is False
+
+    def test_passes_include_history_true_through(self):
+        captured = {}
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return {"indicator": "none"}
+
+        ex = self._executor(spy)
+        ex._tool_check_service_status({"include_history": True})
+        assert captured["include_history"] is True
 
 
 def incident(incident_id="inc1") -> statuspage.IncidentView:
@@ -252,3 +279,136 @@ class TestToolPayloadStaleness:
         assert payload["stale"] is True
         assert "error" in payload
         assert payload["indicator"] == "none", "last-known data must survive alongside the error"
+
+
+def history_entry(entry_id="inc1") -> statuspage.HistoryEntry:
+    from datetime import UTC, datetime
+
+    return statuspage.HistoryEntry(
+        id=entry_id,
+        name="Elevated error rates on Claude Opus 4.5",
+        status="resolved",
+        impact="minor",
+        started_at=datetime(2026, 8, 5, 13, 55, tzinfo=UTC),
+        resolved_at=datetime(2026, 8, 5, 15, 10, tzinfo=UTC),
+    )
+
+
+class TestStatusHistoryPayload:
+    """_status_history_payload: lazy fetch, TTL cache, failure-tolerant,
+    never touches _status_state or _status_read_cache."""
+
+    def _bind(self, status_plugin):
+        from llm.plugin import LLM
+
+        status_plugin._status_history_payload = LLM._status_history_payload.__get__(status_plugin)
+        return status_plugin
+
+    def test_cache_hit_inside_ttl_does_not_refetch(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents")
+        plugin._status_history_cache = (history_entry(),)
+        plugin._status_history_at = 1000.0
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL - 1
+
+        result = plugin._status_history_payload()
+
+        fetch.assert_not_called()
+        assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
+
+    def test_expiry_refetches(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
+        fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
+        plugin._status_history_cache = (history_entry(),)
+        plugin._status_history_at = 1000.0
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL + 1
+
+        plugin._status_history_payload()
+
+        fetch.assert_called_once()
+
+    def test_fetch_failure_returns_stale_cache_without_raising(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        mocker.patch(
+            "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
+        )
+        plugin._status_history_cache = (history_entry(),)
+        plugin._status_history_at = 0.0
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL + 1
+
+        result = plugin._status_history_payload()
+
+        assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
+
+    def test_fetch_failure_with_no_cache_returns_empty_list(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        mocker.patch(
+            "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
+        )
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        plugin._now = 1000.0
+
+        result = plugin._status_history_payload()
+
+        assert result == []
+
+    def test_invalid_payload_on_fetch_is_swallowed_like_any_other_failure(
+        self, status_plugin, mocker
+    ):
+        plugin = self._bind(status_plugin)
+        fake_result = mocker.Mock(payload={"not": "a valid history payload"})
+        mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        plugin._now = 1000.0
+
+        result = plugin._status_history_payload()
+
+        assert result == []
+
+    def test_does_not_touch_status_state_or_read_cache(self, status_plugin, mocker):
+        plugin = self._bind(status_plugin)
+        fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
+        mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
+        before_state = plugin._status_state
+        before_read_cache = plugin._status_read_cache
+        plugin._status_history_cache = None
+        plugin._status_history_at = 0.0
+        plugin._now = 1000.0
+
+        plugin._status_history_payload()
+
+        assert plugin._status_state is before_state
+        assert plugin._status_read_cache is before_read_cache
+
+
+class TestStatusToolPayloadIncludeHistory:
+    def test_include_history_false_has_no_recent_incidents_key(self, status_plugin):
+        from llm.plugin import LLM
+
+        status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
+        status_plugin._status_read_cache = green_snapshot(1000.0)
+        status_plugin._now = 1000.0
+
+        payload = status_plugin._status_tool_payload(include_history=False)
+
+        assert "recent_incidents" not in payload
+        assert payload["indicator"] == "none"
+
+    def test_include_history_true_includes_recent_incidents(self, status_plugin, mocker):
+        from llm.plugin import LLM
+
+        status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
+        status_plugin._status_history_payload = LLM._status_history_payload.__get__(status_plugin)
+        status_plugin._status_read_cache = green_snapshot(1000.0)
+        status_plugin._now = 1000.0
+        status_plugin._status_history_cache = (history_entry(),)
+        status_plugin._status_history_at = 1000.0
+
+        payload = status_plugin._status_tool_payload(include_history=True)
+
+        assert "recent_incidents" in payload
+        assert payload["recent_incidents"][0]["name"] == "Elevated error rates on Claude Opus 4.5"
+        assert payload["indicator"] == "none", "current status is always present"

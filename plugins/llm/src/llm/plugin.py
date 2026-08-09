@@ -870,6 +870,8 @@ class LLM(callbacks.Plugin):
         self._status_read_cache: statuspage.Snapshot | None = None
         self._status_last_fetch = 0.0
         self._status_announce_times: list[float] = []
+        self._status_history_cache: tuple[statuspage.HistoryEntry, ...] | None = None
+        self._status_history_at = 0.0
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
         self._schedule_status_poll()
@@ -1152,11 +1154,51 @@ class LLM(callbacks.Plugin):
         self._status_read_cache = snapshot
         return snapshot
 
-    def _status_tool_payload(self) -> dict[str, Any]:
+    def _status_history_payload(self) -> list[dict]:
+        """Lazily fetch and cache resolved-incident history.
+
+        Fetched ONLY when the model asks for history — never on the 120s poll
+        path, and never touching _status_state or _status_read_cache. Cached
+        for _STATUS_HISTORY_TTL because resolved history changes rarely.
+        Returns [] on any failure; the caller reports current status regardless.
+        """
+        now = self._status_now()
+        if (
+            self._status_history_cache is not None
+            and now - self._status_history_at < self._STATUS_HISTORY_TTL
+        ):
+            return statuspage.to_history_payload(
+                self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
+            )
+        try:
+            base = self.registryValue("statusPageUrl")
+            result = statuspage.fetch_incidents(
+                base,
+                # Same 30s ceiling as _status_fetch_snapshot: a history fetch
+                # must not hold an executor permit any longer than the
+                # regular status fetch does.
+                timeout=min(self.registryValue("timeout"), 30),
+                validate=validate_external_url,
+                resolves_public=self.llm_service._resolves_to_public,
+            )
+            entries = statuspage.parse_incidents(result.payload)
+        except Exception as e:
+            self.log.info("Status history fetch failed: %s", e)
+            if self._status_history_cache is not None:
+                return statuspage.to_history_payload(
+                    self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
+                )
+            return []
+        self._status_history_cache = entries
+        self._status_history_at = now
+        return statuspage.to_history_payload(entries, now=now, limit=self._STATUS_HISTORY_LIMIT)
+
+    def _status_tool_payload(self, *, include_history: bool = False) -> dict[str, Any]:
         """Build the model-facing status payload, refreshing if stale.
 
         Reads (and may refresh) the read cache only. Lifecycle state is the
-        poller's alone.
+        poller's alone. Current status is always returned regardless of
+        ``include_history`` — history is additive.
         """
         now = self._status_now()
         max_age = 2 * self._STATUS_POLL_INTERVAL
@@ -1170,6 +1212,8 @@ class LLM(callbacks.Plugin):
         if (now - snapshot.fetched_at) > max_age:
             payload["stale"] = True
             payload["error"] = "The status page is currently unreachable; this is the last reading."
+        if include_history:
+            payload["recent_incidents"] = self._status_history_payload()
         return payload
 
     def _run_status_poll(self) -> None:
@@ -1413,6 +1457,8 @@ class LLM(callbacks.Plugin):
     _STATUS_ANNOUNCE_MAX_PER_HOUR = 6
     _STATUS_FETCH_FLOOR = 30
     _STATUS_ANNOUNCE_MAX_LEN = 400
+    _STATUS_HISTORY_TTL = 3600  # history changes rarely; 1 hour is plenty
+    _STATUS_HISTORY_LIMIT = 5
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15
