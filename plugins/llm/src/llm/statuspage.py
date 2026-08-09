@@ -424,3 +424,113 @@ def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str
         f"{label} status: {incident.name} ({incident.status}) — {page_url}",
         limit=400,
     )
+
+
+SUMMARY_PATH = "/api/v2/summary.json"
+
+# 256 KB. The real body is ~2.3 KB; this is a resource guard against a
+# hostile or broken endpoint, mirroring the 20 MB cap on the image path.
+MAX_RESPONSE_BYTES = 262144
+
+
+class FetchError(RuntimeError):
+    """The status page could not be fetched safely or at all."""
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Outcome of one conditional GET."""
+
+    not_modified: bool
+    payload: Any | None
+    etag: str | None
+    modified: str | None
+
+
+def _default_opener_factory():
+    """An opener that refuses redirects.
+
+    A 302 to http://169.254.169.254/ would otherwise land instance metadata in
+    the poller cache and announce it to the channel — the exact primitive the
+    bridge denies web.location for.
+    """
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    return urllib.request.build_opener(_NoRedirect())
+
+
+def fetch_summary(
+    base_url: str,
+    *,
+    timeout: float,
+    etag: str | None = None,
+    modified: str | None = None,
+    validate: Any,
+    resolves_public: Any,
+    opener_factory: Any = None,
+) -> FetchResult:
+    """Conditional GET of ``{base_url}/api/v2/summary.json`` with SSRF guards.
+
+    ``validate`` and ``resolves_public`` are injected so this function stays
+    testable without network; the plugin passes ``validate_external_url`` and
+    ``LLMService._resolves_to_public``. Guard order matters: both checks run
+    before any socket is opened.
+
+    Raises FetchError on any refusal or failure. A 304 returns
+    ``FetchResult(not_modified=True, payload=None, ...)``.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    url = base_url.rstrip("/") + SUMMARY_PATH
+
+    if not validate(url):
+        raise FetchError(f"rejected by URL validation: {url[:200]}")
+    if not resolves_public(url):
+        raise FetchError("host did not resolve to a public IP")
+
+    opener = (opener_factory or _default_opener_factory)()
+
+    headers = {"User-Agent": "VibeBot/8", "Accept": "application/json"}
+    if etag:
+        headers["If-None-Match"] = etag
+    if modified:
+        headers["If-Modified-Since"] = modified
+
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if content_type != "application/json":
+                raise FetchError(f"unexpected content-type: {content_type!r}")
+            data = resp.read(MAX_RESPONSE_BYTES + 1)
+            if len(data) > MAX_RESPONSE_BYTES:
+                raise FetchError("response body too large")
+            resp_etag = resp.headers.get("ETag")
+            resp_modified = resp.headers.get("Last-Modified")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            return FetchResult(not_modified=True, payload=None, etag=etag, modified=modified)
+        raise FetchError(f"HTTP {exc.code}") from exc
+    except FetchError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — translating to one error type
+        raise FetchError(str(exc) or exc.__class__.__name__) from exc
+
+    try:
+        payload = _json.loads(data.decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        raise FetchError("response was not valid JSON") from exc
+
+    return FetchResult(
+        not_modified=False,
+        payload=payload,
+        etag=resp_etag or etag,
+        modified=resp_modified or modified,
+    )

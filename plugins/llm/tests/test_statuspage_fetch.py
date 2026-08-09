@@ -1,0 +1,156 @@
+"""SSRF and resource guards on the one place this feature opens a socket."""
+
+from __future__ import annotations
+
+import io
+import json
+
+import pytest
+from llm import statuspage
+
+
+class FakeResponse(io.BytesIO):
+    def __init__(self, body: bytes, headers: dict[str, str], status: int = 200):
+        super().__init__(body)
+        self.headers = headers
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+
+class FakeOpener:
+    """Records the Request it was given and returns a canned response."""
+
+    def __init__(self, response=None, raises=None):
+        self.response = response
+        self.raises = raises
+        self.request = None
+
+    def open(self, req, timeout=None):  # noqa: ARG002
+        self.request = req
+        if self.raises:
+            raise self.raises
+        return self.response
+
+
+def good_body() -> bytes:
+    return json.dumps(
+        {
+            "page": {"name": "Claude", "url": "https://status.claude.com"},
+            "status": {"indicator": "none", "description": "All Systems Operational"},
+            "components": [],
+            "incidents": [],
+            "scheduled_maintenances": [],
+        }
+    ).encode()
+
+
+def call(opener, *, etag=None, modified=None, validate=None, resolves=None):
+    return statuspage.fetch_summary(
+        "https://status.claude.com",
+        timeout=10,
+        etag=etag,
+        modified=modified,
+        validate=validate if validate is not None else (lambda _u: True),
+        resolves_public=resolves if resolves is not None else (lambda _u: True),
+        opener_factory=lambda: opener,
+    )
+
+
+class TestSsrfGuards:
+    def test_refuses_when_validate_rejects(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        with pytest.raises(statuspage.FetchError, match="rejected"):
+            call(opener, validate=lambda _u: False)
+        assert opener.request is None, "must fail before opening a socket"
+
+    def test_refuses_when_host_is_not_globally_routable(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        with pytest.raises(statuspage.FetchError, match="public"):
+            call(opener, resolves=lambda _u: False)
+        assert opener.request is None
+
+    def test_builds_url_from_base_without_letting_input_into_the_path(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        call(opener)
+        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
+
+    def test_trailing_slash_on_base_does_not_double(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        statuspage.fetch_summary(
+            "https://status.claude.com/",
+            timeout=10,
+            validate=lambda _u: True,
+            resolves_public=lambda _u: True,
+            opener_factory=lambda: opener,
+        )
+        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
+
+
+class TestResponseGuards:
+    def test_rejects_non_json_content_type(self):
+        opener = FakeOpener(FakeResponse(b"<html></html>", {"Content-Type": "text/html"}))
+        with pytest.raises(statuspage.FetchError, match="content-type"):
+            call(opener)
+
+    def test_rejects_oversize_body(self):
+        big = b"x" * (statuspage.MAX_RESPONSE_BYTES + 10)
+        opener = FakeOpener(FakeResponse(big, {"Content-Type": "application/json"}))
+        with pytest.raises(statuspage.FetchError, match="too large"):
+            call(opener)
+
+    def test_rejects_undecodable_json(self):
+        opener = FakeOpener(FakeResponse(b"{not json", {"Content-Type": "application/json"}))
+        with pytest.raises(statuspage.FetchError, match="JSON"):
+            call(opener)
+
+    def test_network_error_becomes_fetch_error(self):
+        opener = FakeOpener(raises=OSError("connection refused"))
+        with pytest.raises(statuspage.FetchError):
+            call(opener)
+
+
+class TestConditionalGet:
+    def test_sends_validators_when_known(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        call(opener, etag='W/"abc"', modified="Sat, 09 Aug 2026 14:00:00 GMT")
+        assert opener.request.get_header("If-none-match") == 'W/"abc"'
+        assert opener.request.get_header("If-modified-since") == "Sat, 09 Aug 2026 14:00:00 GMT"
+
+    def test_omits_validators_when_unknown(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        call(opener)
+        assert opener.request.get_header("If-none-match") is None
+
+    def test_304_returns_not_modified_with_no_payload(self):
+        import urllib.error
+
+        err = urllib.error.HTTPError(
+            "https://status.claude.com/api/v2/summary.json", 304, "Not Modified", {}, None
+        )
+        opener = FakeOpener(raises=err)
+        result = call(opener, etag='W/"abc"')
+        assert result.not_modified is True
+        assert result.payload is None
+
+    def test_returns_validators_from_the_response(self):
+        opener = FakeOpener(
+            FakeResponse(
+                good_body(),
+                {
+                    "Content-Type": "application/json",
+                    "ETag": 'W/"new"',
+                    "Last-Modified": "Sat, 09 Aug 2026 15:00:00 GMT",
+                },
+            )
+        )
+        result = call(opener)
+        assert result.not_modified is False
+        assert result.etag == 'W/"new"'
+        assert result.modified == "Sat, 09 Aug 2026 15:00:00 GMT"
+        assert result.payload["page"]["name"] == "Claude"
