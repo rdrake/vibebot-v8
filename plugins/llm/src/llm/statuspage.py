@@ -307,10 +307,15 @@ def classify(
     opened.sort(key=_sort_key, reverse=True)
     discarded = max(0, len(opened) - max_opened)
 
+    # Use the pre-cap opened set: an incident dropped by max_opened is still
+    # unannounced and must not fall through into changed either. An
+    # unannounced incident is reported as opened, never as changed, so the
+    # deferred all-clear branch cannot double-report it.
+    opened_ids = {v.id for v in opened}
     changed = tuple(
         v
         for cid, v in current.items()
-        if cid in state.active and state.active[cid].status != v.status
+        if cid in state.active and state.active[cid].status != v.status and cid not in opened_ids
     )
     disappeared = tuple(v for cid, v in state.active.items() if cid not in current)
 
@@ -441,15 +446,18 @@ def strip_urls(text: str) -> str:
 def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str:
     """Deterministic one-line announcement. Always available, never fails.
 
-    ``incident.name`` is third-party prose; a link inside it is stripped
-    before composing, since the line already appends the one authoritative
-    URL (``page_url``) at the end.
+    Each third-party field is sanitised BEFORE composing and only a length
+    cap is applied to the join. Sanitising the composed string instead let
+    a dangling ``![x](`` in one field span the boundary into the next and
+    swallow it — the template's own ``)`` after the status was reachable
+    by the markdown regex.
     """
-    label = page_name or "Status"
-    return sanitise_text(
-        f"{label} status: {strip_urls(incident.name)} ({incident.status}) — {page_url}",
-        limit=400,
-    )
+    label = sanitise_text(strip_urls(page_name), limit=60) or "Status"
+    name = sanitise_text(strip_urls(incident.name))
+    line = f"{label} status: {name} ({incident.status}) — {page_url}"
+    if len(line) > 400:
+        line = line[:400].rsplit(" ", 1)[0]
+    return line
 
 
 SUMMARY_PATH = "/api/v2/summary.json"
@@ -512,6 +520,22 @@ def fetch_summary(
     import json as _json
     import urllib.error
     import urllib.request
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(base_url)
+    except ValueError as exc:
+        raise FetchError(f"malformed base URL: {base_url[:100]!r}") from exc
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or parsed.path.rstrip("/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise FetchError(
+            f"statusPageUrl must be a bare scheme://host[:port], got {base_url[:100]!r}"
+        )
 
     url = base_url.rstrip("/") + SUMMARY_PATH
 

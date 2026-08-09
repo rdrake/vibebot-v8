@@ -169,6 +169,24 @@ class TestRenderLine:
         assert "evil.example" not in line
         assert "https://status.claude.com" in line
 
+    def test_dangling_markdown_image_in_page_name_does_not_swallow_the_status(self):
+        """A composed-then-sanitised line let a dangling ``![x](`` in
+        page_name reach past the field boundary and eat the status and
+        incident name, stopping only at the template's own trailing ``)``."""
+        line = statuspage.render_line(
+            view(), page_name="Claude ![x](", page_url="https://status.claude.com"
+        )
+        assert f"({view().status})" in line
+        assert "Elevated error rates on Claude Opus 4.5" in line
+        assert "https://status.claude.com" in line
+
+    def test_dangling_markdown_image_in_incident_name_does_not_swallow_the_status(self):
+        line = statuspage.render_line(
+            view(name="Outage ![x]("), page_name="Claude", page_url="https://status.claude.com"
+        )
+        assert f"({view().status})" in line
+        assert "https://status.claude.com" in line
+
 
 class TestStripUrls:
     def test_strips_scheme_urls_case_insensitively(self):

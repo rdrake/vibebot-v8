@@ -124,6 +124,36 @@ class TestChangedAndDisappeared:
         assert "A" not in state.active
 
 
+class TestOpenedAndChangedAreDisjoint:
+    def test_unannounced_incident_with_a_status_move_is_only_opened(self):
+        """A never-announced incident (delivery failed) whose status also
+        moved must not appear in both opened and changed — that would let a
+        future all-clear branch double-report it."""
+        _, state = statuspage.classify(statuspage.StatusState(), snap())
+        # Seed "A" into state.active without marking it announced, mirroring
+        # a dropped delivery.
+        _, state = statuspage.classify(state, snap(view("A")))
+        assert "A" not in state.announced
+
+        delta, _state = statuspage.classify(state, snap(view("A", status="monitoring")))
+        assert [i.id for i in delta.opened] == ["A"]
+        assert delta.changed == ()
+
+    def test_capped_opened_is_still_excluded_from_changed(self):
+        """An incident dropped by max_opened is unannounced too — it must not
+        fall through into changed."""
+        _, state = statuspage.classify(statuspage.StatusState(), snap())
+        _, state = statuspage.classify(state, snap(*[view(f"I{n}", minutes=n) for n in range(5)]))
+        for n in range(5):
+            assert f"I{n}" not in state.announced
+
+        moved = snap(*[view(f"I{n}", minutes=n, status="monitoring") for n in range(5)])
+        delta, _state = statuspage.classify(state, moved, max_opened=3)
+        assert delta.discarded == 2
+        assert set(delta.changed).isdisjoint(delta.opened)
+        assert delta.changed == ()
+
+
 class TestPruning:
     def test_announced_map_is_bounded(self):
         state = statuspage.StatusState(seeded=True)

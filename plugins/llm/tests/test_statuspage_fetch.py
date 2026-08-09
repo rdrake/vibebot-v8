@@ -112,6 +112,56 @@ class TestSsrfGuards:
         assert opener.request is None
 
 
+class TestBaseUrlValidation:
+    """statusPageUrl is operator config, but a misconfiguration (a path,
+    query, fragment, or non-http scheme) must fail loudly rather than be
+    silently mis-fetched by naive string concatenation."""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://status.claude.com/some/path",
+            "https://status.claude.com?x=1",
+            "https://status.claude.com#frag",
+            "ftp://status.claude.com",
+            "javascript://status.claude.com",
+        ],
+    )
+    def test_malformed_base_url_raises_and_opens_no_socket(self, base_url):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        with pytest.raises(statuspage.FetchError):
+            statuspage.fetch_summary(
+                base_url,
+                timeout=10,
+                validate=lambda _u: True,
+                resolves_public=lambda _u: True,
+                opener_factory=lambda: opener,
+            )
+        assert opener.request is None
+
+    def test_bare_host_still_works(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        statuspage.fetch_summary(
+            "https://status.claude.com",
+            timeout=10,
+            validate=lambda _u: True,
+            resolves_public=lambda _u: True,
+            opener_factory=lambda: opener,
+        )
+        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
+
+    def test_bare_host_with_trailing_slash_still_works(self):
+        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
+        statuspage.fetch_summary(
+            "https://status.claude.com/",
+            timeout=10,
+            validate=lambda _u: True,
+            resolves_public=lambda _u: True,
+            opener_factory=lambda: opener,
+        )
+        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
+
+
 class TestResponseGuards:
     def test_rejects_non_json_content_type(self):
         opener = FakeOpener(FakeResponse(b"<html></html>", {"Content-Type": "text/html"}))
