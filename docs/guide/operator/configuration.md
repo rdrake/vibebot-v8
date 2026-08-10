@@ -194,7 +194,7 @@ See [Tuning and monitoring](tuning-monitoring.md#status-page) for the poll inter
 |---------|-------|---------|-------------|
 | `pendingTasksEnabled` | channel | `False` | Advertise `set_reminder` and `schedule_llm_task` to the model, so natural-language scheduling works. Off by default: the schemas and their rules cost roughly 1,100 prompt tokens on every completion in the channel |
 
-The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can *create* reminders and scheduled tasks from plain language. Listing and cancelling are not on the chat tool surface at any setting: users list and cancel reminders with `@remind`, and only an owner can reach scheduled tasks, with `@remind admin`.
+The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can *create* reminders and scheduled tasks from plain language. Listing and cancelling are not on the chat tool surface at any setting: users reach both their reminders and their scheduled tasks with `@remind list`, `del` and `clear`.
 
 ## Timeouts and retries
 

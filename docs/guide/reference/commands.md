@@ -114,9 +114,9 @@ Reminders that ask the bot to *do* something (look up, check, fetch,
 summarise) run as an LLM query at fire time and appear as `[auto]` in
 `list`. Recurring action work, such as "every weekday at 9 a.m. check
 the build", becomes a scheduled task. Setting one in plain language
-needs `pendingTasksEnabled`; listing and cancelling tasks is not
-available through chat at all, so a bot owner does it with
-`@remind admin list <nick>` and `@remind admin del <nick> llm_task_<id>`.
+needs `pendingTasksEnabled`; listing and cancelling is command-only,
+and `@remind list`, `del` and `clear` cover your tasks — marked
+`[task]` — alongside your reminders.
 
 ```
 @remind in 30 minutes check the build

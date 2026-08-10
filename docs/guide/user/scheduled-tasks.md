@@ -45,9 +45,17 @@ Scheduling needs an authenticated network account.
 
 ## Listing and cancelling
 
-Scheduled tasks have no user-facing list or cancel. `@remind list`, `@remind del` and `@remind clear` cover reminders only, and the bot has no listing or cancelling tool to reach for in chat — asking it to cancel the changelog one gets you a sentence, not a cancellation.
+Use `@remind`. It covers your scheduled tasks as well as your reminders:
 
-A bot owner can do both:
+```
+@remind list                    # both kinds; tasks are marked [task]
+@remind del <id>                # the id shown by list
+@remind clear                   # every reminder and task you own
+```
+
+The bot has no cancelling tool on the chat surface, so asking it in plain language to cancel the changelog one gets you a sentence, not a cancellation. Type the command.
+
+A bot owner can reach anyone's:
 
 ```
 @remind admin list <nick>

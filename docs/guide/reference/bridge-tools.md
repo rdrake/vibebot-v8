@@ -192,8 +192,8 @@ off. Their schemas and prompt rules cost roughly 1,100 prompt tokens on
 every completion, so channels that never schedule anything should not
 pay for them. The `@remind` command and already-scheduled fires ignore
 the gate. The matching list and cancel tools are off the chat surface
-either way: users list and cancel reminders with `@remind`, and only an
-owner can reach scheduled tasks, through `@remind admin`.
+either way: users list and cancel both kinds with `@remind list`,
+`@remind del` and `@remind clear`.
 
 `check_service_status` reads the poller's cached snapshot of the page
 named by `statusPageUrl`. Clear that key and the schema leaves the

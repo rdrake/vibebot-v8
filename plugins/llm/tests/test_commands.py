@@ -2125,6 +2125,244 @@ class TestRemindClearCommand:
 
 
 # ---------------------------------------------------------------------------
+# remind: the caller's own scheduled LLM tasks
+# ---------------------------------------------------------------------------
+
+
+def _fake_task(mocker, event_name: str, prompt: str, creator: str = "testnick"):
+    """A real ScheduledLlmTaskRow.
+
+    Deliberately not a MagicMock: a mock answers to any attribute, so a typo
+    in a field name the command reads would pass silently.
+    """
+    from llm.persistence import ScheduledLlmTaskRow
+
+    return ScheduledLlmTaskRow(
+        id=1,
+        event_name=event_name,
+        creator_nick=creator,
+        account=creator.upper(),
+        channel="#test",
+        network="testnet",
+        wire_msg="",
+        prompt=prompt,
+        fire_at=time.time() + 3600,
+        created_at=time.time(),
+        recurrence_seconds=None,
+        recurrence_rrule=None,
+        chain_position=1,
+        watch_mode=False,
+    )
+
+
+class TestRemindUserScheduledTasks:
+    """``@remind`` reaches the caller's own scheduled tasks, not just reminders.
+
+    Before this, the three pending-task tools were hidden from the chat
+    profile and ``@remind`` read only the reminders dict, so a user could
+    create a scheduled task in plain language and had no way to remove it.
+    """
+
+    def test_list_includes_own_scheduled_tasks(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a scheduled task WHEN remind list THEN it appears with a [task] marker."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_abc123", "check my open PRs"),
+        ]
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "#abc123:" in reply_text
+        assert "check my open PRs" in reply_text
+        assert "[task]" in reply_text
+        # The lookup must be scoped to the caller, or list leaks other users'
+        # tasks. Without this a hardcoded/empty owner passes every other case.
+        plugin.llm_service.list_scheduled_llm_tasks.assert_called_once_with(
+            creator_nick="testnick", account=None
+        )
+
+    def test_list_truncates_a_long_task_prompt(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a long prompt WHEN remind list THEN it is cut at 40 chars."""
+        plugin, mock_irc, mock_msg = plugin_env
+        prompt = "summarise every open pull request and say which ones are stale"
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_abc123", prompt),
+        ]
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert prompt[:40] + "..." in reply_text
+        assert "are stale" not in reply_text
+
+    def test_identified_caller_forwards_the_account(self, plugin_env, mocker: MockerFixture):
+        """GIVEN an identified caller WHEN remind list/del THEN the account is used.
+
+        Scheduled tasks are account-owned, so the account is the half of the
+        identity that decides ownership; every other test here runs
+        unauthenticated.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="TESTACC")
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+        plugin.llm_service.list_scheduled_llm_tasks.assert_called_once_with(
+            creator_nick="testnick", account="TESTACC"
+        )
+
+        plugin.remind(mock_irc, mock_msg, ["del abc123"])
+        assert plugin.llm_service.cancel_scheduled_llm_task.call_args.kwargs["account"] == "TESTACC"
+
+    def test_list_shows_reminders_and_tasks_together(self, plugin_env, mocker: MockerFixture):
+        """GIVEN both kinds WHEN remind list THEN both are listed in one reply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+                event_name="llm_remind_100_1",
+                nick="testnick",
+                channel="#test",
+                message="check build",
+            )
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_deadbeef", "summarise the news"),
+        ]
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "check build" in reply_text
+        assert "summarise the news" in reply_text
+
+    def test_list_empty_mentions_scheduled_tasks(self, plugin_env):
+        """GIVEN nothing pending WHEN remind list THEN the reply covers both kinds."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+
+        reply_text = mock_irc.reply.call_args[0][0].lower()
+        assert "no pending reminders" in reply_text
+        assert "scheduled task" in reply_text
+
+    def test_delete_cancels_task_by_bare_id(self, plugin_env, mocker: MockerFixture):
+        """GIVEN the id shown by list WHEN remind del THEN the task is cancelled."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
+
+        plugin.remind(mock_irc, mock_msg, ["del abc123"])
+
+        plugin.llm_service.cancel_scheduled_llm_task.assert_called_once()
+        kwargs = plugin.llm_service.cancel_scheduled_llm_task.call_args.kwargs
+        assert kwargs["event_name"] == "llm_task_abc123"
+        assert kwargs["creator_nick"] == "testnick"
+        assert "1 scheduled task" in mock_irc.reply.call_args[0][0]
+
+    def test_delete_accepts_full_event_name(self, plugin_env, mocker: MockerFixture):
+        """GIVEN the full llm_task_ name WHEN remind del THEN it is not double-prefixed."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
+
+        plugin.remind(mock_irc, mock_msg, ["del llm_task_abc123"])
+
+        kwargs = plugin.llm_service.cancel_scheduled_llm_task.call_args.kwargs
+        assert kwargs["event_name"] == "llm_task_abc123"
+
+    def test_delete_reports_someone_elses_task_as_no_match(self, plugin_env, mocker: MockerFixture):
+        """GIVEN the service refuses on ownership WHEN remind del THEN the user gets an error."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(
+            status="error", message="belongs to someone else"
+        )
+
+        plugin.remind(mock_irc, mock_msg, ["del abc123"])
+
+        mock_irc.error.assert_called_once()
+        assert "no matching" in mock_irc.error.call_args[0][0].lower()
+
+    def test_delete_mixed_reminder_and_task(self, plugin_env, mocker: MockerFixture):
+        """GIVEN one of each WHEN remind del with both ids THEN both are cancelled."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_7"] = make_reminder_row(
+                event_name="llm_remind_100_7",
+                nick="testnick",
+                channel="#test",
+                message="mine",
+            )
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+
+        plugin.remind(mock_irc, mock_msg, ["del 7 abc123"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "1 reminder and 1 scheduled task" in reply_text
+
+    def test_clear_also_cancels_scheduled_tasks(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a reminder and two tasks WHEN remind clear THEN all three go."""
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+                event_name="llm_remind_100_1",
+                nick="testnick",
+                channel="#test",
+                message="mine",
+            )
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_aaa", "one"),
+            _fake_task(mocker, "llm_task_bbb", "two"),
+        ]
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
+        mocker.patch("llm.plugin.schedule.removeEvent")
+
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        assert plugin.llm_service.cancel_scheduled_llm_task.call_count == 2
+        cancelled = {
+            c.kwargs["event_name"]
+            for c in plugin.llm_service.cancel_scheduled_llm_task.call_args_list
+        }
+        assert cancelled == {"llm_task_aaa", "llm_task_bbb"}
+        assert "1 reminder and 2 scheduled tasks" in mock_irc.reply.call_args[0][0]
+
+    def test_clear_reports_nothing_when_every_cancel_fails(self, plugin_env, mocker: MockerFixture):
+        """GIVEN tasks that vanish mid-clear THEN the bot does not claim success.
+
+        The listed tasks can fire between the snapshot and the cancel loop, in
+        which case the service refuses every one and nothing is cleared.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_aaa", "one"),
+        ]
+        plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(
+            status="error", message="No scheduled task with id llm_task_aaa."
+        )
+
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert "Cleared ." not in reply_text
+        assert "nothing left to clear" in reply_text.lower()
+
+    def test_clear_counts_only_tasks_the_service_cancelled(self, plugin_env, mocker: MockerFixture):
+        """GIVEN one cancel fails WHEN remind clear THEN the count reflects reality."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_aaa", "one"),
+            _fake_task(mocker, "llm_task_bbb", "two"),
+        ]
+        plugin.llm_service.cancel_scheduled_llm_task.side_effect = [
+            mocker.MagicMock(status="ok"),
+            mocker.MagicMock(status="error", message="gone"),
+        ]
+
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        assert "1 scheduled task" in mock_irc.reply.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
 
 
 class TestRemindAdminCommand:

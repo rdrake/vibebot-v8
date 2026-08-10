@@ -395,6 +395,41 @@ def test_cancel_scheduled_llm_task_owner_scoped(llm_service, db, mocker: MockerF
     remove_event.assert_not_called()
 
 
+def test_cancel_scheduled_llm_task_refuses_unidentified_nick_squatter(
+    llm_service, db, mocker: MockerFixture
+):
+    """An accountless caller cannot cancel a task by holding the owner's nick.
+
+    Scheduling refuses without an account, so every row carries one. A
+    nick-fallback owner check would let anyone who takes the owner's nick
+    while unidentified destroy a task they cannot even list, because
+    ``load_scheduled_llm_tasks_for`` scopes an accountless caller to rows
+    with a NULL account.
+    """
+    remove_event = mocker.patch("llm.service.schedule.removeEvent")
+    db.save_scheduled_llm_task(
+        event_name="alices",
+        creator_nick="alice",
+        account="ALICE",
+        channel="#t",
+        network="afternet",
+        wire_msg=":alice!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=_time.time() + 60,
+    )
+
+    squatter = llm_service.cancel_scheduled_llm_task(
+        event_name="alices", creator_nick="alice", account=None
+    )
+
+    assert squatter.status == "error"
+    assert "someone else" in squatter.message
+    remove_event.assert_not_called()
+    # The row survives: delete_scheduled_llm_task returns True only if it
+    # actually removed something.
+    assert db.delete_scheduled_llm_task("alices") is True
+
+
 def test_cancel_scheduled_llm_task_unknown_returns_error(llm_service):
     out = llm_service.cancel_scheduled_llm_task(
         event_name="does_not_exist", creator_nick="x", account=None

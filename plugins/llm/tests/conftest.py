@@ -407,6 +407,10 @@ def plugin_env(mocker: MockerFixture):
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
+    # No scheduled tasks unless a test seeds them. @remind list/clear iterate
+    # this, and the bare mock would hand them a non-iterable MagicMock.
+    plugin.llm_service.list_scheduled_llm_tasks.return_value = []
+
     # During the unified-assistant transition, ask-style command tests still
     # exercise the existing completion bridge through assistant_request().
     # The bridge wraps CompletionResult into AssistantResult so the chat

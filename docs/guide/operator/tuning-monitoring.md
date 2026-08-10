@@ -98,7 +98,7 @@ Operational properties:
 - Schedules bind to the creator's account at create time; the tool refuses unauthenticated callers.
 - A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and an `INFO` line records `scheduled_llm_task fire: <event> creator <nick> lost llm.ask; auto-cancelling`. At the default `WARNING` that notice is the only trace.
 - A fired task cannot schedule another task (depth cap of 1), which blocks recursion.
-- Users cannot list or cancel schedules from chat: the unified pending-task tools are off the chat surface, and `@remind list` covers reminders only. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>`, which span both reminders and scheduled tasks. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
+- Users cannot list or cancel schedules by talking to the bot — the unified pending-task tools are off the chat surface — but `@remind list`, `del` and `clear` reach their own tasks as well as their reminders. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>` to reach anyone's. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
 
 ### Known limitation
 

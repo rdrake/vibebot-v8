@@ -30,9 +30,8 @@ comes from the command, or from an explicit illustrate cue in a verse
 channel with `verseStorybookEnabled` on. Memory, Reminders and Accounting are
 command-only, with two exceptions — the model can save a memory, and
 where `pendingTasksEnabled` is on it can set a reminder or schedule a
-task. Listing or cancelling a reminder takes `@remind list`, `del` or `clear`;
-a scheduled task has no user-facing list or cancel at all — only an owner can
-clear one, through `@remind admin`.
+task. Listing and cancelling go through `@remind list`, `del` and
+`clear`, which cover your reminders and your scheduled tasks alike.
 [Bridge tools](../reference/bridge-tools.md) lists the tool surface each
 route sees.
 

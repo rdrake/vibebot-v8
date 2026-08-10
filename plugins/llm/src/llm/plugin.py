@@ -36,7 +36,7 @@ from . import apikeys, limnoria_bridge, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
-from .persistence import LLMDatabase, ReminderRow
+from .persistence import LLMDatabase, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
     PROFILE_CHAT,
     PROFILE_CODE,
@@ -6076,13 +6076,72 @@ class LLM(callbacks.Plugin):
                     return name
             return None
 
+    def _user_scheduled_tasks(self, caller: Identity) -> list[ScheduledLlmTaskRow]:
+        """Scheduled LLM tasks owned by ``caller``.
+
+        Ownership here is account-scoped, NOT the account-then-nick policy
+        :meth:`_get_user_reminders` uses: scheduling refuses without an
+        authenticated account, so an accountless caller owns no tasks and
+        gets an empty list. :meth:`_cancel_user_scheduled_task` applies the
+        same rule, so the two halves of ``@remind`` agree on who owns what.
+        """
+        return self.llm_service.list_scheduled_llm_tasks(
+            creator_nick=caller.raw_nick, account=caller.account
+        )
+
+    @staticmethod
+    def _task_id(event_name: str) -> str:
+        """The short id shown to users, from a ``llm_task_<id>`` event name."""
+        return event_name.removeprefix("llm_task_")
+
+    @classmethod
+    def _format_scheduled_tasks(cls, rows: list[ScheduledLlmTaskRow]) -> str:
+        """Format scheduled tasks for display, matching the reminder layout."""
+        parts = []
+        for row in rows:
+            preview = row.prompt[:40] + "..." if len(row.prompt) > 40 else row.prompt
+            parts.append(f"#{cls._task_id(row.event_name)}: {preview} [task]")
+        return " | ".join(parts)
+
+    def _cancel_user_scheduled_task(self, caller: Identity, task_id: str) -> bool:
+        """Cancel one of ``caller``'s scheduled tasks. True when it went.
+
+        Accepts either the short id shown by ``@remind list`` or the full
+        ``llm_task_<id>`` event name. Ownership is re-checked by the service,
+        so an id guessed off another user's task is refused there rather than
+        here.
+        """
+        event_name = task_id if task_id.startswith("llm_task_") else f"llm_task_{task_id}"
+        result = self.llm_service.cancel_scheduled_llm_task(
+            event_name=event_name,
+            creator_nick=caller.raw_nick,
+            account=caller.account,
+        )
+        return result.status == "ok"
+
+    @staticmethod
+    def _describe_pending(reminders: int, tasks: int) -> str:
+        """ "1 reminder and 2 scheduled tasks" — omitting whichever count is 0."""
+        bits = []
+        if reminders:
+            bits.append(f"{reminders} reminder{'' if reminders == 1 else 's'}")
+        if tasks:
+            bits.append(f"{tasks} scheduled task{'' if tasks == 1 else 's'}")
+        return " and ".join(bits)
+
     def _remind_list(self, irc: callbacks.Irc, caller: Identity) -> None:
-        """List pending reminders for the calling user."""
+        """List the calling user's pending reminders and scheduled tasks."""
         user_reminders = self._get_user_reminders(caller)
-        if not user_reminders:
-            irc.reply(_("You have no pending reminders."))
+        tasks = self._user_scheduled_tasks(caller)
+        if not user_reminders and not tasks:
+            irc.reply(_("You have no pending reminders or scheduled tasks."))
             return
-        irc.reply(self._format_reminders(user_reminders))
+        parts = []
+        if user_reminders:
+            parts.append(self._format_reminders(user_reminders))
+        if tasks:
+            parts.append(self._format_scheduled_tasks(tasks))
+        irc.reply(" | ".join(parts))
 
     def _get_reminders_for_target(self, target: str) -> list[tuple[str, ReminderRow]]:
         """Return reminders whose stored nick or account matches ``target``.
@@ -6555,6 +6614,9 @@ class LLM(callbacks.Plugin):
         otherwise it just echoes your text. Reminders marked [auto] in
         `list` are LLM actions.
 
+        `list`, `delete` and `clear` also cover your scheduled tasks, which
+        are marked [task]; delete one by the id `list` shows.
+
         Examples:
           @remind in 30 minutes check the build
           @remind in 2 hours check status of CVE-2026-31431 in Debian
@@ -6586,28 +6648,39 @@ class LLM(callbacks.Plugin):
 
         elif subcommand in ("delete", "del") and len(parts) >= 2:
             raw_ids = text.split()[1:]
-            deleted = 0
+            reminders_deleted = 0
+            tasks_deleted = 0
             for rid in raw_ids:
                 target = self._find_user_reminder(caller, rid)
                 if target:
                     self._cancel_reminder(target)
-                    deleted += 1
-            if deleted == 0:
+                    reminders_deleted += 1
+                elif self._cancel_user_scheduled_task(caller, rid):
+                    tasks_deleted += 1
+            if reminders_deleted == 0 and tasks_deleted == 0:
                 self._react(irc, msg, "❌")
-                irc.error(_("No matching reminders found."))
+                irc.error(_("No matching reminders or scheduled tasks found."))
             else:
-                label = "reminder" if deleted == 1 else "reminders"
-                self._ack(irc, msg, "👍", f"Cancelled {deleted} {label}.")
+                what = self._describe_pending(reminders_deleted, tasks_deleted)
+                self._ack(irc, msg, "👍", f"Cancelled {what}.")
 
         elif subcommand == "clear":
             user_reminders = self._get_user_reminders(caller)
-            if not user_reminders:
-                self._ack(irc, msg, "👌", _("No reminders to clear."))
+            tasks = self._user_scheduled_tasks(caller)
+            if not user_reminders and not tasks:
+                self._ack(irc, msg, "👌", _("No reminders or scheduled tasks to clear."))
                 return
             for name, _data in user_reminders:
                 self._cancel_reminder(name)
-            label = "reminder" if len(user_reminders) == 1 else "reminders"
-            self._ack(irc, msg, "👍", f"Cleared {len(user_reminders)} {label}.")
+            tasks_cleared = sum(
+                1 for row in tasks if self._cancel_user_scheduled_task(caller, row.event_name)
+            )
+            what = self._describe_pending(len(user_reminders), tasks_cleared)
+            if not what:
+                # Everything listed fired or was cancelled underneath us.
+                self._ack(irc, msg, "👌", _("Nothing left to clear."))
+                return
+            self._ack(irc, msg, "👍", f"Cleared {what}.")
 
         else:
             self._remind_set(irc, msg, caller, text)
@@ -6660,7 +6733,10 @@ class LLM(callbacks.Plugin):
                     self._cancel_reminder(reminder_event)
                     deleted += 1
                     continue
-                task_row = self.db.get_scheduled_llm_task(rid)
+                # Accept the short id `@remind list` shows as well as the full
+                # event name printed by `admin list`.
+                event_name = rid if rid.startswith("llm_task_") else f"llm_task_{rid}"
+                task_row = self.db.get_scheduled_llm_task(event_name)
                 if task_row is not None and (
                     ircutils.toLower(task_row.creator_nick) == ircutils.toLower(target)
                     or (
@@ -6668,7 +6744,7 @@ class LLM(callbacks.Plugin):
                         and ircutils.toLower(task_row.account) == ircutils.toLower(target)
                     )
                 ):
-                    self._cancel_scheduled_llm_task_admin(rid)
+                    self._cancel_scheduled_llm_task_admin(event_name)
                     deleted += 1
             if deleted == 0:
                 self._react(irc, msg, "❌")

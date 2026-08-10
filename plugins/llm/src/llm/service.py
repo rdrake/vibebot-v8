@@ -7142,9 +7142,16 @@ Examples (echo → action_prompt: ""):
     ) -> ScheduleLlmTaskResult:
         """Cancel a single task (owner-scoped).
 
-        On success removes the schedule event AND deletes the DB row. Uses
-        ``Identity.matches`` so the owner check is consistent with the
-        reminder system's ``_get_user_reminders`` policy.
+        On success removes the schedule event AND deletes the DB row.
+
+        Ownership is **account-to-account only**, deliberately stricter than
+        the reminder system's ``Identity.matches``. Creation refuses without
+        an account (see :meth:`schedule_llm_task`), so every row carries one
+        and the nick fallback could never serve a real owner — it could only
+        let an unidentified caller holding the owner's nick cancel a task
+        they cannot even list, because ``load_scheduled_llm_tasks_for``
+        matches accountless callers against ``account IS NULL`` rows only.
+        ``creator_nick`` is retained for logging and for the admin path.
         """
         db = self.plugin.db
         row = db.get_scheduled_llm_task(event_name)
@@ -7153,12 +7160,16 @@ Examples (echo → action_prompt: ""):
                 status="error",
                 message=f"No scheduled task with id {event_name}.",
             )
-        # Local import avoids a service.py -> plugin.py import cycle at module load.
-        from .plugin import Identity
-
-        caller = Identity(raw_nick=creator_nick, account=account)
-        owner = Identity(raw_nick=row.creator_nick, account=row.account)
-        if not owner.matches(caller):
+        if (
+            not account
+            or not row.account
+            or ircutils.toLower(account) != ircutils.toLower(row.account)
+        ):
+            self.log.info(
+                "cancel_scheduled_llm_task: %s refused for nick=%s (not the owner)",
+                event_name,
+                creator_nick,
+            )
             return ScheduleLlmTaskResult(
                 status="error",
                 message=f"Scheduled task {event_name} belongs to someone else.",

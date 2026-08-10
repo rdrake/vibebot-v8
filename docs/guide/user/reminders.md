@@ -3,7 +3,7 @@
 Set reminders in natural language. When the time comes, the bot either echoes your text back or, if you asked it to *do* something, runs the task at fire time.
 
 !!! tip "Natural language"
-    Where an operator has enabled it, you can *create* reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". Listing and cancelling stay on `@remind`. The channel key is `supybot.plugins.LLM.pendingTasksEnabled`, and it's off by default. `@remind` always works.
+    Where an operator has enabled it, you can *create* reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". Listing and cancelling stay on the `@remind` command either way. The channel key is `supybot.plugins.LLM.pendingTasksEnabled`, and it's off by default. `@remind` always works.
 
 ## `remind`
 
@@ -53,7 +53,7 @@ VibeBot, every weekday at 9 a.m. summarize the overnight CVE feed
 
 Anything that needs tools at fire time becomes a [scheduled task](scheduled-tasks.md). Plain echo reminders also recur: `@remind every Friday at 5 p.m. switch laundry over` schedules a chain of one-shot reminders that re-arm themselves, up to 50 times, before you have to set them again.
 
-None of it can be listed or cancelled by talking to the bot — creating is all chat can do. Reminders come back through `@remind list` and `@remind delete`, below. Scheduled tasks have no user-facing list or cancel at all: ask an owner for `@remind admin list <nick>` and `@remind admin del <nick> llm_task_<id>`.
+None of it can be listed or cancelled by talking to the bot — creating is all chat can do. Everything you own, reminders and scheduled tasks alike, comes back through `@remind list` and `@remind delete`, below.
 
 Things to know:
 
@@ -67,13 +67,15 @@ Things to know:
 ## Listing and cancelling
 
 ```
-@remind list                # your reminders, with IDs ([auto] marks action reminders)
+@remind list                # your reminders and tasks, with IDs
 @remind delete abc1         # cancel one (del also works)
 @remind delete abc1 def2    # cancel several
-@remind clear               # cancel all your reminders
+@remind clear               # cancel everything you own
 ```
 
-`@remind clear` cancels every reminder you own, echo and `[auto]` alike. It leaves scheduled tasks untouched, and those have no user-facing bulk cancel — an owner can run `@remind admin clear <nick>`, which covers both.
+`list` marks action reminders `[auto]` and [scheduled tasks](scheduled-tasks.md) `[task]`. Delete either kind by the id `list` shows it under.
+
+`@remind clear` cancels every reminder and scheduled task you own. It says what went, so `Cleared 2 reminders and 1 scheduled task.` is your receipt.
 
 ## Delivery
 
