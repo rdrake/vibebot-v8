@@ -55,14 +55,14 @@ The AI and verse command surfaces require a Limnoria capability:
 
 | Capability | Gates |
 |------------|-------|
-| `llm.ask` | `@ask`, `@forget`, and general assistant tool access |
+| `llm.ask` | `@ask`, `@forget`, `@remind`, and general assistant tool access |
 | `llm.code` | `@code` and the code-generation tool |
 | `llm.draw` | `@draw`, `@story`, and the image-generation tool |
 | `llm.verse` | Verse participation: `@verseopt`, `@rp`, `@verse`, `@look`, `@who` |
 | `llm.verse.edit` | Canon editing: `@versedit`, `@canon`, the `verse_edit` tool |
 | `llm.verse.gm` | Game-moderator (GM) operations: `@versedump`, `@versepurge`, `@versecompact` |
 
-`@memories`, `@instruct`, `@avatar`, `@usage`, and `@remind` carry no plugin capability; anyone who can talk to the bot can use them on their own data. Their privileged forms — `@memories <nick>`, `@memories cleanup <nick>`, `@remind admin`, and the global `@usage` overview by PM — check Limnoria's stock `owner` or `admin` capability instead.
+`@memories`, `@instruct`, `@avatar`, and `@usage` carry no plugin capability; anyone who can talk to the bot can use them on their own data. Their privileged forms — `@memories <nick>`, `@memories cleanup <nick>`, and the global `@usage` overview by PM — check Limnoria's stock `owner` or `admin` capability instead, as does `@remind admin`.
 
 !!! warning "The default is allow, not deny"
 

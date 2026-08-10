@@ -2325,6 +2325,30 @@ class TestRemindUserScheduledTasks:
         assert cancelled == {"llm_task_aaa", "llm_task_bbb"}
         assert "1 reminder and 2 scheduled tasks" in mock_irc.reply.call_args[0][0]
 
+    def test_remind_requires_llm_ask(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a caller without llm.ask WHEN remind clear THEN nothing is cancelled.
+
+        `@remind` reaches persisted, account-owned rows, so it is gated like
+        `@ask`, `@code` and `@forget`. Locks the gate in: drop the
+        checkCapability converter and this goes red.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        with plugin._reminders_lock:
+            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+                event_name="llm_remind_100_1",
+                nick="testnick",
+                channel="#test",
+                message="mine",
+            )
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        mocker.patch("llm.plugin.schedule.removeEvent")
+
+        plugin.remind(mock_irc, mock_msg, ["clear"])
+
+        assert "llm_remind_100_1" in plugin._reminders
+        plugin.db.delete_reminder.assert_not_called()
+        plugin.llm_service.cancel_scheduled_llm_task.assert_not_called()
+
     def test_clear_reports_nothing_when_every_cancel_fails(self, plugin_env, mocker: MockerFixture):
         """GIVEN tasks that vanish mid-clear THEN the bot does not claim success.
 
@@ -2394,7 +2418,13 @@ class TestRemindAdminCommand:
         """Non-owner invoking remind admin gets an error and no state changes."""
         plugin, mock_irc, mock_msg = plugin_env
         self._seed(plugin)
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+        # Holds llm.ask (so the command's own capability gate passes) but not
+        # owner — otherwise the wrap-level gate denies first and this stops
+        # testing the admin check.
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap, **kw: cap == "llm.ask",
+        )
 
         plugin.remind(mock_irc, mock_msg, ["admin clear targetnick"])
 

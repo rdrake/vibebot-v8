@@ -108,7 +108,7 @@ See [memory and instructions](../user/memory.md) for full details.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@remind` | `[<text> \| list \| del <id> [<id>...] \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders. `del` takes several ids at once. The `admin` subcommands are owner-only. |
+| `@remind` | `[<text> \| list \| del <id> [<id>...] \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders, plus your scheduled tasks in `list`, `del` and `clear`. `del` takes several ids at once. Requires `llm.ask`; the `admin` subcommands are owner-only. |
 
 Reminders that ask the bot to *do* something (look up, check, fetch,
 summarise) run as an LLM query at fire time and appear as `[auto]` in

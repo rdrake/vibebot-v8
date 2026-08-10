@@ -43,8 +43,9 @@ Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
 (`@canon`, `@versedit`), and `llm.verse.gm` (`@versedump`,
 `@versepurge`, `@versecompact`).
 
-`@memories`, `@instruct`, `@remind`, `@usage`, and `@avatar` carry no
-capability of their own. The paths that reach past your own data check
+`@remind` also needs `llm.ask`, since it manages persisted reminders and
+scheduled tasks. `@memories`, `@instruct`, `@usage`, and `@avatar` carry
+no capability of their own. The paths that reach past your own data check
 inline instead: `owner` for `@memories <nick>` and `@remind admin`,
 `admin` for a bare `@usage` by PM. Owner and admin accounts bypass rate limits.
 

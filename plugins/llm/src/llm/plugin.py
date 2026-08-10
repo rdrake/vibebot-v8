@@ -6770,7 +6770,12 @@ class LLM(callbacks.Plugin):
         else:
             irc.error(_("Usage: remind admin <list|del|clear> <nick> [<id>...]"))
 
-    remind = wrap(remind, [optional("text")])
+    # Gated like its siblings (@ask, @code, @forget). @remind reaches persisted,
+    # account-owned rows — reminders and, since the list/cancel merge, scheduled
+    # tasks — so it should not be the one command anyone can reach ungated.
+    # llm.ask rather than a bucket of its own: action reminders already bill to
+    # the ask rate limit at fire time.
+    remind = wrap(remind, [("checkCapability", "llm.ask"), optional("text")])
 
     # =========================================================================
     # Verse subsystem
