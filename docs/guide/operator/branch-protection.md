@@ -4,7 +4,7 @@ VibeBot's pipeline does not require GitHub branch protection. The upstream repos
 
 ## Recommended ruleset
 
-In **Settings → Branches**, add a ruleset for `main`:
+In **Settings → Rules → Rulesets**, add a branch ruleset targeting `main`. **Settings → Branches** works too if you prefer a classic protection rule. Every setting below exists in both editors, except that rulesets express *Do not allow bypassing* as an empty bypass list.
 
 | Setting | Value |
 |---------|-------|
@@ -23,6 +23,8 @@ Add these checks after the first CI run on a PR; they do not appear in the picke
 - `check (3.14)`
 - `lint`
 - `secrets`
+
+The `pull_request` trigger in `ci.yml` is unfiltered, unlike the `push` trigger's `paths-ignore`. Keep it that way: a required check that never reports leaves a docs-only pull request permanently unmergeable.
 
 The `docker` job in `ci.yml` is deliberately not required. That job is a PR-only smoke build that never pushes; the production image build lives in `docker.yml`, gated separately on CI success.
 

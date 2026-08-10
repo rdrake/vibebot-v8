@@ -963,11 +963,14 @@ conf.registerChannelValue(
         channel. Enforced at create time by the schedule_llm_task tool. Set to
         0 to disable scheduling entirely.
 
-        Each fire still counts against the user's normal askRateLimit bucket —
-        this value caps the *number* of pending schedules, not their cumulative
-        cost. The bridge* prefix is intentional: this is Phase 2 bridge-adjacent
-        scheduling that can run bridge tools at fire time, even though
-        schedule_llm_task itself is a native tool."""),
+        Each fire is checked against the user's ask rate limit but consumes no
+        slot (plugin._unattended_ask_rate_limited peeks with record=False): a
+        fire is skipped when the user has already maxed their own interactive
+        use. This value caps the *number* of pending schedules, not their
+        cumulative cost. The bridge* prefix is a leftover from the Phase 2
+        bridge work that introduced scheduling; a fire runs through
+        _run_unattended_assistant, which wires no bridge tools, so a scheduled
+        task cannot execute Limnoria commands."""),
     ),
 )
 

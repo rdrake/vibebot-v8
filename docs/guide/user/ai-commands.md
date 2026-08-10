@@ -8,7 +8,7 @@ You don't need commands to ask the bot questions. Mention it by name in a channe
           collide with gases in Earth's atmosphere...
 ```
 
-Natural language also manages memories, reminders, instructions, and usage. Use the following commands when you want direct, predictable behaviour, or features such as code generation and image creation.
+Plain language covers questions, web lookups, images, code, service status, and saving a memory ("remember that I use Debian"). Reminders and scheduled tasks join that list where an operator has enabled `pendingTasksEnabled`. Managing memories, instructions, usage and context is command-only — use the commands below.
 
 ---
 
@@ -39,7 +39,7 @@ Context expires after a few minutes of inactivity. Use `@forget` to clear it soo
 
 ### Vision
 
-Include an image URL in your question and the bot analyzes it:
+Include an image URL in your question and the bot analyses it:
 
 ```
 @ask What's in this image? https://example.com/photo.jpg
@@ -76,7 +76,7 @@ Conversation context carries over, so you can refine across requests:
   → https://bot.example.com/llm/def456.html
 ```
 
-If the web server is unavailable, the bot pastes the code directly into IRC instead.
+If the page cannot be saved, the bot answers without a link — ask your operator to check `httpRoot` and `httpUrlBase`. A `@code` request that times out is retried in the background and delivered later, pasted inline if the page still cannot be saved.
 
 ---
 
@@ -93,7 +93,7 @@ Generate an image from a text description.
 
 `@draw` needs an authenticated account. The bot asks you to log in first if you aren't.
 
-Image generation applies content safety filters. If a filter blocks your prompt, the bot rewrites the prompt and retries, so you still get an image, though the result might interpret your request a little differently.
+Image generation applies content safety filters. If a filter blocks your prompt, the bot rewrites it and retries — three times by default (`drawAutoRewriteMax`) — so a rewritten prompt may interpret your request a little differently. If every rewrite is blocked too, the bot says so.
 
 ---
 
@@ -111,7 +111,7 @@ Generate an illustrated page from a short brief and post a link when it's ready.
 @story explain how photosynthesis works, with diagrams
 ```
 
-The page renders in the background; the bot posts the link when it finishes. `@story` needs an authenticated account, uses the same permission as `@draw`, and has a short per-account cooldown between pages.
+The page renders in the background; the bot posts the link when it finishes. `@story` needs an authenticated account, uses the same permission as `@draw`, and allows one page per account every five minutes by default (`verseStorybookCooldownSeconds`).
 
 ---
 
@@ -124,6 +124,8 @@ Clear your conversation context for the current channel, or a named one:
 @forget #otherchannel
 ```
 
+Run in a channel, `@forget` also clears that channel's shared recent history, so stale bot answers stop feeding everyone's follow-ups. Naming a different channel clears only your own thread there — you cannot wipe another channel's shared history from outside it.
+
 ---
 
 ## `usage`
@@ -134,17 +136,17 @@ View API usage statistics for yourself, another user, or a channel.
 
 ```
 @usage              → your stats plus the channel's, this month
-@usage someone      → another user's stats
+@usage someone      → another user's stats, scoped to this channel (account-wide by PM)
 @usage #somechannel → a channel's stats
 ```
 
-Natural language works too: "VibeBot, how much have I used this month?"
+The bot carries no usage tool and no usage figures in its prompt, so asking in conversation can get you a made-up number.
 
 ---
 
 ## Rate limits
 
-Each command family carries its own rate limit, and your tier depends on account status: unregistered, registered, or trusted. Image commands (`@draw`, `@story`) have the tightest limits. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
+Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Image commands (`@draw`, `@story`) have the tightest limits. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
 
 ---
 
@@ -159,11 +161,11 @@ In channels with the verse enabled, you can join a persistent shared fiction as 
 | `@rp on` / `@rp off` | Stay in character without prefixing every line |
 | `@avatar <persona>` | Set the persona that shapes your avatar's voice |
 | `@verse` | Show where your avatar currently is |
-| `@look [<target>]` | Describe your scene, or a named person or place |
+| `@look [<target>]` | Show your scene, same as `@verse`, or describe any named person, place, faction, or item in the world |
 | `@who` | List active avatars and their locations |
 
-Once opted in, mentioning someone or something in the world, or the channel's trigger word, gets you a tale: the bot answers in your avatar's voice, as a few paragraphs posted straight to the channel. Ask it to "illustrate" and you get a picture book instead; ask it to "draw" and you get a single image.
+Once opted in, address the bot and mention someone or something in the world, or the channel's trigger word, and you get a tale: six or more paragraphs in your avatar's voice. The channel sees a one-line teaser and a link, because anything longer than a single IRC line is saved to the bot's web server rather than flooded into the channel. Where the operator has enabled `verseStorybookEnabled`, ask it to "illustrate" and you get an illustrated page instead; ask it to "draw" and you get a single image.
 
-Use `@rp` when you want a deliberate in-character turn, or `@rp on` for a run of them. Mentions on their own no longer flip the bot into character; they just keep the answer true to the world.
+The bot stays in character for that turn only. `@rp` gives you a deliberate in-character turn without needing a mention, and `@rp on` holds character across a run of them. Without an avatar, a mention just keeps an ordinary answer true to the world.
 
 Start a message with `//` or wrap it in `((...))` to speak out of character. Questions with nothing to do with the world get a straight answer, not a tall tale.

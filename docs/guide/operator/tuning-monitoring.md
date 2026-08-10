@@ -2,16 +2,16 @@
 
 ## Choosing models
 
-The model surface splits by workload so cost and quality can differ per task. All model and key settings are channel-overridable.
+The model surface splits by workload so cost and quality can differ per task. Every model setting below is channel-overridable except `verseCompactionModel`, which is global.
 
 | Setting | Used for |
 |---------|----------|
 | `assistantModel` | Chat, the planner loop, bridge tool selection, reminder parsing, memory extraction and cleanup, image-prompt rewrites, scheduled tasks |
-| `codeModel` | `@code`, kept separate so code generation can run a stronger or cheaper model than chat |
+| `codeModel` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop that calls it runs on `assistantModel` |
 | `imageModel` | Image generation |
 | `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty |
 | `verseModel` | Verse-mode narration. Falls back to `assistantModel` when empty |
-| `verseCompactionModel` | The daily verse compaction digest (global) |
+| `verseCompactionModel` | The daily verse compaction digest |
 
 Guidance from operating this surface:
 
@@ -43,7 +43,7 @@ The shared channel context is what lets the bot connect a question from one user
 
 ## Limnoria tool bridge
 
-The bridge exposes loaded Limnoria plugin commands to the LLM as one dispatch tool. When the model needs something a stock plugin already does, a ping, the time, a seen lookup, it defers to that plugin instead of guessing. The bridge is opt-in per channel.
+The bridge exposes loaded Limnoria plugin commands to the LLM as two tools: `run_limnoria_command` dispatches one command, and `search_bridge_commands` substring-searches the exposed set by plugin name, command name, argument syntax and description. When the model needs something a stock plugin already does, a ping, the time, a seen lookup, it defers to that plugin instead of guessing. The bridge is opt-in per channel.
 
 ### Enabling
 
@@ -65,14 +65,14 @@ With `bridgeAllowedPlugins` empty, the bridge exposes:
 
 `Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG`
 
-Each is pure-read or has its write commands gated by `bridgeAllowMutating`. The list lives in `DEFAULT_ALLOWED_PLUGINS` in `plugins/llm/src/llm/limnoria_bridge.py`.
+Each is pure-read or has its write commands gated by `bridgeAllowMutating`. The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
 
 ### Security model
 
 Three independent layers limit what the bridge reaches:
 
 1. **Hard-denied plugins**, never bridged regardless of config: `LLM` (recursion), `Owner`, `Admin`, `Config`, `Channel`, `User` (bot, channel, and account management).
-2. **Hard-denied commands**, blocked even inside allowlisted plugins: `Web.fetch` (request-forgery vector), `Utilities.apply` and `Utilities.let` (re-dispatch bypass), `Misc.more` and `Misc.clearmores` (interactive scrollback only).
+2. **Hard-denied commands**, blocked even inside allowlisted plugins: every URL-fetching `Web` read — `fetch`, `location`, `headers`, `doctype`, `size`, `title` — because each hands the bot's network position to a caller-supplied URL; `Utilities.apply` and `Utilities.let` (re-dispatch bypass); `Misc.more` and `Misc.clearmores` (interactive scrollback only). Those six `Web` reads are not writes, so `bridgeAllowMutating` does not gate them, and `Web` ships in the curated default set, so the deny is unconditional.
 3. **Limnoria capabilities**, applied per command at dispatch time. Commands guarded by default-deny anti-capabilities are refused unless explicitly granted.
 
 ### Write-command gate
@@ -83,11 +83,11 @@ Commands that change persistent state (offline notes, RSS registrations, karma c
 @config channel #yourchan plugins.LLM.bridgeAllowMutating True
 ```
 
-The classification lives in `MUTATING_COMMANDS` in `plugins/llm/src/llm/limnoria_bridge.py`. When the gate is closed and an allowlisted plugin has hidden writes, the tool description tells the model the gate exists.
+The classification lives in `MUTATING_COMMANDS` (`plugins/llm/src/llm/limnoria_bridge.py`). When the gate is closed and an allowlisted plugin has hidden writes, the tool description tells the model the gate exists.
 
 ### Scheduled LLM tasks
 
-The `schedule_llm_task` tool schedules a future assistant turn. At fire time the bot replays the creator's IRC identity and runs the prompt with full tool access. It differs from `set_reminder`:
+The `schedule_llm_task` tool schedules a future assistant turn. At fire time the bot replays the creator's IRC identity and runs the prompt on the reminder-action profile, which carries every native tool: search, fetch, draw, code, memory, usage, and pending-task management. It does not carry the bridge — bridged Limnoria commands ride `@ask`, mentions and PMs only. It differs from `set_reminder`:
 
 - `set_reminder` delivers fixed text at fire time. "Remind me to switch the laundry at 6."
 - `schedule_llm_task` runs an LLM turn at fire time. "Every Monday at 9, check my open PRs and tell me which are stale." Use it when the task needs tools when it fires.
@@ -96,8 +96,9 @@ Operational properties:
 
 - `bridgeScheduledTaskLimit` (default 5, channel) caps each creator's active schedules; `0` disables scheduling. Each fire still counts against the creator's `ask` rate-limit bucket.
 - Schedules bind to the creator's account at create time; the tool refuses unauthenticated callers.
+- A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and an `INFO` line records `scheduled_llm_task fire: <event> creator <nick> lost llm.ask; auto-cancelling`. At the default `WARNING` that notice is the only trace.
 - A fired task cannot schedule another task (depth cap of 1), which blocks recursion.
-- Users list and cancel schedules by asking the bot in chat; the model uses its unified pending-task tools. Owners can also use `@remind admin`. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
+- Users cannot list or cancel schedules from chat: the unified pending-task tools are off the chat surface, and `@remind list` covers reminders only. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>`, which span both reminders and scheduled tasks. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
 
 ### Known limitation
 
@@ -120,13 +121,13 @@ Plugins that nest sub-leaves under a `Commands` group (notably `RSS`'s `announce
 
 ## Concurrency
 
-Every outbound LLM call, foreground or background, runs through one bounded executor so a slow provider never backs up the IRC event loop.
+Every outbound LLM call, foreground or background, takes a slot from one bounded executor, so a single knob caps how much load reaches a provider no matter which thread started the call. Keeping a slow call off the IRC driver is a separate mechanism: nick-addressed messages are dispatched on their own thread so the driver can flush typing notifications while the call is in flight.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
 | `maxConcurrentLLMCalls` | `16` | global | Cap on simultaneous outbound LLM calls |
 
-Lower it on small hosts or when a provider rate-limits aggressively. The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field; sustained queueing with `running` at the cap means the executor is the bottleneck.
+Lower it on small hosts or when a provider rate-limits aggressively. The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field. `queued` counts background submissions only: a foreground command waiting for a slot blocks inside `permit()` before either counter moves, so `16/0/16` does not mean nothing is waiting. `running` pinned at `max` is the signal, not `queued`.
 
 ## Status page
 
@@ -155,9 +156,9 @@ user-facing behaviour.
 ### Logs
 
 ```bash
-journalctl --user -u vibebot         # service logs
-journalctl --user -u vibebot -f      # follow in real time
-tail -f logs/messages.log            # bot message log, from the working directory
+journalctl --user -u vibebot                    # service logs
+journalctl --user -u vibebot -f                 # follow in real time
+tail -f ~/.config/vibebot/logs/messages.log     # bot message log
 ```
 
 At startup, an `INFO`-level line reports secret redaction coverage, naming which environment variable *names* it covers (never their values):
@@ -171,6 +172,20 @@ That line is the only positive confirmation that redaction is actually installed
 !!! warning "Use `%i`, never `%d`, in log format strings"
 
     Supybot routes log arguments through `supybot.utils.str.format`, which is not printf. It supports `%s`, `%r`, `%i`, `%f` and `%.3f` — but has **no `%d`**. An unsupported `%d` is left in the output literally and the remaining arguments shift left into whichever slots *are* supported, silently producing a wrong line with no exception and no warning. Because `supybot.log` calls `logging.setLoggerClass` at import, this affects every logger in the process, not just Supybot's own. `test_log_format_specifiers.py` fails the suite on any `%d` in a logging call.
+
+### Per-call log lines
+
+Three structured lines record what a call cost, what the history guards removed, and how long a background call waited for a slot. A line emitted from a turn is prefixed with that turn's eight-character request id (`[3f9a1c04] completion_timing op=…`), so one turn can be pulled out of an interleaved log with a single grep. The daily verse compaction runs off a timer with no request id and its lines carry no prefix.
+
+| Line | Level | Emitted | Fields |
+|------|-------|---------|--------|
+| `completion_timing` | `WARNING` | Once per model call | `op` (call-site label: `assistant_step_N`, `run_completion_<command>`, `grounded_<kind>` — `xai_responses_<kind>` instead when the resolved model is an xAI one — `image_generation`, `reminder_parse`, `pending_retry`, `status_announce`, `compaction:<op>`), `model`, `msgs`, `msg_chars`, `tools`, `prefix_hash`, `gap_s`, `elapsed_ms`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `tool_calls`. A failed call ends `result=error error_type=<class>` in place of the token fields |
+| `history_strip` | `WARNING` | Once per turn that dropped poisoned history; silent when nothing was stripped | `model`, `channel`, `route`, `assistant_turns`, `removed`, then one field per guard that fired: `safety_refusal`, `image_failure`, `tool_complaint`, `degraded`, `repeat`, `verse_denial` |
+| `llm_executor submit` and `llm_executor done` | `INFO` | Once each per background submission | `submit`: `label`, `running`, `queued`, `max`. `done`: `label`, `elapsed_ms`, `queued_ms` |
+
+`completion_timing` and `history_strip` sit at `WARNING`, so they are present at the default log level; the `llm_executor` pair needs `logLevel` at `INFO`. Three `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=xai_responses_<kind>` omits `prefix_hash` and `gap_s`; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
+
+On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` is 0: `gap_s` is the seconds since the last call on the same model and cache lane (`-1` on the first call) and is the dominant predictor of a cache hit, so a large gap means a cold cache while a changed `prefix_hash` means the cacheable head of the request moved.
 
 ### Log level
 
@@ -187,6 +202,8 @@ That line is the only positive confirmation that redaction is actually installed
 ### Usage statistics
 
 `@usage` shows API usage for yourself and the channel; the global overview by PM is admin-only. One caveat: verse turns are recorded under the `ask` label, so verse traffic is displayed as `ask` rows in the report.
+
+The dollar figures come from LiteLLM's built-in price table, not from any provider billing API. A model LiteLLM has no price for records `$0.0000` and logs `completion_cost failed for model=…`; image models are priced from the two-entry `IMAGE_COST_PER_IMAGE` table in `plugins/llm/src/llm/service.py`. Read `@usage` as a relative signal and reconcile against the provider invoice.
 
 ### Storage
 
@@ -250,4 +267,20 @@ The last of those is the general case, and it also catches a reply that blames a
 assistant_completion: reply blamed a tool that never ran, nudging and retrying (1/1)
 ```
 
-If a stock phrase does get stuck, `@forget` clears the affected user's stored conversation. Note that a bot reply is itself stored as history, so a bad reply persists until it is cleared or ages out.
+If a stock phrase does get stuck, run `@forget` in the affected channel: that clears the caller's own thread *and* the channel's shared recent history. Run from PM, or with a channel argument from somewhere else, it clears only the caller's thread and leaves the bad line in the shared window. A bot reply is itself stored as history, so it persists until cleared or aged out.
+
+To measure how often the guards fire, grep for `history_strip`:
+
+```bash
+docker logs vibebot 2>&1 | grep history_strip
+```
+
+```
+history_strip model=xai/grok-4-1-fast-reasoning channel=#afternet route=chat assistant_turns=14 removed=2 image_failure=1 tool_complaint=1
+```
+
+`assistant_turns` is the denominator within one turn: the bot's own turns visible across the personal thread and the shared channel window before anything was stripped, against `removed` as the numerator. The line is silent on clean turns, so for a rate across a whole log use the `op=assistant_step_1` lines as the turn count:
+
+```bash
+docker logs vibebot 2>&1 | grep -c "op=assistant_step_1"
+```

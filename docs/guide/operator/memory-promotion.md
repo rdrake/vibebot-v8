@@ -32,17 +32,17 @@ A threshold of `1` collapses the system to single-stage and saves every extracte
 
 ### Candidate TTL
 
-`memoryCandidateTTLDays` controls how long unreinforced candidates sit in the candidate table before the cleanup pass deletes them. TTL is short for time to live.
+`memoryCandidateTTLDays` — TTL is time to live — controls how long an unreinforced candidate survives. Every extraction pass for a user deletes that user's candidates whose `last_seen` is older than the cutoff, so someone who goes quiet keeps their candidates until they speak again.
 
 ```
 @config plugins.LLM.memoryCandidateTTLDays 30
 ```
 
-A TTL of `0` disables pruning, so candidates accumulate forever. That makes sense only if you also raise the threshold and accept slow growth in the candidate table.
+A TTL of `0` disables pruning. Nothing else prunes the candidate table, so it grows for the life of the database — reasonable only on a small, quiet bot where you want a fact mentioned twice a year to still promote.
 
 ### Per-user ceiling
 
-`memoryMaxPerUser` caps durable memories per user. When promotion would push a user past the ceiling, the oldest memory drops to make room.
+`memoryMaxPerUser` caps durable memories per user. The cap is a hard stop, not a rolling window: once a user reaches it, promotion is skipped and the memories already stored stay put. Nothing is evicted to make room.
 
 ```
 @config plugins.LLM.memoryMaxPerUser 100
@@ -52,13 +52,13 @@ The cap applies only to the durable side. Candidates do not count against it.
 
 ### Cleanup cadence
 
-`memoryCleanupInterval` triggers a cleanup pass every N successful extractions. Cleanup applies the candidate TTL and trims any user over `memoryMaxPerUser`. With the default of `3`, every third extraction that saves at least one row also runs cleanup.
+`memoryCleanupInterval` counts promotions, not extractions. Every pass that promotes at least one candidate to a durable memory bumps a per-user counter; when the counter reaches N it resets and a cleanup pass runs. Cleanup asks the model to drop redundant memories and merge overlapping ones — it needs at least two memories to do anything, and it neither applies the candidate TTL nor trims a user down to `memoryMaxPerUser`.
 
 ```
 @config plugins.LLM.memoryCleanupInterval 10
 ```
 
-Set it to `0` to disable periodic cleanup; the candidate table then grows until something else triggers a manual pass.
+Setting it to `0` disables periodic cleanup; durable memories then accumulate unmerged until someone runs `@memories cleanup`. The candidate table is unaffected either way — that is `memoryCandidateTTLDays`.
 
 ## What users see
 
@@ -72,14 +72,14 @@ Users interact only with durable memories. The candidate stage is invisible to t
 
 Candidates have no user-facing surface. Operators with database access can inspect the `memory_candidates` table directly if a fact looks stuck.
 
-## What flows through the extractor
+## What writes a memory
 
-The bot runs memory extraction after these events:
+The bot writes memories after these events:
 
-- Successful `@ask` responses, on the user who asked.
-- Tool-driven memory writes from the assistant's `remember` tool.
+- Successful `@ask` and `@code` responses, on the user who asked. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
+- Explicit `save_memory` tool calls, when a user asks the bot to remember something.
 
-The candidate path applies only to automatic extraction. Anything the assistant chooses to remember through its own tool skips the candidate stage, so the model can record explicit user preferences in one shot.
+The candidate path applies only to automatic extraction. Anything the assistant chooses to remember through its own tool skips the candidate stage, so the model can record explicit user preferences in one shot. `save_memory` writes straight to the durable table and does not check `memoryMaxPerUser`, so an explicit "remember this" can carry a user past the ceiling.
 
 ## Interaction with other settings
 
@@ -91,6 +91,7 @@ The candidate path applies only to automatic extraction. Anything the assistant 
 ## Operational notes
 
 - Candidate rows carry `first_seen` and `last_seen` timestamps. A user who repeats a fact keeps moving `last_seen` forward, so the TTL fires only on truly stale candidates.
-- Reinforcement updates the candidate text in place when the extractor returns a slight rephrase. The mention counter still increments, so a fact that reappears in different wording still promotes once it crosses the threshold.
+- Reinforcement bumps `mentions` and `last_seen` only; the candidate text is never rewritten. A fact that reappears in different wording still promotes, but it promotes under the wording first recorded.
 - Lowering `memoryPromotionThreshold` does not retroactively promote old candidates. Promotion happens on the next reinforcement event.
-- Raising `memoryMaxPerUser` does not restore memories that earlier hit the cap. Once a memory drops, the only path back is for the user to state the fact again.
+- A user at `memoryMaxPerUser` stops being extracted altogether — no model call, no new candidates, no reinforcement, no TTL pruning, and no cleanup pass, because cleanup only fires after a promotion. Recovery is `@memories del <id>`, `@memories cleanup`, or a higher cap.
+- Raising `memoryMaxPerUser` takes effect on that user's next extraction, since the value is read once per pass. It cannot recover facts skipped while the user sat at the cap; those have to be said again, and any candidate that aged past the TTL meanwhile is dropped on that next pass.

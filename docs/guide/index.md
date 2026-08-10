@@ -18,15 +18,15 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 
 ## Features
 
-- **Natural-language interaction.** Mention the bot by name or send it a PM. Ask questions, manage reminders, and check usage through plain conversation.
+- **Natural-language interaction.** Mention the bot by name or send it a PM. Ask questions, search the web, pull a page, generate code or an image, or tell it something to remember — no command needed. Managing memories, instructions, usage, and conversation context stays command-only.
 - **Conversation memory.** Follow up on earlier questions. The bot tracks context per user and channel.
 - **Vision.** Drop an image URL into `@ask` and the bot describes or reasons about it.
 - **Code generation.** `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
 - **Image generation.** `@draw` creates images from text descriptions.
 - **Illustrated stories.** `@story` builds an illustrated story or explainer page and posts the link.
-- **[Reminders](user/reminders-usage.md) and [scheduled tasks](user/scheduled-tasks.md).** Natural-language reminders, plus recurring LLM runs with full tool access.
-- **Stored facts.** Save things about yourself with `@memories`. Facts persist across sessions, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't become memories.
-- **[The verse](operator/forest-verse.md).** A per-channel world model with avatars, user-driven roleplay, and a persistent entity graph.
+- **[Reminders](user/reminders.md) and [scheduled tasks](user/scheduled-tasks.md).** Natural-language reminders, plus recurring LLM runs with the full native tool set.
+- **Stored facts.** The bot picks up durable facts from your conversations, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't stick. Say "remember that I use Arch" and it saves immediately; review or prune the list with `@memories`.
+- **[The verse](operator/verse.md).** A per-channel world model with avatars, user-driven roleplay, and a persistent entity graph.
 - **[Limnoria bridge](reference/bridge-tools.md).** The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, and so on) as tools: read-only by default, mutations gated.
 - **Custom instructions.** Shape how the bot responds to you with `@instruct`.
 - **Multi-provider AI.** Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).

@@ -10,15 +10,22 @@ in a channel, or send it a PM:
 
 ```
 VibeBot, what's the weather like on Mars?
-VibeBot, remind me in 2 hours to deploy
+VibeBot, remember that I deploy on Fridays
 VibeBot, what do you remember about me?
-VibeBot, how much have I used this month?
-VibeBot, set my instruction to respond in haiku
+VibeBot, remind me in 2 hours to deploy
 ```
 
-The bot uses tools internally to handle your request: managing
-memories, setting reminders, checking usage, and more. Natural language
-works especially well for combining actions in one message.
+The bot reaches for tools as it answers: web search, page fetches, code
+generation, image generation, saving a memory, and — where the operator
+has configured a status page — a service-status check. Where the
+[bridge](bridge-tools.md) is enabled, it can also look up and run a
+Limnoria command. It can recite what it remembers about you, because
+your stored memories sit in its context on every turn.
+
+Listing memories precisely, editing or deleting them, setting an
+instruction, checking usage, and clearing context are command-only.
+Natural-language reminders and scheduled tasks need
+`pendingTasksEnabled` set for the channel; `@remind` works either way.
 
 Use the commands below when you want direct, predictable behaviour.
 
@@ -60,7 +67,7 @@ Generate an image from a text description. Requires an authenticated
 account.
 
 ```
-@draw A sunset over mountains in watercolor style
+@draw A sunset over mountains in watercolour style
 @draw A cyberpunk cityscape at night
 ```
 
@@ -69,8 +76,9 @@ account.
 Generate an illustrated page from your brief and post a link when the
 page is ready. The bot picks one of two modes from your wording: an
 in-character illustrated tale, or a concept explainer with labelled
-diagrams. No verse mode required. A per-account cooldown applies,
-shared with the verse storybook tool.
+diagrams. No verse mode required. One page per account every five
+minutes by default (`verseStorybookCooldownSeconds`), a cooldown shared
+with the verse storybook tool.
 
 ```
 @story an illustrated tale of the crew winning the pub quiz
@@ -81,9 +89,9 @@ shared with the verse storybook tool.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@forget` | `[<channel>]` | Clear your volatile conversation context. |
-| `@memories` | `[<nick> \| del <id> \| edit <id> <text> \| clear \| cleanup]` | Manage stored facts. Viewing another user's memories is owner-only. |
-| `@instruct` | `[<instruction> \| clear]` | Set persistent instructions for `@ask`. Empty shows the current one. |
+| `@forget` | `[<channel>]` | Clear volatile conversation context: your own thread, plus the channel's shared recent history when run in that channel. Naming another channel clears only your own thread there. Requires `llm.ask`. |
+| `@memories` | `[<nick> \| del <id> [<id>...] \| edit <id> <text> \| clear \| cleanup [<nick>]]` | Manage stored facts. `del` takes several ids at once. The `<nick>` forms — viewing and cleaning up another user's memories — are owner-only. |
+| `@instruct` | `[<instruction> \| clear]` | Set a persistent instruction that rides `@ask`, plain mentions, `@rp` and verse turns, `@code`, and reminder fires. `@draw` ignores it. Empty shows the current one. |
 
 ```
 @memories
@@ -100,13 +108,15 @@ See [memory and instructions](../user/memory.md) for full details.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@remind` | `[<text> \| list \| del <id> \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders. The `admin` subcommands are owner-only. |
+| `@remind` | `[<text> \| list \| del <id> [<id>...] \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders. `del` takes several ids at once. The `admin` subcommands are owner-only. |
 
 Reminders that ask the bot to *do* something (look up, check, fetch,
-summarize) run as an LLM query at fire time and appear as `[auto]` in
+summarise) run as an LLM query at fire time and appear as `[auto]` in
 `list`. Recurring action work, such as "every weekday at 9 a.m. check
-the build", becomes a scheduled task; ask the bot in plain language to
-set, list, or cancel scheduled tasks.
+the build", becomes a scheduled task. Setting one in plain language
+needs `pendingTasksEnabled`; listing and cancelling tasks is not
+available through chat at all, so a bot owner does it with
+`@remind admin list <nick>` and `@remind admin del <nick> llm_task_<id>`.
 
 ```
 @remind in 30 minutes check the build
@@ -116,7 +126,7 @@ set, list, or cancel scheduled tasks.
 @remind admin list someone        # owner only
 ```
 
-See [reminders and usage](../user/reminders-usage.md) for caveats:
+See [reminders](../user/reminders.md) for caveats:
 reminders count against the `@ask` rate limit, run with no elevated
 capabilities at fire time, and recurring chains cap at 50 fires.
 
@@ -124,7 +134,7 @@ capabilities at fire time, and recurring chains cap at 50 fires.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@usage` | `[<nick> \| #channel]` | Show API usage statistics. The global overview by PM is admin-only. |
+| `@usage` | `[<nick> \| #channel]` | Show API usage statistics. A nick queried in a channel is scoped to that channel, account-wide by PM. The global overview by PM is admin-only. |
 
 ```
 @usage
@@ -134,8 +144,11 @@ capabilities at fire time, and recurring chains cap at 50 fires.
 
 ## Verse commands (user)
 
-All verse commands require the channel to have `verseEnabled` set and
-the caller to hold the `llm.verse` capability, except `@avatar`.
+`@verseopt`, `@verse`, `@look` and `@who` must be typed in a
+verse-enabled channel and need the `llm.verse` capability. `@rp` needs
+`llm.verse` too, but answers as ordinary chat when the channel has no
+verse or you have no avatar. `@avatar` needs neither and works
+anywhere, including PM.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
@@ -162,11 +175,13 @@ command still answers, as ordinary chat grounded in canon.
 Mentioning canon without `@rp` no longer puts the bot in character. It
 grounds the reply in canon facts, and, for an avatar holder, answers as
 an inline prose tale. See
-[the verse](../operator/forest-verse.md#the-canon-layer-and-roleplay-mode).
+[the verse](../operator/verse.md#the-canon-layer-and-roleplay-mode).
 
 ## Verse commands (editor)
 
 These require the `llm.verse.edit` capability, granted globally.
+`@canon` must be run in the verse-enabled channel itself; `@versedit`
+takes a leading `#channel`, so it can be run from a PM.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
@@ -176,12 +191,14 @@ These require the `llm.verse.edit` capability, granted globally.
 `@versedit` verbs: `add`, `pin`, `unpin`, `set`, `name`, `desc`,
 `retire`, `restore`, `relate`, `unrelate`, `event`, `editevent`,
 `delevent`, and `show`. Entity kinds are `avatar`, `npc`, `place`,
-`faction`, and `item`. Refer to entities by `#id` or name.
+`faction`, and `item`. Refer to entities by `#id` or by name, but name
+lookup only finds active entities — so `restore` needs the `#id`, which
+`@versedump` and the `retired #<id>` reply both give you.
 
 ```
 @versedit add npc Headmaster Pringle :: stern keeper of the academy
 @versedit pin #12
-@versedit set #12 mood=grumpy
+@versedit set #12 mood grumpy
 @versedit show #12
 ```
 
@@ -191,29 +208,9 @@ These require the `llm.verse.gm` capability.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
-| `@versedump` | `[#channel] [--format=json]` | Dump the full verse state as JSON. |
+| `@versedump` | `[#channel] [--format=json]` | Dump the verse state — entities, relations, aliases, avatar links, the 1000 most recent proposals, and the 200 most recent events — to the bot's pastebin, and reply with the link. |
 | `@versepurge` | `[#channel] [<token>]` | Irreversibly wipe a channel's verse. Two-step token confirmation. |
-| `@versecompact` | `<channel>` | Run retention compaction for the channel now. |
+| `@versecompact` | `[<channel>]` | Run retention compaction for the channel now. Defaults to the channel you type it in; name one explicitly from a private message. |
 
-See [verse operations](../operator/forest-verse.md) for what compaction
+See [verse operations](../operator/verse.md) for what compaction
 does and how to operate the verse.
-
-## Features at a glance
-
-- **Natural language interaction**: mention the bot by name or send a
-  PM to ask questions, manage memories, and set reminders without
-  commands.
-- **Volatile memory**: the bot remembers your recent conversation for
-  follow-up questions. Context is per-user and per-channel, and expires
-  after inactivity.
-- **Non-volatile memory**: durable facts about you that persist across
-  conversations.
-- **Vision**: include image URLs in `@ask` messages and the bot
-  describes or reasons about them.
-- **Syntax-highlighted code**: `@code` responses arrive as HTTP links,
-  keeping IRC clean.
-- **[The verse](../operator/forest-verse.md)**: a per-channel world
-  model with user-driven roleplay, avatars, and a persistent entity
-  graph. Opt in with `@verseopt in`.
-- **Multi-provider AI**: LiteLLM routes to OpenAI, Anthropic, Google
-  Gemini, xAI, and Vertex AI models behind one interface.

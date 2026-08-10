@@ -27,9 +27,11 @@ The hooks check:
 - **Lint** (ruff): catches code issues and auto-fixes where possible
 - **Format** (ruff): keeps style consistent
 - **Types** (ty): catches type errors
-- **Hygiene**: merge-conflict markers, oversize files, trailing whitespace
+- **Hygiene**: merge-conflict markers, files over 500 KB, trailing whitespace, missing final newline
 
-If a check fails, fix the issue and commit again. Run `make pre-commit` to run all hooks on all files.
+If a check fails, fix the issue and commit again. Run `make pre-commit` to run the pre-commit hooks on every file, including ones you have not touched.
+
+The config also defines a pre-push hook that runs `make check-fast` (lint, format-check, typecheck, syntax-check); the test suite stays in CI so pushes stay quick. `make install-hooks` installs the pre-commit shim only — run `uv run prek install -t pre-push` to catch a broken push before CI does.
 
 ## Code quality
 
@@ -55,12 +57,14 @@ make test-all     # full suite, including slow tests
 Tests must keep at least **93%** branch coverage; `make test` enforces the floor. For a detailed report:
 
 ```bash
-uv run pytest plugins/llm/tests/ --cov --cov-report=term-missing
+uv run pytest plugins/llm/tests/ plugins/nickinmiddle/tests/ --cov --cov-report=term-missing
 ```
 
 ### Docs
 
-The published guide builds from `docs/guide/` with MkDocs (`make docs`). Prose lints with [Vale](https://vale.sh/): run `vale docs/guide README.md` and keep new content free of errors and warnings. Project terms live in `styles/config/vocabularies/VibeBot/accept.txt`.
+The published guide builds from `docs/guide/` with MkDocs (`make docs`), and CI does not lint prose.
+
+Prose linting with [Vale](https://vale.sh/) is optional and local-only: `styles/` and `.vale.ini` are gitignored, so a fresh clone has no Vale setup. To use it, install Vale, write a `.vale.ini` pointing `StylesPath` at `styles`, run `vale sync`, then `vale docs/guide README.md`. Keep new content free of errors; the warning and suggestion levels carry house rules that fight this project's voice.
 
 ## Commit messages
 
@@ -83,8 +87,9 @@ The maintainer commits to `main` directly. Outside contributions arrive as pull 
 - `lint`: prek hooks plus the syntax check
 - `check (3.12 / 3.13 / 3.14)`: the full test suite on each supported Python
 - `secrets`: gitleaks scanning
+- `docker`: builds the container image on pull requests; advisory, never a required check
 
-Pushes to `main` that pass CI build and publish the Docker image, then restart production automatically. Treat every push to `main` as a deploy.
+Pushes to `main` that pass CI build and publish the Docker image, then restart production automatically. Treat any push touching runtime files as a deploy. Docs-only pushes (`docs/**`, `*.md`, `mkdocs.yml`) skip CI by design, so they neither rebuild the image nor bounce the bot; `docs/**` and `mkdocs.yml` publish through the Pages workflow instead.
 
 ## Releases
 
@@ -95,7 +100,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The release workflow generates notes with git-cliff, creates the GitHub release, and opens a PR that refreshes `CHANGELOG.md` on `main`. Run `make changelog` to preview the changelog locally.
+The release workflow generates notes with git-cliff, creates the GitHub release, and opens a PR that refreshes `CHANGELOG.md` on `main`. `make changelog` regenerates `CHANGELOG.md` locally, overwriting the tracked file; it needs `git-cliff` on `PATH` (`brew install git-cliff`).
 
 ## Dependencies
 

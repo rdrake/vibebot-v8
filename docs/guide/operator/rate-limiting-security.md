@@ -32,6 +32,8 @@ The rate-limited commands are `ask`, `code`, `draw`, and `story`. Each has three
 
 A count of `0` blocks nothing; it disables the limit for that command and tier. All rate-limit settings are global.
 
+Buckets are keyed by account name for identified users and by nick for everyone else, so an unidentified user can reset an `ask` or `code` bucket by changing nick. `draw` and `story` are unaffected: they refuse to run without an account at all.
+
 ### Default limits
 
 | Command | Registered | Trusted | Unregistered |
@@ -49,18 +51,31 @@ A count of `0` blocks nothing; it disables the limit for that command and tier. 
 
 ### Capability-based access control
 
-Each command surface requires a Limnoria capability:
+The AI and verse command surfaces require a Limnoria capability:
 
 | Capability | Gates |
 |------------|-------|
-| `llm.ask` | `@ask` and general assistant tool access |
+| `llm.ask` | `@ask`, `@forget`, and general assistant tool access |
 | `llm.code` | `@code` and the code-generation tool |
 | `llm.draw` | `@draw`, `@story`, and the image-generation tool |
 | `llm.verse` | Verse participation: `@verseopt`, `@rp`, `@verse`, `@look`, `@who` |
 | `llm.verse.edit` | Canon editing: `@versedit`, `@canon`, the `verse_edit` tool |
 | `llm.verse.gm` | Game-moderator (GM) operations: `@versedump`, `@versepurge`, `@versecompact` |
 
-By default all users hold the `llm.ask`, `llm.code`, and `llm.draw` capabilities. Restrict a command by removing its capability from specific users or channels; grant the verse capabilities explicitly. See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html).
+`@memories`, `@instruct`, `@avatar`, `@usage`, and `@remind` carry no plugin capability; anyone who can talk to the bot can use them on their own data. Their privileged forms — `@memories <nick>`, `@memories cleanup <nick>`, `@remind admin`, and the global `@usage` overview by PM — check Limnoria's stock `owner` or `admin` capability instead.
+
+!!! warning "The default is allow, not deny"
+
+    None of the `llm.*` capabilities is registered default-deny, and this deployment ships `supybot.capabilities.default` at its stock value of `True`. Limnoria grants any capability a user neither holds nor anti-holds, so on a fresh install every user — identified or not — passes all six checks above. That includes `llm.verse.gm`, which gates `@versepurge`, the command that deletes a channel's verse database file.
+
+Lock the destructive surfaces down before you enable verse. Add the anti-capability globally, then hand it back per account:
+
+```
+@config supybot.capabilities [config supybot.capabilities] -llm.verse.gm -llm.verse.edit
+@admin capability add <account> llm.verse.edit
+```
+
+The nested `[config supybot.capabilities]` reads the current list back, so the stock entries survive the write. A capability held explicitly on an account beats the global anti-capability, and the `owner` capability satisfies every check regardless of either. The same pattern restricts `llm.ask`, `llm.code`, and `llm.draw`. See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html).
 
 ### URL validation
 
@@ -69,23 +84,27 @@ When users include image URLs in `@ask` prompts for vision, the bot validates th
 - **Scheme check.** Only `http://` and `https://` URLs are accepted. Schemes such as `javascript:`, `data:`, and `file:` are blocked.
 - **Path traversal.** URLs containing `..` in the path are rejected.
 - **Request-forgery protection.** URLs resolving to private, loopback, link-local, or reserved IP addresses are blocked, which prevents server-side request forgery (SSRF) against the bot's network. The check fails closed: if DNS resolution fails, the URL is rejected.
-- **Extension check.** Only recognized image extensions are accepted: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`.
+- **Extension check.** Only recognised image extensions are accepted: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`.
 
-### Output sanitization
+### Input and output sanitisation
 
-The bot sanitizes all LLM output before sending it to IRC:
+Model output is sanitised before it reaches IRC, and incoming text before Limnoria parses it:
 
-- **IRC command injection.** Lines starting with a configured command prefix (default `.`) get a leading space so other bots cannot be driven by model output. Configure extra prefixes with `commandPrefixes`.
+- **IRC command injection.** Lines starting with a configured command prefix get a leading space, so neither this bot nor another can be driven by model output. `commandPrefixes` defaults to `. @` — the conventional `.` and VibeBot's own `@`; add any others the network uses.
+- **Wire-structural bytes.** NUL and the CTCP delimiter `\x01` are deleted from every outbound model line, the `ACTION` path included, so model text cannot forge a CTCP. Leaked model sentinels such as `<|eos|>` are stripped in the same pass.
 - **API key scrubbing.** Error messages are scrubbed of API keys before display.
-- **HTML sanitization.** Code output rendered as HTML passes through `nh3`, an allowlist-based sanitizer, to prevent script injection.
+- **HTML sanitisation.** Every page the bot publishes — code pastes, long answers, storybooks, verse dumps — passes through `nh3`, an allowlist-based sanitiser restricted to `http`, `https`, and `mailto` URLs. A second pass drops any `<img>` whose source is neither a bare relative filename nor under `httpUrlBase` or `imageUploadUrl`, so model output cannot embed a tracking pixel or fire a request when the page is opened.
+- **Inbound control characters.** Incoming PRIVMSG text has its C0 control characters removed, ESC among them, and unbalanced `[` or `]` replaced with full-width equivalents, before Limnoria's tokenizer sees it.
 
 ### Prompt injection defences
 
 - **Structured system prompts.** Prompts separate instructions from context, with a preamble telling the model to ignore instructions embedded in user-provided content.
-- **Channel topics as untrusted data.** Topics arrive as user messages, not system messages, because any channel member can set them.
-- **Input length limit.** User prompts are capped at `maxPromptLength` characters (default 10,000).
+- **Channel topics as untrusted data.** Topics arrive as user messages, not system messages, because any channel member can set them. Line separators inside a topic are collapsed to spaces so it cannot open a new instruction line, and the text is trimmed to 300 characters. The anti-injection preamble calls the topic out explicitly as an attack surface.
+- **Input length limit.** `maxPromptLength` (default 10,000 characters) is enforced on image prompts and on the inner code-generation tool call, not on the chat path — `@ask`, `@code`, and nick-addressed text reach the model unmeasured.
 - **Tool-loop cap.** `metaMaxSteps` (default 12) bounds tool-call round trips per turn, so a prompt cannot drive an unbounded tool loop.
 
 ### Verse write safety
 
-The model's in-band canon tool, `verse_edit`, is constructive-only: it can add but never delete, retire, or rewrite. Destructive operations live behind operator commands with the `llm.verse.edit` and `llm.verse.gm` capabilities, and `@versepurge` adds a two-step token confirmation. See [The verse](forest-verse.md).
+The model's in-band canon tool, `verse_edit`, is restricted to five operations: `add_entity`, `add_event`, `add_relation`, `set_attribute`, and `update_entity`. It can never delete an entity, retire one, or edit a recorded event. It can, however, rename an entity, rewrite its summary, and overwrite an attribute value, so a hijacked turn can still corrupt canon in place. `set_attribute` refuses reserved lifecycle keys, and both it and `add_relation` refuse retired entities.
+
+Destructive operations live behind operator commands with the `llm.verse.edit` and `llm.verse.gm` capabilities, and `@versepurge` adds a two-step token confirmation. See [The verse](verse.md).

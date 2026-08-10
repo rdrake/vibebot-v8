@@ -1,6 +1,6 @@
 # Scheduled tasks
 
-The bot can run a future AI task on your behalf. At run time it runs a fresh `@ask`-style query as you, with full tool access: search, fetch, draw, code, and the Limnoria bridge. Use a scheduled task for jobs that need *tools* at run time, not a string echoed back.
+The bot can run a future AI task on your behalf. At run time it runs a fresh query as you, with the bot's own tools: search, fetch, draw, code, memory and reminders. Use a scheduled task for jobs that need *tools* at run time, not a string echoed back.
 
 There's no `@schedule` command. You create scheduled tasks conversationally: ask the bot, and its scheduler tool does the rest.
 
@@ -9,7 +9,7 @@ There's no `@schedule` command. You create scheduled tasks conversationally: ask
 
 ## Task or reminder
 
-A [reminder](reminders-usage.md) fits when:
+A [reminder](reminders.md) fits when:
 
 - You already know the exact text you want delivered later.
 - You want a poke or a deadline, not a synthesis.
@@ -45,17 +45,16 @@ Scheduling needs an authenticated network account.
 
 ## Listing and cancelling
 
-Ask the bot:
+Scheduled tasks have no user-facing list or cancel. `@remind list`, `@remind del` and `@remind clear` cover reminders only, and the bot has no listing or cancelling tool to reach for in chat — asking it to cancel the changelog one gets you a sentence, not a cancellation.
+
+A bot owner can do both:
 
 ```
-VibeBot, what tasks do I have scheduled?
-VibeBot, cancel the changelog one
-VibeBot, cancel everything
+@remind admin list <nick>
+@remind admin del <nick> llm_task_<id>
 ```
 
-Tasks and reminders share one list and one cancel path, so you can refer to a task by topic ("the changelog one") rather than by ID.
-
-Bot owners can inspect and cancel another user's tasks and reminders with `@remind admin list <nick>` and `@remind admin del <nick> <id>`.
+`admin list` prints reminders and tasks together; a task shows as `task:llm_task_<id>` followed by the opening of its prompt. `admin clear <nick>` drops both kinds at once.
 
 ## Where the result lands
 
@@ -70,15 +69,17 @@ VibeBot, every Monday at 9am check my PRs and message me directly
 
 ## What a task can do at run time
 
-A scheduled task runs through the same chat profile as `@ask`, with the same tools:
+A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 21 of the bot's model-facing tools; chat sees at most eight. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask`, `llm.draw` and `llm.code`, so owner and admin powers are never inherited.
 
-- **Search** the web, when a search provider is configured.
+- **Search** the web, when the search model's provider supports grounding (xAI, Gemini, Vertex AI).
 - **Fetch** URLs.
 - **Draw and code** with the image and code tools.
-- **Limnoria bridge:** call read-only commands from allowlisted plugins (Time, Math, Seen, Web, Note, Karma, QuoteGrabs, RSS, DDG, and so on).
-- **Memory and reminders:** save facts or set follow-up reminders on your behalf.
+- **Bookkeeping:** read and edit your memories, read your usage, and list or cancel your other pending tasks.
+- **Status:** check the configured status page, where `statusPageUrl` is set.
 
-Each run counts against your normal `@ask` rate limit. The number of active schedules is capped separately per user.
+The Limnoria bridge is not available at fire time — it rides `@ask`, mentions and PMs only. Neither is scheduling: a task can set a follow-up reminder, but it cannot schedule another task.
+
+Each run counts against your normal `@ask` rate limit. `supybot.plugins.LLM.bridgeScheduledTaskLimit` caps how many active tasks one person may hold *in a channel* — five by default, and zero turns scheduling off there.
 
 ## Recurring schedules
 
@@ -89,19 +90,21 @@ Both numeric and calendar recurrences work:
 - `every weekday at 9am`
 - `every first of the month at noon`
 
-A recurring task keeps running until you cancel it.
+A recurring task fires at most five times and is then deleted — re-arm it if you still want it. Every attempt counts, including a run the rate limit skips. The cap is tighter than the reminder chain's 50 because a task can post into another channel, and nothing tells you that the fifth fire was the last one.
 
 ## When things go wrong
 
-- **API key missing or invalid:** the task logs an error and skips that run; recurring tasks try again next time.
+- **API key missing or invalid:** the run posts `Error: <reason>` to the delivery target and burns one of the five fires; recurring tasks try again next time.
 - **Tool error:** a failed search or fetch can still produce a partial reply explaining what went wrong.
-- **Rate limit hit:** the run is dropped; recurring tasks try again next time.
+- **Rate limit hit:** the run is dropped with a note in the delivery target — "Scheduled task skipped — daily ask limit reached." Recurring tasks try again next time.
 - **Cancelled mid-run:** the current run completes; the next one doesn't fire.
+- **Bot restarted:** schedules live in the database and are re-registered on startup. A fire whose time passed while the bot was down happens a second after it starts up, however long it was away — unlike reminders, which are dropped once they are 24 hours overdue.
+- **You lost `llm.ask`:** the task is deleted at its next fire, and the bot says so in the delivery target.
 
-The bot doesn't message you when a run errors out. If a recurring task goes quiet, ask the bot to list your tasks.
+An unexpected error is the one silent case: it reaches the log and nothing else. If a recurring task goes quiet, ask an owner to run `@remind admin list <nick>`.
 
 ## Privacy
 
 Scheduled tasks run as you. Their output respects your channel context and your `@instruct` text. A task can't read messages from a channel you're not in. A task that posts to a channel speaks over the bot's connection, so others see the bot speaking, not you.
 
-Owners can inspect any user's tasks through `@remind admin list <nick>`. Treat scheduled tasks as you would any other automated traffic on a shared bot: useful, observable, and not strictly private.
+Owners can inspect any user's tasks through `@remind admin list <nick>`.

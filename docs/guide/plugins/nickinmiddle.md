@@ -2,7 +2,7 @@
 
 A small `inFilter` plugin that rewrites incoming channel messages that
 contain the bot's nick in the *middle* of the text, moving the nick to
-the front. Limnoria's normal addressing logic then recognizes the
+the front. Limnoria's normal addressing logic then recognises the
 message as addressed, with no core changes.
 
 ## Why it exists
@@ -27,22 +27,33 @@ For every channel `PRIVMSG`, NickInMiddle:
 2. Skips PMs and CTCP or ACTION messages.
 3. Looks for the bot's nick, or any nick configured under
    `supybot.reply.whenAddressedBy.nicks`, appearing strictly between
-   two word-boundary separators (space, comma, colon, semicolon).
-4. Rewrites the `PRIVMSG` so the nick sits at the front, then lets
-   Limnoria dispatch the message normally.
+   two separators (space, tab, comma, colon, semicolon). A trailing
+   `?`, `.`, or `!` comes off before the comparison, so `vibebot?`
+   counts, and matching uses RFC 1459 case folding, so `vibe{bot}`
+   matches `Vibe[bot]`.
+4. Rewrites the `PRIVMSG` with the bot's own nick at the front — a
+   configured alias is replaced by the real nick, not carried through —
+   then lets Limnoria dispatch the message normally.
 
 Example rewrite, with bot nick `vibebot`:
 
 | Before | After |
 |--------|-------|
-| `can you, vibebot, tell me the weather` | `vibebot can you tell me the weather` |
+| `can you, vibebot, tell me the weather` | `vibebot can you, tell me the weather` |
+
+The separator before the nick stays where it was; the one after it goes
+with the nick.
 
 ## Loading and configuration
 
 ```
 @load NickInMiddle
-@config plugins.NickInMiddle.enabled True
 ```
 
-The plugin is channel-aware: enable or disable it independently per
-network and per channel through `supybot.plugins.NickInMiddle.enabled`.
+`supybot.plugins.NickInMiddle.enabled` defaults to `True`, so loading
+the plugin is all it takes. It is a channel value, scoped per network
+and per channel, so turn it off where you don't want it:
+
+```
+@config channel #noisy plugins.NickInMiddle.enabled False
+```

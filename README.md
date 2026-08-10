@@ -9,10 +9,10 @@ The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io
 - **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and xAI Grok behind one LiteLLM interface, with per-channel model overrides
 - **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
 - **Code generation**: `@code` writes code and posts it as an HTTP link
-- **Image generation**: `@draw` renders images with Vertex AI Imagen or xAI grok-imagine
+- **Image generation**: `@draw` renders images with Google Imagen (`gemini/imagen-4.0-fast-generate-001` by default, on `GEMINI_API_KEY`) or xAI grok-imagine; Vertex AI Imagen works too, but needs `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
 - **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
-- **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts that save only after they recur
-- **Reminders and scheduled tasks**: natural-language reminders with recurrence, plus model-created scheduled tasks
+- **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts — picked up automatically once they recur, or saved at once when you say "remember this"
+- **Reminders and scheduled tasks**: `@remind` parses natural language and handles recurrence; letting the model create them from `@ask` is opt-in per channel via `pendingTasksEnabled`
 - **Verse mode**: an opt-in persistent fiction layer with avatars, a world store, and canon editing
 - **Abuse controls**: capability checks, account gating, tiered rate limits, and bounded LLM concurrency
 - **NickInMiddle**: a companion plugin that recognises the bot's nick mid-sentence, so "can you, vibebot, help?" works like addressed speech
@@ -59,7 +59,7 @@ Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`
 
 ```
 supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest
-supybot.plugins.LLM.codeModel: gemini/gemini-1.5-flash
+supybot.plugins.LLM.codeModel: gemini/gemini-flash-latest
 supybot.plugins.LLM.imageModel: gemini/imagen-4.0-fast-generate-001
 ```
 
@@ -164,7 +164,6 @@ vibebot-v8/
 ├── docs/guide/              # MkDocs source for the published guide
 ├── docs/plans/              # Design and implementation plans
 ├── scripts/                 # Maintenance and compatibility scripts
-├── styles/                  # Vale prose-lint styles for the docs
 ├── bot.conf                 # Development bot configuration
 └── pyproject.toml           # Workspace and tool configuration
 ```

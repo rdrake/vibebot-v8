@@ -50,12 +50,14 @@ For `plugins/llm/src/llm/`:
 - `service.py`: LiteLLM integration and business logic
 - `assistant.py`: tool-using chat profile, tool schemas, and tool wrappers
 - `profile.py`: route profiles (`chat`, `verse`, `code`, `draw`, `remind_action`) that decide which tools an entry point advertises
-- `prompts.py`: shared system-prompt fragments
+- `prompts.py`: the five framework system prompts, the memory-pipeline prompts, and the shared `IRC_OUTPUT_FORMAT` block
 - `executor.py`: `LLMExecutor` (`BoundedSemaphore` + `ThreadPoolExecutor`); every blocking LLM call goes through `permit()` or `submit()`
 - `persistence.py`: SQLite store for memories, reminders, scheduled tasks, and usage; uses the `_write_txn` context manager for atomic writes
 - `limnoria_bridge.py`: allowlisted Limnoria-as-tool surface (mutation gating plus a curated default allowlist)
-- `config.py`: Limnoria registry configuration (models, API keys, prompts, context, memory, rate limits, verse, bridge)
+- `config.py`: Limnoria registry configuration (models, prompt overlays, context, memory, rate limits, verse, bridge, status page). No API keys — those come from the environment; see `apikeys.py`
 - `context.py`: conversation history and thread-safe state
+- `apikeys.py`: provider-scoped key resolution (model → provider → environment variable) and the `SecretFilter` that scrubs key values out of every log handler
+- `statuspage.py`: Atlassian Statuspage v2 model — fetch, strict parse, incident classification, sanitisation, line rendering; deliberately free of Limnoria and `service` imports
 - `tracing.py`: structured trace severity helpers
 - `verse/`: the verse subsystem (SQLite world store, avatars, aging, compaction, reactions, taste command-line tools, validation, purge)
 
@@ -70,7 +72,7 @@ Keep those boundaries intact:
 ## Security invariants
 
 - Never log, echo, or persist API keys in plain text.
-- Do not introduce environment-variable API key handling; this project uses Limnoria registry config.
+- API keys come from the environment, one variable per provider (`XAI_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), resolved in `apikeys.py`. Do not move key handling into the Limnoria registry — the `LLM.*ApiKey` settings were deliberately removed.
 - Scrub secrets from user-visible error messages.
 - Treat channel topics, stored memory, reminders, and other recovered content as untrusted input.
 - Check image and external URLs; block unsafe schemes such as `javascript:`, `data:`, and `file:`.
@@ -99,9 +101,9 @@ Keep those boundaries intact:
 
 ### Changing LLM behaviour
 
-- System prompts live in `config.py` as registry-backed settings; verse prompt assembly lives in `verse/avatar.py`.
+- Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` and `codeSystemPrompt` are channel-overridable registry settings.
 - Model selection is per-purpose: `assistantModel`, `codeModel`, `imageModel`, `searchModel`, `verseModel`, and `verseCompactionModel`. Bumping the chat model does not move verse; update both when that is the intent.
-- API keys come from Limnoria config at runtime, not environment variables.
+- API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). Providers outside the four this deployment pays for directly — vertex_ai, openrouter, azure, bedrock — use their own native credentials (ADC, IAM, their own variables).
 
 ## Important files
 

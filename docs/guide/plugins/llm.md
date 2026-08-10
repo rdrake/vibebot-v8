@@ -24,30 +24,48 @@ and capability requirements, and the
 [configuration guide](../operator/configuration.md) for every registry
 key.
 
-Most features also work through plain language: mention the bot by
-name or send it a PM, and the assistant picks the right tool itself.
+`@ask`, `@code` and `@draw` also work through plain language: mention
+the bot by name or send it a PM. `@story` does not — an illustrated page
+comes from the command, or from an explicit illustrate cue in a verse
+channel with `verseStorybookEnabled` on. Memory, Reminders and Accounting are
+command-only, with two exceptions — the model can save a memory, and
+where `pendingTasksEnabled` is on it can set a reminder or schedule a
+task. Listing or cancelling a reminder takes `@remind list`, `del` or `clear`;
+a scheduled task has no user-facing list or cancel at all — only an owner can
+clear one, through `@remind admin`.
+[Bridge tools](../reference/bridge-tools.md) lists the tool surface each
+route sees.
 
 ## Capabilities
 
-Limnoria capabilities gate each command family: `llm.ask`, `llm.code`,
-`llm.draw` (also covers `@story`), `llm.verse`, `llm.verse.edit`, and
-`llm.verse.gm`. Owner and admin accounts bypass rate limits.
+Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
+`@forget`), `llm.code`, `llm.draw` (also covers `@story`), `llm.verse`
+(`@rp`, `@verseopt`, `@verse`, `@look`, `@who`), `llm.verse.edit`
+(`@canon`, `@versedit`), and `llm.verse.gm` (`@versedump`,
+`@versepurge`, `@versecompact`).
+
+`@memories`, `@instruct`, `@remind`, `@usage`, and `@avatar` carry no
+capability of their own. The paths that reach past your own data check
+inline instead: `owner` for `@memories <nick>` and `@remind admin`,
+`admin` for a bare `@usage` by PM. Owner and admin accounts bypass rate limits.
 
 ## Internal layout
 
 ```
 plugins/llm/src/llm/
 ├── plugin.py          # IRC command surface + Limnoria glue
-├── service.py         # LiteLLM calls, sanitization, output shaping
-├── assistant.py       # Tool-using chat profile (function calling)
-├── profile.py         # Route profiles: which tools each entry point sees
+├── service.py         # LiteLLM calls, sanitisation, output shaping
+├── assistant.py       # Tool schemas and per-route visibility (function calling)
+├── profile.py         # Route profiles: model, prompt, overlay, and caps per mode
 ├── prompts.py         # Shared system-prompt fragments
 ├── executor.py        # LLMExecutor: global concurrency cap
 ├── persistence.py     # SQLite store (memories, reminders, schedules, usage)
 ├── limnoria_bridge.py # Allowlisted "Limnoria as tools" surface
+├── statuspage.py      # Statuspage v2 polling, parsing, and rendering
 ├── context.py         # Conversation history with TTL
 ├── config.py          # Limnoria registry options
-├── tracing.py         # Structured trace severity helpers
+├── apikeys.py         # Provider-scoped API keys and secret redaction
+├── tracing.py         # Per-request IDs threaded through the logs
 └── verse/             # Verse store, avatar engine, compaction, taste tools
 ```
 
@@ -64,7 +82,8 @@ design:
 - shares one shutdown gate, so plugin reloads drain in-flight work
   cleanly.
 
-`@usage` exposes the live counts (`running/queued/max`) for tuning.
+The global `@usage` report — a bare `@usage` by PM, admin only —
+appends an `executor: running/queued/max` field for tuning.
 
 ## Storage
 
@@ -78,8 +97,8 @@ own SQLite store under `data/verse/`.
 ## See also
 
 - [Memory and instructions](../user/memory.md)
-- [Reminders and usage](../user/reminders-usage.md)
+- [Reminders](../user/reminders.md)
 - [Scheduled tasks](../user/scheduled-tasks.md)
 - [Bridge tools](../reference/bridge-tools.md)
-- [Verse operations](../operator/forest-verse.md)
+- [Verse operations](../operator/verse.md)
 - [Tuning and monitoring](../operator/tuning-monitoring.md)

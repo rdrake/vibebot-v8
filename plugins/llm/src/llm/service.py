@@ -1653,7 +1653,7 @@ class LLMService:
         # payload is wrapped in CTCP delimiters we control.
         text = _IRC_STRUCTURAL_CONTROL_RE.sub("", text)
 
-        # Get configurable prefixes (default: . and /)
+        # Get configurable prefixes (default: . and @)
         prefixes = tuple(self.plugin.registryValue("commandPrefixes"))
         if not prefixes:
             return text
@@ -3335,8 +3335,10 @@ class LLMService:
             system_prompt: Optional override for the system prompt. When provided,
                 this is used instead of the registry ``{command}SystemPrompt`` value.
             memories: Optional list of remembered facts about the user.
-                When provided and non-empty, these are appended to the system
-                prompt so the LLM can personalize its responses.
+                When provided and non-empty, these ride as a separate user
+                message fenced in ``<user_memory>`` markers (built in
+                ``_build_messages``), not in the system prompt, which stays
+                per-channel-stable for prompt caching.
             model_override: Optional model override. When provided, this is used
                 instead of the registry ``{command}Model`` value.
 

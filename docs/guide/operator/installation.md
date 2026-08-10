@@ -4,7 +4,7 @@
 
 You need one of:
 
-- **Docker** (recommended): any recent version with `docker pull` support.
+- **Docker** (recommended): a systemd deployment needs the binary at `/usr/bin/docker`, which the unit calls directly.
 - **Python 3.12 or newer** with [uv](https://docs.astral.sh/uv/): for manual and development installs.
 
 VibeBot is a [Limnoria](https://docs.limnoria.net/) plugin. If you have never used Limnoria before, follow the [Limnoria getting started guide](https://docs.limnoria.net/use/getting_started.html) to create your initial `bot.conf`. You need a working `bot.conf` before proceeding.
@@ -22,36 +22,40 @@ Run the container, mounting your configuration and data directories:
 ```bash
 docker run --rm --name vibebot \
     --user $(id -u):$(id -g) \
+    --env-file /path/to/config/env \
     -v /path/to/config:/config \
     -v /var/www/llm:/var/www/llm \
     -w /config \
     ghcr.io/rdrake/vibebot-v8:latest
 ```
 
-The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. The `/var/www/llm` mount is optional: add it only when an external web server serves the `@code` and `@draw` output files.
+The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. The `/var/www/llm` mount is optional: add it only when you point `httpRoot` there for an external web server to serve. `httpRoot` is empty by default, which keeps the `@code` and `@draw` output inside `/config` under `data/web/llm/` — see [Configuration → Web and HTTP output](configuration.md#web-and-http-output).
+
+`--env-file` is not optional. Provider API keys are read from the environment at call time and have no `bot.conf` equivalent, so without it the bot connects to IRC and every LLM command answers `no API key configured for provider`. Start from `.env.example` in the repository — it lists the four variables and the format rules Docker's `--env-file` parser enforces. See [Configuration → API keys](configuration.md#api-keys).
 
 ## systemd service
 
-The repository includes a systemd user service for production deployments. Install it with:
+The repository includes a systemd user service for production deployments. The target lives in the repository's `Makefile`, so clone first even if you are deploying the published image:
 
 ```bash
+git clone https://github.com/rdrake/vibebot-v8.git
+cd vibebot-v8
 make install-service
 ```
 
-This copies the unit file and creates the standard directory layout:
+This copies the unit file and creates the directory layout:
 
 | Path | Purpose |
 |------|---------|
 | `~/.config/systemd/user/vibebot.service` | systemd unit |
-| `~/.config/vibebot/` | `bot.conf` and `env` file |
-| `~/.local/share/vibebot/{conf,data,logs}` | Persistent bot data |
+| `~/.config/vibebot/` | `bot.conf`, the `env` file, and the bot's `conf/`, `data/`, `logs/` and `backup/` directories |
 
-The unit runs the Docker image with `~/.config/vibebot` mounted at `/config`, reads API keys from the `env` file, and pulls the latest image on every start.
+The unit runs the Docker image with `~/.config/vibebot` mounted at `/config`, passes the same directory's `env` file to `docker run --env-file`, and pulls the latest image on every start. `make install-service` also creates `~/.local/share/vibebot/`, which nothing mounts and nothing writes to; ignore it.
 
 After installing, complete the setup:
 
 1. Copy your `bot.conf` to `~/.config/vibebot/bot.conf`.
-2. Add your API keys to `~/.config/vibebot/env`.
+2. Edit `~/.config/vibebot/env`. `make install-service` seeds it from `.env.example`, so it arrives full of placeholders: enter the providers you use and delete the lines for the rest, since a leftover `your-xai-key-here` counts as a real key. Keep to the format rules noted in that file — `NAME=value`, no quotes, no trailing comments, no spaces around `=`, LF line endings. Docker's `--env-file` parser rejects a malformed line by exiting the container on start, and `Restart=always` turns that into a silent crashloop.
 3. Enable and start the service:
 
 ```bash

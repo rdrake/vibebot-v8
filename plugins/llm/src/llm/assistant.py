@@ -600,10 +600,13 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
         "capability": "llm.code",
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),
     },
-    # Phase 2 Task 3 / C2 — schedule_llm_task fires "as you" with full bridge
-    # access at fire time, so creating a schedule must require an authenticated
-    # account. list/cancel inherit the default capability=llm.ask /
-    # require_account=False / visible_in={"chat", "remind_action"}.
+    # Phase 2 Task 3 / C2 — schedule_llm_task fires "as you" later, under the
+    # creator's identity and rate-limit bucket with nobody present to stop it,
+    # so creating a schedule must require an authenticated account. The fire
+    # gets no bridge tools: plugin._run_unattended_assistant passes no
+    # extra_tools. list/cancel inherit capability=llm.ask and
+    # require_account=False, but _BOOKKEEPING_TOOLS strips chat and verse,
+    # leaving visible_in={"remind_action"}.
     "schedule_llm_task": {
         "require_account": True,
     },
@@ -630,14 +633,6 @@ PENDING_TASK_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Tools hidden from a route because they have no use on it. Keeping the
-# advertised surface small is a correctness measure, not tidiness:
-# xai/grok-4-1-fast-reasoning starts emitting empty completions once the
-# surface climbs past ~25 tools (4 empty-response incidents on 2026-05-10,
-# more than any prior day in 30d), and a non-reasoning model asked to pick
-# one tool out of twenty will sometimes pick none and answer from its own
-# invention instead — which is how a draw request came back with a
-# fabricated image URL on 2026-08-01.
 # Tools that let the model administer stored state through conversation.
 # Every one duplicates a command the user can already type:
 #

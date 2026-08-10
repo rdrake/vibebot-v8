@@ -5668,8 +5668,8 @@ class LLM(callbacks.Plugin):
 
         # If in a verse-enabled channel with an active avatar, mirror to the
         # avatar's summary so /look and other display paths reflect the change
-        # immediately. The persona registry remains the source of truth for
-        # the verse system prompt.
+        # immediately. The user_avatar_personas table remains the source of
+        # truth for the verse system prompt.
         if channel and self.registryValue("verseEnabled", channel):
             store = self._get_or_create_verse_store(channel)
             avatar_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)

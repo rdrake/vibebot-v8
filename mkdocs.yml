@@ -48,7 +48,7 @@ nav:
     - Getting started: user/getting-started.md
     - AI commands: user/ai-commands.md
     - Memory and instructions: user/memory.md
-    - Reminders: user/reminders-usage.md
+    - Reminders: user/reminders.md
     - Scheduled tasks: user/scheduled-tasks.md
     - Service status: user/service-status.md
   - Plugins:
@@ -59,7 +59,7 @@ nav:
     - Installation and deployment: operator/installation.md
     - Operations and auto-updates: operator/operations.md
     - Configuration: operator/configuration.md
-    - The verse: operator/forest-verse.md
+    - The verse: operator/verse.md
     - Memory promotion: operator/memory-promotion.md
     - Rate limiting and security: operator/rate-limiting-security.md
     - Tuning and monitoring: operator/tuning-monitoring.md
