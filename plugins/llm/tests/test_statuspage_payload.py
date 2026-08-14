@@ -373,3 +373,83 @@ class TestEpochGuardsUnrepresentableDatetimes:
         )
         payload = statuspage.to_history_payload((entry,), now=1000.0)
         assert payload[0]["duration_sec"] is None
+
+
+class TestFormatDuration:
+    def test_renders_coarse_units(self):
+        assert statuspage.format_duration(60) == "1m"
+        assert statuspage.format_duration(3600) == "1h"
+        assert statuspage.format_duration(3600 + 23 * 60) == "1h 23m"
+        assert statuspage.format_duration(25 * 3600) == "1d 1h"
+        assert statuspage.format_duration(48 * 3600) == "2d"
+
+    def test_sub_minute_and_undated_render_empty(self):
+        """'resolved after 0m' reads as a bug in the bot rather than a quirk
+        of the page."""
+        assert statuspage.format_duration(0) == ""
+        assert statuspage.format_duration(59) == ""
+        assert statuspage.format_duration(None) == ""
+
+    def test_a_page_clock_ahead_of_ours_renders_empty(self):
+        assert statuspage.format_duration(-500) == ""
+
+
+class TestRenderResolvedLine:
+    def test_says_resolved_with_the_duration_and_the_incident_link(self):
+        line = statuspage.render_resolved_line(
+            view(),
+            page_name="Claude",
+            page_url="https://status.claude.com",
+            duration_sec=3600 + 23 * 60,
+        )
+        assert "resolved after 1h 23m" in line
+        assert "https://status.claude.com/incidents/inc1" in line
+        assert "Elevated error rates on Claude Opus 4.5" in line
+
+    def test_never_repeats_the_last_live_status(self):
+        """The retained view of a vanished incident still reads
+        'investigating'; announcing that alongside 'resolved' contradicts
+        itself."""
+        line = statuspage.render_resolved_line(
+            view(status="investigating"),
+            page_name="Claude",
+            page_url="https://status.claude.com",
+        )
+        assert "investigating" not in line
+        assert "resolved" in line
+
+    def test_undated_incident_drops_the_duration_clause(self):
+        line = statuspage.render_resolved_line(
+            view(started_at=None, created_at=None),
+            page_name="Claude",
+            page_url="https://status.claude.com",
+            duration_sec=None,
+        )
+        assert "resolved —" in line
+        assert "after" not in line
+
+    def test_third_party_prose_is_sanitised_like_the_opening_line(self):
+        line = statuspage.render_resolved_line(
+            view(name="Outage \x01 — see https://evil.example/fix"),
+            page_name="Claude ![x](",
+            page_url="https://status.claude.com",
+        )
+        assert "evil.example" not in line
+        assert "\x01" not in line
+        assert "resolved" in line
+
+
+class TestIncidentDuration:
+    def test_measures_from_the_incident_start(self):
+        now = datetime(2026, 8, 9, 13, 30, tzinfo=UTC).timestamp()
+        assert statuspage.incident_duration_sec(view(), now=now) == 5400
+
+    def test_undated_incident_has_no_duration(self):
+        assert (
+            statuspage.incident_duration_sec(view(started_at=None, created_at=None), now=1000.0)
+            is None
+        )
+
+    def test_falls_back_to_created_at(self):
+        now = datetime(2026, 8, 9, 13, 0, tzinfo=UTC).timestamp()
+        assert statuspage.incident_duration_sec(view(started_at=None), now=now) == 3600

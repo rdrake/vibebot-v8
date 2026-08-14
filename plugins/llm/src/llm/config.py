@@ -1003,9 +1003,9 @@ conf.registerChannelValue(
     "statusAnnounce",
     registry.Boolean(
         False,
-        _("""Announce newly opened status-page incidents in this channel.
-        Off by default. When enabling this, remove the equivalent RSS feed
-        announcement for the channel first, or every incident is reported
-        twice."""),
+        _("""Announce status-page incidents in this channel as they open and
+        again as they resolve. Off by default. When enabling this, remove the
+        equivalent RSS feed announcement for the channel first, or every
+        incident is reported twice."""),
     ),
 )

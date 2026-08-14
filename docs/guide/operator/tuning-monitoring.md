@@ -132,14 +132,14 @@ Lower it on small hosts or when a provider rate-limits aggressively. The global 
 ## Status page
 
 The bot polls an Atlassian Statuspage-hosted status page and can answer
-questions about it in conversation, and optionally announce newly opened
-incidents on its own. See [Service status](../user/service-status.md) for the
+questions about it in conversation, and optionally announce incidents on its
+own as they open and resolve. See [Service status](../user/service-status.md) for the
 user-facing behaviour.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
 | `statusPageUrl` | `https://status.claude.com` | global | Base URL of a Statuspage-hosted status page (no trailing path). The bot polls `{url}/api/v2/summary.json` every two minutes to answer status questions and to announce new incidents. Empty disables status awareness entirely. |
-| `statusAnnounce` | `False` | channel | Announce newly opened status-page incidents in this channel. |
+| `statusAnnounce` | `False` | channel | Announce status-page incidents in this channel as they open and again as they resolve. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
 
 !!! warning "Turn off the RSS feed first"
 

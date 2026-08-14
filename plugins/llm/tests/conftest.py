@@ -881,6 +881,10 @@ def announcing_plugin(status_plugin):
     plugin._safe_queue = MagicMock(return_value=True)
     plugin._irc_for_channel = MagicMock(return_value=MagicMock())
     plugin._status_rewrite = MagicMock(return_value=None)
+    # Must be bound, not left as a MagicMock attribute: _announce_status
+    # branches on its return value, and an unbound mock returns a truthy Mock
+    # that marks every incident announced while sending nothing.
+    plugin._deliver_status_line = LLM._deliver_status_line.__get__(plugin)
     plugin._announce_status = LLM._announce_status.__get__(plugin)
     plugin._status_rewrite_ok = LLM._status_rewrite_ok.__get__(plugin)
     plugin._status_announce_budget_ok = LLM._status_announce_budget_ok.__get__(plugin)

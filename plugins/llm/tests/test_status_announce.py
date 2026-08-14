@@ -439,3 +439,130 @@ class TestStatusAnnounceCompletion:
         mock_completion.return_value = make_completion_response(None)
         result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert result is None
+
+
+class TestResolutionAnnounce:
+    """The all-clear rides the same delivery path as the opening it closes."""
+
+    def test_template_says_resolved_and_links_the_incident(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(resolved=(incident(id="005ym4vzrq2w"),)))
+        sent = plugin._sent_text[0]
+        assert "resolved" in sent
+        assert "https://status.claude.com/incidents/005ym4vzrq2w" in sent
+
+    def test_template_never_repeats_the_last_live_status(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(resolved=(incident(status="investigating"),)))
+        assert "investigating" not in plugin._sent_text[0]
+
+    def test_rewrite_is_told_the_incident_is_over(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert plugin._status_rewrite.call_args.kwargs["event"] == "resolved"
+
+    def test_resolution_facts_state_resolved_and_drop_the_stale_update(self, announcing_plugin):
+        """A vanished incident's retained view still says 'investigating' and
+        still carries its last live update body. Either one reaching the model
+        invites a line that calls the outage ongoing and over at once."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(
+            incident(),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url="https://status.claude.com/incidents/inc1",
+            label="Claude",
+            event="resolved",
+            duration_sec=3600,
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert facts["event"] == "resolved"
+        assert facts["status"] == "resolved"
+        assert facts["duration_sec"] == 3600
+        assert "latest_update" not in facts
+
+    def test_opening_facts_keep_the_live_status_and_update(self, announcing_plugin):
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(
+            incident(),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url="https://status.claude.com/incidents/inc1",
+            label="Claude",
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert facts["event"] == "opened"
+        assert facts["status"] == "investigating"
+        assert facts["latest_update"] == "We are investigating."
+
+    def test_a_passing_rewrite_is_used_for_the_all_clear(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value="Claude's back, we're good.")
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert "Claude's back" in plugin._sent_text[0]
+
+    def test_a_foreign_url_in_the_all_clear_falls_back_to_template(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(
+            return_value="Claude is fine now, see https://evil.example"
+        )
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert "evil.example" not in plugin._sent_text[0]
+        assert "resolved" in plugin._sent_text[0]
+
+    def test_marks_resolved_only_on_a_successful_queue(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._safe_queue.return_value = True
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert "inc1" in plugin._status_state.resolved_announced
+
+    def test_does_not_mark_resolved_when_the_queue_drops(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._safe_queue.return_value = False
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert "inc1" not in plugin._status_state.resolved_announced, "must retry next poll"
+
+    def test_the_all_clear_does_not_mark_the_opening_announced(self, announcing_plugin):
+        """Separate maps: an incident whose opening was missed must not be
+        recorded as announced just because its all-clear went out."""
+        plugin = announcing_plugin
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert "inc1" not in plugin._status_state.announced
+
+    def test_an_opening_and_an_all_clear_in_one_pass_both_send(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(
+            statuspage.Delta(opened=(incident(id="A"),), resolved=(incident(id="B"),))
+        )
+        assert len(plugin._sent_text) == 2
+        assert "(investigating)" in plugin._sent_text[0]
+        assert "resolved" in plugin._sent_text[1]
+
+    def test_resolutions_share_the_hourly_rewrite_budget(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_announce_times = [
+            plugin._now for _ in range(plugin._STATUS_ANNOUNCE_MAX_PER_HOUR)
+        ]
+        plugin._status_rewrite = MagicMock(return_value="Claude's back.")
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert plugin._status_rewrite.call_count == 0
+        assert "resolved" in plugin._sent_text[0], "template still sends"
+
+    def test_a_parted_channel_spends_nothing_on_the_all_clear(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._irc_for_channel = MagicMock(return_value=None)
+        plugin._status_rewrite = MagicMock()
+        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        assert plugin._status_rewrite.call_count == 0
+        assert plugin._safe_queue.call_count == 0
+        assert "inc1" not in plugin._status_state.resolved_announced

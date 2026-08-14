@@ -46,6 +46,14 @@ already-announced and never fires. It also never fires later, because
 `announced` is monotonic and `summary.json` only lists unresolved
 incidents.
 
+Narrowed, not closed, by the resolution announcer (2026-08-14): cold-start
+seeding writes `announced` but leaves `resolved_announced` empty for any
+incident that is still live, so the channel does hear the all-clear for an
+outage whose opening it missed. The opening itself is still lost, and an
+incident that both opened and resolved inside the window stays silent in
+both directions — it is absent from the first `summary.json` the new
+process reads.
+
 ## Gap 2 — partial delivery marks globally (dormant)
 
 In `_announce_status` (`plugin.py:1411-1462`), `delivered` is a single

@@ -24,6 +24,12 @@ INCIDENT_STATUSES: frozenset[str] = frozenset(
     {"investigating", "identified", "monitoring", "resolved", "postmortem"}
 )
 
+# An incident in one of these statuses is over. Statuspage normally drops a
+# resolved incident straight out of summary.json's unresolved set, but the
+# schema permits it to sit there terminal-but-present, so an incident can
+# reach the end of its life by either route. Both collapse to one event.
+TERMINAL_STATUSES: frozenset[str] = frozenset({"resolved", "postmortem"})
+
 COMPONENT_STATUSES: frozenset[str] = frozenset(
     {
         "operational",
@@ -317,6 +323,11 @@ def parse_incidents(payload: Any, *, limit: int = 50) -> tuple[HistoryEntry, ...
 # regardless of age — dropping an active id would re-announce a live outage.
 MAX_ANNOUNCED_RETAINED = 200
 
+# Bound on the pending-resolution queue. An entry only survives here until
+# its all-clear is delivered, so this is a guard against a page churning
+# incidents faster than the announcer can drain them, not a working size.
+MAX_PENDING_RESOLVED = 50
+
 
 @dataclass(frozen=True)
 class StatusState:
@@ -325,20 +336,30 @@ class StatusState:
     active: dict[str, IncidentView] = field(default_factory=dict)
     announced: dict[str, float] = field(default_factory=dict)
     seeded: bool = False
+    # An incident that vanishes from summary.json is gone from ``active`` on
+    # the very next classify, so unlike ``opened`` its all-clear cannot be
+    # recomputed from the snapshot on a later poll. The view is parked here
+    # instead, and stays until a delivery succeeds — that is what makes a
+    # dropped all-clear retryable rather than lost.
+    pending_resolved: dict[str, IncidentView] = field(default_factory=dict)
+    resolved_announced: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Delta:
     """What changed between the retained state and a new snapshot.
 
-    ``changed`` and ``disappeared`` are computed but unconsumed in v1 —
-    deliberate scaffolding, reserved for a future all-clear announcement
-    branch. Do not delete them as dead code.
+    ``changed`` is computed but unconsumed: intra-incident status moves
+    (investigating → identified → monitoring) are deliberately not announced.
+    Do not delete it as dead code. ``disappeared`` is the raw signal;
+    ``resolved`` is what the announcer consumes — the same incidents plus any
+    that ended in place, minus those whose all-clear already went out.
     """
 
     opened: tuple[IncidentView, ...] = ()
     changed: tuple[IncidentView, ...] = ()
     disappeared: tuple[IncidentView, ...] = ()
+    resolved: tuple[IncidentView, ...] = ()
     discarded: int = 0
 
 
@@ -363,22 +384,34 @@ def _prune(announced: dict[str, float], active_ids: set[str]) -> dict[str, float
     return keep
 
 
+def _cap_pending(pending: dict[str, IncidentView]) -> dict[str, IncidentView]:
+    """Keep the newest MAX_PENDING_RESOLVED entries; drop the stale tail."""
+    if len(pending) <= MAX_PENDING_RESOLVED:
+        return pending
+    newest = sorted(pending.items(), key=lambda kv: _sort_key(kv[1]), reverse=True)
+    return dict(newest[:MAX_PENDING_RESOLVED])
+
+
 def classify(
     state: StatusState,
     snapshot: Snapshot,
     *,
     max_opened: int = 3,
+    max_resolved: int = 3,
 ) -> tuple[Delta, StatusState]:
     """Classify a snapshot against retained state. Pure — mutates nothing.
 
     On a cold start (``state.seeded`` False) every current incident is
     recorded as already-announced and an empty Delta is returned, so a restart
     during an outage does not re-announce it. This mirrors stock RSS's
-    ``initial`` flag.
+    ``initial`` flag. An incident already *terminal* at cold start is
+    additionally recorded as resolution-announced: it ended before this
+    process was watching, so its all-clear is not ours to send.
 
-    ``opened`` is NOT written into ``announced`` — the caller does that via
-    ``mark_announced`` after a successful send, so a dropped delivery is
-    retried on the next poll.
+    Neither ``opened`` nor ``resolved`` is written into its announced map —
+    the caller does that via ``mark_announced`` / ``mark_resolved_announced``
+    after a successful send, so a dropped delivery is retried on the next
+    poll.
     """
     current = snapshot.incidents
 
@@ -387,16 +420,29 @@ def classify(
             active=dict(current),
             announced=dict.fromkeys(current, snapshot.fetched_at),
             seeded=True,
+            resolved_announced={
+                cid: snapshot.fetched_at
+                for cid, view in current.items()
+                if view.status in TERMINAL_STATUSES
+            },
         )
 
-    opened = [v for cid, v in current.items() if cid not in state.announced]
+    # A terminal incident still listed in summary.json is over, so it is
+    # never an opening — announcing "X (resolved)" as news and then "X
+    # resolved" in the same pass would report one incident twice, in
+    # contradictory voices.
+    opened = [
+        v
+        for cid, v in current.items()
+        if cid not in state.announced and v.status not in TERMINAL_STATUSES
+    ]
     opened.sort(key=_sort_key, reverse=True)
     discarded = max(0, len(opened) - max_opened)
 
     # Use the pre-cap opened set: an incident dropped by max_opened is still
     # unannounced and must not fall through into changed either. An
     # unannounced incident is reported as opened, never as changed, so the
-    # deferred all-clear branch cannot double-report it.
+    # all-clear branch cannot double-report it.
     opened_ids = {v.id for v in opened}
     changed = tuple(
         v
@@ -405,17 +451,31 @@ def classify(
     )
     disappeared = tuple(v for cid, v in state.active.items() if cid not in current)
 
+    # Two routes to the same event, unioned then de-duplicated by id: gone
+    # from the unresolved set, or still listed but terminal. An incident that
+    # takes both routes on consecutive polls must announce once.
+    pending = dict(state.pending_resolved)
+    pending.update({v.id: v for v in disappeared})
+    pending.update({cid: v for cid, v in current.items() if v.status in TERMINAL_STATUSES})
+    pending = _cap_pending(
+        {cid: v for cid, v in pending.items() if cid not in state.resolved_announced}
+    )
+    resolved = tuple(sorted(pending.values(), key=_sort_key, reverse=True)[:max_resolved])
+
     return (
         Delta(
             opened=tuple(opened[:max_opened]),
             changed=changed,
             disappeared=disappeared,
+            resolved=resolved,
             discarded=discarded,
         ),
         StatusState(
             active=dict(current),
             announced=_prune(dict(state.announced), set(current)),
             seeded=True,
+            pending_resolved=pending,
+            resolved_announced=_prune(dict(state.resolved_announced), set()),
         ),
     )
 
@@ -424,7 +484,32 @@ def mark_announced(state: StatusState, incident_id: str, *, now: float) -> Statu
     """Record that ``incident_id`` was successfully announced."""
     announced = dict(state.announced)
     announced[incident_id] = now
-    return StatusState(active=state.active, announced=announced, seeded=state.seeded)
+    return StatusState(
+        active=state.active,
+        announced=announced,
+        seeded=state.seeded,
+        pending_resolved=state.pending_resolved,
+        resolved_announced=state.resolved_announced,
+    )
+
+
+def mark_resolved_announced(state: StatusState, incident_id: str, *, now: float) -> StatusState:
+    """Record that ``incident_id``'s all-clear was successfully announced.
+
+    Drops it from the pending queue in the same move: the queue is what makes
+    a dropped delivery retryable, so an entry that has been delivered must
+    leave it or the next poll re-announces the same all-clear.
+    """
+    resolved_announced = dict(state.resolved_announced)
+    resolved_announced[incident_id] = now
+    pending = {cid: v for cid, v in state.pending_resolved.items() if cid != incident_id}
+    return StatusState(
+        active=state.active,
+        announced=state.announced,
+        seeded=state.seeded,
+        pending_resolved=pending,
+        resolved_announced=resolved_announced,
+    )
 
 
 # Duplicated from service.py rather than imported: statuspage.py must stay
@@ -583,21 +668,75 @@ def incident_url(page_url: str, incident_id: str) -> str:
     return f"{base}/incidents/{incident_id}"
 
 
-def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str:
-    """Deterministic one-line announcement. Always available, never fails.
+def format_duration(seconds: int | None) -> str:
+    """Coarse human duration for an announcement line, or "" when unusable.
 
-    Each third-party field is sanitised BEFORE composing and only a length
-    cap is applied to the join. Sanitising the composed string instead let
-    a dangling ``![x](`` in one field span the boundary into the next and
-    swallow it — the template's own ``)`` after the status was reachable
-    by the markdown regex.
+    Sub-minute and negative inputs render empty rather than "0m": an undated
+    incident and a page whose clock runs ahead of ours both land here, and
+    "resolved after 0m" reads as a bug in the bot rather than a quirk of the
+    page.
     """
-    label = sanitise_text(strip_urls(page_name), limit=60) or "Status"
-    name = sanitise_text(strip_urls(incident.name))
-    line = f"{label} status: {name} ({incident.status}) — {incident_url(page_url, incident.id)}"
+    if seconds is None or seconds < 60:
+        return ""
+    hours, minutes = divmod(seconds // 60, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
+def incident_duration_sec(incident: IncidentView, *, now: float) -> int | None:
+    """Seconds the incident has been running as of ``now``; None if undated."""
+    return _age_sec(incident.started_at or incident.created_at, now)
+
+
+def _compose(label: str, name: str, tail: str, link: str) -> str:
+    """Join pre-sanitised fields and cap the result at the wire limit.
+
+    Each third-party field is sanitised BEFORE reaching here and only a
+    length cap is applied to the join. Sanitising the composed string
+    instead let a dangling ``![x](`` in one field span the boundary into the
+    next and swallow it — the template's own ``)`` after the status was
+    reachable by the markdown regex.
+    """
+    line = f"{label} status: {name} {tail} — {link}"
     if len(line) > 400:
         line = line[:400].rsplit(" ", 1)[0]
     return line
+
+
+def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str:
+    """Deterministic one-line announcement. Always available, never fails."""
+    return _compose(
+        sanitise_text(strip_urls(page_name), limit=60) or "Status",
+        sanitise_text(strip_urls(incident.name)),
+        f"({incident.status})",
+        incident_url(page_url, incident.id),
+    )
+
+
+def render_resolved_line(
+    incident: IncidentView,
+    *,
+    page_name: str,
+    page_url: str,
+    duration_sec: int | None = None,
+) -> str:
+    """Deterministic all-clear line. Always available, never fails.
+
+    Says "resolved", never the incident's last-known live status: this fires
+    for an incident that vanished from the unresolved set, whose retained
+    view still reads ``investigating``.
+    """
+    duration = format_duration(duration_sec)
+    return _compose(
+        sanitise_text(strip_urls(page_name), limit=60) or "Status",
+        sanitise_text(strip_urls(incident.name)),
+        f"resolved after {duration}" if duration else "resolved",
+        incident_url(page_url, incident.id),
+    )
 
 
 SUMMARY_PATH = "/api/v2/summary.json"

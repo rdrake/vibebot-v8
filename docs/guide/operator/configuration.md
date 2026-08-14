@@ -184,7 +184,7 @@ See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security mode
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `statusPageUrl` | global | `https://status.claude.com` | Base URL of a Statuspage-hosted status page, with no trailing path. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
-| `statusAnnounce` | channel | `False` | Announce newly opened incidents in this channel |
+| `statusAnnounce` | channel | `False` | Announce incidents in this channel as they open and again as they resolve |
 
 See [Tuning and monitoring](tuning-monitoring.md#status-page) for the poll interval and the RSS cutover order.
 

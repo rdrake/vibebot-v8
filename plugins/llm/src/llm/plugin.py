@@ -1314,6 +1314,8 @@ class LLM(callbacks.Plugin):
         snapshot: statuspage.Snapshot,
         url: str,
         label: str,
+        event: str = "opened",
+        duration_sec: int | None = None,
     ) -> str | None:
         """One-shot rewrite of the sanitised incident facts in channel voice.
 
@@ -1333,17 +1335,27 @@ class LLM(callbacks.Plugin):
         """
         if snapshot is None:
             return None
+        resolved = event == "resolved"
         facts = {
+            "event": event,
             "name": statuspage.sanitise_text(incident.name),
-            "status": incident.status,
+            # An incident that vanished from the unresolved set carries its
+            # last LIVE status ("investigating") and its last live update
+            # body. Handing either to a resolution rewrite invites a line
+            # that announces an outage as ongoing and over in one breath, so
+            # the status is stated as the event and the stale body dropped.
+            "status": "resolved" if resolved else incident.status,
             "impact": statuspage.sanitise_text(incident.impact),
             "affected_components": [
                 statuspage.sanitise_text(c) for c in incident.affected_components
             ],
-            "latest_update": statuspage.sanitise_text(incident.latest_update_body),
             "service": label,
             "url": url,
         }
+        if resolved:
+            facts["duration_sec"] = duration_sec
+        else:
+            facts["latest_update"] = statuspage.sanitise_text(incident.latest_update_body)
         try:
             return self.llm_service.status_announce_completion(facts=facts, channel=channel)
         except Exception as e:
@@ -1357,15 +1369,85 @@ class LLM(callbacks.Plugin):
                 return irc_conn
         return None
 
+    def _deliver_status_line(
+        self,
+        incident: statuspage.IncidentView,
+        *,
+        template: str,
+        by_overlay: dict[str, list[str]],
+        snapshot: statuspage.Snapshot,
+        label: str,
+        configured_host: str,
+        link: str,
+        event: str,
+        duration_sec: int | None = None,
+    ) -> bool:
+        """Send one incident line to every deliverable channel.
+
+        Returns True if at least one channel took it, which is the caller's
+        cue to mark the event announced. Shared by the opened and resolved
+        branches so an all-clear inherits the same budget, post-checks and
+        truncation as the opening it closes.
+        """
+        delivered = False
+        for group_channels in by_overlay.values():
+            # Look up deliverability BEFORE spending a completion or the
+            # hourly budget: a channel the bot has since parted cannot be
+            # delivered to regardless of what the rewrite produces.
+            deliverable = [
+                (channel, irc_conn)
+                for channel in group_channels
+                if (irc_conn := self._irc_for_channel(channel)) is not None
+            ]
+            if not deliverable:
+                continue
+
+            text = template
+            if self._status_announce_budget_ok():
+                # First deliverable channel drives provider cache routing;
+                # the rewrite itself is shared across the whole group.
+                rewrite = self._status_rewrite(
+                    incident,
+                    deliverable[0][0],
+                    snapshot=snapshot,
+                    url=link,
+                    label=label,
+                    event=event,
+                    duration_sec=duration_sec,
+                )
+                self._status_announce_times.append(self._status_now())
+                if rewrite and self._status_rewrite_ok(
+                    rewrite, allowed_host=configured_host, label=label
+                ):
+                    text = rewrite
+
+            safe = self.llm_service.sanitize_output(text)
+            safe = self._collapse_for_irc(safe) or safe
+            if len(safe) > self._STATUS_ANNOUNCE_MAX_LEN:
+                safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN].rsplit(" ", 1)[0]
+            if not safe:
+                # render_line fails closed to "" on pathological input, and the
+                # whitespace truncation above can empty a single-token line. Skip
+                # rather than queue "PRIVMSG #chan :" — and leave the incident
+                # unmarked so the next poll retries it.
+                continue
+
+            for channel, irc_conn in deliverable:
+                if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
+                    delivered = True
+        return delivered
+
     def _announce_status(self, delta: statuspage.Delta) -> None:
-        """Announce newly opened incidents to opted-in channels.
+        """Announce newly opened and newly resolved incidents to opted-in channels.
 
         Template-primary: the deterministic line is built first and is always
         available. The rewrite is an upgrade, applied only when the budget
         allows and every post-check passes.
 
         An incident is marked announced only after a successful queue, so a
-        drop during shutdown is retried on the next poll.
+        drop during shutdown is retried on the next poll. Openings and
+        all-clears are tracked in separate maps, so one incident produces at
+        most one of each over the process lifetime.
         """
         snapshot = self._status_read_cache
         if snapshot is None:
@@ -1409,60 +1491,40 @@ class LLM(callbacks.Plugin):
             overlay = self.registryValue("assistantSystemPrompt", channel) or ""
             by_overlay.setdefault(overlay, []).append(channel)
 
+        # Deep-link each incident, matching what the RSS announcer already
+        # posts. Host still comes from statusPageUrl, so the rewrite host
+        # check is unaffected.
         for incident in delta.opened:
-            # Deep-link the incident, matching what the RSS announcer already
-            # posts. Host still comes from statusPageUrl, so the rewrite host
-            # check is unaffected.
-            link = statuspage.incident_url(configured, incident.id)
-            template = statuspage.render_line(incident, page_name=label, page_url=configured)
-            delivered = False
-
-            for group_channels in by_overlay.values():
-                # Look up deliverability BEFORE spending a completion or the
-                # hourly budget: a channel the bot has since parted cannot be
-                # delivered to regardless of what the rewrite produces.
-                deliverable = [
-                    (channel, irc_conn)
-                    for channel in group_channels
-                    if (irc_conn := self._irc_for_channel(channel)) is not None
-                ]
-                if not deliverable:
-                    continue
-
-                text = template
-                if self._status_announce_budget_ok():
-                    # First deliverable channel drives provider cache routing;
-                    # the rewrite itself is shared across the whole group.
-                    rewrite = self._status_rewrite(
-                        incident,
-                        deliverable[0][0],
-                        snapshot=snapshot,
-                        url=link,
-                        label=label,
-                    )
-                    self._status_announce_times.append(self._status_now())
-                    if rewrite and self._status_rewrite_ok(
-                        rewrite, allowed_host=configured_host, label=label
-                    ):
-                        text = rewrite
-
-                safe = self.llm_service.sanitize_output(text)
-                safe = self._collapse_for_irc(safe) or safe
-                if len(safe) > self._STATUS_ANNOUNCE_MAX_LEN:
-                    safe = safe[: self._STATUS_ANNOUNCE_MAX_LEN].rsplit(" ", 1)[0]
-                if not safe:
-                    # render_line fails closed to "" on pathological input, and the
-                    # whitespace truncation above can empty a single-token line. Skip
-                    # rather than queue "PRIVMSG #chan :" — and leave the incident
-                    # unmarked so the next poll retries it.
-                    continue
-
-                for channel, irc_conn in deliverable:
-                    if self._safe_queue(irc_conn, self._safe_privmsg(channel, safe)):
-                        delivered = True
-
-            if delivered:
+            if self._deliver_status_line(
+                incident,
+                template=statuspage.render_line(incident, page_name=label, page_url=configured),
+                by_overlay=by_overlay,
+                snapshot=snapshot,
+                label=label,
+                configured_host=configured_host,
+                link=statuspage.incident_url(configured, incident.id),
+                event="opened",
+            ):
                 self._status_state = statuspage.mark_announced(
+                    self._status_state, incident.id, now=self._status_now()
+                )
+
+        for incident in delta.resolved:
+            duration = statuspage.incident_duration_sec(incident, now=self._status_now())
+            if self._deliver_status_line(
+                incident,
+                template=statuspage.render_resolved_line(
+                    incident, page_name=label, page_url=configured, duration_sec=duration
+                ),
+                by_overlay=by_overlay,
+                snapshot=snapshot,
+                label=label,
+                configured_host=configured_host,
+                link=statuspage.incident_url(configured, incident.id),
+                event="resolved",
+                duration_sec=duration,
+            ):
+                self._status_state = statuspage.mark_resolved_announced(
                     self._status_state, incident.id, now=self._status_now()
                 )
 

@@ -59,11 +59,12 @@ status still answers.
 
 ## Announcements
 
-Where an operator has enabled it for the channel, the bot announces newly
-opened incidents on its own:
+Where an operator has enabled it for the channel, the bot announces incidents
+as they open, and again as they clear:
 
 ```
 <VibeBot> Claude status: Elevated error rates on the API (investigating) — https://status.claude.com/incidents/005ym4vzrq2w
+<VibeBot> Claude status: Elevated error rates on the API resolved after 1h 23m — https://status.claude.com/incidents/005ym4vzrq2w
 ```
 
 The link points at the incident itself, not the status page's front door. It
@@ -74,11 +75,20 @@ bare page URL.
 That template is the floor, not the usual output. Up to six times an hour the
 bot restates the same facts in the channel's own voice instead; a rewrite is
 thrown away and the template sent if it drops the service name or carries a
-link to anywhere but the configured status page.
+link to anywhere but the configured status page. Openings and all-clears draw
+on that same hourly budget.
 
-Only newly opened incidents are announced. Resolutions, status updates within
-an incident, component-only changes, and scheduled maintenance are not.
+The duration runs from the incident's own start time to the poll that saw it
+clear, so it is accurate to within the two-minute poll interval and rounds to
+whole minutes. An incident the status page never dated is announced without
+one.
+
+Openings and resolutions are the whole vocabulary. Status moves within an
+incident (investigating → identified → monitoring), component-only changes,
+and scheduled maintenance are not announced.
+
 Incidents already open when the bot starts count as already announced, so a
-restart mid-outage doesn't replay one into the channel — and that incident
-stays silent for the rest of its life. Ask the bot if you need its current
-state.
+restart mid-outage doesn't replay one into the channel. Their all-clear still
+fires, though — the bot watched that incident end even if it never announced
+the start. An incident that both opened and closed while the bot was down is
+silent in both directions. Ask the bot if you need its current state.

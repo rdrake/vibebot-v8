@@ -169,3 +169,107 @@ class TestPruning:
         state = statuspage.mark_announced(state, "OLD", now=-1.0)
         _, state = statuspage.classify(state, snap(view("OLD")))
         assert "OLD" in state.announced, "an active id must survive pruning or it re-announces"
+
+
+class TestResolution:
+    """summary.json lists only unresolved incidents, so an id vanishing IS
+    the resolution signal. The schema also permits a terminal incident to
+    linger in the list, so both routes have to land on one event."""
+
+    def _seeded(self, *views: statuspage.IncidentView) -> statuspage.StatusState:
+        _, state = statuspage.classify(statuspage.StatusState(), snap(*views))
+        return state
+
+    def test_a_vanished_incident_resolves(self):
+        state = self._seeded(view("A"))
+        delta, _ = statuspage.classify(state, snap())
+        assert [v.id for v in delta.resolved] == ["A"]
+
+    def test_a_terminal_incident_still_listed_resolves(self):
+        state = self._seeded(view("A"))
+        delta, _ = statuspage.classify(state, snap(view("A", status="resolved")))
+        assert [v.id for v in delta.resolved] == ["A"]
+
+    def test_terminal_then_vanished_announces_once(self):
+        """The two routes are consecutive polls for the same incident. Only
+        the successful send may retire it, and it must retire once."""
+        state = self._seeded(view("A"))
+        delta, state = statuspage.classify(state, snap(view("A", status="resolved")))
+        assert [v.id for v in delta.resolved] == ["A"]
+        state = statuspage.mark_resolved_announced(state, "A", now=1000.0)
+        delta, state = statuspage.classify(state, snap())
+        assert delta.resolved == ()
+
+    def test_an_unannounced_resolution_is_retried_next_poll(self):
+        """A vanished incident is absent from active on the next classify, so
+        without the pending queue its all-clear could never be recomputed."""
+        state = self._seeded(view("A"))
+        delta, state = statuspage.classify(state, snap())
+        assert [v.id for v in delta.resolved] == ["A"]
+        delta, state = statuspage.classify(state, snap())
+        assert [v.id for v in delta.resolved] == ["A"], "a dropped all-clear must retry"
+
+    def test_marking_resolved_drains_the_pending_queue(self):
+        state = self._seeded(view("A"))
+        _, state = statuspage.classify(state, snap())
+        assert "A" in state.pending_resolved
+        state = statuspage.mark_resolved_announced(state, "A", now=1000.0)
+        assert "A" not in state.pending_resolved
+        delta, _ = statuspage.classify(state, snap())
+        assert delta.resolved == ()
+
+    def test_an_incident_terminal_at_cold_start_never_resolves(self):
+        """It ended before this process was watching; its all-clear is not
+        ours to send."""
+        _, state = statuspage.classify(statuspage.StatusState(), snap(view("A", status="resolved")))
+        assert "A" in state.resolved_announced
+        delta, _ = statuspage.classify(state, snap())
+        assert delta.resolved == ()
+
+    def test_an_incident_open_at_cold_start_still_resolves(self):
+        """The inverse, and the point of the seeding split: a restart mid-
+        outage loses the opening announcement but must not lose the all-clear."""
+        state = self._seeded(view("A"))
+        delta, _ = statuspage.classify(state, snap())
+        assert [v.id for v in delta.resolved] == ["A"]
+
+    def test_a_terminal_incident_is_never_reported_as_opened(self):
+        """Otherwise one incident produces two contradictory lines in a
+        single pass: '(resolved)' as news, then 'resolved'."""
+        _, state = statuspage.classify(statuspage.StatusState(), snap())
+        delta, _ = statuspage.classify(state, snap(view("NEW", status="resolved")))
+        assert delta.opened == ()
+        assert [v.id for v in delta.resolved] == ["NEW"]
+
+    def test_resolutions_are_capped_per_poll(self):
+        state = self._seeded(*[view(f"I{n}", minutes=n) for n in range(5)])
+        delta, _ = statuspage.classify(state, snap(), max_resolved=3)
+        assert len(delta.resolved) == 3
+
+    def test_pending_queue_is_bounded(self):
+        state = self._seeded(*[view(f"I{n}", minutes=n % 60) for n in range(80)])
+        _, state = statuspage.classify(state, snap())
+        assert len(state.pending_resolved) <= statuspage.MAX_PENDING_RESOLVED
+
+    def test_resolved_announced_map_is_bounded(self):
+        state = statuspage.StatusState(seeded=True)
+        for n in range(300):
+            state = statuspage.mark_resolved_announced(state, f"I{n}", now=float(n))
+        _, state = statuspage.classify(state, snap())
+        assert len(state.resolved_announced) <= statuspage.MAX_ANNOUNCED_RETAINED
+
+    def test_marking_an_opening_does_not_disturb_resolution_state(self):
+        state = self._seeded(view("A"))
+        _, state = statuspage.classify(state, snap())
+        state = statuspage.mark_announced(state, "B", now=1000.0)
+        assert "A" in state.pending_resolved
+
+    def test_a_reopened_id_is_not_re_resolved(self):
+        """An id that shrinks out of the list and comes back must not fire a
+        second all-clear on its second disappearance."""
+        state = self._seeded(view("A"))
+        _, state = statuspage.classify(state, snap())
+        state = statuspage.mark_resolved_announced(state, "A", now=1000.0)
+        _, state = statuspage.classify(state, snap(view("A")))
+        delta, _ = statuspage.classify(state, snap())
+        assert delta.resolved == ()
