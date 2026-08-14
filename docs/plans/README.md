@@ -7,4 +7,8 @@ the [guide](../guide/index.md) and the source as the truth.
 Active plans live in this directory. When the work ships, the plan moves
 to `archive/`.
 
-Everything here is currently archived.
+Active:
+
+- [Status-announce restart gap](2026-08-14-status-announce-restart-gap.md) —
+  `_status_state` is memory-only, so an incident opening during a restart is
+  seeded as already-announced and never fires. Noted, not started.
