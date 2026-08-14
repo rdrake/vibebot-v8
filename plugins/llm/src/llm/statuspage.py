@@ -560,6 +560,29 @@ def strip_urls(text: str) -> str:
     return " ".join(URL_LIKE_RE.sub("", text).split())
 
 
+# Statuspage incident ids are short base-36-ish tokens (e.g. 005ym4vzrq2w).
+# Whitelisted rather than escaped: the id is payload data spliced into a link
+# the bot speaks unprompted, so anything unexpected loses the deep link
+# instead of shaping it.
+INCIDENT_ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+
+
+def incident_url(page_url: str, incident_id: str) -> str:
+    """Permalink for one incident, falling back to the page URL.
+
+    Statuspage publishes each incident at ``{page}/incidents/{id}`` — the same
+    link its own RSS feed carries — so the deep link is *derived* from the
+    operator-configured ``page_url`` and never quoted from the payload. Only
+    the path segment comes from third-party data, and only through
+    ``INCIDENT_ID_RE``; the host stays whatever the operator configured, which
+    is what keeps ``_status_rewrite_ok``'s host check meaningful.
+    """
+    base = page_url.rstrip("/")
+    if not base or not INCIDENT_ID_RE.match(incident_id):
+        return page_url
+    return f"{base}/incidents/{incident_id}"
+
+
 def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str:
     """Deterministic one-line announcement. Always available, never fails.
 
@@ -571,7 +594,7 @@ def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str
     """
     label = sanitise_text(strip_urls(page_name), limit=60) or "Status"
     name = sanitise_text(strip_urls(incident.name))
-    line = f"{label} status: {name} ({incident.status}) — {page_url}"
+    line = f"{label} status: {name} ({incident.status}) — {incident_url(page_url, incident.id)}"
     if len(line) > 400:
         line = line[:400].rsplit(" ", 1)[0]
     return line

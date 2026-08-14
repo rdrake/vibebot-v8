@@ -141,15 +141,56 @@ class TestAges:
         assert payload["incidents"][0]["latest_update_age_sec"] is None
 
 
+class TestIncidentUrl:
+    """The permalink is derived, never quoted: host from operator config,
+    path from a charset-whitelisted incident id."""
+
+    def test_builds_the_statuspage_permalink(self):
+        assert (
+            statuspage.incident_url("https://status.claude.com", "005ym4vzrq2w")
+            == "https://status.claude.com/incidents/005ym4vzrq2w"
+        )
+
+    def test_tolerates_a_trailing_slash_on_the_configured_url(self):
+        assert (
+            statuspage.incident_url("https://status.claude.com/", "005ym4vzrq2w")
+            == "https://status.claude.com/incidents/005ym4vzrq2w"
+        )
+
+    def test_falls_back_to_the_page_url_for_an_id_outside_the_whitelist(self):
+        """The id is payload data. Anything but [A-Za-z0-9_-] could splice
+        attacker-chosen text into a link the bot speaks unprompted."""
+        for bad in ("../../evil", "a b", "a?x=1", "a#frag", "a/b", "", "x" * 65):
+            assert (
+                statuspage.incident_url("https://status.claude.com", bad)
+                == "https://status.claude.com"
+            ), bad
+
+    def test_empty_page_url_yields_no_link(self):
+        assert statuspage.incident_url("", "005ym4vzrq2w") == ""
+
+    def test_derived_link_keeps_the_configured_host(self):
+        from urllib.parse import urlparse
+
+        url = statuspage.incident_url("https://status.claude.com", "005ym4vzrq2w")
+        assert urlparse(url).hostname == "status.claude.com"
+
+
 class TestRenderLine:
-    def test_names_the_service_and_links_the_page(self):
+    def test_names_the_service_and_links_the_incident(self):
         line = statuspage.render_line(
             view(), page_name="Claude", page_url="https://status.claude.com"
         )
         assert "Claude" in line
-        assert "https://status.claude.com" in line
+        assert "https://status.claude.com/incidents/inc1" in line
         assert "Elevated error rates on Claude Opus 4.5" in line
         assert "investigating" in line
+
+    def test_unusable_incident_id_falls_back_to_the_page_url(self):
+        line = statuspage.render_line(
+            view(id="../evil"), page_name="Claude", page_url="https://status.claude.com"
+        )
+        assert line.endswith("https://status.claude.com")
 
     def test_render_line_is_sanitised_and_single_line(self):
         line = statuspage.render_line(

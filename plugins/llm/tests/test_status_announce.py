@@ -46,6 +46,24 @@ class TestTemplatePath:
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
         assert "Heads up" in plugin._sent_text[0]
 
+    def test_template_links_the_incident_not_the_page_root(self, announcing_plugin):
+        """The RSS announcer already deep-links each incident; the status
+        announcer pointed at the page root, which says nothing about which
+        incident fired."""
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        assert "https://status.claude.com/incidents/005ym4vzrq2w" in plugin._sent_text[0]
+
+    def test_rewrite_is_handed_the_incident_permalink(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value=None)
+        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        assert (
+            plugin._status_rewrite.call_args.kwargs["url"]
+            == "https://status.claude.com/incidents/005ym4vzrq2w"
+        )
+
 
 class TestPostChecks:
     def test_rejects_rewrite_carrying_a_foreign_url(self, announcing_plugin):
@@ -66,6 +84,18 @@ class TestPostChecks:
         )
         plugin._announce_status(statuspage.Delta(opened=(incident(),)))
         assert "status.claude.com" in plugin._sent_text[0]
+
+    def test_accepts_a_rewrite_quoting_the_incident_permalink(self, announcing_plugin):
+        """The host check is derived from statusPageUrl, so the deeper path
+        must still pass it — otherwise every rewrite falls back to template."""
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(
+            return_value=(
+                "Claude API is degraded — https://status.claude.com/incidents/005ym4vzrq2w"
+            )
+        )
+        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        assert "/incidents/005ym4vzrq2w" in plugin._sent_text[0]
 
     def test_rejects_rewrite_that_never_names_the_service(self, announcing_plugin):
         plugin = announcing_plugin

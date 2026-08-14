@@ -63,8 +63,13 @@ Where an operator has enabled it for the channel, the bot announces newly
 opened incidents on its own:
 
 ```
-<VibeBot> Claude status: Elevated error rates on the API (investigating) — https://status.claude.com
+<VibeBot> Claude status: Elevated error rates on the API (investigating) — https://status.claude.com/incidents/005ym4vzrq2w
 ```
+
+The link points at the incident itself, not the status page's front door. It
+is built from the configured `statusPageUrl` plus the incident's own id, so it
+stays on the configured host; an id in any unexpected shape drops back to the
+bare page URL.
 
 That template is the floor, not the usual output. Up to six times an hour the
 bot restates the same facts in the channel's own voice instead; a rewrite is

@@ -1322,9 +1322,10 @@ class LLM(callbacks.Plugin):
         nested permit (double acquire; self-deadlock at
         maxConcurrentLLMCalls=1).
 
-        ``url`` IS the operator-configured value (``statusPageUrl``), never
-        re-read from the fetched snapshot: the page's own ``page_url`` is
-        third-party data, and handing the model a hostile page's own URL
+        ``url`` is built from the operator-configured value (``statusPageUrl``
+        plus the incident's own path segment via ``statuspage.incident_url``),
+        never re-read from the fetched snapshot: the page's own ``page_url``
+        is third-party data, and handing the model a hostile page's own URL
         would make ``_status_rewrite_ok`` reject every rewrite against the
         wrong host. ``label`` is derived from the third-party ``page_name``
         (sanitised and URL-stripped, falling back to the configured host)
@@ -1409,6 +1410,10 @@ class LLM(callbacks.Plugin):
             by_overlay.setdefault(overlay, []).append(channel)
 
         for incident in delta.opened:
+            # Deep-link the incident, matching what the RSS announcer already
+            # posts. Host still comes from statusPageUrl, so the rewrite host
+            # check is unaffected.
+            link = statuspage.incident_url(configured, incident.id)
             template = statuspage.render_line(incident, page_name=label, page_url=configured)
             delivered = False
 
@@ -1432,7 +1437,7 @@ class LLM(callbacks.Plugin):
                         incident,
                         deliverable[0][0],
                         snapshot=snapshot,
-                        url=configured,
+                        url=link,
                         label=label,
                     )
                     self._status_announce_times.append(self._status_now())
