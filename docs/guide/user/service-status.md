@@ -74,9 +74,9 @@ bare page URL.
 
 That template is the floor, not the usual output. Up to six times an hour the
 bot restates the same facts in the channel's own voice instead; a rewrite is
-thrown away and the template sent if it drops the service name or carries a
-link to anywhere but the configured status page. Openings and all-clears draw
-on that same hourly budget.
+thrown away and the template sent if it drops the service name, carries a link
+to anywhere but the configured status page, or the model ran out of room and
+stopped mid-sentence. Openings and all-clears draw on that same hourly budget.
 
 The duration runs from the incident's own start time to the poll that saw it
 clear, so it is accurate to within the two-minute poll interval and rounds to

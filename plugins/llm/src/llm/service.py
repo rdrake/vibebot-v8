@@ -4145,6 +4145,16 @@ Examples (echo → action_prompt: ""):
         # attach. No assistant tools are passed either, so the surface is empty.
         optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
         optional_kwargs["max_tokens"] = 120
+        # Gemini bills thinking against max_tokens, and the reasoning budget
+        # expands to fill whatever cap it is handed — measured on
+        # gemini-flash-latest at 113 reasoning tokens of 120 and 385 of 400,
+        # leaving 3 and 11 for the sentence. So raising the cap is a treadmill,
+        # not a fix; the request has to ask for no thinking at all. Providers
+        # differ on whether they accept the parameter (xAI's grok-4 rejects it),
+        # so drop_params carries it the same way the assistant path carries its
+        # sampling overrides.
+        optional_kwargs["reasoning_effort"] = "disable"
+        optional_kwargs.setdefault("drop_params", True)
         response = self._completion_with_tool_fallback(
             model=model,
             messages=[
@@ -4156,7 +4166,20 @@ Examples (echo → action_prompt: ""):
             op="status_announce",
             channel=channel,
         )
-        content = response.choices[0].message.content
+        # A cut-off sentence is worse than no rewrite: the caller's post-checks
+        # are all negative (no foreign host, service named), so a fragment like
+        # "Claude incident opened" passes every one of them and then displaces
+        # a template that carried the incident name and its permalink. Reject
+        # anything the provider did not finish; the caller falls back to the
+        # deterministic line, which is exactly the right answer here.
+        choice = response.choices[0]
+        if getattr(choice, "finish_reason", "stop") != "stop":
+            self.log.info(
+                "Status rewrite truncated (finish_reason=%s), using template",
+                choice.finish_reason,
+            )
+            return None
+        content = choice.message.content
         return content.strip() if content else None
 
     def _ask_completion(

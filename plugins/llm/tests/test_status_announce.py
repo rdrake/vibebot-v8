@@ -440,6 +440,45 @@ class TestStatusAnnounceCompletion:
         result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert result is None
 
+    def test_truncated_completion_returns_none(self, service, mocker):
+        """finish_reason=length means the sentence was cut off mid-thought.
+
+        Observed in prod 2026-08-14: gemini-flash-latest spent 113 of the 120
+        allotted output tokens on reasoning and emitted three, so the channel
+        got the fragment "Claude incident opened" — which names the service,
+        carries no URL, and therefore passed every post-check while saying
+        less than the template it displaced.
+        """
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            "Claude incident opened", finish_reason="length"
+        )
+        result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert result is None
+
+    def test_complete_completion_is_returned(self, service, mocker):
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            "Claude API is degraded.", finish_reason="stop"
+        )
+        result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert result == "Claude API is degraded."
+
+    def test_reasoning_is_disabled_so_thinking_cannot_eat_the_output_budget(self, service, mocker):
+        """Gemini counts thinking tokens against ``max_tokens``.
+
+        The reasoning budget scales with whatever cap it is given — measured at
+        113/120 and 385/400 on gemini-flash-latest — so no cap is large enough
+        and the request has to say it wants none. ``drop_params`` keeps the
+        parameter harmless on a provider that rejects it, matching the sampling
+        overrides on the assistant path.
+        """
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response("Claude API is degraded.")
+        service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert mock_completion.call_args.kwargs["reasoning_effort"] == "disable"
+        assert mock_completion.call_args.kwargs["drop_params"] is True
+
 
 class TestResolutionAnnounce:
     """The all-clear rides the same delivery path as the opening it closes."""

@@ -299,6 +299,7 @@ def make_completion_response(
     completion_tokens: int = 20,
     model: str = TEST_MODEL,
     grounding: bool = False,
+    finish_reason: str = "stop",
 ) -> MagicMock:
     """Build a mock that mimics a litellm chat-completion response.
 
@@ -309,6 +310,13 @@ def make_completion_response(
     the vertex grounding marker in ``_hidden_params``. Keeping this in one place
     confines litellm-response coupling so a shape change touches one builder
     rather than hundreds of call sites.
+
+    ``finish_reason`` defaults to ``"stop"`` and must be set explicitly rather
+    than left to MagicMock's auto-attribute: a bare mock answers every
+    ``finish_reason`` comparison with a truthy sentinel that equals nothing, so
+    a caller that rejects truncated output would reject every mocked response
+    in the suite. Pass ``"length"`` to model a completion the provider cut off
+    at ``max_tokens``.
     """
     message = MagicMock()
     message.content = content
@@ -318,6 +326,7 @@ def make_completion_response(
     choice = MagicMock()
     choice.message = message
     choice.grounding_metadata = None
+    choice.finish_reason = finish_reason
 
     response = MagicMock()
     response.choices = [choice]
