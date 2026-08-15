@@ -60,6 +60,48 @@ class TestOwnershipSplit:
         assert [i.id for i in delta.opened] == ["inc1"]
 
 
+class TestDeltaReachesTheAnnouncer:
+    """The poll's own gate on calling _announce_status.
+
+    Every other announcer test calls ``_announce_status`` directly with a
+    hand-built Delta, so the branch that decides whether to call it at all was
+    never covered from this side.
+    """
+
+    def test_an_all_clear_alone_still_reaches_the_announcer(self, status_plugin):
+        """Observed in prod: incident hdynq1pc0fn8 cleared at 00:27:36 on
+        2026-08-15 with the bot live and in the channel, and #clanker heard
+        nothing. The resolved branch was added inside ``_announce_status``
+        while the caller stayed gated on ``delta.opened``, so an incident that
+        cleared in a pass where nothing new opened was parked in
+        ``pending_resolved`` and never spoken."""
+        plugin = status_plugin
+        plugin._fake_snapshot = green_snapshot(1000.0, incidents=[incident()])
+        plugin._run_status_poll()  # cold start seeds inc1 as live
+        plugin._announce_status.reset_mock()
+
+        plugin._fake_snapshot = green_snapshot(2000.0)  # inc1 gone from the unresolved set
+        plugin._run_status_poll()
+
+        assert plugin._announce_status.call_count == 1
+        delta = plugin._announce_status.call_args[0][0]
+        assert [i.id for i in delta.resolved] == ["inc1"]
+        assert delta.opened == ()
+
+    def test_a_quiet_poll_does_not_call_the_announcer(self, status_plugin):
+        """The gate still has to gate: nothing opened and nothing cleared must
+        not spend a pass in the announcer."""
+        plugin = status_plugin
+        plugin._fake_snapshot = green_snapshot(1000.0, incidents=[incident()])
+        plugin._run_status_poll()
+        plugin._announce_status.reset_mock()
+
+        plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
+        plugin._run_status_poll()
+
+        assert plugin._announce_status.call_count == 0
+
+
 class TestFailureHandling:
     def test_fetch_error_retains_last_good_state(self, status_plugin):
         plugin = status_plugin

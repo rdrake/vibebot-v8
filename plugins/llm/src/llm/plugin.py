@@ -1253,7 +1253,12 @@ class LLM(callbacks.Plugin):
                     "Status poll discarded %i opened incidents past the per-poll cap",
                     delta.discarded,
                 )
-            if delta.opened:
+            # Both branches, not just openings: _announce_status walks
+            # delta.resolved too, and gating the call on delta.opened alone
+            # meant an incident that cleared in a pass where nothing new
+            # opened sat in pending_resolved unspoken — then surfaced as a
+            # stale all-clear alongside the next unrelated opening.
+            if delta.opened or delta.resolved:
                 self._announce_status(delta)
         except (statuspage.FetchError, statuspage.InvalidPayload) as e:
             self.log.info("Status poll failed, retaining last good state: %s", e)
