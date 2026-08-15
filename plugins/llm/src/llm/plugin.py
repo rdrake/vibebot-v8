@@ -1358,7 +1358,15 @@ class LLM(callbacks.Plugin):
             "url": url,
         }
         if resolved:
-            facts["duration_sec"] = duration_sec
+            # Formatted, not raw seconds. Handed the integer the model narrates
+            # it verbatim — "resolved after lasting 2,170 seconds" reached
+            # #clanker on 2026-08-15 while the template it was upgrading said
+            # "36m" for the same incident. Omitted entirely when unusable, so
+            # the model has nothing to narrate rather than an empty string to
+            # invent around; that matches what the template does.
+            human = statuspage.format_duration(duration_sec)
+            if human:
+                facts["duration"] = human
         else:
             facts["latest_update"] = statuspage.sanitise_text(incident.latest_update_body)
         try:

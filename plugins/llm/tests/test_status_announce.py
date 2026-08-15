@@ -465,19 +465,30 @@ class TestStatusAnnounceCompletion:
         assert result == "Claude API is degraded."
 
     def test_reasoning_is_disabled_so_thinking_cannot_eat_the_output_budget(self, service, mocker):
-        """Gemini counts thinking tokens against ``max_tokens``.
+        """Asked for, but not relied on.
 
-        The reasoning budget scales with whatever cap it is given — measured at
-        113/120 and 385/400 on gemini-flash-latest — so no cap is large enough
-        and the request has to say it wants none. ``drop_params`` keeps the
-        parameter harmless on a provider that rejects it, matching the sampling
-        overrides on the assistant path.
+        gemini-flash-latest honours this intermittently — 8/8 in one sample,
+        1/5 an hour earlier, with reasoning_effort none/minimal and a
+        thinkingConfig passthrough no better. It stays because the honoured
+        case costs ~10x less. ``drop_params`` keeps the parameter harmless on a
+        provider that rejects it, matching the sampling overrides on the
+        assistant path.
         """
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert mock_completion.call_args.kwargs["reasoning_effort"] == "disable"
         assert mock_completion.call_args.kwargs["drop_params"] is True
+
+    def test_the_cap_leaves_room_for_thinking_plus_a_sentence(self, service, mocker):
+        """Gemini bills thinking against max_tokens, so a cap sized for the
+        sentence alone truncates every time the disable above is ignored.
+        Thinking settles around 400-550 for this prompt rather than growing
+        with the cap, so the cap has to clear that, not the sentence."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response("Claude API is degraded.")
+        service.status_announce_completion(facts={"name": "x"}, channel="#test")
+        assert mock_completion.call_args.kwargs["max_tokens"] >= 600
 
 
 class TestResolutionAnnounce:
@@ -523,8 +534,51 @@ class TestResolutionAnnounce:
         facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
         assert facts["event"] == "resolved"
         assert facts["status"] == "resolved"
-        assert facts["duration_sec"] == 3600
         assert "latest_update" not in facts
+
+    def test_resolution_facts_carry_a_human_duration_not_raw_seconds(self, announcing_plugin):
+        """Observed live 2026-08-15: handed ``duration_sec=2170`` the model
+        wrote "resolved after lasting 2,170 seconds", while the template it
+        was upgrading says "36m" for the same incident. ``format_duration``
+        already renders this for the template path; the rewrite path gets the
+        same string rather than the raw integer."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(
+            incident(),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url="https://status.claude.com/incidents/inc1",
+            label="Claude",
+            event="resolved",
+            duration_sec=3600,
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert facts["duration"] == "1h"
+        assert "duration_sec" not in facts, "raw seconds must not reach the model"
+
+    def test_an_unusable_duration_is_omitted_rather_than_sent_empty(self, announcing_plugin):
+        """format_duration renders "" for an undated or sub-minute incident.
+        The template simply says "resolved" there, so the model is given no
+        duration to narrate rather than an empty one to invent around."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        plugin._status_rewrite(
+            incident(),
+            "#test",
+            snapshot=plugin._status_read_cache,
+            url="https://status.claude.com/incidents/inc1",
+            label="Claude",
+            event="resolved",
+            duration_sec=None,
+        )
+        facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
+        assert "duration" not in facts
+        assert "duration_sec" not in facts
 
     def test_opening_facts_keep_the_live_status_and_update(self, announcing_plugin):
         from llm.plugin import LLM
