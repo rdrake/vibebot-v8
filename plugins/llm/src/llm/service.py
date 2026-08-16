@@ -482,6 +482,66 @@ def _strip_image_failures(
     return _strip_assistant_turns(history, _is_image_failure)
 
 
+# Failed-attempt narration guard. The sibling above spares any reply carrying
+# an image URL, deliberately — that turn delivered, so it is not a failure
+# report. But a turn can deliver AND narrate, and the narration is what the
+# user sees first. #afternet on 2026-08-15, "draw bunga bunga party":
+#
+#   Second image ready, first failed.
+#   https://paste.boxlabs.uk/img/img_6a81079496b1b.jpg
+#   First image failed. Second one ready.
+#
+# The retry is the bot's own bookkeeping. Nobody asked for two images, nobody
+# needs to know one was refused, and because the reply carries a URL it slips
+# past _is_image_failure into history, where it seeds the same narration next
+# time. The short-circuit in assistant_completion heads this off when the step
+# called generate_image and nothing else; this covers the residue — a step that
+# mixed a draw with another tool, so the model still wrote the post-tool text.
+#
+# The rewrite is blunt on purpose: content becomes the delivered URLs, which is
+# exactly what the short-circuit path returns.
+#
+# What keeps it safe is that the trigger is EVIDENCE, not vocabulary. The
+# caller passes ``had_failed_draw`` — a fact the tool loop recorded, that a
+# generate_image call really did come back an error this turn — and the guard
+# is inert without it. That is the lesson the tool-complaint guard paid for:
+# key on what happened, because the model's wording for it drifts within hours
+# ("first failed", "one got blocked", "the other one was a dud"). With the
+# evidence in hand the word list can stay loose, since the only reply it can
+# reach is one that both lost a draw and won another. Sentences carrying a URL
+# are never examined — those are the delivery.
+_DRAW_FAILURE_WORD_RE = re.compile(
+    r"\b(?:fail(?:ed|ure|s|ing)?|error(?:ed|s)?|blocked|moderated|censored|"
+    r"refus(?:e|ed|es|al)|reject(?:ed|s)?|denied|dud|borked|broken|bombed|"
+    r"didn'?t work|couldn'?t|could not|unable|no dice|no luck)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _strip_failed_attempt_narration(content: str, minted: set[str], had_failed_draw: bool) -> str:
+    """Reduce a mixed-outcome image reply to the images it actually delivered.
+
+    ``minted`` holds the URLs successful generate_image calls returned this
+    turn; ``had_failed_draw`` says another call errored. When both hold and the
+    reply carries a minted URL alongside a sentence about the failure, the
+    prose is dropped and the delivered URLs are returned in the order they
+    appeared. Any other reply — no image, no failed draw, or a failure report
+    with nothing to show for the turn — is passed through untouched.
+    """
+    if not content or not minted or not had_failed_draw:
+        return content
+    delivered = [url for url in _ANY_IMAGE_URL_RE.findall(content) if url in minted]
+    if not delivered:
+        return content
+    for sentence in _SENTENCE_SPLIT_RE.split(content):
+        if _ANY_IMAGE_URL_RE.search(sentence):
+            continue
+        if _DRAW_FAILURE_WORD_RE.search(sentence):
+            return " ".join(dict.fromkeys(delivered))
+    return content
+
+
 # Tool-complaint guard. The image-failure guard above fixed one sentence; this
 # one fixes the behaviour behind it. _IMAGE_FAILURE_RE is keyed on an image noun
 # next to a failure verb, and the model drifted out of that vocabulary within
@@ -5231,6 +5291,23 @@ Examples (echo → action_prompt: ""):
                         content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
                         last_assistant_text = content
 
+                    # The turn delivered an image and also narrated a draw that
+                    # failed on the way there — see
+                    # _strip_failed_attempt_narration. Runs after the guard
+                    # above so it judges real, minted URLs only.
+                    delivered_only = _strip_failed_attempt_narration(
+                        content, minted_image_urls, image_tool_error is not None
+                    )
+                    if delivered_only != content:
+                        self.log.info(
+                            "assistant_completion: reply narrated a failed draw alongside "
+                            "a delivered image; returning the image alone model=%s channel=%s",
+                            model,
+                            channel,
+                        )
+                        content = delivered_only
+                        last_assistant_text = content
+
                     # Reply guards, second half — see _POST_IMAGE_REPLY_GUARDS.
                     # The context is rebuilt because the image guard above may
                     # have REPLACED content with the real tool outcome, and
@@ -5314,6 +5391,11 @@ Examples (echo → action_prompt: ""):
 
                 # Execute each tool call and append results
                 storybook_ok = False
+                # URLs generate_image returned on THIS step, in call order.
+                # Separate from minted_image_urls (whole-turn, unordered) because
+                # the short-circuit below has to deliver this step's images and
+                # nothing else.
+                step_image_urls: list[str] = []
                 # Recorded before dispatch, not after: a call that raises or
                 # errors still means the model reached for a tool, and only a
                 # turn that reached for none can be complaining about nothing.
@@ -5409,9 +5491,10 @@ Examples (echo → action_prompt: ""):
                             # stale-image guard below can tell a fresh image
                             # from one lifted out of history.
                             image_tool_called = True
-                            minted_image_urls.update(
-                                _IMAGE_URL_RE.findall(str(parsed.get("message", "")))
-                            )
+                            image_url = str(parsed.get("message", "")).strip()
+                            minted_image_urls.update(_IMAGE_URL_RE.findall(image_url))
+                            if image_url:
+                                step_image_urls.append(image_url)
                     elif isinstance(parsed, dict) and tc.function.name == "generate_image":
                         image_tool_called = True
                         image_tool_error = str(parsed.get("error") or "").strip() or None
@@ -5450,45 +5533,56 @@ Examples (echo → action_prompt: ""):
                         final_text_after_tools="",
                     )
 
-                # Short-circuit: if the model just called generate_image
-                # alone and got back a URL, return it directly. step_2
+                # Short-circuit: if this step called generate_image and
+                # nothing else, return the URLs it minted directly. step_2
                 # would only have produced a "here's your image" sentence
                 # — costs ~4s on prod for a one-liner the user doesn't
                 # need (the URL is the deliverable).
-                if (
-                    len(message.tool_calls) == 1
-                    and message.tool_calls[0].function.name == "generate_image"
+                #
+                # PARTIAL SUCCESS lands here too, and that is the point.
+                # #afternet on 2026-08-15, "draw bunga bunga party": the model
+                # issued two generate_image calls in one message, one was
+                # refused by the provider, and because the old condition
+                # required exactly one call the turn fell through to step_2 —
+                # which narrated the failure into the channel:
+                #
+                #   Second image ready, first failed.
+                #   https://paste.boxlabs.uk/img/img_6a81079496b1b.jpg
+                #   First image failed. Second one ready.
+                #
+                # The user asked for a picture and got one; a retry the bot
+                # performed on its own behalf is bookkeeping, not news. Worse,
+                # that line then sits in history (it carries a URL, so
+                # _is_image_failure spares it) and seeds the same narration on
+                # the next draw. Delivering the images and dropping the
+                # commentary fixes both. When EVERY call failed there is
+                # nothing to short-circuit on, so the turn continues and the
+                # model reports the failure honestly, as before.
+                if step_image_urls and all(
+                    tc.function.name == "generate_image" for tc in message.tool_calls
                 ):
-                    last_tool_msg = messages[-1]
-                    try:
-                        img_parsed = json.loads(last_tool_msg.get("content", "") or "")
-                    except (json.JSONDecodeError, TypeError):
-                        img_parsed = None
-                    if (
-                        isinstance(img_parsed, dict)
-                        and img_parsed.get("status") == "ok"
-                        and img_parsed.get("message")
-                    ):
-                        url = str(img_parsed["message"])
-                        total_prompt_tokens += executor.accumulated_prompt_tokens
-                        total_completion_tokens += executor.accumulated_completion_tokens
-                        total_cost += executor.accumulated_cost
-                        self.log.info(
-                            "assistant_completion: short-circuit after generate_image, "
-                            "skipping step_%i",
-                            _step + 2,
-                        )
-                        return AssistantResult(
-                            content=self.sanitize_output(url),
-                            prompt_tokens=total_prompt_tokens,
-                            completion_tokens=total_completion_tokens,
-                            cost=total_cost,
-                            model=model,
-                            grounding_used=executor.grounding_used,
-                            last_successful_tool="generate_image",
-                            final_text_after_tools=url,
-                            was_verse=was_verse,
-                        )
+                    url = " ".join(step_image_urls)
+                    total_prompt_tokens += executor.accumulated_prompt_tokens
+                    total_completion_tokens += executor.accumulated_completion_tokens
+                    total_cost += executor.accumulated_cost
+                    self.log.info(
+                        "assistant_completion: short-circuit after generate_image "
+                        "(%i/%i calls delivered), skipping step_%i",
+                        len(step_image_urls),
+                        len(message.tool_calls),
+                        _step + 2,
+                    )
+                    return AssistantResult(
+                        content=self.sanitize_output(url),
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost,
+                        model=model,
+                        grounding_used=executor.grounding_used,
+                        last_successful_tool="generate_image",
+                        final_text_after_tools=url,
+                        was_verse=was_verse,
+                    )
 
             # Step cap reached — fold in leaf tool costs
             total_prompt_tokens += executor.accumulated_prompt_tokens
