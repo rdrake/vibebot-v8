@@ -88,6 +88,12 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 # Commands that support long-term memory extraction
 _MEMORY_COMMANDS = frozenset({"ask", "code"})
 
+# Usage-row label for image spend. Namespaced like "compaction:compact" rather
+# than reusing "draw", because a turn writes BOTH a text row and an image row
+# and counting draws by row would otherwise double. One image generated, one
+# row: `WHERE command = 'draw:image'` is the image bill.
+_IMAGE_USAGE_COMMAND = "draw:image"
+
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
 # brackets crash Limnoria's nested-command tokenizer.
@@ -4085,23 +4091,61 @@ class LLM(callbacks.Plugin):
     ) -> ToolCallbackResult:
         """Generate an image for the generate_image tool.
 
-        Usage logging is handled by the outer command wrapper via
-        ``_store_context_and_log_usage``; leaf tool handlers do not log
-        independently. That makes propagating the cost this leaf's whole
-        accounting responsibility — the wrapper can only record what the
-        executor accumulated, and it accumulates only what is returned here.
-        Dropping it is why draw spend read as $0.00 for four months.
+        The documented rule is that leaf tool handlers do not log usage —
+        ``_store_context_and_log_usage`` writes one row for the turn. This is
+        the exception, and the reason is that a usage row records exactly ONE
+        model. Every other leaf spends on a text model close enough to the
+        caller's that folding the cost in loses nothing worth having; this one
+        spends on the image model, and folding it in files image spend under
+        whatever chat model happened to answer.
+
+        That is not hypothetical. Since 2026-04-11, when @draw was converted to
+        run through assistant_request like everything else, EVERY path to an
+        image has gone through this callback — so from that date no row in the
+        usage table attributed image spend correctly, and `GROUP BY model` read
+        as if the bot had stopped generating images. Storybook already solved it
+        the same way, logging its own row from the background job.
+
+        So: one row per turn from the wrapper for the text, one row per image
+        from here, each naming the model that actually spent.
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
         result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
-        return _ToolCallbackResult(
-            not bool(result.error),
-            result.content,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            cost=result.cost,
-        )
+        self._log_image_usage(msg, prompt, result)
+        return _ToolCallbackResult(not bool(result.error), result.content)
+
+    def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
+        """Write the usage row for one image generation, under the image model.
+
+        Skips silently when nothing was spent — a prompt rejected by
+        ``validate_prompt`` or a missing API key never reaches the provider, and
+        a zero row would only dilute the averages. Never raises: an accounting
+        write must not be able to sink a picture the user is waiting for.
+        """
+        if not (result.cost or result.prompt_tokens or result.completion_tokens):
+            return
+        try:
+            if result.error is None:
+                status = "success"
+            elif self._is_content_blocked_error(result.error):
+                status = "content_blocked"
+            else:
+                status = "error"
+            self.db.log_usage(
+                ircutils.nickFromHostmask(msg.prefix),
+                self._get_channel(msg),
+                _IMAGE_USAGE_COMMAND,
+                result.model,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cost,
+                prompt=prompt[:200],
+                status=status,
+                error_detail=(result.error or "")[:200],
+            )
+        except Exception:
+            self.log.exception("image usage logging failed")
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
         """Generate code and save to HTTP for the generate_code tool."""

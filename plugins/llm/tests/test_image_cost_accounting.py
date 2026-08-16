@@ -6,13 +6,16 @@ single grok-imagine entry — so `completion_cost` returns nothing and
 IMAGE_COST_PER_IMAGE is the only price there is. Two ways that price was being
 lost before it reached the usage table:
 
-* **The tool boundary.** `_draw_for_assistant` knew the cost and returned a
-  two-field `ToolCallbackResult` that could not carry it. From 2026-04-11, when
-  draws moved off the @draw command onto the generate_image tool, until
-  2026-08-16, every image the chat model generated was booked at $0.00. The
-  prod usage table shows it plainly: draw rows carry `xai/grok-imagine-image-pro`
-  at $0.069 average through 2026-04-11, then switch to *chat* model names at
-  ~$0.001 — the text cost of the turn with the image cost missing.
+* **The tool boundary.** `_draw_for_assistant` knew the cost and had nowhere to
+  put it, so nothing recorded it at all. From 2026-04-11, when @draw was
+  converted to run through assistant_request and every path to an image started
+  going through that callback, until 2026-08-16, every image the bot drew was
+  booked at $0.00. The prod usage table shows it plainly: draw rows carry
+  `xai/grok-imagine-image-pro` at $0.069 average through 2026-04-11, then switch
+  to *chat* model names at ~$0.001 — the text cost of the turn with the image
+  cost missing. The fix is a second usage row written by the callback itself,
+  under the image model, because a row names exactly one model and the turn
+  used two.
 
 * **Refused generations.** A moderated refusal still bills; xAI says so in the
   error (`'usage': {'cost_in_usd_ticks': 200000000}`). Nothing costed those at
@@ -25,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.assistant import ToolCallbackResult, ToolResult
+from llm.assistant import ToolCallbackResult
 from llm.service import IMAGE_COST_PER_IMAGE, LLMService
 
 from .conftest import make_completion_response, make_tool_call
@@ -157,51 +160,41 @@ class TestBilledRefusals:
         assert result.cost == pytest.approx(PRICE * 2)
 
 
-class TestCostReachesTheUsageRow:
-    """The leak that mattered: cost dropped at the tool boundary."""
+class TestSpendIsAttributedToTheModelThatSpentIt:
+    """A usage row names one model, so image spend needs its own row.
 
-    def test_callback_result_carries_usage(self) -> None:
-        """Defaults keep every non-spending callback working unchanged."""
-        assert ToolCallbackResult(True, "done").cost == 0.0
-        spent = ToolCallbackResult(True, MINTED, prompt_tokens=3, completion_tokens=0, cost=0.02)
-        assert (spent.prompt_tokens, spent.cost) == (3, 0.02)
+    Folding it into the caller's total makes `GROUP BY model` read as though
+    the chat model bought the pictures. The draw callback writes its own row
+    instead — see `LLM._draw_for_assistant` and the tests in test_assistant.py.
+    """
 
-    def test_draw_tool_returns_a_costed_result(self, mocker: MockerFixture) -> None:
-        """The handler must hand back a ToolResult, not a bare string.
+    def test_callback_result_carries_no_usage(self) -> None:
+        """Deliberate: cost travels via the leaf's own row, not up the stack.
 
-        A bare string is what the executor wraps at cost=0.0, which is exactly
-        how the spend disappeared.
+        If these fields ever come back, the same spend lands in two rows.
         """
+        assert ToolCallbackResult._fields == ("ok", "message")
+
+    def test_draw_tool_returns_a_bare_string(self) -> None:
+        """No ToolResult, so the executor accumulates nothing for a draw."""
         from llm.assistant import AssistantToolExecutor
 
         executor = object.__new__(AssistantToolExecutor)
-        executor._draw_fn = lambda _p: ToolCallbackResult(True, MINTED, cost=PRICE)
+        executor._draw_fn = lambda _p: ToolCallbackResult(True, MINTED)
 
         result = AssistantToolExecutor._tool_generate_image(executor, {"prompt": "a party"})
 
-        assert isinstance(result, ToolResult)
-        assert result.cost == PRICE
-        assert MINTED in result.content
+        assert isinstance(result, str)
+        assert MINTED in result
 
-    def test_failed_draw_still_reports_its_cost(self, mocker: MockerFixture) -> None:
-        """Refusals are the majority case; they cannot be the free case."""
-        from llm.assistant import AssistantToolExecutor
-
-        executor = object.__new__(AssistantToolExecutor)
-        executor._draw_fn = lambda _p: ToolCallbackResult(False, "blocked", cost=PRICE)
-
-        result = AssistantToolExecutor._tool_generate_image(executor, {"prompt": "a party"})
-
-        assert isinstance(result, ToolResult)
-        assert result.cost == PRICE
-
-    def test_assistant_turn_totals_include_the_image(
+    def test_assistant_turn_reports_only_its_text_cost(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        """End to end through the chat loop, which is how draws now run.
+        """The turn's own row must not absorb the image bill.
 
-        This is the number that reaches db.log_usage. Before the fix it came
-        back as the text cost alone.
+        `AssistantResult.cost` is what `_store_context_and_log_usage` writes
+        under the CHAT model. The image is billed separately, so this number
+        stays text-only — otherwise the two rows sum to double the real spend.
         """
         service, _ = make_service(assistantModel="gpt-4", httpUrlBase="https://irc.rdrake.org/llm")
         mocker.patch(
@@ -221,11 +214,11 @@ class TestCostReachesTheUsageRow:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(True, MINTED, cost=PRICE),
+            draw_fn=lambda _p: ToolCallbackResult(True, MINTED),
         )
 
         assert result.content == MINTED
-        assert result.cost == pytest.approx(PRICE)
+        assert result.cost == pytest.approx(0.0)
 
 
 class TestLiteLLMStillCannotPriceThese:

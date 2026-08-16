@@ -532,20 +532,15 @@ class ToolCallbackResult(NamedTuple):
     ``ok=False`` means the operation failed; ``message`` is human-readable
     text safe to surface to the LLM (no secrets, no internal tracebacks).
 
-    The usage fields default to zero and most callbacks leave them there —
-    cleanup and reminders spend nothing. ``generate_image`` is the exception,
-    and the omission was expensive: the draw callback returned an image whose
-    price it knew and dropped it here, so from 2026-04-11 (when draws moved off
-    the @draw command and onto this tool) until 2026-08-16 every image the chat
-    model generated was booked at $0.00. Only the leaf knows what a tool spent,
-    so anything that spends has to say so on the way back.
+    Deliberately carries no usage fields. The one callback that spends real
+    money — generate_image — runs on a DIFFERENT model from the turn that
+    invoked it, and folding its cost into the caller's total would file image
+    spend under the chat model. It writes its own usage row instead; see
+    ``LLM._draw_for_assistant``.
     """
 
     ok: bool
     message: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cost: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1065,24 +1060,19 @@ class AssistantToolExecutor:
         )
         return json.dumps(result)
 
-    def _tool_generate_image(self, args: dict[str, Any]) -> str | ToolResult:
+    def _tool_generate_image(self, args: dict[str, Any]) -> str:
         if self._draw_fn is None:
             return self._err("Image generation is not available.")
         prompt = args.get("prompt", "")
         if not prompt.strip():
             return self._err("A prompt is required.")
+        # No usage returned on purpose — the draw callback books its own row
+        # under the image model. Returning cost here as well would double-count
+        # it. See ToolCallbackResult.
         result = self._draw_fn(prompt)
-        # A ToolResult rather than the bare string the other simple handlers
-        # return, because this is the one that spends money. The FAILURE path
-        # carries cost too: a moderated refusal is a generation the provider
-        # ran and charged for, and refusals are the majority case on the
-        # current image model.
-        return ToolResult(
-            content=self._err(result.message) if not result.ok else self._ok(result.message),
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            cost=result.cost,
-        )
+        if not result.ok:
+            return self._err(result.message)
+        return self._ok(result.message)
 
     def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:
         if not self._search_fn:

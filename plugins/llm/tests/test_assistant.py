@@ -3175,23 +3175,26 @@ class TestDrawForMeta:
         plugin._MetaSynchronized_rlock = threading.RLock()
         return plugin
 
-    def test_draw_for_assistant_does_not_log_usage(
+    def test_draw_for_assistant_logs_its_own_usage_row(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """_draw_for_assistant does not call db.log_usage.
+        """_draw_for_assistant books image spend under the IMAGE model.
 
-        Usage logging is consolidated in the outer command wrapper via
-        _store_context_and_log_usage; leaf tool handlers must not log
-        independently to avoid double-counting.
+        This is the documented exception to "leaf tool handlers do not log
+        independently". A usage row names exactly one model, and this leaf
+        spends on a different one from the turn that invoked it, so folding its
+        cost into the caller's row files image spend under whatever chat model
+        answered. Since 2026-04-11 every path to an image runs through here, so
+        that was every image the bot drew.
         """
         from llm.service import ImageResult
 
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="https://img.example/cat.png",
-            model="dall-e-3",
+            model="xai/grok-imagine-image",
             prompt_tokens=10,
             completion_tokens=0,
-            cost=0.04,
+            cost=0.02,
         )
 
         msg = mocker.MagicMock()
@@ -3202,7 +3205,106 @@ class TestDrawForMeta:
 
         assert result.ok is True
         assert result.message == "https://img.example/cat.png"
+        args, kwargs = plugin.db.log_usage.call_args
+        assert args[2] == "draw:image"
+        assert args[3] == "xai/grok-imagine-image"
+        assert args[6] == 0.02
+        assert kwargs["status"] == "success"
+
+    def test_draw_for_assistant_returns_no_usage_to_the_caller(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Having logged its own row, it must not also report cost upward.
+
+        The executor accumulates whatever a leaf returns and the wrapper logs
+        that. Returning cost here as well would put the same spend in two rows.
+        """
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            prompt_tokens=10,
+            completion_tokens=0,
+            cost=0.02,
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_assistant(mock_irc, msg, "a cat")
+
+        assert not hasattr(result, "cost")
+        assert len(result) == 2
+
+    def test_draw_for_assistant_skips_the_row_when_nothing_was_spent(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """A prompt rejected before any provider call is not a purchase.
+
+        validate_prompt failures and missing API keys never reach the provider;
+        a zero row would only dilute the per-image averages.
+        """
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: prompt too long",
+            error="Error: prompt too long",
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a cat")
+
         plugin.db.log_usage.assert_not_called()
+
+    def test_draw_for_assistant_books_a_billed_refusal(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """A refused generation the provider charged for still gets a row."""
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="Error: No image generated. The prompt was blocked by content safety filters.",
+            model="xai/grok-imagine-image",
+            cost=0.02,
+            error="Error: No image generated. The prompt was blocked by content safety filters.",
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a cat")
+
+        args, kwargs = plugin.db.log_usage.call_args
+        assert args[6] == 0.02
+        assert kwargs["status"] == "content_blocked"
+
+    def test_usage_logging_failure_does_not_sink_the_image(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Accounting is bookkeeping; the user is waiting for a picture."""
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.02,
+        )
+        plugin.db.log_usage.side_effect = RuntimeError("disk full")
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_assistant(mock_irc, msg, "a cat")
+
+        assert result.ok is True
+        assert result.message == "https://img.example/cat.png"
 
     def test_draw_for_assistant_returns_content(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
