@@ -1587,3 +1587,117 @@ class TestImageBoundaryKeyResolution:
         service.image_generation("a cat")
 
         assert image_generation.call_args.kwargs["api_key"] is None
+
+
+class TestXaiModerationArmsTheRewrite:
+    """The auto-rewrite loop must fire on xAI's moderation refusal.
+
+    It did not, for as long as prod has been drawing on grok-imagine.
+    ``_is_content_safety_error`` knew OpenAI's and Google's phrasing only, so
+    ``imagine:content-moderated`` was classified as an ordinary bad request and
+    ``image_generation`` returned without retrying. Measured over six hours on
+    2026-08-15: 18 draws, 10 refused, zero rewrites attempted, with
+    ``drawAutoRewriteMax`` set to 3 the whole time.
+    """
+
+    # Verbatim from prod, 2026-08-15T22:25:59Z. Pinned rather than paraphrased:
+    # the whole defect was a keyword list that did not match reality, so the
+    # test is only worth anything if it carries the real string.
+    XAI_MODERATION_ERROR = (
+        "litellm.BadRequestError: XaiException - Error code: 400 - "
+        "{'code': 'imagine:content-moderated', 'error': 'Generated image "
+        "rejected by content moderation.', 'usage': {'cost_in_usd_ticks': 200000000}}"
+    )
+
+    def _xai_error(self) -> Exception:
+        import litellm as litellm_module
+
+        return litellm_module.BadRequestError(
+            message=self.XAI_MODERATION_ERROR,
+            model="xai/grok-imagine-image",
+            llm_provider="xai",
+        )
+
+    def test_classifier_recognises_the_refusal(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        """The exact prod error is a content block, not a generic bad request."""
+        service, _ = make_service()
+        assert service._is_content_safety_error(self._xai_error()) is True
+
+    def test_a_real_bad_request_is_still_not_a_content_block(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        """Widening the list must not swallow ordinary 400s.
+
+        A malformed request has to keep returning immediately: retrying it
+        spends a rewrite completion and another billed image call on something
+        no wording change can fix.
+        """
+        import litellm as litellm_module
+
+        service, _ = make_service()
+        error = litellm_module.BadRequestError(
+            message="litellm.BadRequestError: XaiException - Error code: 400 - "
+            "{'error': 'Invalid value for parameter n'}",
+            model="xai/grok-imagine-image",
+            llm_provider="xai",
+        )
+        assert service._is_content_safety_error(error) is False
+
+    def test_refusal_now_gets_one_rewrite_and_recovers(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """End to end: refused draw -> rewritten prompt -> image delivered."""
+        service, _ = make_service(
+            imageModel="xai/grok-imagine-image",
+            assistantModel="gemini/gemini-flash-latest",
+            drawAutoRewriteMax=1,
+            httpUrlBase="https://example.com/llm",
+        )
+        success = mocker.Mock()
+        success.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        success.usage = mocker.Mock(prompt_tokens=5, completion_tokens=0)
+
+        image_generation = mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=[self._xai_error(), success],
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("a tasteful party scene"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch.object(
+            service, "_download_and_save_image", return_value="https://example.com/llm/img_a.png"
+        )
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is None
+        assert result.url == "https://example.com/llm/img_a.png"
+        assert result.rewritten_prompt == "a tasteful party scene"
+        assert image_generation.call_count == 2
+
+    def test_the_cap_bounds_the_billed_calls(self, make_service, mocker: MockerFixture) -> None:
+        """A prompt the provider will never pass costs one extra call, not three.
+
+        Every rewrite spends a billed image call on top of the one already
+        refused, which is why the default came down from 3 to 1.
+        """
+        service, _ = make_service(
+            imageModel="xai/grok-imagine-image",
+            assistantModel="gemini/gemini-flash-latest",
+            drawAutoRewriteMax=1,
+            httpUrlBase="https://example.com/llm",
+        )
+        image_generation = mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=[self._xai_error(), self._xai_error()],
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is not None
+        assert image_generation.call_count == 2

@@ -238,10 +238,17 @@ conf.registerChannelValue(
     LLM,
     "drawAutoRewriteMax",
     registry.NonNegativeInteger(
-        3,
+        # 1, not the 3 this defaulted to while the loop was unreachable on the
+        # prod image model. Every rewrite spends a BILLED image call on top of
+        # the one already refused, and the recoveries observed on 2026-08-15 all
+        # landed on the first changed prompt. A cap of 1 buys the bulk of them
+        # for one extra call; 3 mostly buys three refusals of a prompt the
+        # provider was never going to pass.
+        1,
         _("""Maximum number of automatic prompt rewrites when image generation
         is blocked by content safety filters. Set to 0 to disable. Each retry
-        uses the ask model to rewrite the prompt."""),
+        uses the ask model to rewrite the prompt, then spends another billed
+        image call."""),
     ),
 )
 

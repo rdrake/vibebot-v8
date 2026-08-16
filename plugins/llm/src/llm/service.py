@@ -4525,6 +4525,21 @@ Examples (echo → action_prompt: ""):
         Some providers (e.g. OpenAI) return moderation blocks as BadRequestError
         rather than ContentPolicyViolationError.
 
+        This is the switch that arms the auto-rewrite loop, so a provider whose
+        wording is missing here does not merely get classified oddly — it gets
+        no retry at all. That is what happened to xAI, which has been prod's
+        image model while the list only knew OpenAI's and Google's phrasing.
+        Measured over six hours on 2026-08-15: 18 draws, 10 refused, and not one
+        rewrite attempted, because ``imagine:content-moderated`` matches none of
+        the original four keywords. ``drawAutoRewriteMax`` was set to 3 the whole
+        time and had never once run.
+
+        The filter rejects the GENERATED IMAGE rather than the prompt, which
+        might suggest rewriting the prompt cannot help. The logs say otherwise:
+        of three turns where the chat model retried on its own initiative, both
+        that changed the prompt got through and the one that resent an identical
+        prompt was refused again.
+
         Args:
             error: The exception to check
 
@@ -4541,6 +4556,12 @@ Examples (echo → action_prompt: ""):
                 "safety system",
                 "content policy",
                 "safety filter",
+                # xAI. Both the error code (imagine:content-moderated) and the
+                # prose it ships with ("Generated image rejected by content
+                # moderation.") are matched, so a change to either one alone
+                # does not silently disarm the loop again.
+                "content-moderated",
+                "content moderation",
             )
         )
 
