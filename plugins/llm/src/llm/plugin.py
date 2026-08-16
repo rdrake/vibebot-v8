@@ -4087,12 +4087,21 @@ class LLM(callbacks.Plugin):
 
         Usage logging is handled by the outer command wrapper via
         ``_store_context_and_log_usage``; leaf tool handlers do not log
-        independently.
+        independently. That makes propagating the cost this leaf's whole
+        accounting responsibility — the wrapper can only record what the
+        executor accumulated, and it accumulates only what is returned here.
+        Dropping it is why draw spend read as $0.00 for four months.
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
         result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
-        return _ToolCallbackResult(not bool(result.error), result.content)
+        return _ToolCallbackResult(
+            not bool(result.error),
+            result.content,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cost=result.cost,
+        )
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
         """Generate code and save to HTTP for the generate_code tool."""

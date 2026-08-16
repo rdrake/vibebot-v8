@@ -58,10 +58,32 @@ litellm.request_timeout = 120  # 2 minutes
 
 # Per-image cost for models not in LiteLLM's built-in cost map.
 # Used as fallback when litellm.completion_cost() returns 0.
+#
+# Checked against upstream on 2026-08-16 and this is not going away: neither
+# litellm 1.93.0 (what we pin) nor 1.97.0 (released that day) carries a single
+# grok-imagine entry. Both ship the same 40 xai models and none of them is an
+# image or video model, so `completion_cost` has no price to return and the
+# model does not even validate — startup logs "not in litellm's known model
+# list". Upgrading does not fix accounting here; this table is the price.
 IMAGE_COST_PER_IMAGE: dict[str, float] = {
     "xai/grok-imagine-image-pro": 0.07,
     "xai/grok-imagine-image": 0.02,
 }
+
+# Providers report a billed refusal differently, but they all report SOMETHING
+# in the usage block. xAI moderation refusals carry
+# `'usage': {'cost_in_usd_ticks': 200000000}` — the generation ran, the output
+# filter rejected it, and the call is charged anyway. With draws refused better
+# than half the time (measured 2026-08-15: 10 of 18), silently costing those at
+# zero understates image spend by more than the successes do.
+#
+# The AMOUNT comes from IMAGE_COST_PER_IMAGE rather than from the reported
+# ticks: the tick unit is undocumented, and 200000000 only resolves to the
+# table's $0.02 if a tick is 1e-10 USD. That inference is probably right, but a
+# wrong guess here misprices every failure by orders of magnitude, whereas the
+# table is a number we already trust. So the provider's usage block is read as
+# a yes/no signal that it billed, and the price comes from the table.
+_BILLED_FAILURE_MARKERS = ("cost_in_usd_ticks", "'usage'", '"usage"')
 
 _ = PluginInternationalization("LLM")
 
@@ -1602,6 +1624,8 @@ class LLMService:
         # for the gap_s field on completion_timing. See _cache_gap_seconds.
         self._cache_gap_last: dict[tuple[str, str], float] = {}
         self._cache_gap_lock = threading.Lock()
+        # Image models already warned about for having no price. See _image_price.
+        self._unpriced_models: set[str] = set()
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
@@ -2611,6 +2635,42 @@ class LLMService:
             self.log.warning("completion_cost failed for model=%s", model, exc_info=True)
 
         return prompt_tokens, completion_tokens, cost
+
+    def _image_price(self, model: str) -> float:
+        """Per-image price for ``model``, or 0.0 with a warning if unpriced.
+
+        Every image model in use is invisible to LiteLLM's cost map, so a miss
+        here is not a rounding error — it books the call at zero and the spend
+        vanishes from the usage table entirely. That is what made draw cost
+        unreadable for four months, and it happened silently, so this says so
+        out loud. Warned once per model rather than per call: the whole point is
+        that it fires on a model swap, and a per-call warning on a busy channel
+        would be scrolled past.
+        """
+        price = IMAGE_COST_PER_IMAGE.get(model)
+        if price is not None:
+            return price
+        if model not in self._unpriced_models:
+            self._unpriced_models.add(model)
+            self.log.warning(
+                "image model %s has no price in IMAGE_COST_PER_IMAGE and LiteLLM "
+                "cannot cost it; its spend is being recorded as $0.00. Add it to "
+                "IMAGE_COST_PER_IMAGE in service.py.",
+                model,
+            )
+        return 0.0
+
+    def _billed_failure_cost(self, error: Exception, model: str) -> float:
+        """Price of a generation attempt the provider refused but still charged.
+
+        See ``_BILLED_FAILURE_MARKERS``. Returns 0.0 when the provider gave no
+        sign that it billed, so a refusal that genuinely cost nothing stays free
+        in the books.
+        """
+        text = str(error)
+        if not any(marker in text for marker in _BILLED_FAILURE_MARKERS):
+            return 0.0
+        return self._image_price(model)
 
     @staticmethod
     def _msg_chars(messages: list[dict[str, Any]]) -> int:
@@ -4693,7 +4753,7 @@ Examples (echo → action_prompt: ""):
 
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
         if cost == 0.0:
-            cost = IMAGE_COST_PER_IMAGE.get(model, 0.0)
+            cost = self._image_price(model)
 
         if response.data and len(response.data) > 0:
             image_data = response.data[0]
@@ -5773,15 +5833,22 @@ Examples (echo → action_prompt: ""):
                 self._log_server_headers(e)
                 content_blocked = True
                 block_reason = self._sanitize(str(e))[:200]
+                total_cost += self._billed_failure_cost(e, model)
             except Exception as e:
                 self._log_server_headers(e)
                 if self._is_content_safety_error(e):
                     content_blocked = True
                     block_reason = self._sanitize(str(e))[:200]
+                    total_cost += self._billed_failure_cost(e, model)
                 else:
                     # Non-content errors: no retry
                     error_content = self._handle_llm_error(e, "image generation")
-                    return ImageResult(content=error_content, error=error_content)
+                    return ImageResult(
+                        content=error_content,
+                        cost=self._billed_failure_cost(e, model),
+                        model=model,
+                        error=error_content,
+                    )
 
             # --- Auto-rewrite loop ---
             if not content_blocked or max_rewrites <= 0:
@@ -5790,7 +5857,17 @@ Examples (echo → action_prompt: ""):
                     "Error: No image generated. The prompt may have been blocked by "
                     "content safety filters. Try rephrasing your request."
                 )
-                return ImageResult(content=error_content, error=error_content)
+                # total_cost is not always zero here: with rewrites disabled the
+                # first attempt has already been made, and a refusal the provider
+                # charged for is exactly what lands on this path.
+                return ImageResult(
+                    content=error_content,
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    cost=total_cost,
+                    model=model,
+                    error=error_content,
+                )
 
             self.log.info(
                 "Image generation blocked, attempting auto-rewrite (max %s)", max_rewrites
@@ -5835,15 +5912,24 @@ Examples (echo → action_prompt: ""):
                     self._log_server_headers(e)
                     block_reason = self._sanitize(str(e))[:200]
                     prior_rewrites.append((current_prompt, block_reason))
+                    total_cost += self._billed_failure_cost(e, model)
                 except Exception as e:
                     self._log_server_headers(e)
                     if self._is_content_safety_error(e):
                         block_reason = self._sanitize(str(e))[:200]
                         prior_rewrites.append((current_prompt, block_reason))
+                        total_cost += self._billed_failure_cost(e, model)
                     else:
                         # Non-content error during retry — stop
                         error_content = self._handle_llm_error(e, "image generation")
-                        return ImageResult(content=error_content, error=error_content)
+                        return ImageResult(
+                            content=error_content,
+                            prompt_tokens=total_prompt_tokens,
+                            completion_tokens=total_completion_tokens,
+                            cost=total_cost + self._billed_failure_cost(e, model),
+                            model=model,
+                            error=error_content,
+                        )
 
             # Exhausted all retries
             self.log.warning(
