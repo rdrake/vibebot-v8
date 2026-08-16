@@ -115,7 +115,7 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/executor.py`: global LLM concurrency gate; tune via `supybot.plugins.LLM.maxConcurrentLLMCalls`
 - `plugins/nickinmiddle/src/nickinmiddle/`: nick-in-middle `inFilter` plugin
 - `mkdocs.yml` and `docs/guide/`: published guide source
-- `docs/plans/`: design and implementation plans; shipped plans move to `docs/plans/archive/`
+- `docs/plans/`: design and implementation plans; shipped plans move to `docs/plans/archive/`. Check the active list in [`docs/plans/README.md`](docs/plans/README.md) before starting work on a subsystem — it is where open follow-ups that are waiting on production traffic are parked, and the measurement they are waiting for is easy to do accidentally and then lose.
 
 ## Go rewrite (v9)
 

@@ -9,6 +9,9 @@ to `archive/`.
 
 Active:
 
+- [Draw refusal follow-up](2026-08-23-draw-refusal-followup.md) — 56% of draws
+  were refused; the fixes shipped 2026-08-15/16 but the rewrite loop is still
+  unexercised. Waiting on traffic, earliest useful date 2026-08-23.
 - [Status-announce restart gap](2026-08-14-status-announce-restart-gap.md) —
   `_status_state` is memory-only, so an incident opening during a restart is
   seeded as already-announced and never fires. Noted, not started.
