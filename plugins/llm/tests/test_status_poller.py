@@ -266,7 +266,7 @@ CF = "https://www.cloudflarestatus.com"
 
 class TestPerSourceState:
     def test_pruning_clears_every_keyed_structure(self, status_plugin):
-        """Pruning only _status_state would leave the other five growing without
+        """Pruning only _status_state would leave the other seven growing without
         bound — the 5-source cap bounds the configured set, not the historical
         one."""
         plugin = status_plugin
@@ -276,6 +276,8 @@ class TestPerSourceState:
         plugin._status_history_cache = {GITHUB: ()}
         plugin._status_history_at = {GITHUB: 1000.0}
         plugin._status_history_failed_at = {GITHUB: 1000.0}
+        plugin._status_query_cache = {GITHUB: green_snapshot(1000.0)}
+        plugin._status_query_failed_at = {GITHUB: 1000.0}
 
         plugin._status_prune_sources([CLAUDE])
 
@@ -286,6 +288,8 @@ class TestPerSourceState:
             "_status_history_cache",
             "_status_history_at",
             "_status_history_failed_at",
+            "_status_query_cache",
+            "_status_query_failed_at",
         ):
             assert getattr(plugin, name) == {}, f"{name} still holds the removed source"
 

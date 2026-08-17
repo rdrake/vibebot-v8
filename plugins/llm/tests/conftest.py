@@ -818,6 +818,16 @@ def status_plugin():
     obj._status_history_cache = {}
     obj._status_history_at = {}
     obj._status_history_failed_at = {}
+    obj._status_query_cache = {}
+    obj._status_query_failed_at = {}
+    obj._STATUS_QUERY_TTL = LLM._STATUS_QUERY_TTL
+    obj._STATUS_QUERY_CACHE_MAX = LLM._STATUS_QUERY_CACHE_MAX
+    # _status_query_snapshot calls self._status_evict_query_cache() — on a bare
+    # MagicMock an unbound attribute access silently returns a fresh Mock
+    # instead of running the real method, so eviction would be a no-op unless
+    # this is bound explicitly too (same trap as the other _status_* helpers
+    # bound below).
+    obj._status_evict_query_cache = LLM._status_evict_query_cache.__get__(obj)
     obj._fetch_calls = 0
     obj._fake_snapshot = None
     obj._fake_error = None
@@ -837,7 +847,7 @@ def status_plugin():
     obj._status_rotate = LLM._status_rotate.__get__(obj)
     obj._poll_one_source = LLM._poll_one_source.__get__(obj)
 
-    def fake_fetch(source, *, timeout_cap=None):
+    def fake_fetch(source, *, timeout_cap=None, cached=None):
         obj._fetch_calls += 1
         obj._fetch_sources.append(source)
         if obj._fake_error:

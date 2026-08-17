@@ -889,6 +889,10 @@ class LLM(callbacks.Plugin):
         self._status_history_cache: dict[str, tuple[statuspage.HistoryEntry, ...]] = {}
         self._status_history_at: dict[str, float] = {}
         self._status_history_failed_at: dict[str, float] = {}
+        # Queryable-only pages: lazily filled, never polled, never announced,
+        # and never granted lifecycle state.
+        self._status_query_cache: dict[str, statuspage.Snapshot] = {}
+        self._status_query_failed_at: dict[str, float] = {}
         self._status_cursor: str | None = None
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
@@ -1184,12 +1188,15 @@ class LLM(callbacks.Plugin):
     def _status_prune_sources(self, sources: list[str], queryable: list[str] | None = None) -> None:
         """Drop state for sources no longer configured.
 
-        Two different keep-sets, deliberately. Lifecycle state is pruned
-        against the POLLED set: a queryable page must never hold any. The
-        history and query caches are pruned against polled UNION queryable —
-        pruning history against the polled set alone deletes an allowlisted
-        page's history (up to 4 MB, cached for an hour) on the very next poll,
-        120 seconds after it was fetched, backoff and all.
+        Two different keep-sets, deliberately, across eight structures.
+        Lifecycle state is pruned against the POLLED set: a queryable page
+        must never hold any. The history and query caches are pruned against
+        polled UNION queryable — pruning history against the polled set alone
+        deletes an allowlisted page's history (up to 4 MB, cached for an hour)
+        on the very next poll, 120 seconds after it was fetched, backoff and
+        all. The query cache and its failure backoff get the same treatment:
+        without it, a page's query reading is evicted on the next poll rather
+        than aged out by its own TTL and cap.
         """
         polled = set(sources)
         both = polled | set(queryable or ())
@@ -1200,6 +1207,8 @@ class LLM(callbacks.Plugin):
             (self._status_history_cache, both),
             (self._status_history_at, both),
             (self._status_history_failed_at, both),
+            (self._status_query_cache, both),
+            (self._status_query_failed_at, both),
         ):
             for stale in [k for k in holder if k not in keep]:
                 del holder[stale]
@@ -1255,7 +1264,11 @@ class LLM(callbacks.Plugin):
         fut.add_done_callback(lambda _f: self._schedule_status_poll())
 
     def _status_fetch_snapshot(
-        self, source: str, *, timeout_cap: float | None = None
+        self,
+        source: str,
+        *,
+        timeout_cap: float | None = None,
+        cached: statuspage.Snapshot | None = None,
     ) -> statuspage.Snapshot:
         """Fetch and strictly parse one status page.
 
@@ -1263,9 +1276,16 @@ class LLM(callbacks.Plugin):
         fetch entered near a deadline still runs its full ceiling, which is what
         made the first draft of the pass budget bound nothing.
 
+        ``cached`` supplies the conditional-GET validators (ETag / Last-Modified).
+        The poller passes nothing and gets its existing behaviour — validators
+        from ``_status_read_cache``. A caller with its own cache (the query path)
+        supplies its own snapshot so the refresh is still a conditional GET
+        instead of an unconditional full fetch.
+
         Raises statuspage.FetchError or statuspage.InvalidPayload.
         """
-        cached = self._status_read_cache.get(source)
+        if cached is None:
+            cached = self._status_read_cache.get(source)
         # min(...30): this borrows the LLM `timeout` registry key, which is
         # documented for LLM calls and may be raised by an operator for a slow
         # model. A poll must not hold an executor permit for that long — 30s is
@@ -1320,6 +1340,46 @@ class LLM(callbacks.Plugin):
             return self._status_read_cache.get(source)
         self._status_read_cache[source] = snapshot
         return snapshot
+
+    def _status_query_snapshot(
+        self, source: str, *, deadline: float | None = None
+    ) -> statuspage.Snapshot | None:
+        """Cached reading for a page we never poll.
+
+        Writes only the two query dicts — never _status_state, never
+        _status_read_cache. A queryable page has no lifecycle, so there is
+        nothing to announce and nothing a question could consume.
+        """
+        now = self._status_now()
+        cached = self._status_query_cache.get(source)
+        if cached is not None and (now - cached.fetched_at) < self._STATUS_QUERY_TTL:
+            return cached
+        if now - self._status_query_failed_at.get(source, 0.0) < self._STATUS_HISTORY_RETRY:
+            return cached
+        timeout_cap = None
+        if deadline is not None:
+            timeout_cap = deadline - self._status_monotonic()
+            if timeout_cap <= self._STATUS_MIN_FETCH_WINDOW:
+                return cached
+        try:
+            snapshot = self._status_fetch_snapshot(source, timeout_cap=timeout_cap, cached=cached)
+        except Exception as e:
+            self.log.info("Status query fetch failed for %s: %s", source, e)
+            self._status_query_failed_at[source] = now
+            return cached
+        self._status_query_cache[source] = snapshot
+        self._status_query_failed_at.pop(source, None)
+        self._status_evict_query_cache()
+        return snapshot
+
+    def _status_evict_query_cache(self) -> None:
+        """Keep the newest _STATUS_QUERY_CACHE_MAX readings."""
+        excess = len(self._status_query_cache) - self._STATUS_QUERY_CACHE_MAX
+        if excess <= 0:
+            return
+        oldest = sorted(self._status_query_cache.items(), key=lambda kv: kv[1].fetched_at)
+        for source, _snap in oldest[:excess]:
+            del self._status_query_cache[source]
 
     def _status_history_payload(self, source: str, *, deadline: float | None = None) -> list[dict]:
         """Lazily fetch and cache one source's resolved-incident history.
@@ -1865,6 +1925,13 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
     _STATUS_MAX_SOURCES = 5
     _STATUS_MAX_QUERYABLE = 20
+    # Queryable pages are refreshed only when asked for, so their TTL is
+    # shorter than the 600s staleness line — nothing else refreshes them.
+    _STATUS_QUERY_TTL = 300
+    # Equal to _STATUS_MAX_QUERYABLE on purpose. A cache smaller than the
+    # allowlist thrashes: cycling every page inside the TTL evicts each entry
+    # before it is reused, so every request fetches despite the cache.
+    _STATUS_QUERY_CACHE_MAX = 20
 
     # Whole-call budget for the tool path, covering current-status refreshes and
     # the history fan-out together. The tool runs inside the asking request's

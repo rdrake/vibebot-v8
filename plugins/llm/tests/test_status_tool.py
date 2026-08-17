@@ -12,6 +12,7 @@ from .conftest import make_completion_response
 
 CLAUDE = "https://status.claude.com"
 GITHUB = "https://www.githubstatus.com"
+CF = "https://www.cloudflarestatus.com"
 
 
 def green_snapshot(fetched_at: float = 1000.0, *, incidents=()) -> statuspage.Snapshot:
@@ -711,3 +712,86 @@ class TestDescriptionInjection:
         assert len(patched) == len(tools)
         names = {t["function"]["name"] for t in patched}
         assert names == {t["function"]["name"] for t in tools}
+
+
+class TestQueryCache:
+    def test_first_call_fetches_and_caches(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        assert plugin._status_query_snapshot(CF) is not None
+        assert plugin._fetch_calls == 1
+        assert CF in plugin._status_query_cache
+
+    def test_second_call_inside_the_ttl_does_not_refetch(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        plugin._status_query_snapshot(CF)
+        plugin._now += plugin._STATUS_QUERY_TTL - 1
+        plugin._status_query_snapshot(CF)
+        assert plugin._fetch_calls == 1
+
+    def test_past_the_ttl_refetches(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        plugin._status_query_snapshot(CF)
+        plugin._now += plugin._STATUS_QUERY_TTL + 1
+        plugin._status_query_snapshot(CF)
+        assert plugin._fetch_calls == 2
+
+    def test_failure_is_backed_off(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        plugin._fake_error = statuspage.FetchError("down")
+        assert plugin._status_query_snapshot(CF) is None
+        plugin._now += 1
+        assert plugin._status_query_snapshot(CF) is None
+        assert plugin._fetch_calls == 1, "backoff did not hold"
+
+    def test_a_full_cycle_of_the_cap_does_not_thrash(self, status_plugin):
+        """A cache smaller than the allowlist evicts every entry before it is
+        reused, so every request fetches despite the TTL."""
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        pages = [f"https://status{i}.example.com" for i in range(plugin._STATUS_QUERY_CACHE_MAX)]
+        for p in pages:
+            plugin._status_query_snapshot(p)
+        first_pass = plugin._fetch_calls
+        for p in pages:
+            plugin._status_query_snapshot(p)
+        assert plugin._fetch_calls == first_pass, "second pass should be all cache hits"
+
+    def test_cache_evicts_the_oldest_past_capacity(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        for i in range(plugin._STATUS_QUERY_CACHE_MAX + 1):
+            plugin._now += 1
+            plugin._status_query_snapshot(f"https://status{i}.example.com")
+        assert len(plugin._status_query_cache) == plugin._STATUS_QUERY_CACHE_MAX
+        assert "https://status0.example.com" not in plugin._status_query_cache
+
+    def test_conditional_get_uses_the_query_cache_validators(self, status_plugin, mocker):
+        """_status_fetch_snapshot reads ETag from _status_read_cache, which a
+        queryable page never populates — so without an explicit cached= the
+        refresh is an unconditional full GET."""
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        plugin._status_fetch_snapshot = LLM._status_fetch_snapshot.__get__(plugin)
+        fetch = mocker.patch(
+            "llm.plugin.statuspage.fetch_summary",
+            return_value=statuspage.FetchResult(
+                payload={
+                    "page": {"name": "CF", "url": CF},
+                    "status": {"indicator": "none", "description": "ok"},
+                    "components": [],
+                    "incidents": [],
+                    "scheduled_maintenances": [],
+                },
+                etag='W/"abc"',
+                modified=None,
+                not_modified=False,
+            ),
+        )
+        plugin._status_query_snapshot(CF)
+        plugin._now += plugin._STATUS_QUERY_TTL + 1
+        plugin._status_query_snapshot(CF)
+        assert fetch.call_args.kwargs["etag"] == 'W/"abc"'
