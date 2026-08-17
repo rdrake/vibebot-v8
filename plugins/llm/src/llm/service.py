@@ -123,6 +123,38 @@ def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
     return any(tool.get("function", {}).get("name") == name for tool in tools)
 
 
+def _with_status_hosts(tools: list[dict], sources: list[str]) -> list[dict]:
+    """Name the configured status pages in the check_service_status description.
+
+    Without this the model has no way to know GitHub is covered and may reach
+    for search_web instead of a tool whose text never claims it.
+
+    Copies BOTH levels. ToolSpec.as_tool() returns a fresh outer dict but hands
+    back the shared module-level schema object as ``function``: mutating it
+    would corrupt the schema for every caller in the process and re-append the
+    host list on every completion.
+    """
+    if not sources:
+        return tools
+    hosts = ", ".join(urlparse(s).hostname or s for s in sources)
+    patched = []
+    for tool in tools:
+        fn = tool.get("function") or {}
+        if fn.get("name") != "check_service_status":
+            patched.append(tool)
+            continue
+        patched.append(
+            {
+                **tool,
+                "function": {
+                    **fn,
+                    "description": f"{fn['description']} Configured services: {hosts}.",
+                },
+            }
+        )
+    return patched
+
+
 # Degenerate-echo guard. Fast non-reasoning models (observed on
 # xai/grok-4-1-fast-non-reasoning) intermittently return the user's own
 # message verbatim instead of answering it — e.g. a follow-up "finish the
@@ -5198,6 +5230,7 @@ Examples (echo → action_prompt: ""):
             if not status_sources:
                 exclude_tools = exclude_tools | {"check_service_status"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
+            profile_tools = _with_status_hosts(profile_tools, status_sources)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
             force_initial_search = (

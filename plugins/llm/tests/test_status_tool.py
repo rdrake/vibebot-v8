@@ -638,3 +638,52 @@ class TestToolBudget:
         assert fetch.call_count == 1, "GitHub's history must not be attempted"
         assert payload["services"][0]["recent_incidents"] == []
         assert payload["services"][1]["recent_incidents"] == []
+
+
+class TestDescriptionInjection:
+    def test_configured_hosts_reach_the_description(self):
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_hosts
+
+        tools = get_tools_for_profile("chat")
+        patched = _with_status_hosts(
+            tools, ["https://status.claude.com", "https://www.githubstatus.com"]
+        )
+        desc = next(
+            t["function"]["description"]
+            for t in patched
+            if t["function"]["name"] == "check_service_status"
+        )
+        assert "status.claude.com" in desc
+        assert "www.githubstatus.com" in desc
+
+    def test_the_shared_schema_is_never_mutated(self):
+        """ToolSpec.as_tool() returns a fresh outer dict but hands back the
+        SHARED module-level schema object, so an in-place edit would corrupt it
+        process-wide and re-append on every completion."""
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_hosts
+
+        before = next(
+            t["function"]["description"]
+            for t in get_tools_for_profile("chat")
+            if t["function"]["name"] == "check_service_status"
+        )
+        for _ in range(3):
+            _with_status_hosts(get_tools_for_profile("chat"), ["https://status.claude.com"])
+        after = next(
+            t["function"]["description"]
+            for t in get_tools_for_profile("chat")
+            if t["function"]["name"] == "check_service_status"
+        )
+        assert before == after
+
+    def test_other_tools_pass_through_untouched(self):
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_hosts
+
+        tools = get_tools_for_profile("chat")
+        patched = _with_status_hosts(tools, ["https://status.claude.com"])
+        assert len(patched) == len(tools)
+        names = {t["function"]["name"] for t in patched}
+        assert names == {t["function"]["name"] for t in tools}
