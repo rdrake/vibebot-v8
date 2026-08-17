@@ -1928,10 +1928,11 @@ class LLM(callbacks.Plugin):
     # Queryable pages are refreshed only when asked for, so their TTL is
     # shorter than the 600s staleness line — nothing else refreshes them.
     _STATUS_QUERY_TTL = 300
-    # Equal to _STATUS_MAX_QUERYABLE on purpose. A cache smaller than the
-    # allowlist thrashes: cycling every page inside the TTL evicts each entry
-    # before it is reused, so every request fetches despite the cache.
-    _STATUS_QUERY_CACHE_MAX = 20
+    # Equal to _STATUS_MAX_QUERYABLE on purpose, expressed as a reference so
+    # the coupling can't drift: a cache smaller than the allowlist thrashes —
+    # cycling every page inside the TTL evicts each entry before it is
+    # reused, so every request fetches despite the cache.
+    _STATUS_QUERY_CACHE_MAX = _STATUS_MAX_QUERYABLE
 
     # Whole-call budget for the tool path, covering current-status refreshes and
     # the history fan-out together. The tool runs inside the asking request's

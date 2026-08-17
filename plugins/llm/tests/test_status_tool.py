@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from llm import assistant, statuspage
 from llm.plugin import LLM
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION, PROFILE_VERSE
@@ -749,13 +750,20 @@ class TestQueryCache:
 
     def test_a_full_cycle_of_the_cap_does_not_thrash(self, status_plugin):
         """A cache smaller than the allowlist evicts every entry before it is
-        reused, so every request fetches despite the TTL."""
+        reused, so every request fetches despite the TTL.
+
+        Sized from _STATUS_MAX_QUERYABLE, not _STATUS_QUERY_CACHE_MAX: the
+        failure mode this guards is cache bound < allowlist cap, and a loop
+        sized from the cache's own bound can never see that gap even if the
+        two constants drift apart.
+        """
         plugin = status_plugin
         plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        pages = [f"https://status{i}.example.com" for i in range(plugin._STATUS_QUERY_CACHE_MAX)]
+        pages = [f"https://status{i}.example.com" for i in range(plugin._STATUS_MAX_QUERYABLE)]
         for p in pages:
             plugin._status_query_snapshot(p)
         first_pass = plugin._fetch_calls
+        assert first_pass == len(pages), "first pass should be one fetch per page"
         for p in pages:
             plugin._status_query_snapshot(p)
         assert plugin._fetch_calls == first_pass, "second pass should be all cache hits"
@@ -787,7 +795,7 @@ class TestQueryCache:
                     "scheduled_maintenances": [],
                 },
                 etag='W/"abc"',
-                modified=None,
+                modified="Wed, 21 Oct 2015 07:28:00 GMT",
                 not_modified=False,
             ),
         )
@@ -795,3 +803,55 @@ class TestQueryCache:
         plugin._now += plugin._STATUS_QUERY_TTL + 1
         plugin._status_query_snapshot(CF)
         assert fetch.call_args.kwargs["etag"] == 'W/"abc"'
+        assert fetch.call_args.kwargs["modified"] == "Wed, 21 Oct 2015 07:28:00 GMT"
+
+    def test_does_not_touch_status_state_or_read_cache(self, status_plugin):
+        """The headline invariant: a queryable page must never acquire
+        lifecycle state. Snapshotting with dict(...) rather than comparing to
+        {} mirrors test_status_history_payload's sibling guard at :420 — a
+        per-source rewrite replaces a value at an existing key, which an
+        == {} check on an empty starting dict cannot distinguish from doing
+        nothing."""
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        plugin._status_state = {CLAUDE: object()}
+        plugin._status_read_cache = {CLAUDE: object()}
+        before_state = dict(plugin._status_state)
+        before_read_cache = dict(plugin._status_read_cache)
+
+        plugin._status_query_snapshot(CF)
+
+        assert plugin._status_state == before_state
+        assert plugin._status_read_cache == before_read_cache
+
+    def test_deadline_already_spent_returns_cached_without_fetching(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        first = plugin._status_query_snapshot(CF)
+        assert plugin._fetch_calls == 1
+        plugin._now += plugin._STATUS_QUERY_TTL + 1  # past TTL: would refetch but for the deadline
+        spent_deadline = plugin._status_monotonic() + plugin._STATUS_MIN_FETCH_WINDOW - 0.1
+        result = plugin._status_query_snapshot(CF, deadline=spent_deadline)
+        assert result is first
+        assert plugin._fetch_calls == 1, "a spent deadline must not trigger a fetch"
+
+    def test_live_deadline_reaches_the_fetch_as_timeout_cap(self, status_plugin, mocker):
+        plugin = status_plugin
+        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
+        snap = statuspage.Snapshot(
+            page_name="CF",
+            page_url=CF,
+            indicator="none",
+            description="ok",
+            components={},
+            incidents={},
+            fetched_at=plugin._now,
+        )
+        fetch = mocker.Mock(return_value=snap)
+        plugin._status_fetch_snapshot = fetch
+        plugin._mono = 100.0
+        deadline = 130.0
+
+        plugin._status_query_snapshot(CF, deadline=deadline)
+
+        assert fetch.call_args.kwargs["timeout_cap"] == pytest.approx(30.0)
