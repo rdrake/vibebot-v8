@@ -1370,25 +1370,13 @@ class LLM(callbacks.Plugin):
             return 0
         if self._llm_executor.closing:
             return 0
-        # This is the new call shape; Task 4 is what makes it real by
-        # rewriting _announce_status to accept it. Until that commit lands,
-        # _announce_status still has its old signature — self, delta — so
-        # calling it with these extra positional/keyword arguments raises
-        # TypeError every time a source has news to announce. The generic
-        # `except Exception` in _run_status_poll's per-source loop catches
-        # that, logs it, and moves on to the next source, so a pass still
-        # completes — it just announces nothing until Task 4 ships. Expected
-        # and tracked at this task boundary, not a regression to chase here.
-        # ty ignores below are transitional for the same reason: they hush
-        # diagnostics against a signature that does not exist yet.
         return self._announce_status(
-            source,  # ty: ignore[invalid-argument-type]
-            delta,  # ty: ignore[too-many-positional-arguments]
+            source,
+            delta,
             snapshot,
-            lines_left=lines_left,  # ty: ignore[unknown-argument]
-            template_only=(deadline - self._status_monotonic())  # ty: ignore[unknown-argument]
-            < self._STATUS_REWRITE_RESERVE,
-        )  # ty: ignore[invalid-return-type]
+            lines_left=lines_left,
+            template_only=(deadline - self._status_monotonic()) < self._STATUS_REWRITE_RESERVE,
+        )
 
     def _run_status_poll(self) -> None:
         """Poll every configured source under one wall-clock budget.
@@ -1561,6 +1549,7 @@ class LLM(callbacks.Plugin):
         link: str,
         event: str,
         duration_sec: int | None = None,
+        template_only: bool = False,
     ) -> bool:
         """Send one incident line to every deliverable channel.
 
@@ -1583,7 +1572,7 @@ class LLM(callbacks.Plugin):
                 continue
 
             text = template
-            if self._status_announce_budget_ok():
+            if not template_only and self._status_announce_budget_ok():
                 # First deliverable channel drives provider cache routing;
                 # the rewrite itself is shared across the whole group.
                 rewrite = self._status_rewrite(
@@ -1617,34 +1606,34 @@ class LLM(callbacks.Plugin):
                     delivered = True
         return delivered
 
-    def _announce_status(self, delta: statuspage.Delta) -> None:
-        """Announce newly opened and newly resolved incidents to opted-in channels.
+    def _announce_status(
+        self,
+        source: str,
+        delta: statuspage.Delta,
+        snapshot: statuspage.Snapshot,
+        *,
+        lines_left: int,
+        template_only: bool = False,
+    ) -> int:
+        """Announce one source's openings and all-clears. Returns lines sent.
 
         Template-primary: the deterministic line is built first and is always
         available. The rewrite is an upgrade, applied only when the budget
-        allows and every post-check passes.
+        allows, the pass has time, and every post-check passes.
 
         An incident is marked announced only after a successful queue, so a
-        drop during shutdown is retried on the next poll. Openings and
-        all-clears are tracked in separate maps, so one incident produces at
-        most one of each over the process lifetime.
+        drop during shutdown — or an incident pushed past ``lines_left`` — is
+        retried on the next poll. Openings and all-clears are tracked in
+        separate maps, so one incident produces at most one of each over the
+        process lifetime.
 
-        NOT YET MULTI-SOURCE: this body still reads _status_read_cache and
-        _status_state as the pre-Task-2 scalars (Snapshot | None /
-        StatusState), but Task 2 retyped both to dict[str, ...] keyed by
-        source. `snapshot = self._status_read_cache` binds the whole dict,
-        so `if snapshot is None: return` never fires against `{}`, and this
-        falls through to `snapshot.page_name` on a dict below, then passes a
-        dict where mark_announced/mark_resolved_announced expect a
-        StatusState. Left unfixed deliberately: Task 4 replaces this whole
-        method with a per-source version. Called from _run_status_poll
-        whenever delta.opened or delta.resolved; the bare `except Exception`
-        around that call site swallows the crash, so announcements silently
-        no-op until Task 4 lands.
+        ``snapshot`` is the observation the caller classified, passed in
+        rather than re-read from ``_status_read_cache``: that cache is
+        writable by the tool path, so re-reading it can label a delta with a
+        different reading.
         """
-        snapshot = self._status_read_cache
-        if snapshot is None:
-            return
+        if lines_left <= 0:
+            return 0
 
         # Copy before iterating: stock RSS copies (RSS/plugin.py:405) because
         # channel state mutates under JOIN/PART on the IRC thread, and outages
@@ -1655,20 +1644,15 @@ class LLM(callbacks.Plugin):
             if self.registryValue("statusAnnounce", channel)
         ]
         if not channels:
-            return
+            return 0
 
-        # allowed_host/label are derived from OPERATOR CONFIG (statusPageUrl),
-        # never from the fetched payload: page_name/page_url in the snapshot
-        # are third-party data, and trusting them here would let a hostile
-        # status page nominate its own phishing host as the only one this
-        # gate permits. label itself IS quoted from the payload (page_name),
-        # so it is URL-stripped and sanitised before use — a link in the
-        # page's own name must not reach an unprompted IRC line verbatim.
-        configured = self.registryValue("statusPageUrl") or ""
-        try:
-            configured_host = urlparse(configured).hostname or ""
-        except ValueError:
-            configured_host = ""
+        # allowed_host/label are derived from OPERATOR CONFIG (the canonical
+        # source), never from the fetched payload: page_name/page_url in the
+        # snapshot are third-party data, and trusting them here would let a
+        # hostile status page nominate its own phishing host as the only one
+        # this gate permits. label itself IS quoted from the payload
+        # (page_name), so it is URL-stripped and sanitised before use.
+        configured_host = self._status_host(source)
         label = (
             statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
             or configured_host
@@ -1677,49 +1661,61 @@ class LLM(callbacks.Plugin):
 
         # The rewrite varies only with the channel's assistantSystemPrompt
         # overlay, so channels sharing one share a completion. This both cuts
-        # cost and removes the deterministic starvation of alphabetically-
-        # later channels once the hourly budget is exhausted.
+        # cost and removes the deterministic starvation of alphabetically-later
+        # channels once the hourly budget is exhausted.
         by_overlay: dict[str, list[str]] = {}
         for channel in channels:
             overlay = self.registryValue("assistantSystemPrompt", channel) or ""
             by_overlay.setdefault(overlay, []).append(channel)
 
-        # Deep-link each incident, matching what the RSS announcer already
-        # posts. Host still comes from statusPageUrl, so the rewrite host
-        # check is unaffected.
+        sent = 0
         for incident in delta.opened:
+            if sent >= lines_left:
+                break
             if self._deliver_status_line(
                 incident,
-                template=statuspage.render_line(incident, page_name=label, page_url=configured),
+                template=statuspage.render_line(incident, page_name=label, page_url=source),
                 by_overlay=by_overlay,
                 snapshot=snapshot,
                 label=label,
                 configured_host=configured_host,
-                link=statuspage.incident_url(configured, incident.id),
+                link=statuspage.incident_url(source, incident.id),
                 event="opened",
+                template_only=template_only,
             ):
-                self._status_state = statuspage.mark_announced(
-                    self._status_state, incident.id, now=self._status_now()
+                sent += 1
+                self._status_state[source] = statuspage.mark_announced(
+                    self._status_state.get(source, statuspage.StatusState()),
+                    incident.id,
+                    now=self._status_now(),
                 )
 
         for incident in delta.resolved:
+            if sent >= lines_left:
+                break
             duration = statuspage.incident_duration_sec(incident, now=self._status_now())
             if self._deliver_status_line(
                 incident,
                 template=statuspage.render_resolved_line(
-                    incident, page_name=label, page_url=configured, duration_sec=duration
+                    incident, page_name=label, page_url=source, duration_sec=duration
                 ),
                 by_overlay=by_overlay,
                 snapshot=snapshot,
                 label=label,
                 configured_host=configured_host,
-                link=statuspage.incident_url(configured, incident.id),
+                link=statuspage.incident_url(source, incident.id),
                 event="resolved",
                 duration_sec=duration,
+                template_only=template_only,
             ):
-                self._status_state = statuspage.mark_resolved_announced(
-                    self._status_state, incident.id, now=self._status_now()
+                sent += 1
+                self._status_state[source] = statuspage.mark_resolved_announced(
+                    self._status_state.get(source, statuspage.StatusState()),
+                    incident.id,
+                    now=self._status_now(),
                 )
+
+        return sent
 
     # Safety poll interval (seconds) — fallback for event-driven wakeups
     _SAFETY_POLL_INTERVAL = 300  # 5 minutes

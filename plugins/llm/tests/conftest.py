@@ -871,16 +871,22 @@ def announcing_plugin(status_plugin):
     plugin = status_plugin
     plugin._STATUS_ANNOUNCE_MAX_PER_HOUR = LLM._STATUS_ANNOUNCE_MAX_PER_HOUR
     plugin._STATUS_ANNOUNCE_MAX_LEN = LLM._STATUS_ANNOUNCE_MAX_LEN
-    plugin._status_state = statuspage.StatusState(seeded=True)
-    plugin._status_read_cache = statuspage.Snapshot(
-        page_name="Claude",
-        page_url="https://status.claude.com",
-        indicator="minor",
-        description="Partial System Outage",
-        components={"Claude API (api.anthropic.com)": "degraded_performance"},
-        incidents={},
-        fetched_at=plugin._now,
-    )
+    plugin._status_read_cache = {
+        "https://status.claude.com": statuspage.Snapshot(
+            page_name="Claude",
+            page_url="https://status.claude.com",
+            indicator="minor",
+            description="Partial System Outage",
+            components={"Claude API (api.anthropic.com)": "degraded_performance"},
+            incidents={},
+            fetched_at=plugin._now,
+        )
+    }
+    plugin._status_state = {}
+    plugin._registry = {
+        "statusPageUrls": ["https://status.claude.com", "https://www.githubstatus.com"],
+        "assistantSystemPrompt": "",
+    }
     plugin._status_announce_times = []
     plugin._announce_channels = {"#test": True}
     plugin._all_known_channels = lambda: set(plugin._announce_channels)

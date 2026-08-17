@@ -444,3 +444,26 @@ class TestDeadlinePropagation:
         plugin._run_status_poll()
 
         assert plugin._announce_status.call_args.kwargs["template_only"] is True
+
+
+class TestAnnouncerIsReachedPerSource:
+    def test_each_source_announces_its_own_incident(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._run_status_poll()  # cold start seeds both
+
+        def both_broken(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            name = "c1" if source == CLAUDE else "g1"
+            return green_snapshot(plugin._now, incidents=[incident(name)])
+
+        plugin._status_fetch_snapshot = both_broken
+        plugin._announce_status.reset_mock()
+        plugin._announce_status.return_value = 1
+        plugin._run_status_poll()
+
+        announced = {
+            call.args[0]: [i.id for i in call.args[1].opened]
+            for call in plugin._announce_status.call_args_list
+        }
+        assert announced == {CLAUDE: ["c1"], GITHUB: ["g1"]}

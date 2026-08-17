@@ -29,11 +29,143 @@ def incident(**over) -> statuspage.IncidentView:
     return statuspage.IncidentView(**base)
 
 
+def github_snapshot(fetched_at: float = 1000.0) -> statuspage.Snapshot:
+    return statuspage.Snapshot(
+        page_name="GitHub",
+        page_url="https://www.githubstatus.com",
+        indicator="major",
+        description="Incident with Actions",
+        components={"Actions": "major_outage"},
+        incidents={},
+        fetched_at=fetched_at,
+    )
+
+
+def claude_snapshot(fetched_at: float = 1000.0) -> statuspage.Snapshot:
+    return statuspage.Snapshot(
+        page_name="Claude",
+        page_url="https://status.claude.com",
+        indicator="none",
+        description="All Systems Operational",
+        components={},
+        incidents={},
+        fetched_at=fetched_at,
+    )
+
+
+def github_incident(incident_id: str = "gh1") -> statuspage.IncidentView:
+    return statuspage.IncidentView(
+        id=incident_id,
+        name="Incident with Actions",
+        status="investigating",
+        impact="major",
+        affected_components=("Actions",),
+        started_at=None,
+        created_at=None,
+        latest_update_body="We are investigating.",
+        latest_update_at=None,
+    )
+
+
+class TestPerSourceAnnouncing:
+    def test_host_check_uses_the_source_that_raised_the_incident(self, announcing_plugin):
+        """allowed_host must come from the incident's own page. Deriving it from
+        a single configured URL would reject every GitHub rewrite once a second
+        source existed."""
+        plugin = announcing_plugin
+        snapshot = github_snapshot()
+        plugin._status_rewrite = MagicMock(
+            return_value="GitHub is having trouble — https://www.githubstatus.com/incidents/gh1"
+        )
+        delta = statuspage.Delta(opened=(github_incident(),))
+
+        plugin._announce_status("https://www.githubstatus.com", delta, snapshot, lines_left=5)
+
+        assert plugin._sent_text, "nothing was sent"
+        assert "githubstatus.com/incidents/gh1" in plugin._sent_text[0]
+
+    def test_marking_announced_writes_only_that_sources_state(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_state = {}
+        snapshot = github_snapshot()
+        delta = statuspage.Delta(opened=(github_incident(),))
+
+        plugin._announce_status("https://www.githubstatus.com", delta, snapshot, lines_left=5)
+
+        assert "gh1" in plugin._status_state["https://www.githubstatus.com"].announced
+        assert "https://status.claude.com" not in plugin._status_state
+
+    def test_template_only_spends_no_completion(self, announcing_plugin):
+        """Under the rewrite reserve the pass still announces — the template is
+        the primary path — but must not start a completion it has no time for."""
+        plugin = announcing_plugin
+        plugin._status_rewrite = MagicMock(return_value="a rewrite")
+        delta = statuspage.Delta(opened=(github_incident(),))
+
+        plugin._announce_status(
+            "https://www.githubstatus.com",
+            delta,
+            github_snapshot(),
+            lines_left=5,
+            template_only=True,
+        )
+
+        plugin._status_rewrite.assert_not_called()
+        assert plugin._sent_text, "the template line must still go out"
+
+    def test_uses_the_passed_snapshot_not_the_read_cache(self, announcing_plugin):
+        """The read cache is writable by the tool path under 16 concurrent
+        permits, so re-reading it here can label a delta with a different
+        observation than the one that produced it."""
+        plugin = announcing_plugin
+        plugin._status_read_cache = {"https://www.githubstatus.com": claude_snapshot()}
+        delta = statuspage.Delta(opened=(github_incident(),))
+
+        plugin._announce_status(
+            "https://www.githubstatus.com", delta, github_snapshot(), lines_left=5
+        )
+
+        assert "GitHub" in plugin._sent_text[0]
+        assert "Claude" not in plugin._sent_text[0]
+
+
+class TestGlobalLineCap:
+    def test_lines_left_bounds_the_burst(self, announcing_plugin):
+        plugin = announcing_plugin
+        opened = tuple(github_incident(f"gh{i}") for i in range(3))
+        delta = statuspage.Delta(opened=opened)
+
+        sent = plugin._announce_status(
+            "https://www.githubstatus.com", delta, github_snapshot(), lines_left=2
+        )
+
+        assert sent == 2
+        assert len(plugin._sent_text) == 2
+
+    def test_an_uncapped_incident_is_left_unmarked_for_the_next_poll(self, announcing_plugin):
+        plugin = announcing_plugin
+        plugin._status_state = {}
+        opened = tuple(github_incident(f"gh{i}") for i in range(3))
+        delta = statuspage.Delta(opened=opened)
+
+        plugin._announce_status(
+            "https://www.githubstatus.com", delta, github_snapshot(), lines_left=2
+        )
+
+        announced = plugin._status_state["https://www.githubstatus.com"].announced
+        assert len(announced) == 2, "the dropped incident must stay unannounced"
+
+
 class TestTemplatePath:
     def test_template_sends_when_rewrite_returns_none(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._safe_queue.call_count == 1
         sent = plugin._sent_text[0]
         assert "Elevated error rates on Claude Opus 4.5" in sent
@@ -43,7 +175,12 @@ class TestTemplatePath:
         plugin._status_rewrite = MagicMock(
             return_value="Heads up — Claude's API is throwing errors on Opus 4.5."
         )
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "Heads up" in plugin._sent_text[0]
 
     def test_template_links_the_incident_not_the_page_root(self, announcing_plugin):
@@ -52,13 +189,23 @@ class TestTemplatePath:
         incident fired."""
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "https://status.claude.com/incidents/005ym4vzrq2w" in plugin._sent_text[0]
 
     def test_rewrite_is_handed_the_incident_permalink(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert (
             plugin._status_rewrite.call_args.kwargs["url"]
             == "https://status.claude.com/incidents/005ym4vzrq2w"
@@ -73,7 +220,12 @@ class TestPostChecks:
         plugin._status_rewrite = MagicMock(
             return_value="Claude is down, see https://evil.example/fix"
         )
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "evil.example" not in plugin._sent_text[0]
         assert "Elevated error rates" in plugin._sent_text[0], "fell back to template"
 
@@ -82,7 +234,12 @@ class TestPostChecks:
         plugin._status_rewrite = MagicMock(
             return_value="Claude API is degraded — https://status.claude.com"
         )
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "status.claude.com" in plugin._sent_text[0]
 
     def test_accepts_a_rewrite_quoting_the_incident_permalink(self, announcing_plugin):
@@ -94,19 +251,34 @@ class TestPostChecks:
                 "Claude API is degraded — https://status.claude.com/incidents/005ym4vzrq2w"
             )
         )
-        plugin._announce_status(statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(id="005ym4vzrq2w"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "/incidents/005ym4vzrq2w" in plugin._sent_text[0]
 
     def test_rejects_rewrite_that_never_names_the_service(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value="Something somewhere is broken.")
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "Elevated error rates" in plugin._sent_text[0]
 
     def test_rejects_empty_rewrite(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value="   ")
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "Elevated error rates" in plugin._sent_text[0]
 
 
@@ -117,7 +289,12 @@ class TestSendPipeline:
         nearly verbatim."""
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin.llm_service.sanitize_output.called
 
     def test_line_is_truncated_at_a_word_boundary(self, announcing_plugin):
@@ -126,7 +303,12 @@ class TestSendPipeline:
         plugin = announcing_plugin
         full = "Claude " + ("word " * 100)
         plugin._status_rewrite = MagicMock(return_value=full)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         sent = plugin._sent_text[0]
         assert len(sent) <= plugin._STATUS_ANNOUNCE_MAX_LEN
         assert sent.startswith("Claude")
@@ -138,7 +320,12 @@ class TestSendPipeline:
         url = "https://status.claude.com/incidents/2026-08-09-elevated-errors"
         full = padding + url
         plugin._status_rewrite = MagicMock(return_value=full)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         sent = plugin._sent_text[0]
         assert len(sent) <= plugin._STATUS_ANNOUNCE_MAX_LEN
         # The URL is one unbroken token with no internal space: word-boundary
@@ -150,29 +337,53 @@ class TestMarkingAndBudget:
     def test_marks_announced_only_on_successful_queue(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._safe_queue.return_value = True
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
-        assert "inc1" in plugin._status_state.announced
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+        assert "inc1" in plugin._status_state["https://status.claude.com"].announced
 
     def test_does_not_mark_when_the_queue_drops(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._safe_queue.return_value = False
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
-        assert "inc1" not in plugin._status_state.announced, "must retry next poll"
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+        state = plugin._status_state.get("https://status.claude.com", statuspage.StatusState())
+        assert "inc1" not in state.announced, "must retry next poll"
 
     def test_empty_rendered_line_is_skipped_and_not_marked(self, announcing_plugin, mocker):
         """An empty line must never be queued, and must stay unmarked so the
         next poll retries it — otherwise a lost announcement is permanent."""
         mocker.patch("llm.plugin.statuspage.render_line", return_value="")
         announcing_plugin._status_rewrite = mocker.MagicMock(return_value=None)
-        announcing_plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        announcing_plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            announcing_plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert announcing_plugin._safe_queue.call_count == 0
-        assert "inc1" not in announcing_plugin._status_state.announced
+        state = announcing_plugin._status_state.get(
+            "https://status.claude.com", statuspage.StatusState()
+        )
+        assert "inc1" not in state.announced
 
     def test_over_budget_skips_the_rewrite_but_still_announces(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_announce_times = [plugin._now] * plugin._STATUS_ANNOUNCE_MAX_PER_HOUR
         plugin._status_rewrite = MagicMock()
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_count == 0, "no completion when over budget"
         assert plugin._safe_queue.call_count == 1, "template still goes out"
 
@@ -181,7 +392,12 @@ class TestChannelSelection:
     def test_only_opted_in_channels_receive_it(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._announce_channels = {"#yes": True, "#no": False}
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         targets = [c.args[1].args[0] for c in plugin._safe_queue.call_args_list]
         assert targets == ["#yes"]
 
@@ -200,7 +416,12 @@ class TestChannelSelection:
             return result
 
         plugin._all_known_channels = mutating
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         targets = [c.args[1].args[0] for c in plugin._safe_queue.call_args_list]
         assert "#c" not in targets, "iteration must use a snapshot, not live state"
         assert sorted(targets) == ["#a", "#b"]
@@ -214,7 +435,12 @@ class TestStatusRewrite:
         plugin = announcing_plugin
         plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
         plugin.llm_service.status_announce_completion.side_effect = RuntimeError("provider down")
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._safe_queue.call_count == 1
         assert "Elevated error rates" in plugin._sent_text[0]
 
@@ -224,11 +450,12 @@ class TestStatusRewrite:
 
         plugin = announcing_plugin
         plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        snapshot = plugin._status_read_cache["https://status.claude.com"]
         plugin._status_rewrite(
             incident(name="bad\x01name <|tok|>"),
             "#test",
-            snapshot=plugin._status_read_cache,
-            url=plugin._status_read_cache.page_url,
+            snapshot=snapshot,
+            url=snapshot.page_url,
             label="Claude",
         )
         facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
@@ -242,11 +469,12 @@ class TestStatusRewrite:
 
         plugin = announcing_plugin
         plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
+        snapshot = plugin._status_read_cache["https://status.claude.com"]
         plugin._status_rewrite(
             incident(impact="critical\x01<|tok|>", affected_components=("API\x01x", "Code<|z|>")),
             "#test",
-            snapshot=plugin._status_read_cache,
-            url=plugin._status_read_cache.page_url,
+            snapshot=snapshot,
+            url=snapshot.page_url,
             label="Claude",
         )
         facts = plugin.llm_service.status_announce_completion.call_args.kwargs["facts"]
@@ -264,7 +492,7 @@ class TestStatusRewrite:
         plugin = announcing_plugin
         plugin._status_rewrite = LLM._status_rewrite.__get__(plugin)
         hostile_snapshot = dataclasses.replace(
-            plugin._status_read_cache,
+            plugin._status_read_cache["https://status.claude.com"],
             page_name="Evil <|inject|> https://evil.example",
             page_url="https://evil.example",
         )
@@ -287,23 +515,34 @@ class TestLabelSanitisation:
 
     def test_label_strips_a_url_embedded_in_the_page_name(self, announcing_plugin):
         plugin = announcing_plugin
-        plugin._status_read_cache = dataclasses.replace(
-            plugin._status_read_cache,
+        snapshot = dataclasses.replace(
+            plugin._status_read_cache["https://status.claude.com"],
             page_name="Claude — see https://evil.example/phish for details",
         )
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            snapshot,
+            lines_left=5,
+        )
         sent = plugin._sent_text[0]
         assert "evil.example" not in sent
         assert "Claude" in sent
 
     def test_label_strips_control_tokens_from_the_page_name(self, announcing_plugin):
         plugin = announcing_plugin
-        plugin._status_read_cache = dataclasses.replace(
-            plugin._status_read_cache, page_name="Claude\x01<|inject|>"
+        snapshot = dataclasses.replace(
+            plugin._status_read_cache["https://status.claude.com"],
+            page_name="Claude\x01<|inject|>",
         )
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            snapshot,
+            lines_left=5,
+        )
         sent = plugin._sent_text[0]
         assert "\x01" not in sent
         assert "<|" not in sent
@@ -312,9 +551,16 @@ class TestLabelSanitisation:
         self, announcing_plugin
     ):
         plugin = announcing_plugin
-        plugin._status_read_cache = dataclasses.replace(plugin._status_read_cache, page_name="")
+        snapshot = dataclasses.replace(
+            plugin._status_read_cache["https://status.claude.com"], page_name=""
+        )
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            snapshot,
+            lines_left=5,
+        )
         assert "status.claude.com" in plugin._sent_text[0]
 
 
@@ -326,7 +572,12 @@ class TestSkipBeforeSpend:
         plugin = announcing_plugin
         plugin._irc_for_channel = MagicMock(return_value=None)
         plugin._status_rewrite = MagicMock()
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_count == 0
         assert plugin._status_announce_times == []
         assert plugin._safe_queue.call_count == 0
@@ -339,7 +590,12 @@ class TestSkipBeforeSpend:
             side_effect=lambda ch: live_irc if ch == "#live" else None
         )
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._safe_queue.call_count == 1
         assert plugin._status_rewrite.call_count == 1
 
@@ -362,7 +618,12 @@ class TestOverlaySharing:
             else plugin._registry.get(key)
         )
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         # "#a"/"#b" share an overlay (one completion); "#c" is its own group
         # (a second completion) — three channels, two completions.
         assert plugin._status_rewrite.call_count == 2
@@ -379,7 +640,12 @@ class TestOverlaySharing:
             else plugin._registry.get(key)
         )
         plugin._status_rewrite = MagicMock(return_value="Claude API is degraded right now.")
-        plugin._announce_status(statuspage.Delta(opened=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_count == 1
         assert plugin._sent_text == [
             "Claude API is degraded right now.",
@@ -497,7 +763,12 @@ class TestResolutionAnnounce:
     def test_template_says_resolved_and_links_the_incident(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(resolved=(incident(id="005ym4vzrq2w"),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(id="005ym4vzrq2w"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         sent = plugin._sent_text[0]
         assert "resolved" in sent
         assert "https://status.claude.com/incidents/005ym4vzrq2w" in sent
@@ -505,13 +776,23 @@ class TestResolutionAnnounce:
     def test_template_never_repeats_the_last_live_status(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(resolved=(incident(status="investigating"),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(status="investigating"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "investigating" not in plugin._sent_text[0]
 
     def test_rewrite_is_told_the_incident_is_over(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_args.kwargs["event"] == "resolved"
 
     def test_resolution_facts_state_resolved_and_drop_the_stale_update(self, announcing_plugin):
@@ -525,7 +806,7 @@ class TestResolutionAnnounce:
         plugin._status_rewrite(
             incident(),
             "#test",
-            snapshot=plugin._status_read_cache,
+            snapshot=plugin._status_read_cache["https://status.claude.com"],
             url="https://status.claude.com/incidents/inc1",
             label="Claude",
             event="resolved",
@@ -549,7 +830,7 @@ class TestResolutionAnnounce:
         plugin._status_rewrite(
             incident(),
             "#test",
-            snapshot=plugin._status_read_cache,
+            snapshot=plugin._status_read_cache["https://status.claude.com"],
             url="https://status.claude.com/incidents/inc1",
             label="Claude",
             event="resolved",
@@ -570,7 +851,7 @@ class TestResolutionAnnounce:
         plugin._status_rewrite(
             incident(),
             "#test",
-            snapshot=plugin._status_read_cache,
+            snapshot=plugin._status_read_cache["https://status.claude.com"],
             url="https://status.claude.com/incidents/inc1",
             label="Claude",
             event="resolved",
@@ -588,7 +869,7 @@ class TestResolutionAnnounce:
         plugin._status_rewrite(
             incident(),
             "#test",
-            snapshot=plugin._status_read_cache,
+            snapshot=plugin._status_read_cache["https://status.claude.com"],
             url="https://status.claude.com/incidents/inc1",
             label="Claude",
         )
@@ -600,7 +881,12 @@ class TestResolutionAnnounce:
     def test_a_passing_rewrite_is_used_for_the_all_clear(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value="Claude's back, we're good.")
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "Claude's back" in plugin._sent_text[0]
 
     def test_a_foreign_url_in_the_all_clear_falls_back_to_template(self, announcing_plugin):
@@ -608,34 +894,58 @@ class TestResolutionAnnounce:
         plugin._status_rewrite = MagicMock(
             return_value="Claude is fine now, see https://evil.example"
         )
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert "evil.example" not in plugin._sent_text[0]
         assert "resolved" in plugin._sent_text[0]
 
     def test_marks_resolved_only_on_a_successful_queue(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._safe_queue.return_value = True
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
-        assert "inc1" in plugin._status_state.resolved_announced
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+        assert "inc1" in plugin._status_state["https://status.claude.com"].resolved_announced
 
     def test_does_not_mark_resolved_when_the_queue_drops(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._safe_queue.return_value = False
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
-        assert "inc1" not in plugin._status_state.resolved_announced, "must retry next poll"
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+        state = plugin._status_state.get("https://status.claude.com", statuspage.StatusState())
+        assert "inc1" not in state.resolved_announced, "must retry next poll"
 
     def test_the_all_clear_does_not_mark_the_opening_announced(self, announcing_plugin):
         """Separate maps: an incident whose opening was missed must not be
         recorded as announced just because its all-clear went out."""
         plugin = announcing_plugin
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
-        assert "inc1" not in plugin._status_state.announced
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+        assert "inc1" not in plugin._status_state["https://status.claude.com"].announced
 
     def test_an_opening_and_an_all_clear_in_one_pass_both_send(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(return_value=None)
         plugin._announce_status(
-            statuspage.Delta(opened=(incident(id="A"),), resolved=(incident(id="B"),))
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(id="A"),), resolved=(incident(id="B"),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
         )
         assert len(plugin._sent_text) == 2
         assert "(investigating)" in plugin._sent_text[0]
@@ -647,7 +957,12 @@ class TestResolutionAnnounce:
             plugin._now for _ in range(plugin._STATUS_ANNOUNCE_MAX_PER_HOUR)
         ]
         plugin._status_rewrite = MagicMock(return_value="Claude's back.")
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_count == 0
         assert "resolved" in plugin._sent_text[0], "template still sends"
 
@@ -655,7 +970,13 @@ class TestResolutionAnnounce:
         plugin = announcing_plugin
         plugin._irc_for_channel = MagicMock(return_value=None)
         plugin._status_rewrite = MagicMock()
-        plugin._announce_status(statuspage.Delta(resolved=(incident(),)))
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(resolved=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
         assert plugin._status_rewrite.call_count == 0
         assert plugin._safe_queue.call_count == 0
-        assert "inc1" not in plugin._status_state.resolved_announced
+        state = plugin._status_state.get("https://status.claude.com", statuspage.StatusState())
+        assert "inc1" not in state.resolved_announced
