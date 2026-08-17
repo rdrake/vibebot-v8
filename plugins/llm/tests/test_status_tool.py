@@ -161,15 +161,18 @@ def incident(incident_id="inc1") -> statuspage.IncidentView:
 
 
 class TestToolWiringGate:
-    """service.py ~4996: status_fn must be wired only when statusPageUrl is
+    """service.py ~4996: status_fn must be wired only when statusPageUrls is
     configured — with it empty, config.py says status awareness is fully
     disabled, so the tool must not occupy a chat-surface slot at all."""
 
-    def _run(self, mocker, make_service, *, status_page_url: str):
+    def _run(self, mocker, make_service, *, status_page_urls: list[str]):
         from llm.assistant import AssistantToolExecutor
         from llm.profile import PROFILE_CHAT
 
-        service, plugin = make_service(statusPageUrl=status_page_url)
+        service, plugin = make_service(statusPageUrls=status_page_urls)
+        # The gate under test is service.py's USE of the source list;
+        # _status_sources itself is covered in test_status_poller.py.
+        plugin._status_sources = lambda: list(status_page_urls)
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         mocker.patch(
             "llm.service.litellm.completion",
@@ -197,13 +200,13 @@ class TestToolWiringGate:
 
     def test_wired_when_status_page_url_is_configured(self, mocker, make_service):
         executor_spy, plugin = self._run(
-            mocker, make_service, status_page_url="https://status.claude.com"
+            mocker, make_service, status_page_urls=["https://status.claude.com"]
         )
         kwargs = executor_spy.call_args.kwargs
         assert kwargs["status_fn"] is plugin._status_tool_payload
 
     def test_absent_when_status_page_url_is_empty(self, mocker, make_service):
-        executor_spy, _plugin = self._run(mocker, make_service, status_page_url="")
+        executor_spy, _plugin = self._run(mocker, make_service, status_page_urls=[])
         kwargs = executor_spy.call_args.kwargs
         assert kwargs["status_fn"] is None
 
@@ -213,10 +216,13 @@ class TestToolSchemaGateOnConfig:
     slot when the feature is unconfigured — an offered tool that can only
     answer 'not configured' still costs prompt tokens on every completion."""
 
-    def _tool_names(self, mocker, make_service, *, status_page_url: str) -> set[str]:
+    def _tool_names(self, mocker, make_service, *, status_page_urls: list[str]) -> set[str]:
         from llm.profile import PROFILE_CHAT
 
-        service, plugin = make_service(statusPageUrl=status_page_url)
+        service, plugin = make_service(statusPageUrls=status_page_urls)
+        # The gate under test is service.py's USE of the source list;
+        # _status_sources itself is covered in test_status_poller.py.
+        plugin._status_sources = lambda: list(status_page_urls)
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         completion = mocker.patch(
             "llm.service.litellm.completion",
@@ -238,11 +244,13 @@ class TestToolSchemaGateOnConfig:
         return {(t.get("function", t) or {}).get("name") for t in tools}
 
     def test_absent_from_tool_list_when_status_page_url_is_empty(self, mocker, make_service):
-        names = self._tool_names(mocker, make_service, status_page_url="")
+        names = self._tool_names(mocker, make_service, status_page_urls=[])
         assert "check_service_status" not in names
 
     def test_present_in_tool_list_when_status_page_url_is_set(self, mocker, make_service):
-        names = self._tool_names(mocker, make_service, status_page_url="https://status.claude.com")
+        names = self._tool_names(
+            mocker, make_service, status_page_urls=["https://status.claude.com"]
+        )
         assert "check_service_status" in names
 
 

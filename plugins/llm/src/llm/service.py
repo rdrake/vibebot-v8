@@ -5162,6 +5162,11 @@ Examples (echo → action_prompt: ""):
             if profile.temperature is not None or profile.frequency_penalty is not None:
                 optional_kwargs.setdefault("drop_params", True)
 
+            # Canonical, deduplicated, capped source list. Read once: it gates
+            # both the tool callback and the schema below, and registryValue
+            # is not free.
+            status_sources = self.plugin._status_sources()
+
             executor = AssistantToolExecutor(
                 db=db,
                 context=context,
@@ -5181,11 +5186,7 @@ Examples (echo → action_prompt: ""):
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
                 schedule_llm_task_fn=schedule_llm_task_fn,
-                status_fn=(
-                    self.plugin._status_tool_payload
-                    if self.plugin.registryValue("statusPageUrl")
-                    else None
-                ),
+                status_fn=(self.plugin._status_tool_payload if status_sources else None),
             )
 
             # check_service_status must not occupy a chat-surface slot when
@@ -5193,7 +5194,7 @@ Examples (echo → action_prompt: ""):
             # in that case, but the schema itself still shipped and cost
             # ~150 prompt tokens per completion for a tool that could only
             # ever answer "not configured".
-            if not self.plugin.registryValue("statusPageUrl"):
+            if not status_sources:
                 exclude_tools = exclude_tools | {"check_service_status"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
             if extra_tools:
