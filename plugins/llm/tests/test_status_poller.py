@@ -107,13 +107,15 @@ class TestFailureHandling:
         plugin = status_plugin
         plugin._fake_snapshot = green_snapshot(1000.0, incidents=[incident()])
         plugin._run_status_poll()
-        before = plugin._status_state
+        before_active = dict(plugin._status_state[CLAUDE].active)
 
         plugin._fake_error = statuspage.FetchError("boom")
         plugin._run_status_poll()
 
-        assert plugin._status_state is before, "state must not advance on failure"
-        assert plugin._status_read_cache is not None
+        assert plugin._status_state[CLAUDE].active == before_active, (
+            "state must not advance on failure"
+        )
+        assert CLAUDE in plugin._status_read_cache
 
     def test_invalid_payload_does_not_seed(self, status_plugin):
         plugin = status_plugin
@@ -156,9 +158,9 @@ class TestDisabled:
 
 class TestArming:
     def test_arms_even_when_url_is_empty(self, status_plugin, mocker):
-        """Re-enabling statusPageUrl must resume polling without a reload."""
+        """Re-enabling statusPageUrls must resume polling without a reload."""
         sched = mocker.patch("llm.plugin.schedule")
-        status_plugin._registry["statusPageUrl"] = ""
+        status_plugin._registry["statusPageUrls"] = []
         status_plugin._schedule_status_poll()
         assert sched.addEvent.called, "an empty URL must not disarm the timer forever"
 
@@ -401,3 +403,44 @@ class TestShutdownDuringAPass:
         plugin._status_fetch_snapshot = close_after_first
         plugin._run_status_poll()
         assert plugin._fetch_sources == [CLAUDE]
+
+
+class TestDeadlinePropagation:
+    """The budget must reach the work, not just gate the loop between sources."""
+
+    def test_timeout_cap_is_bounded_and_shrinks_across_sources(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        caps = []
+
+        def recording_fetch(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            caps.append(timeout_cap)
+            plugin._mono += 10.0
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = recording_fetch
+        plugin._run_status_poll()
+
+        assert len(caps) == 2
+        assert caps[0] <= plugin._STATUS_PASS_BUDGET, (
+            "the first cap must not exceed the pass budget"
+        )
+        assert caps[1] < caps[0], "the second source's cap must reflect what the first spent"
+
+    def test_low_remaining_budget_forces_template_only(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._run_status_poll()  # cold start seeds both sources quiet
+
+        def burn_then_incident(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            if source == CLAUDE:
+                plugin._mono += 30.0  # 45s budget - 30s = 15s left, under the 20s reserve
+                return green_snapshot(plugin._now)
+            return green_snapshot(plugin._now, incidents=[incident()])
+
+        plugin._status_fetch_snapshot = burn_then_incident
+        plugin._run_status_poll()
+
+        assert plugin._announce_status.call_args.kwargs["template_only"] is True
