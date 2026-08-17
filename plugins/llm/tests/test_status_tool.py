@@ -170,9 +170,13 @@ class TestToolWiringGate:
         from llm.profile import PROFILE_CHAT
 
         service, plugin = make_service(statusPageUrls=status_page_urls)
-        # The gate under test is service.py's USE of the source list;
-        # _status_sources itself is covered in test_status_poller.py.
-        plugin._status_sources = lambda: list(status_page_urls)
+        # Bind the real reader rather than stubbing it out: service.py's gate
+        # must be exercised against the same registryValue fake the rest of
+        # the request runs on, or a renamed/deleted registry key collapses to
+        # "" here (make_registry_side_effect's fallback) while a live bot
+        # raises NonExistentRegistryEntry — invisible until it hits prod.
+        plugin._status_sources = LLM._status_sources.__get__(plugin)
+        plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         mocker.patch(
             "llm.service.litellm.completion",
@@ -220,9 +224,13 @@ class TestToolSchemaGateOnConfig:
         from llm.profile import PROFILE_CHAT
 
         service, plugin = make_service(statusPageUrls=status_page_urls)
-        # The gate under test is service.py's USE of the source list;
-        # _status_sources itself is covered in test_status_poller.py.
-        plugin._status_sources = lambda: list(status_page_urls)
+        # Bind the real reader rather than stubbing it out: service.py's gate
+        # must be exercised against the same registryValue fake the rest of
+        # the request runs on, or a renamed/deleted registry key collapses to
+        # "" here (make_registry_side_effect's fallback) while a live bot
+        # raises NonExistentRegistryEntry — invisible until it hits prod.
+        plugin._status_sources = LLM._status_sources.__get__(plugin)
+        plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         completion = mocker.patch(
             "llm.service.litellm.completion",
@@ -262,14 +270,14 @@ class TestToolPayloadOwnership:
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
         status_plugin._run_status_poll()  # cold start, seeds empty
-        before = status_plugin._status_state
+        before = dict(status_plugin._status_state)  # shallow copy: catches a per-source rewrite
 
         status_plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
         status_plugin._now = 2000.0  # clear the 30s fetch floor
 
         status_plugin._status_tool_payload()
 
-        assert status_plugin._status_state is before, "the tool path must not write lifecycle state"
+        assert status_plugin._status_state == before, "the tool path must not write lifecycle state"
 
 
 class TestToolPayloadStaleness:
@@ -412,16 +420,20 @@ class TestStatusHistoryPayload:
         plugin = self._bind(status_plugin)
         fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
         mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
-        before_state = plugin._status_state
-        before_read_cache = plugin._status_read_cache
+        # Shallow copies, not the same object: a per-source rewrite
+        # (`self._status_state[source] = ...`) replaces a value at an
+        # existing key rather than replacing the dict, so an identity check
+        # on the outer dict cannot see it.
+        before_state = dict(plugin._status_state)
+        before_read_cache = dict(plugin._status_read_cache)
         plugin._status_history_cache = {}
         plugin._status_history_at = {}
         plugin._now = 1000.0
 
         plugin._status_history_payload(CLAUDE)
 
-        assert plugin._status_state is before_state
-        assert plugin._status_read_cache is before_read_cache
+        assert plugin._status_state == before_state
+        assert plugin._status_read_cache == before_read_cache
 
     def test_failure_stamps_backoff_and_a_second_immediate_call_does_not_refetch(
         self, status_plugin, mocker

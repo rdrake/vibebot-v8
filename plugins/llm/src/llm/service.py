@@ -5164,8 +5164,9 @@ Examples (echo → action_prompt: ""):
 
             # Canonical, deduplicated, capped source list. Read once: it gates
             # both the tool callback and the schema below, and registryValue
-            # is not free.
-            status_sources = self.plugin._status_sources()
+            # is not free. warn=False: this runs on every chat request, not
+            # the poller's ~2-minute cadence, which already logs bad entries.
+            status_sources = self.plugin._status_sources(warn=False)
 
             executor = AssistantToolExecutor(
                 db=db,

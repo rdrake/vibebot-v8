@@ -1074,26 +1074,34 @@ class LLM(callbacks.Plugin):
         cannot corrupt a deadline."""
         return time.monotonic()
 
-    def _status_sources(self) -> list[str]:
+    def _status_sources(self, *, warn: bool = True) -> list[str]:
         """Canonical, deduplicated, capped list of configured status pages.
 
-        Order is the operator's. Bad entries are logged once per poll and
-        dropped rather than raising, so one typo cannot disable the others.
+        Order is the operator's. Bad entries are dropped rather than raising,
+        so one typo cannot disable the others.
+
+        ``warn`` gates the diagnostic logging and defaults to on for the
+        poller's own ~2-minute cadence. This is also called on the per-request
+        hot path — service.py's tool-wiring gate, and the tool handler itself
+        — where callers pass ``warn=False``: without that, one typo'd entry
+        logs once per chat message instead of once per poll.
         """
         seen: list[str] = []
         for raw in self.registryValue("statusPageUrls") or []:
             source = statuspage.canonical_source(raw)
             if source is None:
-                self.log.warning("Ignoring unusable statusPageUrls entry: %s", str(raw)[:100])
+                if warn:
+                    self.log.warning("Ignoring unusable statusPageUrls entry: %s", str(raw)[:100])
                 continue
             if source not in seen:
                 seen.append(source)
         if len(seen) > self._STATUS_MAX_SOURCES:
-            self.log.warning(
-                "statusPageUrls lists %i usable sources; polling the first %i",
-                len(seen),
-                self._STATUS_MAX_SOURCES,
-            )
+            if warn:
+                self.log.warning(
+                    "statusPageUrls lists %i usable sources; polling the first %i",
+                    len(seen),
+                    self._STATUS_MAX_SOURCES,
+                )
             seen = seen[: self._STATUS_MAX_SOURCES]
         return seen
 
@@ -1313,7 +1321,9 @@ class LLM(callbacks.Plugin):
         be indistinguishable to the model.
         """
         now = self._status_now()
-        sources = self._status_sources()
+        # warn=False: this runs per tool call, not per poll; the poller
+        # already logs a bad entry on its own ~2-minute cadence.
+        sources = self._status_sources(warn=False)
         if not sources:
             return {"error": "No status pages are configured."}
 
