@@ -211,9 +211,12 @@ def parse_summary(
         raise InvalidPayload(f"unknown indicator: {indicator!r}")
     description = _require_str(status.get("description"), "status.description")
 
-    raw_components = _require_list(root.get("components"), "components")
-    _require_list(root.get("incidents"), "incidents")
-    _require_list(root.get("scheduled_maintenances"), "scheduled_maintenances")
+    # incident.io's Atlassian-compatible shim OMITS an empty collection rather
+    # than sending []. Absence is not a structural violation; a present value
+    # of the wrong type still is, so _require_list keeps guarding that.
+    raw_components = _require_list(root.get("components", []), "components")
+    _require_list(root.get("incidents", []), "incidents")
+    _require_list(root.get("scheduled_maintenances", []), "scheduled_maintenances")
 
     components: dict[str, str] = {}
     for item in raw_components:
@@ -221,16 +224,19 @@ def parse_summary(
             raise InvalidPayload("component is not an object")
         name = item.get("name")
         comp_status = item.get("status")
-        if (
-            not isinstance(name, str)
-            or not isinstance(comp_status, str)
-            or comp_status not in COMPONENT_STATUSES
-        ):
+        if not isinstance(name, str) or not isinstance(comp_status, str):
             raise InvalidPayload(f"bad component entry: {name!r}/{comp_status!r}")
+        # An unrecognised status keeps the component instead of rejecting the
+        # page. That rejection was worst-case timed — it would fire during an
+        # outage, the only time anyone asks — and the alternative of dropping
+        # the component fails silently in the worse direction, reporting "all
+        # operational" precisely because the broken one was discarded.
+        # to_tool_payload lists anything != "operational" in `degraded`, so an
+        # unfamiliar value still reaches the model, which reads prose anyway.
         components[name] = comp_status
 
     incidents: dict[str, IncidentView] = {}
-    for item in root["incidents"]:
+    for item in root.get("incidents", []):
         view = _parse_incident(item)
         incidents[view.id] = view
 

@@ -97,15 +97,6 @@ class TestParseSummaryRejects:
             ({}, "empty object"),
             ("<html>error</html>", "not a mapping"),
             (None, "None"),
-            ({"status": {"indicator": "none", "description": "ok"}}, "missing components"),
-            (
-                {
-                    "status": {"indicator": "none", "description": "ok"},
-                    "components": [],
-                    "incidents": [],
-                },
-                "missing scheduled_maintenances",
-            ),
             (
                 {
                     "status": {"indicator": "bogus", "description": "ok"},
@@ -129,6 +120,27 @@ class TestParseSummaryRejects:
     def test_rejects_malformed(self, payload, reason):
         with pytest.raises(statuspage.InvalidPayload):
             statuspage.parse_summary(payload, fetched_at=1.0)
+
+    def test_missing_components_parses_as_empty(self):
+        """Was 'rejects missing components'. incident.io omits an empty
+        collection rather than sending []; absence is not malformed."""
+        payload = {"status": {"indicator": "none", "description": "ok"}}
+        snap = statuspage.parse_summary(payload, fetched_at=1.0)
+        assert snap.components == {}
+        assert snap.incidents == {}
+
+    def test_missing_scheduled_maintenances_parses_as_empty(self):
+        """Was 'rejects missing scheduled_maintenances'. Same relaxation:
+        scheduled_maintenances is never surfaced in Snapshot, so the only
+        observable effect is that parsing succeeds instead of raising."""
+        payload = {
+            "status": {"indicator": "none", "description": "ok"},
+            "components": [],
+            "incidents": [],
+        }
+        snap = statuspage.parse_summary(payload, fetched_at=1.0)
+        assert snap.components == {}
+        assert snap.incidents == {}
 
     def test_rejects_incident_with_empty_id(self):
         payload = incident_payload()
@@ -178,6 +190,124 @@ class TestFieldWhitelisting:
         snap = statuspage.parse_summary(payload, fetched_at=1.0)
         assert not hasattr(snap.incidents["inc1"], "evil")
         assert "evil" not in repr(snap.incidents["inc1"])
+
+
+class TestOptionalCollectionsMayBeAbsent:
+    """incident.io omits empty collections rather than sending []. Absence is
+    not a structural violation; a present-but-wrong-type value still is."""
+
+    def _base(self) -> dict:
+        return {
+            "page": {"name": "OpenAI", "url": "https://status.openai.com/"},
+            "status": {"indicator": "none", "description": "All Systems Operational"},
+            "components": [{"name": "API", "status": "operational"}],
+            "incidents": [],
+            "scheduled_maintenances": [],
+        }
+
+    @pytest.mark.parametrize("key", ["incidents", "scheduled_maintenances", "components"])
+    def test_absent_collection_parses_as_empty(self, key):
+        payload = self._base()
+        del payload[key]
+        snap = statuspage.parse_summary(payload, fetched_at=1000.0)
+        assert snap.incidents == {}
+        if key == "components":
+            assert snap.components == {}
+
+    @pytest.mark.parametrize("key", ["incidents", "scheduled_maintenances", "components"])
+    @pytest.mark.parametrize("bad", ["not a list", 42, {"a": 1}])
+    def test_present_but_not_a_list_still_rejects(self, key, bad):
+        payload = self._base()
+        payload[key] = bad
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1000.0)
+
+
+class TestUnknownComponentStatus:
+    """Rejecting the whole page over one unrecognised status is worst-case
+    timed: it fires during an outage, the only time anyone asks."""
+
+    def _payload(self, comp_status: str) -> dict:
+        return {
+            "page": {"name": "OpenAI", "url": "https://status.openai.com/"},
+            "status": {"indicator": "minor", "description": "Partial outage"},
+            "components": [
+                {"name": "API", "status": comp_status},
+                {"name": "Dashboard", "status": "operational"},
+            ],
+            "incidents": [],
+            "scheduled_maintenances": [],
+        }
+
+    def test_unknown_status_keeps_the_component(self):
+        snap = statuspage.parse_summary(self._payload("degraded"), fetched_at=1000.0)
+        assert snap.components["API"] == "degraded"
+        assert snap.components["Dashboard"] == "operational"
+
+    def test_unknown_status_still_reaches_the_model_as_degraded(self):
+        snap = statuspage.parse_summary(self._payload("degraded"), fetched_at=1000.0)
+        payload = statuspage.to_tool_payload(snap, now=1000.0)
+        assert {"name": "API", "status": "degraded"} in payload["degraded"]
+        assert all(d["name"] != "Dashboard" for d in payload["degraded"])
+
+    def test_structural_violations_still_reject(self):
+        for bad_components in (
+            [{"name": "API"}],  # no status
+            [{"status": "operational"}],  # no name
+            [{"name": 5, "status": "operational"}],  # non-string name
+            [{"name": "API", "status": 5}],  # non-string status
+            ["not an object"],
+        ):
+            payload = self._payload("operational")
+            payload["components"] = bad_components
+            with pytest.raises(statuspage.InvalidPayload):
+                statuspage.parse_summary(payload, fetched_at=1000.0)
+
+
+class TestIncidentStatusStaysStrict:
+    """Deliberate asymmetry: INCIDENT_STATUSES drives TERMINAL_STATUSES, so
+    misreading an incident as live or over corrupts the announce lifecycle in
+    a way a wrong component label cannot."""
+
+    def test_unknown_incident_status_still_rejects(self):
+        payload = {
+            "page": {"name": "OpenAI", "url": "https://status.openai.com/"},
+            "status": {"indicator": "minor", "description": "Partial outage"},
+            "components": [],
+            "incidents": [{"id": "abc", "status": "brewing", "name": "X"}],
+            "scheduled_maintenances": [],
+        }
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1000.0)
+
+
+class TestOpenAIShapedFixture:
+    """Reproduces the shape observed live against status.openai.com on
+    2026-08-17: page/status/components present, incidents and
+    scheduled_maintenances absent entirely (not []), and two components
+    sharing a name (the live page has 25 components, 24 unique names)."""
+
+    def test_parses_and_collapses_duplicate_component_name(self):
+        payload = {
+            "page": {"name": "OpenAI", "url": "https://status.openai.com/"},
+            "status": {"indicator": "none", "description": "All Systems Operational"},
+            "components": [
+                {"id": "1", "name": "API", "status": "operational"},
+                {"id": "2", "name": "ChatGPT", "status": "operational"},
+                {"id": "3", "name": "Playground", "status": "operational"},
+                # Same name as "API" above — a component group and a leaf can
+                # share a display name on a real page; both must collapse to
+                # one dict key rather than one silently shadowing the other
+                # in a way that raises.
+                {"id": "4", "name": "API", "status": "operational"},
+            ],
+            # incidents and scheduled_maintenances deliberately absent.
+        }
+        snap = statuspage.parse_summary(payload, fetched_at=1000.0)
+        assert snap.page_name == "OpenAI"
+        assert snap.incidents == {}
+        assert len(snap.components) == 3
+        assert snap.components["API"] == "operational"
 
 
 class TestCanonicalSource:
