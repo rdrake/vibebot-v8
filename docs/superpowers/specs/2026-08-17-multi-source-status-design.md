@@ -377,8 +377,10 @@ report.
 - **Per-channel source selection.** Rejected in favour of the all-or-nothing
   opt-in; querying is already unconditional, which covers the case a channel
   wants information without noise.
-- **A `service` argument on the tool.** Rejected: the tool-path deadline bounds
-  the fan-out cost that a selector would otherwise be needed to avoid.
+- **A `service` argument on the tool.** Not needed here — the tool-path deadline
+  bounds the fan-out cost a selector would otherwise avoid. Deferred, not
+  rejected: it returns in the phase-2 queryable allowlist below, where the model
+  must name which page it wants.
 - **A per-channel "status query enabled" bool.** The ~150 prompt tokens the
   schema costs per completion are already being paid today; nothing in current
   traffic justifies the key.
@@ -391,3 +393,36 @@ report.
   restart window is still silent. Unchanged by this work.
 - **Locking the inline-fetch floor.** Racy by design; a duplicate fetch is a
   cost, not a correctness problem.
+
+## Planned follow-up: a queryable allowlist (phase 2)
+
+Polled pages and queryable pages need not be the same set. Polling costs a fetch
+every 120s plus lifecycle state per source, which is why this spec caps sources
+at 5. Querying costs one lazy fetch, cached, only when someone asks — so a short
+polled list can sit inside a much longer allowlist of pages the bot can answer
+about but never announces.
+
+Deliberately deferred until multi-source polling is running, because it builds
+directly on what this spec establishes: canonical source ids, per-source caches
+with their own TTL and failure backoff, and the tool-path deadline. Designing it
+against working code beats designing it against a plan.
+
+Sketch, not a commitment:
+
+- `statusQueryablePages`, a global list of `name=url` pairs. Names are needed
+  here in a way they are not for the polled list, because the model has to
+  select one.
+- The `service` argument on `check_service_status`, plus matching from what the
+  user actually said ("cloudflare") to an entry.
+- A lazy fetch path reusing `_status_fetch_snapshot`, with its own cache, TTL
+  and a bounded eviction policy — the allowlist can be long, so cache growth
+  needs a ceiling the polled path does not need.
+- No polling, no lifecycle state, no announcements for these pages. They are
+  read-on-demand only, which is what keeps the cost linear in questions asked
+  rather than in pages listed.
+
+A fully open "any Statuspage URL the model names" variant was considered and
+rejected for a public channel. The SSRF stack does hold — it was built for
+untrusted input — but a hallucinated hostname becomes a fetch whose third-party
+prose the bot then speaks unprompted, and nothing bounds how many hosts
+accumulate state.
