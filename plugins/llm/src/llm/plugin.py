@@ -1252,6 +1252,17 @@ class LLM(callbacks.Plugin):
         this, every subsequent "when did it last go down" question during an
         outage retries a 30s-timeout fetch while holding an executor permit,
         even though the answer (still broken) hasn't changed.
+
+        NOT YET MULTI-SOURCE: this body still reads _status_history_cache,
+        _status_history_at, and _status_history_failed_at as the pre-Task-2
+        scalars (None / 0.0), but Task 2 retyped all three to
+        dict[str, ...], keyed by source, and they now start as {}. The
+        `is not None` check below is always True against an empty dict, and
+        `now - self._status_history_at` raises TypeError (float - dict) the
+        first time this runs. Left unfixed deliberately: Task 5 replaces this
+        whole method with a per-source, deadline-budgeted version. Reachable
+        today via _status_tool_payload(include_history=True), which has no
+        try/except around this call.
         """
         now = self._status_now()
         if (
@@ -1301,9 +1312,9 @@ class LLM(callbacks.Plugin):
         """
         now = self._status_now()
         max_age = 2 * self._STATUS_POLL_INTERVAL
-        # First-source-only shim: Task 5 replaces this body with a real
-        # multi-source aggregate. This keeps the signature change from Task 2
-        # type-checking without pre-empting that design.
+        # First-source-only shim, so the Task 2 _status_fetch_now/
+        # _status_fetch_snapshot signature change type-checks. Task 5 owns
+        # the real replacement: a per-source loop aggregated into one payload.
         source = next(iter(self._status_sources()), None)
         snapshot = self._status_read_cache.get(source) if source else None
         stale = snapshot is None or (now - snapshot.fetched_at) > max_age
@@ -1326,10 +1337,9 @@ class LLM(callbacks.Plugin):
         and re-arms (schedule.py:118-122, :150-153).
         """
         try:
-            # First-source-only shim: Task 3 replaces this body with the
-            # deadline-budgeted, rotation-cursor multi-source loop. This keeps
-            # the signature change from Task 2 type-checking without
-            # pre-empting that design.
+            # First-source-only shim, so the Task 2 _status_fetch_snapshot
+            # signature change type-checks. Task 3 owns the real replacement:
+            # a deadline-budgeted, rotation-cursor multi-source poll loop.
             source = next(iter(self._status_sources()), None)
             if source is None:
                 return
@@ -1555,6 +1565,19 @@ class LLM(callbacks.Plugin):
         drop during shutdown is retried on the next poll. Openings and
         all-clears are tracked in separate maps, so one incident produces at
         most one of each over the process lifetime.
+
+        NOT YET MULTI-SOURCE: this body still reads _status_read_cache and
+        _status_state as the pre-Task-2 scalars (Snapshot | None /
+        StatusState), but Task 2 retyped both to dict[str, ...] keyed by
+        source. `snapshot = self._status_read_cache` binds the whole dict,
+        so `if snapshot is None: return` never fires against `{}`, and this
+        falls through to `snapshot.page_name` on a dict below, then passes a
+        dict where mark_announced/mark_resolved_announced expect a
+        StatusState. Left unfixed deliberately: Task 4 replaces this whole
+        method with a per-source version. Called from _run_status_poll
+        whenever delta.opened or delta.resolved; the bare `except Exception`
+        around that call site swallows the crash, so announcements silently
+        no-op until Task 4 lands.
         """
         snapshot = self._status_read_cache
         if snapshot is None:
