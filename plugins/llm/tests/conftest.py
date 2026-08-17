@@ -598,6 +598,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "verseEnabled": False,
         "verseCompactionModel": "gemini/gemini-flash-lite-latest",
         "verseStyleExemplars": [],
+        # Service status tool — a single configured source by default so
+        # _status_sources() (bound below onto the plugin Mock) returns a real
+        # list instead of an unconfigured Mock's auto-attribute.
+        "statusPageUrls": ["https://status.claude.com"],
     }
     if overrides:
         defaults.update(overrides)
@@ -630,6 +634,16 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         plugin.log = mocker.Mock()
         plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect(overrides or None))
 
+        # Bind the real reader, not a stub returning a fixed list: a prior
+        # incident shipped a commit that read a deleted registry key, and a
+        # stubbed _status_sources would have hidden that structurally. Routing
+        # through the real method means a mistyped or removed registry key
+        # collapses to [] here too, the same as it would in production.
+        from llm.plugin import LLM
+
+        plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+        plugin._status_sources = LLM._status_sources.__get__(plugin)
+
         # Service tests dispatch scheduled-task fires synchronously to
         # assert downstream effects; with the executor migration the
         # real fire() submits the worker via plugin._llm_executor.submit.
@@ -654,8 +668,6 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         # Every raw-queue send builds its IrcMsg with _safe_privmsg (the
         # safeArgument counterpart to irc.reply's). Use the real staticmethod so
         # tests inspecting queueMsg see an actual PRIVMSG, not a bare Mock.
-        from llm.plugin import LLM
-
         plugin._safe_privmsg.side_effect = LLM._safe_privmsg
 
         return LLMService(plugin), plugin
