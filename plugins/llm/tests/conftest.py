@@ -792,22 +792,26 @@ def status_plugin():
     obj._STATUS_FETCH_FLOOR = LLM._STATUS_FETCH_FLOOR
     obj._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
     obj._status_sources = LLM._status_sources.__get__(obj)
-    obj._status_state = statuspage.StatusState()
-    obj._status_read_cache = None
-    obj._status_last_fetch = 0.0
+    obj._status_state = {}
+    obj._status_read_cache = {}
+    obj._status_last_fetch = {}
+    obj._status_history_cache = {}
+    obj._status_history_at = {}
+    obj._status_history_failed_at = {}
     obj._fetch_calls = 0
     obj._fake_snapshot = None
     obj._fake_error = None
     obj._now = 1000.0
+    obj._mono = 0.0
+    obj._status_monotonic = lambda: obj._mono
+    obj._STATUS_MIN_FETCH_WINDOW = LLM._STATUS_MIN_FETCH_WINDOW
     obj._STATUS_HISTORY_TTL = LLM._STATUS_HISTORY_TTL
     obj._STATUS_HISTORY_LIMIT = LLM._STATUS_HISTORY_LIMIT
     obj._STATUS_HISTORY_RETRY = LLM._STATUS_HISTORY_RETRY
-    obj._status_history_cache = None
-    obj._status_history_at = 0.0
-    obj._status_history_failed_at = 0.0
 
-    def fake_fetch():
+    def fake_fetch(source, *, timeout_cap=None):
         obj._fetch_calls += 1
+        obj._fetch_sources.append(source)
         if obj._fake_error:
             err, obj._fake_error = obj._fake_error, None
             raise err
@@ -824,11 +828,14 @@ def status_plugin():
             )
         return snap
 
+    obj._fetch_sources = []
     obj._status_fetch_snapshot = fake_fetch
     obj._status_now = lambda: obj._now
     obj._announce_status = MagicMock()
     obj._run_status_poll = LLM._run_status_poll.__get__(obj)
     obj._status_fetch_now = LLM._status_fetch_now.__get__(obj)
+    obj._status_prune_sources = LLM._status_prune_sources.__get__(obj)
+    obj._status_host = LLM._status_host.__get__(obj)
 
     # Arming/dedup tests bind the real _schedule_status_poll /
     # _enqueue_status_poll. Both traps below matter: `closing` on a bare

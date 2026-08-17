@@ -235,3 +235,59 @@ class TestSourceList:
         plugin = status_plugin
         plugin._registry["statusPageUrls"] = [f"https://status{i}.example.com" for i in range(9)]
         assert len(plugin._status_sources()) == plugin._STATUS_MAX_SOURCES
+
+
+CLAUDE = "https://status.claude.com"
+GITHUB = "https://www.githubstatus.com"
+
+
+class TestPerSourceState:
+    def test_pruning_clears_every_keyed_structure(self, status_plugin):
+        """Pruning only _status_state would leave the other five growing without
+        bound — the 5-source cap bounds the configured set, not the historical
+        one."""
+        plugin = status_plugin
+        plugin._status_state = {GITHUB: statuspage.StatusState(seeded=True)}
+        plugin._status_read_cache = {GITHUB: green_snapshot(1000.0)}
+        plugin._status_last_fetch = {GITHUB: 1000.0}
+        plugin._status_history_cache = {GITHUB: ()}
+        plugin._status_history_at = {GITHUB: 1000.0}
+        plugin._status_history_failed_at = {GITHUB: 1000.0}
+
+        plugin._status_prune_sources([CLAUDE])
+
+        for name in (
+            "_status_state",
+            "_status_read_cache",
+            "_status_last_fetch",
+            "_status_history_cache",
+            "_status_history_at",
+            "_status_history_failed_at",
+        ):
+            assert getattr(plugin, name) == {}, f"{name} still holds the removed source"
+
+    def test_pruning_keeps_configured_sources(self, status_plugin):
+        plugin = status_plugin
+        plugin._status_state = {
+            CLAUDE: statuspage.StatusState(seeded=True),
+            GITHUB: statuspage.StatusState(seeded=True),
+        }
+        plugin._status_prune_sources([CLAUDE, GITHUB])
+        assert set(plugin._status_state) == {CLAUDE, GITHUB}
+
+    def test_fetch_floor_is_per_source(self, status_plugin):
+        """One source's inline fetch must not suppress another's."""
+        plugin = status_plugin
+        plugin._now = 1000.0
+        plugin._status_last_fetch = {CLAUDE: 1000.0}
+        plugin._status_fetch_now(GITHUB)
+        assert plugin._fetch_calls == 1, "GitHub blocked by Claude's floor"
+        plugin._status_fetch_now(CLAUDE)
+        assert plugin._fetch_calls == 1, "Claude's own floor did not hold"
+
+    def test_read_cache_is_keyed(self, status_plugin):
+        plugin = status_plugin
+        plugin._now = 2000.0
+        plugin._status_fetch_now(GITHUB)
+        assert GITHUB in plugin._status_read_cache
+        assert CLAUDE not in plugin._status_read_cache

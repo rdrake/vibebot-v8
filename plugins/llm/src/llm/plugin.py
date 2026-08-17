@@ -872,13 +872,19 @@ class LLM(callbacks.Plugin):
         # Status page poller. Lifecycle state is advanced here and nowhere
         # else; the tool's inline fetch writes only _status_read_cache.
         self._status_poll_inflight = threading.Event()
-        self._status_state = statuspage.StatusState()
-        self._status_read_cache: statuspage.Snapshot | None = None
-        self._status_last_fetch = 0.0
+        # Every field is keyed by canonical source id (statuspage.canonical_source).
+        # The ownership split from 2026-08-09 is unchanged and load-bearing:
+        # _status_state is advanced by the poller ONLY, so a user asking "is it
+        # down?" cannot consume an announcement. The tool's inline fetch writes
+        # _status_read_cache and _status_last_fetch.
+        self._status_state: dict[str, statuspage.StatusState] = {}
+        self._status_read_cache: dict[str, statuspage.Snapshot] = {}
+        self._status_last_fetch: dict[str, float] = {}
         self._status_announce_times: list[float] = []
-        self._status_history_cache: tuple[statuspage.HistoryEntry, ...] | None = None
-        self._status_history_at = 0.0
-        self._status_history_failed_at = 0.0
+        self._status_history_cache: dict[str, tuple[statuspage.HistoryEntry, ...]] = {}
+        self._status_history_at: dict[str, float] = {}
+        self._status_history_failed_at: dict[str, float] = {}
+        self._status_cursor: str | None = None
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
         self._schedule_status_poll()
@@ -1062,6 +1068,12 @@ class LLM(callbacks.Plugin):
         """Indirection point so tests can pin the clock."""
         return time.time()
 
+    def _status_monotonic(self) -> float:
+        """Monotonic clock for deadlines. Separate indirection from _status_now
+        so tests can pin them independently — and so a wall-clock adjustment
+        cannot corrupt a deadline."""
+        return time.monotonic()
+
     def _status_sources(self) -> list[str]:
         """Canonical, deduplicated, capped list of configured status pages.
 
@@ -1084,6 +1096,32 @@ class LLM(callbacks.Plugin):
             )
             seen = seen[: self._STATUS_MAX_SOURCES]
         return seen
+
+    def _status_host(self, source: str) -> str:
+        """Display host for a canonical source id. Operator-derived, always safe."""
+        try:
+            return urlparse(source).hostname or source
+        except ValueError:
+            return source
+
+    def _status_prune_sources(self, sources: list[str]) -> None:
+        """Drop state for sources no longer configured.
+
+        Every keyed structure, not just _status_state: the 5-source cap bounds
+        the configured set, not the set this process has ever seen, so pruning
+        one dict leaves the other five growing across config churn.
+        """
+        keep = set(sources)
+        for holder in (
+            self._status_state,
+            self._status_read_cache,
+            self._status_last_fetch,
+            self._status_history_cache,
+            self._status_history_at,
+            self._status_history_failed_at,
+        ):
+            for stale in [k for k in holder if k not in keep]:
+                del holder[stale]
 
     def _schedule_status_poll(self) -> None:
         """Arm the next status poll as a one-shot.
@@ -1135,21 +1173,28 @@ class LLM(callbacks.Plugin):
         fut.add_done_callback(lambda _f: self._status_poll_inflight.clear())
         fut.add_done_callback(lambda _f: self._schedule_status_poll())
 
-    def _status_fetch_snapshot(self) -> statuspage.Snapshot:
-        """Fetch and strictly parse the configured status page.
+    def _status_fetch_snapshot(
+        self, source: str, *, timeout_cap: float | None = None
+    ) -> statuspage.Snapshot:
+        """Fetch and strictly parse one status page.
+
+        ``timeout_cap`` is the caller's remaining deadline budget. Without it a
+        fetch entered near a deadline still runs its full ceiling, which is what
+        made the first draft of the pass budget bound nothing.
 
         Raises statuspage.FetchError or statuspage.InvalidPayload.
         """
-        base = self.registryValue("statusPageUrl")
-        cached = self._status_read_cache
+        cached = self._status_read_cache.get(source)
+        # min(...30): this borrows the LLM `timeout` registry key, which is
+        # documented for LLM calls and may be raised by an operator for a slow
+        # model. A poll must not hold an executor permit for that long — 30s is
+        # the developer-tuned ceiling for one small status endpoint.
+        timeout = min(self.registryValue("timeout"), 30)
+        if timeout_cap is not None:
+            timeout = min(timeout, max(1.0, timeout_cap))
         result = statuspage.fetch_summary(
-            base,
-            # min(...30): this borrows the LLM `timeout` registry key, which
-            # is documented for LLM calls and may be raised by an operator
-            # for a slow model. A poll must not hold an executor permit for
-            # that long — 30s is the developer-tuned ceiling for one small
-            # status endpoint.
-            timeout=min(self.registryValue("timeout"), 30),
+            source,
+            timeout=timeout,
             etag=cached.etag if cached else None,
             modified=cached.modified if cached else None,
             validate=validate_external_url,
@@ -1164,24 +1209,35 @@ class LLM(callbacks.Plugin):
             result.payload, fetched_at=now, etag=result.etag, modified=result.modified
         )
 
-    def _status_fetch_now(self) -> statuspage.Snapshot | None:
-        """Refresh the READ CACHE ONLY. Never touches lifecycle state.
+    def _status_fetch_now(
+        self, source: str, *, deadline: float | None = None
+    ) -> statuspage.Snapshot | None:
+        """Refresh ONE source's read cache. Never touches lifecycle state.
 
-        Called from the tool handler when the cache is cold or stale. Writing
-        lifecycle state here would let a user's question consume an
+        Called from the tool handler when that source's cache is cold or stale.
+        Writing lifecycle state here would let a user's question consume an
         announcement: the poller would diff against a baseline that already
         contained the incident.
+
+        The floor is per source — one page's recent read must not suppress
+        another's. It stays an unlocked check-then-set: it is a cost guard, not
+        a correctness guard, and a duplicate fetch is harmless.
         """
         now = self._status_now()
-        if now - self._status_last_fetch < self._STATUS_FETCH_FLOOR:
-            return self._status_read_cache
-        self._status_last_fetch = now
+        if now - self._status_last_fetch.get(source, 0.0) < self._STATUS_FETCH_FLOOR:
+            return self._status_read_cache.get(source)
+        self._status_last_fetch[source] = now
+        timeout_cap = None
+        if deadline is not None:
+            timeout_cap = deadline - self._status_monotonic()
+            if timeout_cap <= self._STATUS_MIN_FETCH_WINDOW:
+                return self._status_read_cache.get(source)
         try:
-            snapshot = self._status_fetch_snapshot()
+            snapshot = self._status_fetch_snapshot(source, timeout_cap=timeout_cap)
         except Exception as e:
-            self.log.info("Status inline fetch failed: %s", e)
-            return self._status_read_cache
-        self._status_read_cache = snapshot
+            self.log.info("Status inline fetch failed for %s: %s", source, e)
+            return self._status_read_cache.get(source)
+        self._status_read_cache[source] = snapshot
         return snapshot
 
     def _status_history_payload(self) -> list[dict]:
@@ -1245,10 +1301,14 @@ class LLM(callbacks.Plugin):
         """
         now = self._status_now()
         max_age = 2 * self._STATUS_POLL_INTERVAL
-        snapshot = self._status_read_cache
+        # First-source-only shim: Task 5 replaces this body with a real
+        # multi-source aggregate. This keeps the signature change from Task 2
+        # type-checking without pre-empting that design.
+        source = next(iter(self._status_sources()), None)
+        snapshot = self._status_read_cache.get(source) if source else None
         stale = snapshot is None or (now - snapshot.fetched_at) > max_age
-        if stale:
-            snapshot = self._status_fetch_now() or snapshot
+        if stale and source:
+            snapshot = self._status_fetch_now(source) or snapshot
         if snapshot is None:
             return {"error": "The status page has not been read yet."}
         payload = statuspage.to_tool_payload(snapshot, now=now)
@@ -1266,17 +1326,22 @@ class LLM(callbacks.Plugin):
         and re-arms (schedule.py:118-122, :150-153).
         """
         try:
-            if not self.registryValue("statusPageUrl"):
+            # First-source-only shim: Task 3 replaces this body with the
+            # deadline-budgeted, rotation-cursor multi-source loop. This keeps
+            # the signature change from Task 2 type-checking without
+            # pre-empting that design.
+            source = next(iter(self._status_sources()), None)
+            if source is None:
                 return
-            self._status_last_fetch = self._status_now()
-            snapshot = self._status_fetch_snapshot()
-            self._status_read_cache = snapshot
+            self._status_last_fetch[source] = self._status_now()
+            snapshot = self._status_fetch_snapshot(source)
+            self._status_read_cache[source] = snapshot
             delta, new_state = statuspage.classify(
-                self._status_state,
+                self._status_state.get(source, statuspage.StatusState()),
                 snapshot,
                 max_opened=self._STATUS_MAX_ANNOUNCE_PER_POLL,
             )
-            self._status_state = new_state
+            self._status_state[source] = new_state
             if delta.discarded:
                 self.log.warning(
                     "Status poll discarded %i opened incidents past the per-poll cap",
@@ -1579,6 +1644,7 @@ class LLM(callbacks.Plugin):
     _STATUS_MAX_ANNOUNCE_PER_POLL = 3
     _STATUS_ANNOUNCE_MAX_PER_HOUR = 6
     _STATUS_FETCH_FLOOR = 30
+    _STATUS_MIN_FETCH_WINDOW = 2.0
     _STATUS_ANNOUNCE_MAX_LEN = 400
     _STATUS_HISTORY_TTL = 3600  # history changes rarely; 1 hour is plenty
     _STATUS_HISTORY_LIMIT = 5
