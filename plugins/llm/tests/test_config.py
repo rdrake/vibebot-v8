@@ -179,6 +179,24 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
+    def test_status_page_urls_default_is_a_list_of_two_urls(self) -> None:
+        """A string default would become a list of single characters:
+        registry.Value.__init__ passes the default to setValue, and
+        SeparatedListOf.setValue calls list(v)."""
+        import llm.config  # noqa: F401 — import side effect registers the values
+        import supybot.conf as conf
+
+        assert list(conf.supybot.plugins.LLM.statusPageUrls()) == [
+            "https://status.claude.com",
+            "https://www.githubstatus.com",
+        ]
+
+    def test_status_page_url_singular_is_gone(self) -> None:
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert not hasattr(conf.supybot.plugins.LLM, "statusPageUrl")
+
     def test_capability_settings_registered_with_defaults(self) -> None:
         """T5b: capability-based registry values are the sole surface for
         assistant/image model after the command-era keys were removed."""

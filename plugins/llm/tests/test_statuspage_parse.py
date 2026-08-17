@@ -178,3 +178,45 @@ class TestFieldWhitelisting:
         snap = statuspage.parse_summary(payload, fetched_at=1.0)
         assert not hasattr(snap.incidents["inc1"], "evil")
         assert "evil" not in repr(snap.incidents["inc1"])
+
+
+class TestCanonicalSource:
+    """The configured string is not safe as a dict key: _fetch_json accepts a
+    trailing slash (statuspage.py:826 rstrips the path, :835 rstrips the base),
+    so two spellings of one page would otherwise get two lifecycle states and
+    announce every incident twice."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("https://status.claude.com", "https://status.claude.com"),
+            ("https://status.claude.com/", "https://status.claude.com"),
+            ("https://status.claude.com///", "https://status.claude.com"),
+            ("  https://status.claude.com  ", "https://status.claude.com"),
+            ("HTTPS://Status.Claude.COM", "https://status.claude.com"),
+            ("https://status.claude.com:443", "https://status.claude.com"),
+            ("http://example.com:80", "http://example.com"),
+            ("https://example.com:8443", "https://example.com:8443"),
+        ],
+    )
+    def test_equivalent_spellings_collapse(self, raw, expected):
+        assert statuspage.canonical_source(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "",
+            "   ",
+            "status.claude.com",  # no scheme
+            "ftp://status.claude.com",  # not http(s)
+            "file:///etc/passwd",
+            "https://status.claude.com/api",  # path
+            "https://status.claude.com?x=1",  # query
+            "https://status.claude.com#frag",  # fragment
+            "https://",  # no host
+            "http://[",  # urlparse().hostname raises
+            "https://example.com:notaport",  # .port raises
+        ],
+    )
+    def test_unusable_entries_return_none(self, raw):
+        assert statuspage.canonical_source(raw) is None

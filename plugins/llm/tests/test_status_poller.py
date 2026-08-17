@@ -203,3 +203,35 @@ class TestNotModified:
         )
         with pytest.raises(statuspage.FetchError):
             LLM._status_fetch_snapshot.__get__(status_plugin)()
+
+
+class TestSourceList:
+    def test_canonicalizes_dedupes_and_preserves_order(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [
+            "https://status.claude.com/",
+            "https://www.githubstatus.com",
+            "HTTPS://STATUS.CLAUDE.COM",
+        ]
+        assert plugin._status_sources() == [
+            "https://status.claude.com",
+            "https://www.githubstatus.com",
+        ]
+
+    def test_unusable_entries_are_dropped_not_fatal(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [
+            "not a url",
+            "https://www.githubstatus.com",
+        ]
+        assert plugin._status_sources() == ["https://www.githubstatus.com"]
+
+    def test_empty_list_disables(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = []
+        assert plugin._status_sources() == []
+
+    def test_caps_at_max_sources(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [f"https://status{i}.example.com" for i in range(9)]
+        assert len(plugin._status_sources()) == plugin._STATUS_MAX_SOURCES

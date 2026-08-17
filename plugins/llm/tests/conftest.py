@@ -785,11 +785,13 @@ def status_plugin():
     from llm.plugin import LLM
 
     obj = MagicMock()
-    obj._registry = {"statusPageUrl": "https://status.claude.com"}
+    obj._registry = {"statusPageUrls": ["https://status.claude.com"]}
     obj.registryValue = lambda key, *a, **k: obj._registry.get(key)
     obj._STATUS_POLL_INTERVAL = LLM._STATUS_POLL_INTERVAL
     obj._STATUS_MAX_ANNOUNCE_PER_POLL = LLM._STATUS_MAX_ANNOUNCE_PER_POLL
     obj._STATUS_FETCH_FLOOR = LLM._STATUS_FETCH_FLOOR
+    obj._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+    obj._status_sources = LLM._status_sources.__get__(obj)
     obj._status_state = statuspage.StatusState()
     obj._status_read_cache = None
     obj._status_last_fetch = 0.0

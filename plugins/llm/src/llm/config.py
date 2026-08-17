@@ -995,13 +995,15 @@ conf.registerChannelValue(
 
 conf.registerGlobalValue(
     LLM,
-    "statusPageUrl",
-    registry.String(
-        "https://status.claude.com",
-        _("""Base URL of an Atlassian Statuspage-hosted service status page
-        (no trailing path). The bot polls {url}/api/v2/summary.json to answer
-        status questions and to announce new incidents. Set to the empty
-        string to disable status awareness entirely."""),
+    "statusPageUrls",
+    registry.SpaceSeparatedListOfStrings(
+        ["https://status.claude.com", "https://www.githubstatus.com"],
+        _("""Space-separated base URLs of Atlassian Statuspage-hosted service
+        status pages (each a bare scheme://host, no trailing path). The bot
+        polls {url}/api/v2/summary.json for each to answer status questions and
+        to announce new incidents. Entries that are not a bare scheme://host are
+        ignored with a warning, duplicates collapse, and at most 5 are polled.
+        Set to the empty list to disable status awareness entirely."""),
     ),
 )
 

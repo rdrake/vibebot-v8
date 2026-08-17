@@ -1062,6 +1062,29 @@ class LLM(callbacks.Plugin):
         """Indirection point so tests can pin the clock."""
         return time.time()
 
+    def _status_sources(self) -> list[str]:
+        """Canonical, deduplicated, capped list of configured status pages.
+
+        Order is the operator's. Bad entries are logged once per poll and
+        dropped rather than raising, so one typo cannot disable the others.
+        """
+        seen: list[str] = []
+        for raw in self.registryValue("statusPageUrls") or []:
+            source = statuspage.canonical_source(raw)
+            if source is None:
+                self.log.warning("Ignoring unusable statusPageUrls entry: %s", str(raw)[:100])
+                continue
+            if source not in seen:
+                seen.append(source)
+        if len(seen) > self._STATUS_MAX_SOURCES:
+            self.log.warning(
+                "statusPageUrls lists %i usable sources; polling the first %i",
+                len(seen),
+                self._STATUS_MAX_SOURCES,
+            )
+            seen = seen[: self._STATUS_MAX_SOURCES]
+        return seen
+
     def _schedule_status_poll(self) -> None:
         """Arm the next status poll as a one-shot.
 
@@ -1560,6 +1583,7 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_TTL = 3600  # history changes rarely; 1 hour is plenty
     _STATUS_HISTORY_LIMIT = 5
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
+    _STATUS_MAX_SOURCES = 5
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15

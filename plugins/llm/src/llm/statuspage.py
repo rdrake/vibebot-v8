@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 INDICATORS: frozenset[str] = frozenset({"none", "minor", "major", "critical"})
 
@@ -668,6 +669,43 @@ def incident_url(page_url: str, incident_id: str) -> str:
     return f"{base}/incidents/{incident_id}"
 
 
+def canonical_source(url: str) -> str | None:
+    """Canonicalize a configured status-page URL into a stable source id.
+
+    Returns a bare ``scheme://host[:port]`` — the exact shape ``_fetch_json``
+    accepts — or None for anything it would reject, so a bad config entry is
+    dropped once at read time instead of raising on every poll.
+
+    Both ``urlparse(...).hostname`` and ``.port`` raise ValueError on malformed
+    input ("http://[", ":notaport"), which is why each is guarded separately
+    rather than trusting the initial urlparse.
+    """
+    if not url or not url.strip():
+        return None
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return None
+    if parsed.path.rstrip("/") or parsed.params or parsed.query or parsed.fragment:
+        return None
+    try:
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None or port == (443 if scheme == "https" else 80):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
 def format_duration(seconds: int | None) -> str:
     """Coarse human duration for an announcement line, or "" when unusable.
 
@@ -814,7 +852,6 @@ def _fetch_json(
     import json as _json
     import urllib.error
     import urllib.request
-    from urllib.parse import urlparse
 
     try:
         parsed = urlparse(base_url)
