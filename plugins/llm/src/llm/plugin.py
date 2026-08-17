@@ -1439,12 +1439,13 @@ class LLM(callbacks.Plugin):
         phishing link in its own voice with nobody having asked. The URL host
         check is the highest-value filter on this path.
 
-        ``allowed_host`` is caller-derived from operator config
-        (``statusPageUrl``) only, never from the fetched payload — a hostile
-        status page could otherwise set its own ``page_url`` and become the
-        only host this gate permits. ``label`` MAY be quoted from the fetched
-        payload (``page_name``), but only after the caller has stripped URLs
-        and sanitised it (see ``_announce_status``) — this check only
+        ``allowed_host`` is caller-derived from operator config (the
+        canonical source, via ``_status_host``) only, never from the fetched
+        payload — a hostile status page could otherwise set its own
+        ``page_url`` and become the only host this gate permits. ``label``
+        MAY be quoted from the fetched payload (``page_name``), but only
+        after the caller has stripped URLs and sanitised it (see
+        ``_announce_status``) — this check only
         confirms the label appears in the text, so it never on its own
         authorizes a URL. An empty ``label`` fails closed (rejects) rather
         than skipping the service-name check. Never raises: a malformed URL

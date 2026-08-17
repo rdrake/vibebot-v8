@@ -82,7 +82,11 @@ class TestPerSourceAnnouncing:
         plugin._announce_status("https://www.githubstatus.com", delta, snapshot, lines_left=5)
 
         assert plugin._sent_text, "nothing was sent"
-        assert "githubstatus.com/incidents/gh1" in plugin._sent_text[0]
+        assert "GitHub is having trouble" in plugin._sent_text[0], (
+            "the rewrite must have passed _status_rewrite_ok's host check — the "
+            "template fallback contains the same incident URL, so asserting on "
+            "the URL alone can't tell rewrite-accepted from rewrite-rejected"
+        )
 
     def test_marking_announced_writes_only_that_sources_state(self, announcing_plugin):
         plugin = announcing_plugin
@@ -243,8 +247,9 @@ class TestPostChecks:
         assert "status.claude.com" in plugin._sent_text[0]
 
     def test_accepts_a_rewrite_quoting_the_incident_permalink(self, announcing_plugin):
-        """The host check is derived from statusPageUrl, so the deeper path
-        must still pass it — otherwise every rewrite falls back to template."""
+        """The host check is derived from the canonical source, so the deeper
+        path must still pass it — otherwise every rewrite falls back to
+        template."""
         plugin = announcing_plugin
         plugin._status_rewrite = MagicMock(
             return_value=(
@@ -640,7 +645,7 @@ class TestOverlaySharing:
             else plugin._registry.get(key)
         )
         plugin._status_rewrite = MagicMock(return_value="Claude API is degraded right now.")
-        plugin._announce_status(
+        sent = plugin._announce_status(
             "https://status.claude.com",
             statuspage.Delta(opened=(incident(),)),
             plugin._status_read_cache["https://status.claude.com"],
@@ -651,6 +656,7 @@ class TestOverlaySharing:
             "Claude API is degraded right now.",
             "Claude API is degraded right now.",
         ]
+        assert sent == 1, "one incident delivered to two channels counts once, not per channel"
 
 
 class TestIrcForChannel:

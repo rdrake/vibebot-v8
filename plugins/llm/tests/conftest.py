@@ -883,10 +883,12 @@ def announcing_plugin(status_plugin):
         )
     }
     plugin._status_state = {}
-    plugin._registry = {
-        "statusPageUrls": ["https://status.claude.com", "https://www.githubstatus.com"],
-        "assistantSystemPrompt": "",
-    }
+    plugin._registry.update(
+        {
+            "statusPageUrls": ["https://status.claude.com", "https://www.githubstatus.com"],
+            "assistantSystemPrompt": "",
+        }
+    )
     plugin._status_announce_times = []
     plugin._announce_channels = {"#test": True}
     plugin._all_known_channels = lambda: set(plugin._announce_channels)
