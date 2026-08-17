@@ -20,8 +20,10 @@ Ask in plain language. There's no command.
           The API's showing degraded; everything else looks fine.
 ```
 
-Ask about any configured page by name — "is GitHub down?" gets GitHub's
-reading, not Claude's.
+Ask about any configured page by name — "is GitHub down?" is meant to get
+GitHub's reading, not Claude's. There's no argument that pins the page down;
+the model reads the question and picks the right entry from the full list, so
+an oddly phrased question can occasionally answer from the wrong one.
 
 The bot reads the live pages rather than answering from memory. With more
 than one configured, it polls them in rotation within a single pass, so a
@@ -43,8 +45,9 @@ Roleplay replies can't reach the status pages. Ask outside the story.
 
 ## Past incidents
 
-Questions about the past pull a second reading for that page — the recent
-incident list, not just what's broken now:
+Questions about the past pull a second reading — the recent incident list,
+not just what's broken now — for every configured page, not only the one
+asked about:
 
 ```
 <you>     VibeBot, has Claude been flaky lately?

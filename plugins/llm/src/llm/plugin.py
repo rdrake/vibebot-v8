@@ -1320,7 +1320,6 @@ class LLM(callbacks.Plugin):
         third party — two pages both calling themselves "Claude" would otherwise
         be indistinguishable to the model.
         """
-        now = self._status_now()
         # warn=False: this runs per tool call, not per poll; the poller
         # already logs a bad entry on its own ~2-minute cadence.
         sources = self._status_sources(warn=False)
@@ -1333,8 +1332,14 @@ class LLM(callbacks.Plugin):
         for source in sources:
             entry: dict[str, Any] = {"source": self._status_host(source)}
             snapshot = self._status_read_cache.get(source)
+            # `now` is captured per source, not once before the fan-out: a
+            # source refreshed during another source's fetch would otherwise
+            # have fetched_at > now, and snapshot_age_sec below would go
+            # negative.
+            now = self._status_now()
             if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
                 snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
+                now = self._status_now()
             if snapshot is None:
                 entry["error"] = "This status page has not been read yet."
                 services.append(entry)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 import threading
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -13,6 +15,10 @@ from llm.config import ValidatedModelName
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+LLM_SRC = REPO_ROOT / "plugins" / "llm" / "src" / "llm"
+REGISTER_METHODS = {"registerGlobalValue", "registerChannelValue"}
 
 
 class TestValidatedModelName:
@@ -396,3 +402,81 @@ class TestVerseStyleExemplars:
         import supybot.conf as conf
 
         assert conf.supybot.plugins.LLM.verseStyleExemplars() == []
+
+
+def _registered_config_keys() -> set[str]:
+    """Every key name registered against the LLM plugin in config.py."""
+    path = LLM_SRC / "config.py"
+    tree = ast.parse(path.read_text(), filename=str(path))
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in REGISTER_METHODS
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            keys.add(node.args[1].value)
+    return keys
+
+
+def _registry_value_literals() -> list[tuple[Path, int, str]]:
+    """Every string-literal key passed to a ``registryValue(...)`` call
+    under plugin.py / service.py.
+
+    A call that builds its key dynamically (an f-string, a bare variable, a
+    ``PROFILES[...].overlay_setting`` lookup) is invisible to this scan and
+    must be reviewed by hand -- this only guards literals, of which there are
+    63 today against zero dynamic-key blind spots left unreviewed.
+    """
+    found: list[tuple[Path, int, str]] = []
+    for fname in ("plugin.py", "service.py"):
+        path = LLM_SRC / fname
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "registryValue"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                found.append((path, node.lineno, node.args[0].value))
+    return found
+
+
+class TestEveryRegistryValueLiteralIsRegistered:
+    """The production incident this pins: a commit read
+    ``registryValue("statusPageUrl")`` (singular) after config.py had
+    already been renamed to ``statusPageUrls`` (plural). Every test in the
+    suite passed --  ``make_registry_side_effect``'s stub just returns ""
+    for a key it doesn't recognise -- while production raised
+    ``NonExistentRegistryEntry`` on every chat message, because the real
+    supybot registry has no fallback.
+
+    This statically cross-checks every literal key plugin.py/service.py
+    reads via ``registryValue`` against every key config.py actually
+    registers, so a deleted or mistyped literal fails here instead of live.
+    """
+
+    def test_the_scan_actually_finds_calls(self) -> None:
+        """Guards the guard: a broken scanner would make the real test
+        below vacuously pass."""
+        assert len(_registry_value_literals()) > 50
+        assert len(_registered_config_keys()) > 50
+
+    def test_no_orphaned_registry_value_literal(self) -> None:
+        registered = _registered_config_keys()
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)}:{lineno}: registryValue({key!r})"
+            for path, lineno, key in _registry_value_literals()
+            if key not in registered
+        ]
+        assert not offenders, (
+            "registryValue() reads a key config.py never registers -- this "
+            "raises NonExistentRegistryEntry in production, not in this "
+            "test suite:\n" + "\n".join(offenders)
+        )

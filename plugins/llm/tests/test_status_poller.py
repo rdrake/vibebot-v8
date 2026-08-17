@@ -445,6 +445,28 @@ class TestDeadlinePropagation:
 
         assert plugin._announce_status.call_args.kwargs["template_only"] is True
 
+    def test_timeout_cap_bounds_the_real_fetch_call(self, status_plugin, mocker):
+        """The caller-computed cap is worthless unless the callee's socket
+        timeout actually shrinks to match it. This binds the real
+        _status_fetch_snapshot (not the fake_fetch fixture stand-in every
+        other poller/tool test uses) and asserts what reaches
+        statuspage.fetch_summary."""
+        plugin = status_plugin
+        plugin._registry["timeout"] = 30  # above the cap, so the cap must be what wins
+        cached = green_snapshot(1000.0)
+        plugin._status_read_cache = {CLAUDE: cached}
+        mock_fetch = mocker.patch(
+            "llm.plugin.statuspage.fetch_summary",
+            return_value=statuspage.FetchResult(
+                not_modified=True, payload=None, etag=None, modified=None
+            ),
+        )
+        timeout_cap = 5.0  # below both the registry timeout and the 30s ceiling
+
+        LLM._status_fetch_snapshot.__get__(plugin)(CLAUDE, timeout_cap=timeout_cap)
+
+        assert mock_fetch.call_args.kwargs["timeout"] <= timeout_cap
+
 
 class TestAnnouncerIsReachedPerSource:
     def test_each_source_announces_its_own_incident(self, status_plugin):
@@ -467,3 +489,52 @@ class TestAnnouncerIsReachedPerSource:
             for call in plugin._announce_status.call_args_list
         }
         assert announced == {CLAUDE: ["c1"], GITHUB: ["g1"]}
+
+
+THIRD = "https://status.example.com"
+
+
+class TestGlobalLineBudget:
+    """_STATUS_MAX_LINES_PER_POLL is only enforced by _run_status_poll on the
+    caller side of the announcer seam (lines_left -= self._poll_one_source(...)).
+    Nothing on the callee side proves the budget actually shrinks across
+    sources or stops a source once it is spent."""
+
+    def test_second_source_receives_the_shrunk_budget(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._run_status_poll()  # cold start seeds both, quiet
+
+        def both_incident(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            name = "c1" if source == CLAUDE else "g1"
+            return green_snapshot(plugin._now, incidents=[incident(name)])
+
+        plugin._status_fetch_snapshot = both_incident
+        plugin._announce_status.reset_mock()
+        plugin._announce_status.return_value = 4  # _STATUS_MAX_LINES_PER_POLL (5) - 4 = 1 left
+        plugin._run_status_poll()
+
+        assert plugin._announce_status.call_count == 2
+        assert plugin._announce_status.call_args_list[1].kwargs["lines_left"] == 1
+
+    def test_a_third_source_is_never_announced_once_the_budget_is_spent(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB, THIRD]
+        plugin._run_status_poll()  # cold start seeds all three, quiet
+
+        def all_incidents(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            name = {CLAUDE: "c1", GITHUB: "g1", THIRD: "t1"}[source]
+            return green_snapshot(plugin._now, incidents=[incident(name)])
+
+        plugin._status_fetch_snapshot = all_incidents
+        plugin._announce_status.reset_mock()
+        plugin._announce_status.return_value = 4  # first source alone exhausts the budget
+        plugin._run_status_poll()
+
+        assert plugin._announce_status.call_count == 2, (
+            "the third source must not be announced once lines_left is spent"
+        )
+        announced_sources = {call.args[0] for call in plugin._announce_status.call_args_list}
+        assert THIRD not in announced_sources

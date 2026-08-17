@@ -591,6 +591,30 @@ class TestAggregatePayload:
         assert payload["note"]
         assert all("note" not in e for e in payload["services"])
 
+    def test_snapshot_age_is_never_negative_for_a_source_refreshed_mid_fanout(self, status_plugin):
+        """A cold source's own fetch can burn real time before its snapshot
+        lands. If `now` were captured once before the whole fan-out (the
+        prior bug), that source's fetched_at would land after the captured
+        `now` and snapshot_age_sec would go negative."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_fetch_now = LLM._status_fetch_now.__get__(plugin)
+        plugin._status_read_cache = {}
+        plugin._status_last_fetch = {}
+
+        real_fetch_snapshot = plugin._status_fetch_snapshot  # fixture's fake_fetch
+
+        def slow_fetch(source, *, timeout_cap=None):
+            plugin._now += 20  # the clock moves while this source's fetch is "in flight"
+            return real_fetch_snapshot(source, timeout_cap=timeout_cap)
+
+        plugin._status_fetch_snapshot = slow_fetch
+
+        payload = plugin._status_tool_payload()
+
+        assert payload["services"][0]["snapshot_age_sec"] >= 0
+
 
 class TestToolBudget:
     def test_a_slow_source_returns_stale_rather_than_blocking(self, status_plugin):
