@@ -949,7 +949,12 @@ class TestPerSourceAnnouncing:
         )
 
         assert plugin._sent_text, "nothing was sent"
-        assert "githubstatus.com/incidents/gh1" in plugin._sent_text[0]
+        # Assert the REWRITE's own prose, not the incident URL: render_line
+        # embeds incident_url(page_url, id) too, so a URL substring is present
+        # whether the rewrite passed the host check or the template fallback
+        # went out — which would make this test pass on the exact regression
+        # it exists to catch.
+        assert "GitHub is having trouble" in plugin._sent_text[0]
 
     def test_marking_announced_writes_only_that_sources_state(self, announcing_plugin):
         plugin = announcing_plugin
