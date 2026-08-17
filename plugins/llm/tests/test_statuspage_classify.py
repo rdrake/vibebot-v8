@@ -154,6 +154,31 @@ class TestOpenedAndChangedAreDisjoint:
         assert delta.changed == ()
 
 
+class TestUnknownIncidentStatusIsLive:
+    """_parse_incident no longer rejects an unrecognised status (finding 2,
+    2026-08-17); classify must land it on the live side of TERMINAL_STATUSES
+    — opened when new, never resolved while still listed — or a status
+    outside our five silently swallows a real outage instead of announcing
+    it."""
+
+    def test_unknown_status_opens_rather_than_resolves(self):
+        _, state = statuspage.classify(statuspage.StatusState(), snap())
+        delta, state = statuspage.classify(state, snap(view("A", status="triage")))
+        assert [i.id for i in delta.opened] == ["A"]
+        assert delta.resolved == ()
+
+    def test_unknown_status_stays_active_and_never_auto_resolves(self):
+        """An incident sitting in an unrecognised status forever must not
+        resolve just because it never reaches a status we know — only its
+        disappearance from the payload, or a move to an actually-terminal
+        status, may resolve it."""
+        _, state = statuspage.classify(statuspage.StatusState(), snap())
+        _, state = statuspage.classify(state, snap(view("A", status="triage")))
+        delta, _ = statuspage.classify(state, snap(view("A", status="triage")))
+        assert delta.resolved == ()
+        assert "A" in state.active
+
+
 class TestPruning:
     def test_announced_map_is_bounded(self):
         state = statuspage.StatusState(seeded=True)

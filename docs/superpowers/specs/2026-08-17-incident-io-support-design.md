@@ -80,6 +80,33 @@ incident.io's incidents, which carry no `components` key, degrade to an empty
    Structural strictness is unchanged: a component that is not an object, or whose
    `name`/`status` is not a string, is still rejected.
 
+2b. **An unrecognised incident status keeps the incident, and is treated as live.**
+   Superseded by whole-branch review, 2026-08-17. `_parse_incident` raised out of
+   `parse_summary` on any status outside `INCIDENT_STATUSES`, which rejects the
+   **entire page**, not just that incident — the asymmetry described below as
+   deliberate was actually a bug in how strict a single unfamiliar incident status
+   was allowed to be. Failure scenario: incident.io's native lifecycle includes
+   `triage`/`fixing` (no live incident.io incident was ever observed at spec time),
+   so a real OpenAI outage opening in one of those states would fail every poll for
+   the outage's entire duration — no announcement in any `statusAnnounce` channel,
+   and the tool answering `stale: True, error: "currently unreachable"` beside
+   `description: "All Systems Operational"`. When the incident later resolved and
+   dropped out of the payload, nothing would announce that either, because it never
+   entered `active`.
+
+   The operator ruled: tolerate it. `_parse_incident` no longer raises on an
+   unrecognised `status`; the incident is kept. The status is passed through
+   `sanitise_text`, exactly as component status already is — required, not
+   optional, since `incident.status` reaches IRC (`render_line`'s
+   `f"({incident.status})"`) and the rewrite prompt (`facts["status"]`)
+   unsanitised today, safe only because the enum used to bound the value.
+   Classification treats an unrecognised status as **not terminal** —
+   `TERMINAL_STATUSES` is an explicit allowlist (`{"resolved", "postmortem"}`), so
+   anything unfamiliar falls on the live side without a separate branch: it
+   announces as opened and resolves normally when it vanishes from the payload.
+   Structural strictness is unchanged: an incident with no usable `id`, or a
+   non-string `status`, still rejects.
+
 3. **No aliases.** "Are Claude and Codex up?" relies on the model mapping Codex to the
    OpenAI entry. It already receives every configured service in one call, and the tool
    description tells it to answer from the right entry. Zero config, zero tokens.
@@ -98,15 +125,30 @@ status (`investigating` / `identified` / `monitoring`) or a non-operational comp
 
 Decision 2 is what makes that acceptable: if incident.io's live vocabulary diverges,
 the page degrades to an unfamiliar status string reaching the model rather than the page
-dropping out. An unknown *incident* status still rejects that incident
-(`statuspage.py:152-154`) — left strict deliberately, because `INCIDENT_STATUSES` drives
-`TERMINAL_STATUSES`, and mis-classifying an incident as live or over corrupts the
-announce lifecycle in a way a wrong component label cannot.
+dropping out. Decision 2b (added 2026-08-17, superseding the paragraph this replaced)
+extends the same tolerance to incident status: an unknown *incident* status used to
+reject the whole page rather than "that incident" as originally believed here — see 2b
+for the corrected blast radius and the fix. `INCIDENT_STATUSES` no longer gates parsing
+either way; it documents the vocabulary and backs `TERMINAL_STATUSES`, which is now the
+single membership test deciding whether an incident is treated as over.
 
 Second observation from the live payload: 25 components collapse to 24, because
 `components` is a dict keyed by name and OpenAI ships two components with the same name.
 Pre-existing behaviour for any page, not incident.io-specific, and `to_tool_payload`'s
 `degraded` list already exists to preserve non-operational components that collide.
+
+Third, a pre-existing hole that this branch does not close (flagged in whole-branch
+review, 2026-08-17, rated Minor deliberately): absent `incidents` is indistinguishable
+from a truncated payload. An already-announced active incident plus a payload with
+`indicator: "critical"` and `incidents` removed parses, and `classify` puts the incident
+in `resolved` — a false all-clear. This is not new: `{"incidents": []}` with
+`indicator: "critical"` was already accepted before this branch and yields an identical
+`Snapshot`, so a hostile page gains nothing new here; only a buggy *truncated* payload
+now takes the same path a page that legitimately omits an empty `incidents` key always
+could. Deliberately not cross-checked against `indicator` — closing only the
+newly-reachable encoding of a hole that already existed via `[]` would fix nothing and
+add branching for no security gain. Revisit only alongside a broader "trust the
+indicator over the incident list" design, not as a standalone patch.
 
 ## Scope
 
@@ -138,8 +180,11 @@ Pre-existing behaviour for any page, not incident.io-specific, and `to_tool_payl
    `sanitise_text("degraded_performance")` is a no-op, so this costs nothing on real
    input. Assert the cap holds for a hostile value.
 4. Structurally bad component (not an object; non-string name) → still rejected.
-5. Unknown *incident* status → still rejected, pinning the deliberate asymmetry in
-   decision 2.
+5. Unknown *incident* status → the incident parses and is kept (decision 2b), sanitised
+   and capped at `MAX_FREE_TEXT` like every other quoted field, a control-token status is
+   stripped, and `classify` treats it as opened rather than resolved — proving it lands on
+   the live side of `TERMINAL_STATUSES`. A non-string status, or an incident with no
+   usable `id`, still rejects.
 6. A real OpenAI-shaped summary fixture parses end to end.
 7. `test_config.py` asserts the three-source default.
 

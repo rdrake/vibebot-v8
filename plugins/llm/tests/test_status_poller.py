@@ -128,6 +128,26 @@ class TestFailureHandling:
         plugin._fake_error = RuntimeError("unexpected")
         plugin._run_status_poll()  # must not raise
 
+    def test_fetch_error_logs_at_info_not_warning(self, status_plugin):
+        """Transient and self-healing: a network blip, a timeout, a 5xx. The
+        next poll retries on its own — this must not page anyone."""
+        plugin = status_plugin
+        plugin._fake_error = statuspage.FetchError("boom")
+        plugin._run_status_poll()
+        assert plugin.log.info.call_count == 1
+        assert plugin.log.warning.call_count == 0
+
+    def test_invalid_payload_logs_at_warning_not_info(self, status_plugin):
+        """Structural, not transient: the page's vocabulary moved under a
+        still-strict guard. A page that parsed yesterday and rejects today
+        needs a human, not a silent retry — it must not share FetchError's
+        log level."""
+        plugin = status_plugin
+        plugin._fake_error = statuspage.InvalidPayload("garbage")
+        plugin._run_status_poll()
+        assert plugin.log.warning.call_count == 1
+        assert plugin.log.info.call_count == 0
+
 
 class TestFetchFloor:
     def test_inline_fetch_respects_the_floor(self, status_plugin):

@@ -21,6 +21,14 @@ from urllib.parse import urlparse
 
 INDICATORS: frozenset[str] = frozenset({"none", "minor", "major", "critical"})
 
+# Retained as documentation of Statuspage's own incident-lifecycle vocabulary.
+# _parse_incident no longer enforces it — an unrecognised status keeps the
+# incident instead of rejecting the whole page (see finding 2, 2026-08-17) —
+# so this constant no longer gates parsing. Its remaining job is
+# classification: TERMINAL_STATUSES membership is what decides whether an
+# incident is treated as over. A value added to TERMINAL_STATUSES silently
+# ends every incident carrying it, including one this constant never named,
+# so extend that set with care.
 INCIDENT_STATUSES: frozenset[str] = frozenset(
     {"investigating", "identified", "monitoring", "resolved", "postmortem"}
 )
@@ -155,8 +163,19 @@ def _parse_incident(raw: Any) -> IncidentView:
         raise InvalidPayload("incident has no usable id")
 
     status = obj.get("status")
-    if not isinstance(status, str) or status not in INCIDENT_STATUSES:
-        raise InvalidPayload(f"unknown incident status: {status!r}")
+    if not isinstance(status, str):
+        raise InvalidPayload(f"incident status is not a string: {status!r}")
+    # An unrecognised status keeps the incident instead of rejecting the
+    # whole page. Rejecting used to fire mid-outage — the one time anyone
+    # asks — for the entire time an incident sat in an unfamiliar status, and
+    # incident.io's native lifecycle already includes values (triage,
+    # fixing) outside our five. The operator ruled: tolerate it, treat it as
+    # live (classify's TERMINAL_STATUSES check naturally excludes anything
+    # unrecognised, so this lands on the live side without a separate
+    # branch), and sanitise it like every other quoted field now that the
+    # enum no longer bounds it — it still reaches IRC via render_line and the
+    # rewrite prompt via facts["status"].
+    status = sanitise_text(status)
 
     components = obj.get("components")
     affected: tuple[str, ...] = ()
@@ -303,7 +322,10 @@ def parse_incidents(payload: Any, *, limit: int = 50) -> tuple[HistoryEntry, ...
     still not something to guess through).
     """
     root = _require_mapping(payload, "payload")
-    raw_incidents = _require_list(root.get("incidents"), "incidents")
+    # Mirrors parse_summary's decision 1: incident.io omits an empty
+    # collection rather than sending []. Absence is not a structural
+    # violation here either — a present-but-wrong-type value still is.
+    raw_incidents = _require_list(root.get("incidents", []), "incidents")
 
     entries: list[HistoryEntry] = []
     for item in raw_incidents:
@@ -595,7 +617,13 @@ def to_tool_payload(snapshot: Snapshot, *, now: float) -> dict[str, Any]:
         "degraded": [
             {"name": sanitise_text(name), "status": status}
             for name, status in snapshot.components.items()
-            if status != "operational"
+            # Compare normalised: sanitise_text already collapsed whitespace,
+            # so case is the remaining gap. An exact match against
+            # "operational" classified any differently-cased healthy value
+            # (e.g. "Operational") as degraded — safe for an unknown *broken*
+            # state, wrong for an unknown *healthy* one. The raw (sanitised)
+            # value is still what reaches the model, unlowered.
+            if status.strip().lower() != "operational"
         ],
         "incidents": [
             {

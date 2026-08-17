@@ -1451,9 +1451,21 @@ class LLM(callbacks.Plugin):
                     lines_left -= self._poll_one_source(
                         source, deadline=deadline, lines_left=lines_left
                     )
-                except (statuspage.FetchError, statuspage.InvalidPayload) as e:
+                except statuspage.FetchError as e:
+                    # Transient and self-healing: network blip, timeout, a
+                    # 5xx. The next poll retries on its own.
                     self.log.info(
                         "Status poll failed for %s, retaining last good state: %s", source, e
+                    )
+                except statuspage.InvalidPayload as e:
+                    # Structural, not transient: the page's vocabulary moved
+                    # under a still-strict guard (bad indicator, non-string
+                    # status, etc). A page that parsed yesterday and rejects
+                    # today needs a human, not a retry.
+                    self.log.warning(
+                        "Status poll rejected payload for %s, retaining last good state: %s",
+                        source,
+                        e,
                     )
                 except Exception as e:
                     self.log.error("Status poll raised for %s: %s", source, e)

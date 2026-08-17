@@ -230,9 +230,13 @@ class TestParseIncidentsHappyPath:
 
 
 class TestParseIncidentsRejects:
-    def test_missing_incidents_key_raises(self):
-        with pytest.raises(statuspage.InvalidPayload):
-            statuspage.parse_incidents({"page": {}})
+    def test_missing_incidents_key_parses_as_empty(self):
+        """Was 'rejects missing incidents key'. parse_summary's decision 1
+        (absent means empty) was applied to that parser but not this one —
+        incident.io omits an empty collection here too, so a page with no
+        incident history must not raise."""
+        entries = statuspage.parse_incidents({"page": {}})
+        assert entries == ()
 
     def test_non_list_incidents_raises(self):
         with pytest.raises(statuspage.InvalidPayload):
