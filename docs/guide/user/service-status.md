@@ -1,10 +1,12 @@
 # Service status
 
-The bot watches one or more live status pages — Claude's and GitHub's by
-default — and can answer questions about any of them in conversation. Which
-pages it watches (`statusPageUrls`, up to 5, each a bare `scheme://host` with
-duplicates collapsed), and whether a channel gets announcements
-(`statusAnnounce`), are operator settings: see
+The bot watches one or more live status pages — Claude's, GitHub's, and
+OpenAI's by default — and can answer questions about any of them in
+conversation. Both Atlassian Statuspage pages and incident.io pages work;
+incident.io is read through its Atlassian-compatible endpoints, so it needs
+no separate setup. Which pages it watches (`statusPageUrls`, up to 5, each a
+bare `scheme://host` with duplicates collapsed), and whether a channel gets
+announcements (`statusAnnounce`), are operator settings: see
 [Status pages](../operator/tuning-monitoring.md#status-pages). With no status
 page configured the bot has no status awareness at all and falls back to
 whatever the chat model already believes, which is usually months out of

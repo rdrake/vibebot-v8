@@ -183,7 +183,7 @@ See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security mode
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `statusPageUrls` | global | `https://status.claude.com https://www.githubstatus.com` | Space-separated base URLs of Statuspage-hosted status pages, each a bare `scheme://host` with no trailing path. Duplicates collapse and at most 5 are polled. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
+| `statusPageUrls` | global | `https://status.claude.com https://www.githubstatus.com https://status.openai.com` | Space-separated base URLs of status pages — both Atlassian Statuspage and incident.io pages work — each a bare `scheme://host` with no trailing path. Duplicates collapse and at most 5 are polled. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
 | `statusAnnounce` | channel | `False` | Announce incidents from every configured status page in this channel as they open and again as they resolve |
 
 See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.

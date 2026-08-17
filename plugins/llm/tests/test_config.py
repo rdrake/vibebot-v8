@@ -185,7 +185,7 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
-    def test_status_page_urls_default_is_a_list_of_two_urls(self) -> None:
+    def test_status_page_urls_default_is_three_urls(self) -> None:
         """A string default would become a list of single characters:
         registry.Value.__init__ passes the default to setValue, and
         SeparatedListOf.setValue calls list(v)."""
@@ -195,6 +195,7 @@ class TestConfigValues:
         assert list(conf.supybot.plugins.LLM.statusPageUrls()) == [
             "https://status.claude.com",
             "https://www.githubstatus.com",
+            "https://status.openai.com",
         ]
 
     def test_status_page_url_singular_is_gone(self) -> None:

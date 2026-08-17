@@ -997,13 +997,20 @@ conf.registerGlobalValue(
     LLM,
     "statusPageUrls",
     registry.SpaceSeparatedListOfStrings(
-        ["https://status.claude.com", "https://www.githubstatus.com"],
-        _("""Space-separated base URLs of Atlassian Statuspage-hosted service
-        status pages (each a bare scheme://host, no trailing path). The bot
-        polls {url}/api/v2/summary.json for each to answer status questions and
-        to announce new incidents. Entries that are not a bare scheme://host are
-        ignored with a warning, duplicates collapse, and at most 5 are polled.
-        Set to the empty list to disable status awareness entirely."""),
+        [
+            "https://status.claude.com",
+            "https://www.githubstatus.com",
+            "https://status.openai.com",
+        ],
+        _("""Space-separated base URLs of status pages (each a bare
+        scheme://host, no trailing path). Both Atlassian Statuspage and
+        incident.io pages work — incident.io is read through its
+        Atlassian-compatible endpoints, no separate configuration needed. The
+        bot polls {url}/api/v2/summary.json for each to answer status
+        questions and to announce new incidents. Entries that are not a bare
+        scheme://host are ignored with a warning, duplicates collapse, and at
+        most 5 are polled. Set to the empty list to disable status awareness
+        entirely."""),
     ),
 )
 
