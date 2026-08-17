@@ -22,9 +22,11 @@ from urllib.parse import urlparse
 INDICATORS: frozenset[str] = frozenset({"none", "minor", "major", "critical"})
 
 # Retained as documentation of Statuspage's own incident-lifecycle vocabulary.
-# _parse_incident no longer enforces it — an unrecognised status keeps the
-# incident instead of rejecting the whole page (see finding 2, 2026-08-17) —
-# so this constant no longer gates parsing. Its remaining job is
+# Neither _parse_incident (summary.json) nor parse_incidents (incidents.json
+# history) enforces it — an unrecognised status keeps the incident/entry
+# instead of rejecting the whole page or batch (see finding 2, 2026-08-17,
+# and its follow-up the same day) — so this constant no longer gates parsing
+# anywhere. Its remaining job is
 # classification: TERMINAL_STATUSES membership is what decides whether an
 # incident is treated as over. A value added to TERMINAL_STATUSES silently
 # ends every incident carrying it, including one this constant never named,
@@ -336,8 +338,15 @@ def parse_incidents(payload: Any, *, limit: int = 50) -> tuple[HistoryEntry, ...
             raise InvalidPayload("incident has no usable id")
 
         status = obj.get("status")
-        if not isinstance(status, str) or status not in INCIDENT_STATUSES:
-            raise InvalidPayload(f"unknown incident status: {status!r}")
+        if not isinstance(status, str):
+            raise InvalidPayload(f"incident status is not a string: {status!r}")
+        # Mirrors _parse_incident's decision 2b: an unrecognised status keeps
+        # the entry instead of rejecting the whole batch. This path is
+        # best-effort (caught and logged at info, falling back to cache or
+        # [] — plugin.py:1298), but a hostile or merely unfamiliar
+        # incident.io lifecycle value (e.g. "triage", "fixing") must not
+        # blank out every OTHER entry in the same fetch over one status.
+        status = sanitise_text(status)
 
         name = obj.get("name")
         impact = obj.get("impact")
@@ -793,7 +802,7 @@ def render_line(incident: IncidentView, *, page_name: str, page_url: str) -> str
     return _compose(
         sanitise_text(strip_urls(page_name), limit=60) or "Status",
         sanitise_text(strip_urls(incident.name)),
-        f"({incident.status})",
+        f"({strip_urls(incident.status)})",
         incident_url(page_url, incident.id),
     )
 

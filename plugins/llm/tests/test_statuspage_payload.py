@@ -210,6 +210,18 @@ class TestRenderLine:
         assert "evil.example" not in line
         assert "https://status.claude.com" in line
 
+    def test_render_line_strips_a_url_from_the_incident_status(self):
+        """Status is free text since the enum stopped gating parsing (finding
+        2, 2026-08-17) — a compromised page can put a URL in it, and this is
+        unprompted bot speech with no post-check downstream of it."""
+        line = statuspage.render_line(
+            view(status="see https://evil.example/fix"),
+            page_name="Claude",
+            page_url="https://status.claude.com",
+        )
+        assert "evil.example" not in line
+        assert "https://status.claude.com" in line
+
     def test_dangling_markdown_image_in_page_name_does_not_swallow_the_status(self):
         """A composed-then-sanitised line let a dangling ``![x](`` in
         page_name reach past the field boundary and eat the status and

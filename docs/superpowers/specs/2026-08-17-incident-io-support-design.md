@@ -128,9 +128,12 @@ the page degrades to an unfamiliar status string reaching the model rather than 
 dropping out. Decision 2b (added 2026-08-17, superseding the paragraph this replaced)
 extends the same tolerance to incident status: an unknown *incident* status used to
 reject the whole page rather than "that incident" as originally believed here — see 2b
-for the corrected blast radius and the fix. `INCIDENT_STATUSES` no longer gates parsing
-either way; it documents the vocabulary and backs `TERMINAL_STATUSES`, which is now the
-single membership test deciding whether an incident is treated as over.
+for the corrected blast radius and the fix. `parse_incidents` (the `incidents.json`
+history parser) carried the identical bug — rejecting the whole batch over one
+unfamiliar status in a best-effort path — and got the same fix the same day.
+`INCIDENT_STATUSES` no longer gates parsing anywhere; it documents the vocabulary and
+backs `TERMINAL_STATUSES`, which is now the single membership test deciding whether an
+incident is treated as over.
 
 Second observation from the live payload: 25 components collapse to 24, because
 `components` is a dict keyed by name and OpenAI ships two components with the same name.
