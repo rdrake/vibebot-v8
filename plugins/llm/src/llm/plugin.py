@@ -1240,94 +1240,124 @@ class LLM(callbacks.Plugin):
         self._status_read_cache[source] = snapshot
         return snapshot
 
-    def _status_history_payload(self) -> list[dict]:
-        """Lazily fetch and cache resolved-incident history.
+    def _status_history_payload(self, source: str, *, deadline: float | None = None) -> list[dict]:
+        """Lazily fetch and cache one source's resolved-incident history.
 
-        Fetched ONLY when the model asks for history — never on the 120s poll
-        path, and never touching _status_state or _status_read_cache. Cached
-        for _STATUS_HISTORY_TTL because resolved history changes rarely.
-        Returns [] on any failure; the caller reports current status regardless.
+        Fetched ONLY when the model asks for history — never on the poll path,
+        and never touching _status_state or _status_read_cache. Cached for
+        _STATUS_HISTORY_TTL because resolved history changes rarely. Returns []
+        on any failure or once the caller's deadline is spent; the caller
+        reports current status regardless.
 
         A failed fetch is backed off for _STATUS_HISTORY_RETRY seconds: without
         this, every subsequent "when did it last go down" question during an
-        outage retries a 30s-timeout fetch while holding an executor permit,
-        even though the answer (still broken) hasn't changed.
-
-        NOT YET MULTI-SOURCE: this body still reads _status_history_cache,
-        _status_history_at, and _status_history_failed_at as the pre-Task-2
-        scalars (None / 0.0), but Task 2 retyped all three to
-        dict[str, ...], keyed by source, and they now start as {}. The
-        `is not None` check below is always True against an empty dict, and
-        `now - self._status_history_at` raises TypeError (float - dict) the
-        first time this runs. Left unfixed deliberately: Task 5 replaces this
-        whole method with a per-source, deadline-budgeted version. Reachable
-        today via _status_tool_payload(include_history=True), which has no
-        try/except around this call.
+        outage retries a 30s fetch while holding an executor permit, even though
+        the answer (still broken) hasn't changed.
         """
         now = self._status_now()
-        if (
-            self._status_history_cache is not None
-            and now - self._status_history_at < self._STATUS_HISTORY_TTL
+        cached = self._status_history_cache.get(source)
+        if cached is not None and now - self._status_history_at.get(source, 0.0) < (
+            self._STATUS_HISTORY_TTL
         ):
-            return statuspage.to_history_payload(
-                self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
-            )
-        if now - self._status_history_failed_at < self._STATUS_HISTORY_RETRY:
-            if self._status_history_cache is not None:
+            return statuspage.to_history_payload(cached, now=now, limit=self._STATUS_HISTORY_LIMIT)
+        if now - self._status_history_failed_at.get(source, 0.0) < self._STATUS_HISTORY_RETRY:
+            if cached is not None:
                 return statuspage.to_history_payload(
-                    self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
+                    cached, now=now, limit=self._STATUS_HISTORY_LIMIT
                 )
             return []
+        timeout_cap = None
+        if deadline is not None:
+            timeout_cap = deadline - self._status_monotonic()
+            if timeout_cap <= self._STATUS_MIN_FETCH_WINDOW:
+                if cached is not None:
+                    return statuspage.to_history_payload(
+                        cached, now=now, limit=self._STATUS_HISTORY_LIMIT
+                    )
+                return []
         try:
-            base = self.registryValue("statusPageUrl")
+            timeout = min(self.registryValue("timeout"), 30)
+            if timeout_cap is not None:
+                timeout = min(timeout, max(1.0, timeout_cap))
             result = statuspage.fetch_incidents(
-                base,
-                # Same 30s ceiling as _status_fetch_snapshot: a history fetch
-                # must not hold an executor permit any longer than the
-                # regular status fetch does.
-                timeout=min(self.registryValue("timeout"), 30),
+                source,
+                timeout=timeout,
                 validate=validate_external_url,
                 resolves_public=self.llm_service._resolves_to_public,
             )
             entries = statuspage.parse_incidents(result.payload)
         except Exception as e:
-            self.log.info("Status history fetch failed: %s", e)
-            self._status_history_failed_at = now
-            if self._status_history_cache is not None:
+            self.log.info("Status history fetch failed for %s: %s", source, e)
+            self._status_history_failed_at[source] = now
+            if cached is not None:
                 return statuspage.to_history_payload(
-                    self._status_history_cache, now=now, limit=self._STATUS_HISTORY_LIMIT
+                    cached, now=now, limit=self._STATUS_HISTORY_LIMIT
                 )
             return []
-        self._status_history_cache = entries
-        self._status_history_at = now
-        self._status_history_failed_at = 0.0
+        self._status_history_cache[source] = entries
+        self._status_history_at[source] = now
+        self._status_history_failed_at[source] = 0.0
         return statuspage.to_history_payload(entries, now=now, limit=self._STATUS_HISTORY_LIMIT)
 
     def _status_tool_payload(self, *, include_history: bool = False) -> dict[str, Any]:
-        """Build the model-facing status payload, refreshing if stale.
+        """Build the model-facing payload: one entry per configured source.
 
         Reads (and may refresh) the read cache only. Lifecycle state is the
         poller's alone. Current status is always returned regardless of
         ``include_history`` — history is additive.
+
+        Every entry carries ``source``, the operator-configured host. That is
+        the only identity available before a source's first successful fetch,
+        and unlike ``service`` (the page's own name) it cannot be set by a
+        third party — two pages both calling themselves "Claude" would otherwise
+        be indistinguishable to the model.
         """
         now = self._status_now()
-        max_age = 2 * self._STATUS_POLL_INTERVAL
-        # First-source-only shim, so the Task 2 _status_fetch_now/
-        # _status_fetch_snapshot signature change type-checks. Task 5 owns
-        # the real replacement: a per-source loop aggregated into one payload.
-        source = next(iter(self._status_sources()), None)
-        snapshot = self._status_read_cache.get(source) if source else None
-        stale = snapshot is None or (now - snapshot.fetched_at) > max_age
-        if stale and source:
-            snapshot = self._status_fetch_now(source) or snapshot
-        if snapshot is None:
-            return {"error": "The status page has not been read yet."}
-        payload = statuspage.to_tool_payload(snapshot, now=now)
-        if (now - snapshot.fetched_at) > max_age:
-            payload["stale"] = True
-            payload["error"] = "The status page is currently unreachable; this is the last reading."
-        if include_history:
-            payload["recent_incidents"] = self._status_history_payload()
+        sources = self._status_sources()
+        if not sources:
+            return {"error": "No status pages are configured."}
+
+        deadline = self._status_monotonic() + self._STATUS_TOOL_BUDGET
+        services: list[dict[str, Any]] = []
+        readable = 0
+        for source in sources:
+            entry: dict[str, Any] = {"source": self._status_host(source)}
+            snapshot = self._status_read_cache.get(source)
+            if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
+                snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
+            if snapshot is None:
+                entry["error"] = "This status page has not been read yet."
+                services.append(entry)
+                continue
+            entry["service"] = (
+                statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
+                or entry["source"]
+            )
+            # The per-snapshot note is dropped and stated once at the top level:
+            # repeating it per service is pure token cost.
+            entry.update(
+                {
+                    k: v
+                    for k, v in statuspage.to_tool_payload(snapshot, now=now).items()
+                    if k != "note"
+                }
+            )
+            if (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
+                entry["stale"] = True
+                entry["error"] = (
+                    "This status page is currently unreachable; this is the last reading."
+                )
+            else:
+                readable += 1
+            if include_history:
+                entry["recent_incidents"] = self._status_history_payload(source, deadline=deadline)
+            services.append(entry)
+
+        payload: dict[str, Any] = {"services": services, "note": statuspage.UNTRUSTED_NOTE}
+        if readable == 0:
+            # service.py:5557 treats a top-level dict with no "error" key as a
+            # successful tool call, so an all-failed list must say so out loud.
+            payload["error"] = "No configured status page could be read."
         return payload
 
     def _status_rotate(self, sources: list[str]) -> list[str]:
@@ -1733,6 +1763,16 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_LIMIT = 5
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
     _STATUS_MAX_SOURCES = 5
+
+    # Whole-call budget for the tool path, covering current-status refreshes and
+    # the history fan-out together. The tool runs inside the asking request's
+    # permit, so an unbounded fan-out makes that user wait minutes.
+    _STATUS_TOOL_BUDGET = 20
+    # A source is reported stale against its own last SUCCESSFUL read. Fixed
+    # rather than derived from the poll interval: with rotation and a pass
+    # budget, a healthy source can legitimately wait several passes, and
+    # 2 * interval would label it unreachable.
+    _STATUS_STALE_AFTER = 600
 
     # Whole-pass wall-clock budget. A pass walks every configured source inside
     # one executor permit, so without this N sources multiply the permit hold by

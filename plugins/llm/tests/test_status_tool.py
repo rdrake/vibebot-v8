@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 
 from llm import assistant, statuspage
+from llm.plugin import LLM
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION, PROFILE_VERSE
 
 from .conftest import make_completion_response
+
+CLAUDE = "https://status.claude.com"
+GITHUB = "https://www.githubstatus.com"
 
 
 def green_snapshot(fetched_at: float = 1000.0, *, incidents=()) -> statuspage.Snapshot:
@@ -268,41 +272,45 @@ class TestToolPayloadStaleness:
         from llm.plugin import LLM
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
-        status_plugin._status_read_cache = None
+        status_plugin._status_read_cache = {}
         status_plugin._fake_error = statuspage.FetchError("unreachable")
 
         payload = status_plugin._status_tool_payload()
 
-        assert "error" in payload
-        assert "indicator" not in payload, "must never read as 'all systems operational'"
+        service = payload["services"][0]
+        assert "error" in service
+        assert "indicator" not in service, "must never read as 'all systems operational'"
 
     def test_fresh_cache_is_served_without_a_stale_marker(self, status_plugin):
         from llm.plugin import LLM
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
-        status_plugin._status_read_cache = green_snapshot(1000.0)
+        status_plugin._status_read_cache = {CLAUDE: green_snapshot(1000.0)}
         status_plugin._now = 1000.0
 
         payload = status_plugin._status_tool_payload()
 
-        assert "stale" not in payload
+        service = payload["services"][0]
+        assert "stale" not in service
+        assert "error" not in service
         assert "error" not in payload
-        assert payload["indicator"] == "none"
+        assert service["indicator"] == "none"
 
     def test_stale_cache_with_failing_refresh_is_marked_stale_and_keeps_data(self, status_plugin):
         from llm.plugin import LLM
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
-        status_plugin._status_read_cache = green_snapshot(0.0)
-        status_plugin._now = 10_000.0  # far beyond 2 * _STATUS_POLL_INTERVAL
-        status_plugin._status_last_fetch = 0.0  # clear the 30s floor
+        status_plugin._status_read_cache = {CLAUDE: green_snapshot(0.0)}
+        status_plugin._now = status_plugin._STATUS_STALE_AFTER + 1  # past the staleness floor
+        status_plugin._status_last_fetch = {}  # clear the 30s floor
         status_plugin._fake_error = statuspage.FetchError("unreachable")
 
         payload = status_plugin._status_tool_payload()
 
-        assert payload["stale"] is True
-        assert "error" in payload
-        assert payload["indicator"] == "none", "last-known data must survive alongside the error"
+        service = payload["services"][0]
+        assert service["stale"] is True
+        assert "error" in service
+        assert service["indicator"] == "none", "last-known data must survive alongside the error"
 
 
 def history_entry(entry_id="inc1") -> statuspage.HistoryEntry:
@@ -331,11 +339,11 @@ class TestStatusHistoryPayload:
     def test_cache_hit_inside_ttl_does_not_refetch(self, status_plugin, mocker):
         plugin = self._bind(status_plugin)
         fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents")
-        plugin._status_history_cache = (history_entry(),)
-        plugin._status_history_at = 1000.0
+        plugin._status_history_cache = {CLAUDE: (history_entry(),)}
+        plugin._status_history_at = {CLAUDE: 1000.0}
         plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL - 1
 
-        result = plugin._status_history_payload()
+        result = plugin._status_history_payload(CLAUDE)
 
         fetch.assert_not_called()
         assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
@@ -344,11 +352,11 @@ class TestStatusHistoryPayload:
         plugin = self._bind(status_plugin)
         fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
         fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
-        plugin._status_history_cache = (history_entry(),)
-        plugin._status_history_at = 1000.0
+        plugin._status_history_cache = {CLAUDE: (history_entry(),)}
+        plugin._status_history_at = {CLAUDE: 1000.0}
         plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL + 1
 
-        plugin._status_history_payload()
+        plugin._status_history_payload(CLAUDE)
 
         fetch.assert_called_once()
 
@@ -357,11 +365,11 @@ class TestStatusHistoryPayload:
         mocker.patch(
             "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
         )
-        plugin._status_history_cache = (history_entry(),)
-        plugin._status_history_at = 0.0
+        plugin._status_history_cache = {CLAUDE: (history_entry(),)}
+        plugin._status_history_at = {CLAUDE: 0.0}
         plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL + 1
 
-        result = plugin._status_history_payload()
+        result = plugin._status_history_payload(CLAUDE)
 
         assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
 
@@ -370,11 +378,11 @@ class TestStatusHistoryPayload:
         mocker.patch(
             "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
         )
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
         plugin._now = 1000.0
 
-        result = plugin._status_history_payload()
+        result = plugin._status_history_payload(CLAUDE)
 
         assert result == []
 
@@ -384,11 +392,11 @@ class TestStatusHistoryPayload:
         plugin = self._bind(status_plugin)
         fake_result = mocker.Mock(payload={"not": "a valid history payload"})
         mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
         plugin._now = 1000.0
 
-        result = plugin._status_history_payload()
+        result = plugin._status_history_payload(CLAUDE)
 
         assert result == []
 
@@ -398,11 +406,11 @@ class TestStatusHistoryPayload:
         mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
         before_state = plugin._status_state
         before_read_cache = plugin._status_read_cache
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
         plugin._now = 1000.0
 
-        plugin._status_history_payload()
+        plugin._status_history_payload(CLAUDE)
 
         assert plugin._status_state is before_state
         assert plugin._status_read_cache is before_read_cache
@@ -416,18 +424,18 @@ class TestStatusHistoryPayload:
         fetch = mocker.patch(
             "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
         )
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
-        plugin._status_history_failed_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
+        plugin._status_history_failed_at = {}
         plugin._now = 1000.0
 
-        first = plugin._status_history_payload()
+        first = plugin._status_history_payload(CLAUDE)
         assert first == []
-        assert plugin._status_history_failed_at == 1000.0
+        assert plugin._status_history_failed_at[CLAUDE] == 1000.0
         fetch.assert_called_once()
 
         plugin._now = 1000.0 + plugin._STATUS_HISTORY_RETRY - 1
-        second = plugin._status_history_payload()
+        second = plugin._status_history_payload(CLAUDE)
 
         # Still just the one call: the backoff window has not elapsed.
         fetch.assert_called_once()
@@ -438,16 +446,16 @@ class TestStatusHistoryPayload:
         fetch = mocker.patch(
             "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
         )
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
-        plugin._status_history_failed_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
+        plugin._status_history_failed_at = {}
         plugin._now = 1000.0
 
-        plugin._status_history_payload()
+        plugin._status_history_payload(CLAUDE)
         fetch.assert_called_once()
 
         plugin._now = 1000.0 + plugin._STATUS_HISTORY_RETRY + 1
-        plugin._status_history_payload()
+        plugin._status_history_payload(CLAUDE)
 
         assert fetch.call_count == 2
 
@@ -455,16 +463,16 @@ class TestStatusHistoryPayload:
         plugin = self._bind(status_plugin)
         fake_result = mocker.Mock(payload={"page": {}, "incidents": []})
         mocker.patch("llm.plugin.statuspage.fetch_incidents", return_value=fake_result)
-        plugin._status_history_cache = None
-        plugin._status_history_at = 0.0
+        plugin._status_history_cache = {}
+        plugin._status_history_at = {}
         # Past the backoff window (retry=120), or this call would itself be
         # skipped as still-backing-off and never reach the fetch.
-        plugin._status_history_failed_at = 1000.0 - plugin._STATUS_HISTORY_RETRY - 1
+        plugin._status_history_failed_at = {CLAUDE: 1000.0 - plugin._STATUS_HISTORY_RETRY - 1}
         plugin._now = 1000.0
 
-        plugin._status_history_payload()
+        plugin._status_history_payload(CLAUDE)
 
-        assert plugin._status_history_failed_at == 0.0
+        assert plugin._status_history_failed_at[CLAUDE] == 0.0
 
 
 class TestStatusToolPayloadIncludeHistory:
@@ -472,26 +480,141 @@ class TestStatusToolPayloadIncludeHistory:
         from llm.plugin import LLM
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
-        status_plugin._status_read_cache = green_snapshot(1000.0)
+        status_plugin._status_read_cache = {CLAUDE: green_snapshot(1000.0)}
         status_plugin._now = 1000.0
 
         payload = status_plugin._status_tool_payload(include_history=False)
 
-        assert "recent_incidents" not in payload
-        assert payload["indicator"] == "none"
+        service = payload["services"][0]
+        assert "recent_incidents" not in service
+        assert service["indicator"] == "none"
 
     def test_include_history_true_includes_recent_incidents(self, status_plugin, mocker):
         from llm.plugin import LLM
 
         status_plugin._status_tool_payload = LLM._status_tool_payload.__get__(status_plugin)
         status_plugin._status_history_payload = LLM._status_history_payload.__get__(status_plugin)
-        status_plugin._status_read_cache = green_snapshot(1000.0)
+        status_plugin._status_read_cache = {CLAUDE: green_snapshot(1000.0)}
         status_plugin._now = 1000.0
-        status_plugin._status_history_cache = (history_entry(),)
-        status_plugin._status_history_at = 1000.0
+        status_plugin._status_history_cache = {CLAUDE: (history_entry(),)}
+        status_plugin._status_history_at = {CLAUDE: 1000.0}
 
         payload = status_plugin._status_tool_payload(include_history=True)
 
-        assert "recent_incidents" in payload
-        assert payload["recent_incidents"][0]["name"] == "Elevated error rates on Claude Opus 4.5"
-        assert payload["indicator"] == "none", "current status is always present"
+        service = payload["services"][0]
+        assert "recent_incidents" in service
+        assert service["recent_incidents"][0]["name"] == "Elevated error rates on Claude Opus 4.5"
+        assert service["indicator"] == "none", "current status is always present"
+
+
+class TestAggregatePayload:
+    def test_every_entry_is_identified_by_configured_host(self, status_plugin):
+        """page_name is third-party and absent before a first successful fetch;
+        the configured host is operator truth and always present."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_read_cache = {CLAUDE: green_snapshot(plugin._now)}
+
+        payload = plugin._status_tool_payload()
+
+        hosts = [e["source"] for e in payload["services"]]
+        assert hosts == ["status.claude.com", "www.githubstatus.com"]
+
+    def test_partial_failure_still_answers_for_the_healthy_source(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_read_cache = {CLAUDE: green_snapshot(plugin._now)}
+        plugin._fake_error = statuspage.FetchError("unreachable")
+
+        payload = plugin._status_tool_payload()
+
+        claude, github = payload["services"]
+        assert claude["indicator"] == "none"
+        assert "error" not in claude
+        assert "error" in github
+        assert "error" not in payload, "a partial failure is not a tool failure"
+
+    def test_total_failure_sets_a_top_level_error(self, status_plugin):
+        """service.py:5557 treats any top-level dict without "error" as a
+        successful tool call, so an all-failed services list would be recorded
+        as success."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_read_cache = {}
+        plugin._status_fetch_now = lambda source, deadline=None: None
+
+        payload = plugin._status_tool_payload()
+
+        assert "error" in payload
+        assert all("error" in e for e in payload["services"])
+
+    def test_no_configured_sources_is_an_error(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = []
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        assert "error" in plugin._status_tool_payload()
+
+    def test_the_untrusted_note_appears_once_not_per_service(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_read_cache = {
+            CLAUDE: green_snapshot(plugin._now),
+            GITHUB: green_snapshot(plugin._now),
+        }
+
+        payload = plugin._status_tool_payload()
+
+        assert payload["note"]
+        assert all("note" not in e for e in payload["services"])
+
+
+class TestToolBudget:
+    def test_a_slow_source_returns_stale_rather_than_blocking(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_read_cache = {
+            CLAUDE: green_snapshot(0.0),  # ancient, forces a refresh
+            GITHUB: green_snapshot(0.0),
+        }
+        plugin._now = 100000.0
+
+        def slow(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            plugin._mono += 19.0
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = slow
+        payload = plugin._status_tool_payload()
+
+        assert plugin._fetch_sources == [CLAUDE], "second refresh must be skipped"
+        github = payload["services"][1]
+        assert github["stale"] is True
+        assert "error" in github
+
+    def test_history_is_skipped_for_sources_past_the_budget(self, status_plugin, mocker):
+        """223 KB per source, sequentially, inside the asking request's permit."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_tool_payload = LLM._status_tool_payload.__get__(plugin)
+        plugin._status_history_payload = LLM._status_history_payload.__get__(plugin)
+        plugin._status_read_cache = {
+            CLAUDE: green_snapshot(plugin._now),
+            GITHUB: green_snapshot(plugin._now),
+        }
+
+        def slow_history(source, **kwargs):
+            plugin._mono += 19.0  # burns almost the whole 20s call budget
+            raise statuspage.FetchError("too slow")
+
+        fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents", side_effect=slow_history)
+
+        payload = plugin._status_tool_payload(include_history=True)
+
+        assert fetch.call_count == 1, "GitHub's history must not be attempted"
+        assert payload["services"][0]["recent_incidents"] == []
+        assert payload["services"][1]["recent_incidents"] == []

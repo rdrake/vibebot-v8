@@ -811,6 +811,8 @@ def status_plugin():
     obj._STATUS_PASS_BUDGET = LLM._STATUS_PASS_BUDGET
     obj._STATUS_REWRITE_RESERVE = LLM._STATUS_REWRITE_RESERVE
     obj._STATUS_MAX_LINES_PER_POLL = LLM._STATUS_MAX_LINES_PER_POLL
+    obj._STATUS_TOOL_BUDGET = LLM._STATUS_TOOL_BUDGET
+    obj._STATUS_STALE_AFTER = LLM._STATUS_STALE_AFTER
     obj._status_cursor = None
     obj._status_rotate = LLM._status_rotate.__get__(obj)
     obj._poll_one_source = LLM._poll_one_source.__get__(obj)
