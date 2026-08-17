@@ -1330,44 +1330,107 @@ class LLM(callbacks.Plugin):
             payload["recent_incidents"] = self._status_history_payload()
         return payload
 
-    def _run_status_poll(self) -> None:
-        """Poll the status page, advance lifecycle state, announce what opened.
+    def _status_rotate(self, sources: list[str]) -> list[str]:
+        """Order sources for this pass, resuming where the last one stopped.
 
-        The try/except is for log control only — schedule.py already catches
-        and re-arms (schedule.py:118-122, :150-153).
+        A cursor whose source is no longer configured falls back to the head —
+        this is why the cursor is a canonical id and not an index: an index
+        silently points at a different page after any reorder or removal.
+        """
+        cursor = self._status_cursor
+        if cursor is None or cursor not in sources:
+            return list(sources)
+        i = sources.index(cursor)
+        return list(sources[i:]) + list(sources[:i])
+
+    def _poll_one_source(self, source: str, *, deadline: float, lines_left: int) -> int:
+        """Fetch, classify and announce one source. Returns lines delivered."""
+        self._status_last_fetch[source] = self._status_now()
+        snapshot = self._status_fetch_snapshot(
+            source, timeout_cap=deadline - self._status_monotonic()
+        )
+        self._status_read_cache[source] = snapshot
+        delta, new_state = statuspage.classify(
+            self._status_state.get(source, statuspage.StatusState()),
+            snapshot,
+            max_opened=self._STATUS_MAX_ANNOUNCE_PER_POLL,
+        )
+        self._status_state[source] = new_state
+        if delta.discarded:
+            self.log.warning(
+                "Status poll discarded %i opened incidents past the per-poll cap for %s",
+                delta.discarded,
+                source,
+            )
+        # Both branches, not just openings: _announce_status walks delta.resolved
+        # too, and gating on delta.opened alone meant an incident that cleared in
+        # a pass where nothing new opened sat in pending_resolved unspoken — then
+        # surfaced as a stale all-clear alongside the next unrelated opening.
+        if not (delta.opened or delta.resolved) or lines_left <= 0:
+            return 0
+        if self._llm_executor.closing:
+            return 0
+        # This is the new call shape; Task 4 is what makes it real by
+        # rewriting _announce_status to accept it. Until that commit lands,
+        # _announce_status still has its old signature — self, delta — so
+        # calling it with these extra positional/keyword arguments raises
+        # TypeError every time a source has news to announce. The generic
+        # `except Exception` in _run_status_poll's per-source loop catches
+        # that, logs it, and moves on to the next source, so a pass still
+        # completes — it just announces nothing until Task 4 ships. Expected
+        # and tracked at this task boundary, not a regression to chase here.
+        # ty ignores below are transitional for the same reason: they hush
+        # diagnostics against a signature that does not exist yet.
+        return self._announce_status(
+            source,  # ty: ignore[invalid-argument-type]
+            delta,  # ty: ignore[too-many-positional-arguments]
+            snapshot,
+            lines_left=lines_left,  # ty: ignore[unknown-argument]
+            template_only=(deadline - self._status_monotonic())  # ty: ignore[unknown-argument]
+            < self._STATUS_REWRITE_RESERVE,
+        )  # ty: ignore[invalid-return-type]
+
+    def _run_status_poll(self) -> None:
+        """Poll every configured source under one wall-clock budget.
+
+        Sequential inside the worker's single permit: no submit (raises
+        RecursiveSubmitError from worker context) and no nested permit (double
+        acquire). The try/except is for log control only — schedule.py already
+        catches and re-arms (schedule.py:118-122, :150-153).
         """
         try:
-            # First-source-only shim, so the Task 2 _status_fetch_snapshot
-            # signature change type-checks. Task 3 owns the real replacement:
-            # a deadline-budgeted, rotation-cursor multi-source poll loop.
-            source = next(iter(self._status_sources()), None)
-            if source is None:
+            sources = self._status_sources()
+            self._status_prune_sources(sources)
+            if not sources:
                 return
-            self._status_last_fetch[source] = self._status_now()
-            snapshot = self._status_fetch_snapshot(source)
-            self._status_read_cache[source] = snapshot
-            delta, new_state = statuspage.classify(
-                self._status_state.get(source, statuspage.StatusState()),
-                snapshot,
-                max_opened=self._STATUS_MAX_ANNOUNCE_PER_POLL,
-            )
-            self._status_state[source] = new_state
-            if delta.discarded:
-                self.log.warning(
-                    "Status poll discarded %i opened incidents past the per-poll cap",
-                    delta.discarded,
-                )
-            # Both branches, not just openings: _announce_status walks
-            # delta.resolved too, and gating the call on delta.opened alone
-            # meant an incident that cleared in a pass where nothing new
-            # opened sat in pending_resolved unspoken — then surfaced as a
-            # stale all-clear alongside the next unrelated opening.
-            if delta.opened or delta.resolved:
-                self._announce_status(delta)
-        except (statuspage.FetchError, statuspage.InvalidPayload) as e:
-            self.log.info("Status poll failed, retaining last good state: %s", e)
+            deadline = self._status_monotonic() + self._STATUS_PASS_BUDGET
+            lines_left = self._STATUS_MAX_LINES_PER_POLL
+            rotated = self._status_rotate(sources)
+            for idx, source in enumerate(rotated):
+                if self._llm_executor.closing:
+                    return
+                if deadline - self._status_monotonic() <= self._STATUS_MIN_FETCH_WINDOW:
+                    # Never started, so the cursor must NOT advance past it:
+                    # this is the source the next pass owes a poll.
+                    self._status_cursor = source
+                    return
+                try:
+                    lines_left -= self._poll_one_source(
+                        source, deadline=deadline, lines_left=lines_left
+                    )
+                except (statuspage.FetchError, statuspage.InvalidPayload) as e:
+                    self.log.info(
+                        "Status poll failed for %s, retaining last good state: %s", source, e
+                    )
+                except Exception as e:
+                    self.log.error("Status poll raised for %s: %s", source, e)
+                finally:
+                    # Advance past an ATTEMPTED source even when it raised, so a
+                    # permanently broken page cannot pin the head of the rotation
+                    # and starve everything behind it.
+                    self._status_cursor = rotated[idx + 1] if idx + 1 < len(rotated) else None
         except Exception as e:
-            self.log.error("Status poll raised: %s", e)
+            self.log.error("Status poll pass raised: %s", e)
 
     def _status_announce_budget_ok(self) -> bool:
         """Token bucket for announcement completions.
@@ -1673,6 +1736,21 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_LIMIT = 5
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
     _STATUS_MAX_SOURCES = 5
+
+    # Whole-pass wall-clock budget. A pass walks every configured source inside
+    # one executor permit, so without this N sources multiply the permit hold by
+    # N. The deadline is propagated into each fetch's timeout and into the
+    # decision to skip rewrites — checking it only between sources bounds
+    # nothing, since a fetch entered at t=44 still runs its full ceiling.
+    _STATUS_PASS_BUDGET = 45
+    # Below this much remaining, the pass stops spending completions and posts
+    # templates. The template has always been the primary path and the rewrite
+    # an upgrade, so nothing is lost but prose.
+    _STATUS_REWRITE_RESERVE = 20
+    # Global burst cap across all sources for one pass. Per-source caps are 3
+    # openings (max_opened) plus 3 all-clears (classify's max_resolved default),
+    # so five sources could otherwise emit 30 unprompted lines at once.
+    _STATUS_MAX_LINES_PER_POLL = 5
 
     # Delivery retry constants: 15 * 2^attempt, capped at 120s, max 10 attempts
     _DELIVERY_BASE_BACKOFF = 15

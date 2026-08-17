@@ -808,6 +808,12 @@ def status_plugin():
     obj._STATUS_HISTORY_TTL = LLM._STATUS_HISTORY_TTL
     obj._STATUS_HISTORY_LIMIT = LLM._STATUS_HISTORY_LIMIT
     obj._STATUS_HISTORY_RETRY = LLM._STATUS_HISTORY_RETRY
+    obj._STATUS_PASS_BUDGET = LLM._STATUS_PASS_BUDGET
+    obj._STATUS_REWRITE_RESERVE = LLM._STATUS_REWRITE_RESERVE
+    obj._STATUS_MAX_LINES_PER_POLL = LLM._STATUS_MAX_LINES_PER_POLL
+    obj._status_cursor = None
+    obj._status_rotate = LLM._status_rotate.__get__(obj)
+    obj._poll_one_source = LLM._poll_one_source.__get__(obj)
 
     def fake_fetch(source, *, timeout_cap=None):
         obj._fetch_calls += 1

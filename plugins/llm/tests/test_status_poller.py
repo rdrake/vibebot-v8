@@ -39,24 +39,24 @@ class TestOwnershipSplit:
         not consume the announcement."""
         plugin = status_plugin
         plugin._run_status_poll()  # cold start, seeds empty
-        assert plugin._status_state.seeded is True
+        assert plugin._status_state[CLAUDE].seeded is True
 
         plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
         plugin._now = 2000.0  # clear the 30s fetch floor
-        plugin._status_fetch_now()  # the tool's inline path
+        plugin._status_fetch_now(CLAUDE)  # the tool's inline path
 
-        assert plugin._status_read_cache.incidents, "read cache refreshed"
-        assert plugin._status_state.active == {}, "lifecycle state untouched"
+        assert plugin._status_read_cache[CLAUDE].incidents, "read cache refreshed"
+        assert plugin._status_state[CLAUDE].active == {}, "lifecycle state untouched"
 
     def test_incident_seen_first_by_the_tool_is_still_announced(self, status_plugin):
         plugin = status_plugin
         plugin._run_status_poll()
         plugin._fake_snapshot = green_snapshot(2000.0, incidents=[incident()])
         plugin._now = 2000.0  # clear the 30s fetch floor
-        plugin._status_fetch_now()
+        plugin._status_fetch_now(CLAUDE)
         plugin._run_status_poll()
         assert plugin._announce_status.call_count == 1
-        delta = plugin._announce_status.call_args[0][0]
+        delta = plugin._announce_status.call_args[0][1]
         assert [i.id for i in delta.opened] == ["inc1"]
 
 
@@ -84,7 +84,7 @@ class TestDeltaReachesTheAnnouncer:
         plugin._run_status_poll()
 
         assert plugin._announce_status.call_count == 1
-        delta = plugin._announce_status.call_args[0][0]
+        delta = plugin._announce_status.call_args[0][1]
         assert [i.id for i in delta.resolved] == ["inc1"]
         assert delta.opened == ()
 
@@ -119,7 +119,7 @@ class TestFailureHandling:
         plugin = status_plugin
         plugin._fake_error = statuspage.InvalidPayload("garbage")
         plugin._run_status_poll()
-        assert plugin._status_state.seeded is False, "a bad body is not a cold start"
+        assert CLAUDE not in plugin._status_state, "a bad body is not a cold start"
 
     def test_poll_swallows_unexpected_errors(self, status_plugin):
         plugin = status_plugin
@@ -130,25 +130,25 @@ class TestFailureHandling:
 class TestFetchFloor:
     def test_inline_fetch_respects_the_floor(self, status_plugin):
         plugin = status_plugin
-        plugin._status_last_fetch = 999.0
+        plugin._status_last_fetch = {CLAUDE: 999.0}
         plugin._now = 1000.0
         before = plugin._fetch_calls
-        plugin._status_fetch_now()
+        plugin._status_fetch_now(CLAUDE)
         assert plugin._fetch_calls == before, "inside the 30s floor, serve cache"
 
     def test_inline_fetch_proceeds_past_the_floor(self, status_plugin):
         plugin = status_plugin
-        plugin._status_last_fetch = 900.0
+        plugin._status_last_fetch = {CLAUDE: 900.0}
         plugin._now = 1000.0
         before = plugin._fetch_calls
-        plugin._status_fetch_now()
+        plugin._status_fetch_now(CLAUDE)
         assert plugin._fetch_calls == before + 1
 
 
 class TestDisabled:
     def test_empty_url_disables_polling(self, status_plugin):
         plugin = status_plugin
-        plugin._registry["statusPageUrl"] = ""
+        plugin._registry["statusPageUrls"] = []
         before = plugin._fetch_calls
         plugin._run_status_poll()
         assert plugin._fetch_calls == before
@@ -180,7 +180,7 @@ class TestInflightDedup:
 class TestNotModified:
     def test_304_with_cache_returns_cached_snapshot_with_new_timestamp(self, status_plugin, mocker):
         cached = green_snapshot(1000.0)
-        status_plugin._status_read_cache = cached
+        status_plugin._status_read_cache = {CLAUDE: cached}
         status_plugin._now = 2000.0
         mocker.patch(
             "llm.plugin.statuspage.fetch_summary",
@@ -188,13 +188,13 @@ class TestNotModified:
                 not_modified=True, payload=None, etag='W/"a"', modified=None
             ),
         )
-        snap = LLM._status_fetch_snapshot.__get__(status_plugin)()
+        snap = LLM._status_fetch_snapshot.__get__(status_plugin)(CLAUDE)
         assert snap.fetched_at == 2000.0
         assert snap.incidents == cached.incidents
         assert snap.etag == cached.etag
 
     def test_304_with_no_cache_raises_fetch_error(self, status_plugin, mocker):
-        status_plugin._status_read_cache = None
+        status_plugin._status_read_cache = {}
         mocker.patch(
             "llm.plugin.statuspage.fetch_summary",
             return_value=statuspage.FetchResult(
@@ -202,7 +202,7 @@ class TestNotModified:
             ),
         )
         with pytest.raises(statuspage.FetchError):
-            LLM._status_fetch_snapshot.__get__(status_plugin)()
+            LLM._status_fetch_snapshot.__get__(status_plugin)(CLAUDE)
 
 
 class TestSourceList:
@@ -291,3 +291,113 @@ class TestPerSourceState:
         plugin._status_fetch_now(GITHUB)
         assert GITHUB in plugin._status_read_cache
         assert CLAUDE not in plugin._status_read_cache
+
+
+class TestPassDeadline:
+    def test_a_slow_source_defers_the_rest_and_sets_the_cursor(self, status_plugin):
+        """A budget checked only between sources bounds nothing; the deferred
+        source must be where the next pass starts."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+
+        def slow_fetch(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            plugin._mono += 44.0  # burn nearly the whole 45s budget
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = slow_fetch
+        plugin._run_status_poll()
+
+        assert plugin._fetch_sources == [CLAUDE], "second source should be deferred"
+        assert plugin._status_cursor == GITHUB, "next pass must resume at GitHub"
+
+    def test_next_pass_starts_at_the_cursor(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._status_cursor = GITHUB
+        plugin._run_status_poll()
+        assert plugin._fetch_sources == [GITHUB, CLAUDE]
+
+    def test_a_completed_pass_clears_the_cursor(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._run_status_poll()
+        assert plugin._status_cursor is None
+
+    def test_a_cursor_no_longer_configured_restarts_at_the_head(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE]
+        plugin._status_cursor = "https://gone.example.com"
+        plugin._run_status_poll()
+        assert plugin._fetch_sources == [CLAUDE]
+
+    def test_a_failing_source_does_not_pin_the_head_of_the_rotation(self, status_plugin):
+        """Advancing the cursor only on success would let one broken page
+        starve every source behind it, forever."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+
+        def failing_first(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            if source == CLAUDE:
+                raise statuspage.FetchError("boom")
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = failing_first
+        plugin._run_status_poll()
+        assert plugin._fetch_sources == [CLAUDE, GITHUB], "GitHub must still be polled"
+        assert plugin._status_cursor is None
+
+
+class TestSourceIsolation:
+    def test_one_dead_source_does_not_stop_the_others(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+
+        def half_broken(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            if source == CLAUDE:
+                raise statuspage.FetchError("unreachable")
+            return green_snapshot(plugin._now, incidents=[incident()])
+
+        plugin._status_fetch_snapshot = half_broken
+        plugin._run_status_poll()
+
+        assert CLAUDE not in plugin._status_read_cache
+        assert GITHUB in plugin._status_read_cache
+        assert plugin._status_state[GITHUB].seeded is True
+
+    def test_state_does_not_leak_between_sources(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+        plugin._run_status_poll()  # cold start seeds both empty
+
+        def github_only_incident(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            if source == GITHUB:
+                return green_snapshot(plugin._now, incidents=[incident("gh1")])
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = github_only_incident
+        plugin._run_status_poll()
+
+        assert "gh1" in plugin._status_state[GITHUB].active
+        assert plugin._status_state[CLAUDE].active == {}
+
+
+class TestShutdownDuringAPass:
+    def test_unload_stops_the_pass_before_the_next_source(self, status_plugin):
+        """die() waits only 2s for running jobs, and the poll does not check
+        closing today — a multi-source pass would keep fetching and running
+        billed rewrites long after unload."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [CLAUDE, GITHUB]
+
+        def close_after_first(source, *, timeout_cap=None):
+            plugin._fetch_sources.append(source)
+            plugin._llm_executor.closing = True
+            return green_snapshot(plugin._now)
+
+        plugin._status_fetch_snapshot = close_after_first
+        plugin._run_status_poll()
+        assert plugin._fetch_sources == [CLAUDE]
