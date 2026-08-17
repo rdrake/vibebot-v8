@@ -16,6 +16,16 @@ View a current value by omitting the value. Channel-overridable settings also ac
 
 **Scope** in the tables below means: *channel* settings accept per-channel overrides; *global* settings apply everywhere.
 
+!!! warning "A new default in a release does not change a running bot"
+
+    Limnoria writes the whole registry to `bot.conf` when the bot shuts down, so every setting the bot has ever loaded exists there as an explicit line. That line wins over the default shipped in a later release.
+
+    So when an upgrade changes a **Default** in the tables below, the new value applies to fresh installs only. An existing deployment keeps whatever was persisted, silently and with no error — the feature simply behaves as it did before.
+
+    To adopt a new default, set it explicitly with `@config` (which writes through the registry), or stop the bot, edit `bot.conf`, and start it again. Editing `bot.conf` while the bot runs does not work: the next shutdown flush overwrites it.
+
+    Verify by reading back the value with `@config plugins.LLM.<settingName>` — a green deploy and a quiet log do not prove the new value took effect.
+
 ## API keys
 
 API keys are **not** part of the Limnoria registry. They come from environment variables, one per provider, read at the point each provider call is made and selected by the provider of the model being called — not by which command or channel triggered the call. The old `assistantApiKey` / `codeApiKey` / `imageApiKey` / `searchApiKey` registry settings were removed, not deprecated: `@config` on them now errors.

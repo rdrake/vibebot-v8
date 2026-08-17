@@ -197,7 +197,34 @@ wrong and should be inverted; if it pins "malformed is rejected", it must stay.
 
 ## Cutover
 
-No prod config change. `statusPageUrls` is at its registered default, so the new default
-picks up OpenAI on deploy. Cold-start seeding means any OpenAI incident already open at
-deploy is recorded as announced and stays silent until it resolves — expected, same as
-GitHub on the last deploy.
+**A prod config change IS required — this section originally said the opposite, and was
+wrong.** Corrected 2026-08-17 after the deploy shipped green with OpenAI silently
+unpolled.
+
+Shipping a new *default* does not change a running bot. Limnoria flushes the whole
+registry to `bot.conf` on shutdown, so the previous deploy wrote its then-current value
+out as an explicit line:
+
+```
+supybot.plugins.LLM.statusPageUrls: https://status.claude.com https://www.githubstatus.com
+```
+
+That line overrides the new three-URL default. "It's at the registered default" holds
+only until the key has been persisted once, which happens at the first shutdown after
+the key is registered.
+
+Cutover, with the bot stopped (a live edit is clobbered by the next shutdown flush):
+
+1. `systemctl --user stop vibebot`
+2. Add `https://status.openai.com` to the `statusPageUrls` line in `~/.config/vibebot/bot.conf`
+3. `systemctl --user start vibebot`
+
+Or set it from IRC with `@config`, which writes through the registry properly and needs
+no restart.
+
+**Verifying is not "the deploy is green" or "the poller logs no errors."** A source
+absent from config produces no errors at all — it is simply never polled. `grep` the key
+in `bot.conf` and confirm the URL is there.
+
+Cold-start seeding still applies: any OpenAI incident already open at cutover is recorded
+as announced and stays silent until it resolves — expected, same as GitHub before it.

@@ -354,9 +354,18 @@ Prod (`~/.config/vibebot/bot.conf`) holds `statusPageUrl:
 https://status.claude.com` — exactly the registered default, so no operator
 value is lost by the rename.
 
-1. Nothing is required. `statusPageUrls` takes its two-source default, and the
-   existing `statusAnnounce.#clanker: True` (plus its network-scoped duplicate)
-   starts delivering GitHub incidents after the auto-deploy.
+1. Nothing is required *for this deploy specifically*, because `statusPageUrl`
+   (singular) is being renamed: the new key has never been persisted, so it
+   genuinely takes its default. `statusAnnounce.#clanker: True` and its
+   network-scoped duplicate start delivering GitHub incidents after the
+   auto-deploy.
+
+   **This exemption does not generalise, and reading it as a rule cost a silent
+   failure on 2026-08-17.** Once the bot shuts down with `statusPageUrls`
+   registered, Limnoria flushes the registry to `bot.conf` and writes the
+   then-current value out as an explicit line — which then overrides any future
+   default shipped in `config.py`. Every *later* change to this key's default
+   needs an operator edit. See the incident.io spec's cutover section.
 2. Optional tidy: delete the now-inert `supybot.plugins.LLM.statusPageUrl` line,
    with the bot stopped — Limnoria rewrites the registry on shutdown and would
    clobber a live edit.
