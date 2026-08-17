@@ -129,8 +129,14 @@ Pre-existing behaviour for any page, not incident.io-specific, and `to_tool_payl
 
 1. Absent `incidents` → parses, zero incidents. Present-but-a-string → still `InvalidPayload`.
 2. Same pair for `scheduled_maintenances` and `components`.
-3. Unknown component status → component present in `to_tool_payload`'s `degraded` with its
-   raw value; page parses.
+3. Unknown component status → component present in `to_tool_payload`'s `degraded`, page
+   parses, and the status is **`sanitise_text`'d like every other quoted field**. "Passed
+   through" in decision 2 means "not mapped onto our enum" — never "not sanitised".
+   `COMPONENT_STATUSES` was the only thing bounding this field, so dropping the check
+   without substituting the sanitiser lets unbounded third-party text reach the model:
+   measured at 529 bytes against a 200-byte cap on every sibling field.
+   `sanitise_text("degraded_performance")` is a no-op, so this costs nothing on real
+   input. Assert the cap holds for a hostile value.
 4. Structurally bad component (not an object; non-string name) → still rejected.
 5. Unknown *incident* status → still rejected, pinning the deliberate asymmetry in
    decision 2.
