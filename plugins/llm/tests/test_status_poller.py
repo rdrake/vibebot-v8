@@ -261,6 +261,7 @@ class TestSourceList:
 
 CLAUDE = "https://status.claude.com"
 GITHUB = "https://www.githubstatus.com"
+CF = "https://www.cloudflarestatus.com"
 
 
 class TestPerSourceState:
@@ -558,3 +559,110 @@ class TestGlobalLineBudget:
         )
         announced_sources = {call.args[0] for call in plugin._announce_status.call_args_list}
         assert THIRD not in announced_sources
+
+
+class TestPageGrammar:
+    """One grammar for both keys. A bare URL stays valid and takes its host as
+    its name, which is what statusPageUrls entries did before names existed."""
+
+    def test_named_and_bare_entries_both_parse(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [
+            "Claude=https://status.claude.com",
+            "https://www.githubstatus.com",
+        ]
+        plugin._registry["statusQueryablePages"] = []
+        assert plugin._status_named_pages() == {
+            "Claude": "https://status.claude.com",
+            "www.githubstatus.com": "https://www.githubstatus.com",
+        }
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "=https://status.claude.com",  # empty name
+            "has space=https://x.example",  # impossible in a space list, but explicit
+            "toolongname" * 5 + "=https://x.example",
+            "bad!name=https://x.example",
+            "Name=not a url",
+            "Name=ftp://x.example",
+            "Name=https://x.example/path",
+        ],
+    )
+    def test_unusable_entries_are_dropped_not_fatal(self, status_plugin, entry):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [entry, "Good=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = []
+        assert plugin._status_named_pages() == {"Good": "https://status.claude.com"}
+
+    def test_duplicate_name_keeps_the_first(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [
+            "Dup=https://status.claude.com",
+            "dup=https://www.githubstatus.com",
+        ]
+        plugin._registry["statusQueryablePages"] = []
+        assert plugin._status_named_pages() == {"Dup": "https://status.claude.com"}
+
+    def test_two_names_one_canonical_source_drops_the_later(self, status_plugin):
+        """A silent skip would show the operator a valid-looking entry in
+        @config that never appears in the enum."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Foo=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["Bar=https://status.claude.com/"]
+        assert plugin._status_named_pages() == {"Foo": "https://status.claude.com"}
+
+    def test_polled_entries_come_first_and_win_a_collision(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["X=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["Y=https://www.cloudflarestatus.com"]
+        assert list(plugin._status_named_pages()) == ["X", "Y"]
+
+    def test_queryable_is_capped(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = []
+        plugin._registry["statusQueryablePages"] = [
+            f"N{i}=https://status{i}.example.com" for i in range(25)
+        ]
+        assert len(plugin._status_named_pages()) == plugin._STATUS_MAX_QUERYABLE
+
+    def test_sources_returns_polled_urls_only(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        assert plugin._status_sources() == ["https://status.claude.com"]
+
+
+class TestPruneKeepsQueryableHistory:
+    """The subtlest interaction in this feature. Pruning history against the
+    polled set alone deletes an allowlisted page's history — up to 4 MB, cached
+    for an hour — on the very next poll, 120 seconds after it was fetched,
+    along with its failure backoff. Every history question would refetch 4 MB."""
+
+    def test_queryable_history_survives_a_poll(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        plugin._status_history_cache = {CF: ()}
+        plugin._status_history_at = {CF: plugin._now}
+        plugin._status_history_failed_at = {CF: plugin._now}
+
+        plugin._run_status_poll()
+
+        assert CF in plugin._status_history_cache, "queryable history was pruned by the poll"
+        assert CF in plugin._status_history_at
+        assert CF in plugin._status_history_failed_at
+
+    def test_lifecycle_state_is_still_pruned_against_polled_only(self, status_plugin):
+        """The other half: a queryable page must never keep lifecycle state,
+        or a question could consume an announcement it has no right to."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        plugin._status_state = {CF: statuspage.StatusState(seeded=True)}
+        plugin._status_read_cache = {CF: green_snapshot(plugin._now)}
+
+        plugin._run_status_poll()
+
+        assert CF not in plugin._status_state
+        assert CF not in plugin._status_read_cache

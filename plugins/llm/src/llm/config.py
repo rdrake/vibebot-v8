@@ -998,19 +998,31 @@ conf.registerGlobalValue(
     "statusPageUrls",
     registry.SpaceSeparatedListOfStrings(
         [
-            "https://status.claude.com",
-            "https://www.githubstatus.com",
-            "https://status.openai.com",
+            "Claude=https://status.claude.com",
+            "GitHub=https://www.githubstatus.com",
+            "OpenAI=https://status.openai.com",
         ],
-        _("""Space-separated base URLs of status pages (each a bare
-        scheme://host, no trailing path). Both Atlassian Statuspage and
-        incident.io pages work — incident.io is read through its
-        Atlassian-compatible endpoints, no separate configuration needed. The
-        bot polls {url}/api/v2/summary.json for each to answer status
-        questions and to announce new incidents. Entries that are not a bare
-        scheme://host are ignored with a warning, duplicates collapse, and at
-        most 5 are polled. Set to the empty list to disable status awareness
-        entirely."""),
+        _("""Space-separated status pages to poll and announce, each written as
+        Name=url or as a bare url (which takes its host as its name). Both
+        Atlassian Statuspage and incident.io pages work. Name is 1-32 chars of
+        [A-Za-z0-9._-] and is what the model uses to ask about one service. The
+        url must be a bare scheme://host with no trailing path. Unusable
+        entries are dropped with a warning, duplicates collapse, and at most 5
+        are polled. Empty disables polling and announcements."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "statusQueryablePages",
+    registry.SpaceSeparatedListOfStrings(
+        [],
+        _("""Space-separated status pages the bot can be ASKED about but never
+        polls or announces, same Name=url grammar as statusPageUrls. These cost
+        nothing until someone asks: they are fetched lazily and cached, with no
+        incident lifecycle and no channel announcements. Use this for the long
+        tail; use statusPageUrls for pages a channel should be told about. At
+        most 20."""),
     ),
 )
 

@@ -642,6 +642,9 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         from llm.plugin import LLM
 
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+        plugin._status_host = LLM._status_host.__get__(plugin)
+        plugin._status_parse_pages = LLM._status_parse_pages.__get__(plugin)
+        plugin._status_polled_pages = LLM._status_polled_pages.__get__(plugin)
         plugin._status_sources = LLM._status_sources.__get__(plugin)
 
         # Service tests dispatch scheduled-task fires synchronously to
@@ -797,12 +800,17 @@ def status_plugin():
     from llm.plugin import LLM
 
     obj = MagicMock()
-    obj._registry = {"statusPageUrls": ["https://status.claude.com"]}
+    obj._registry = {"statusPageUrls": ["Claude=https://status.claude.com"]}
+    obj._registry["statusQueryablePages"] = []
     obj.registryValue = lambda key, *a, **k: obj._registry.get(key)
     obj._STATUS_POLL_INTERVAL = LLM._STATUS_POLL_INTERVAL
     obj._STATUS_MAX_ANNOUNCE_PER_POLL = LLM._STATUS_MAX_ANNOUNCE_PER_POLL
     obj._STATUS_FETCH_FLOOR = LLM._STATUS_FETCH_FLOOR
     obj._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+    obj._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
+    obj._status_parse_pages = LLM._status_parse_pages.__get__(obj)
+    obj._status_polled_pages = LLM._status_polled_pages.__get__(obj)
+    obj._status_named_pages = LLM._status_named_pages.__get__(obj)
     obj._status_sources = LLM._status_sources.__get__(obj)
     obj._status_state = {}
     obj._status_read_cache = {}

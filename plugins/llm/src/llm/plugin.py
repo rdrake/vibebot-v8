@@ -99,6 +99,11 @@ _IMAGE_USAGE_COMMAND = "draw:image"
 # brackets crash Limnoria's nested-command tokenizer.
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# Selector name for a status page, shared by statusPageUrls and
+# statusQueryablePages. ASCII-only, so plain .lower() is sufficient for
+# case-insensitive uniqueness.
+_STATUS_PAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
+
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {
         "llm.ask",
@@ -1074,36 +1079,100 @@ class LLM(callbacks.Plugin):
         cannot corrupt a deadline."""
         return time.monotonic()
 
-    def _status_sources(self, *, warn: bool = True) -> list[str]:
-        """Canonical, deduplicated, capped list of configured status pages.
+    def _status_parse_pages(self, raw_entries, *, key: str, cap: int, warn: bool) -> dict[str, str]:
+        """Parse ``Name=url`` (or bare ``url``) entries into name -> source.
 
-        Order is the operator's. Bad entries are dropped rather than raising,
-        so one typo cannot disable the others.
+        One grammar, one parser, both config keys. Bad entries are dropped
+        rather than raising: one typo must not disable the feature.
 
-        ``warn`` gates the diagnostic logging and defaults to on for the
-        poller's own ~2-minute cadence. This is also called on the per-request
-        hot path — service.py's tool-wiring gate, and the tool handler itself
-        — where callers pass ``warn=False``: without that, one typo'd entry
-        logs once per chat message instead of once per poll.
+        Split on the FIRST '=' — names forbid '=' and, being in a
+        space-separated list, spaces, so this is unambiguous.
         """
-        seen: list[str] = []
-        for raw in self.registryValue("statusPageUrls") or []:
-            source = statuspage.canonical_source(raw)
+        pages: dict[str, str] = {}
+        lowered: set[str] = set()
+        for raw in raw_entries or []:
+            text = str(raw).strip()
+            if not text:
+                continue
+            name, sep, url = text.partition("=")
+            bare = not sep
+            if bare:
+                name, url = "", text
+            source = statuspage.canonical_source(url)
             if source is None:
                 if warn:
-                    self.log.warning("Ignoring unusable statusPageUrls entry: %s", str(raw)[:100])
+                    self.log.warning("Ignoring unusable %s entry: %s", key, text[:100])
                 continue
-            if source not in seen:
-                seen.append(source)
-        if len(seen) > self._STATUS_MAX_SOURCES:
+            if bare:
+                # A genuine bare url (no '=' at all) falls back to its host.
+                # An explicit but empty name ("=url") is a typo, not a bare
+                # url, and must not silently claim that page's name.
+                name = self._status_host(source)
+            if not _STATUS_PAGE_NAME_RE.match(name):
+                if warn:
+                    self.log.warning("Ignoring %s entry with an unusable name: %s", key, text[:100])
+                continue
+            if name.lower() in lowered:
+                if warn:
+                    self.log.warning("Ignoring duplicate %s name: %s", key, name)
+                continue
+            if source in pages.values():
+                # Two names for one page: the later one would look valid in
+                # @config while never appearing in the enum.
+                existing = next(n for n, s in pages.items() if s == source)
+                if warn:
+                    self.log.warning("Ignoring %s entry %s: same page as %s", key, name, existing)
+                continue
+            pages[name] = source
+            lowered.add(name.lower())
+        if len(pages) > cap:
             if warn:
                 self.log.warning(
-                    "statusPageUrls lists %i usable sources; polling the first %i",
-                    len(seen),
-                    self._STATUS_MAX_SOURCES,
+                    "%s lists %i usable pages; using the first %i", key, len(pages), cap
                 )
-            seen = seen[: self._STATUS_MAX_SOURCES]
-        return seen
+            pages = dict(list(pages.items())[:cap])
+        return pages
+
+    def _status_polled_pages(self, *, warn: bool = True) -> dict[str, str]:
+        return self._status_parse_pages(
+            self.registryValue("statusPageUrls"),
+            key="statusPageUrls",
+            cap=self._STATUS_MAX_SOURCES,
+            warn=warn,
+        )
+
+    def _status_named_pages(self, *, warn: bool = True) -> dict[str, str]:
+        """Name -> canonical source for every configured page, polled first.
+
+        The single source of truth for the tool's ``service`` enum, for
+        resolving that argument, and for the prune sets. Purely a function of
+        config: nothing here may come from a fetched payload, or a page could
+        rename itself into another page's selector.
+        """
+        pages = self._status_polled_pages(warn=warn)
+        polled_sources = set(pages.values())
+        lowered = {n.lower() for n in pages}
+        for name, source in self._status_parse_pages(
+            self.registryValue("statusQueryablePages"),
+            key="statusQueryablePages",
+            cap=self._STATUS_MAX_QUERYABLE,
+            warn=warn,
+        ).items():
+            if source in polled_sources or name.lower() in lowered:
+                if warn:
+                    self.log.warning("Ignoring queryable page %s: already configured", name)
+                continue
+            pages[name] = source
+        return pages
+
+    def _status_sources(self, *, warn: bool = True) -> list[str]:
+        """Canonical, deduplicated, capped list of POLLED status pages.
+
+        Order is the operator's. ``warn`` gates diagnostics and defaults to on
+        for the poller's ~2-minute cadence; request-path callers pass False, or
+        one typo'd entry logs once per chat message.
+        """
+        return list(self._status_polled_pages(warn=warn).values())
 
     def _status_host(self, source: str) -> str:
         """Display host for a canonical source id. Operator-derived, always safe."""
@@ -1112,21 +1181,25 @@ class LLM(callbacks.Plugin):
         except ValueError:
             return source
 
-    def _status_prune_sources(self, sources: list[str]) -> None:
+    def _status_prune_sources(self, sources: list[str], queryable: list[str] | None = None) -> None:
         """Drop state for sources no longer configured.
 
-        Every keyed structure, not just _status_state: the 5-source cap bounds
-        the configured set, not the set this process has ever seen, so pruning
-        one dict leaves the other five growing across config churn.
+        Two different keep-sets, deliberately. Lifecycle state is pruned
+        against the POLLED set: a queryable page must never hold any. The
+        history and query caches are pruned against polled UNION queryable —
+        pruning history against the polled set alone deletes an allowlisted
+        page's history (up to 4 MB, cached for an hour) on the very next poll,
+        120 seconds after it was fetched, backoff and all.
         """
-        keep = set(sources)
-        for holder in (
-            self._status_state,
-            self._status_read_cache,
-            self._status_last_fetch,
-            self._status_history_cache,
-            self._status_history_at,
-            self._status_history_failed_at,
+        polled = set(sources)
+        both = polled | set(queryable or ())
+        for holder, keep in (
+            (self._status_state, polled),
+            (self._status_read_cache, polled),
+            (self._status_last_fetch, polled),
+            (self._status_history_cache, both),
+            (self._status_history_at, both),
+            (self._status_history_failed_at, both),
         ):
             for stale in [k for k in holder if k not in keep]:
                 del holder[stale]
@@ -1433,7 +1506,8 @@ class LLM(callbacks.Plugin):
         """
         try:
             sources = self._status_sources()
-            self._status_prune_sources(sources)
+            queryable = [s for s in self._status_named_pages().values() if s not in set(sources)]
+            self._status_prune_sources(sources, queryable)
             if not sources:
                 return
             deadline = self._status_monotonic() + self._STATUS_PASS_BUDGET
@@ -1790,6 +1864,7 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_LIMIT = 5
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
     _STATUS_MAX_SOURCES = 5
+    _STATUS_MAX_QUERYABLE = 20
 
     # Whole-call budget for the tool path, covering current-status refreshes and
     # the history fan-out together. The tool runs inside the asking request's

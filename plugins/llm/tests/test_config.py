@@ -193,10 +193,16 @@ class TestConfigValues:
         import supybot.conf as conf
 
         assert list(conf.supybot.plugins.LLM.statusPageUrls()) == [
-            "https://status.claude.com",
-            "https://www.githubstatus.com",
-            "https://status.openai.com",
+            "Claude=https://status.claude.com",
+            "GitHub=https://www.githubstatus.com",
+            "OpenAI=https://status.openai.com",
         ]
+
+    def test_status_queryable_pages_defaults_empty(self) -> None:
+        import llm.config  # noqa: F401
+        import supybot.conf as conf
+
+        assert list(conf.supybot.plugins.LLM.statusQueryablePages()) == []
 
     def test_status_page_url_singular_is_gone(self) -> None:
         import llm.config  # noqa: F401
