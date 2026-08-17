@@ -855,3 +855,64 @@ class TestQueryCache:
         plugin._status_query_snapshot(CF, deadline=deadline)
 
         assert fetch.call_args.kwargs["timeout_cap"] == pytest.approx(30.0)
+
+
+class TestServiceSelection:
+    def _plugin(self, status_plugin):
+        p = status_plugin
+        p._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        p._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        p._status_tool_payload = LLM._status_tool_payload.__get__(p)
+        p._status_query_snapshot = LLM._status_query_snapshot.__get__(p)
+        return p
+
+    def test_omitted_service_returns_every_polled_source(self, status_plugin):
+        plugin = self._plugin(status_plugin)
+        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
+        payload = plugin._status_tool_payload()
+        assert [e["source"] for e in payload["services"]] == ["status.claude.com"]
+
+    def test_named_polled_page_returns_only_that_one(self, status_plugin):
+        plugin = self._plugin(status_plugin)
+        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
+        payload = plugin._status_tool_payload(service="Claude")
+        assert len(payload["services"]) == 1
+        assert payload["services"][0]["source"] == "status.claude.com"
+
+    def test_named_polled_page_is_read_from_the_poller_cache_not_queried(self, status_plugin):
+        """A polled source with a fresh read cache must be answered from that
+        cache — not routed through the query path, which would fetch (the
+        query cache starts empty) and would leave a stray entry in the query
+        dicts a polled page must never touch."""
+        plugin = self._plugin(status_plugin)
+        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
+        plugin._status_tool_payload(service="Claude")
+        assert plugin._fetch_calls == 0, "a fresh polled cache must not be fetched"
+        assert plugin._status_query_cache == {}, "a polled source must not populate the query cache"
+
+    def test_named_queryable_page_fetches_lazily(self, status_plugin):
+        plugin = self._plugin(status_plugin)
+        payload = plugin._status_tool_payload(service="CF")
+        assert [e["source"] for e in payload["services"]] == ["www.cloudflarestatus.com"]
+        assert plugin._fetch_calls == 1
+        assert plugin._status_state == {}, "a queryable page must not gain lifecycle state"
+
+    def test_unresolvable_service_errors_but_still_returns_polled_data(self, status_plugin):
+        """service.py records any dict without "error" as a SUCCESSFUL tool
+        call, so a bare note would let the model summarise unrelated healthy
+        services as the requested one's state."""
+        plugin = self._plugin(status_plugin)
+        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
+        payload = plugin._status_tool_payload(service="Nope")
+        assert "error" in payload
+        assert "Nope" in payload["error"]
+        assert payload["services"], "polled data should still ride along"
+
+    def test_service_resolution_uses_the_frozen_mapping_when_given(self, status_plugin):
+        """The enum and the dispatcher must be one snapshot; config changing
+        mid-completion must not reroute an already-issued call."""
+        plugin = self._plugin(status_plugin)
+        frozen = {"CF": "https://www.cloudflarestatus.com"}
+        plugin._registry["statusQueryablePages"] = ["CF=https://other.example.com"]
+        payload = plugin._status_tool_payload(service="CF", pages=frozen)
+        assert payload["services"][0]["source"] == "www.cloudflarestatus.com"

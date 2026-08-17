@@ -874,6 +874,13 @@ def status_plugin():
     obj._status_fetch_now = LLM._status_fetch_now.__get__(obj)
     obj._status_prune_sources = LLM._status_prune_sources.__get__(obj)
     obj._status_host = LLM._status_host.__get__(obj)
+    # Helpers _status_tool_payload delegates to for per-source entry
+    # construction. Same trap as everything else on this bare MagicMock: an
+    # unbound attribute silently returns a fresh Mock instead of running the
+    # real method, which would make budget/staleness logic in the payload
+    # tests silently no-op rather than fail loudly.
+    obj._status_source_entry = LLM._status_source_entry.__get__(obj)
+    obj._status_single_payload = LLM._status_single_payload.__get__(obj)
 
     # Arming/dedup tests bind the real _schedule_status_poll /
     # _enqueue_status_poll. Both traps below matter: `closing` on a bare

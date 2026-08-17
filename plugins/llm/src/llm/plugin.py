@@ -1440,12 +1440,17 @@ class LLM(callbacks.Plugin):
         self._status_history_failed_at[source] = 0.0
         return statuspage.to_history_payload(entries, now=now, limit=self._STATUS_HISTORY_LIMIT)
 
-    def _status_tool_payload(self, *, include_history: bool = False) -> dict[str, Any]:
-        """Build the model-facing payload: one entry per configured source.
+    def _status_source_entry(
+        self, source: str, *, deadline: float, include_history: bool, polled: bool
+    ) -> dict[str, Any]:
+        """Build one source's tool-payload entry.
 
-        Reads (and may refresh) the read cache only. Lifecycle state is the
-        poller's alone. Current status is always returned regardless of
-        ``include_history`` — history is additive.
+        ``polled`` selects the read path: a polled source refreshes through
+        ``_status_read_cache`` under the staleness rule below, the same rule
+        both before and after this was factored out of the aggregate loop. A
+        queryable source is read through ``_status_query_snapshot``, which
+        owns its own TTL and failure backoff and never touches lifecycle
+        state.
 
         Every entry carries ``source``, the operator-configured host. That is
         the only identity available before a source's first successful fetch,
@@ -1453,6 +1458,95 @@ class LLM(callbacks.Plugin):
         third party — two pages both calling themselves "Claude" would otherwise
         be indistinguishable to the model.
         """
+        entry: dict[str, Any] = {"source": self._status_host(source)}
+        if polled:
+            snapshot = self._status_read_cache.get(source)
+            # `now` is captured per source, not once before the fan-out: a
+            # source refreshed during another source's fetch would otherwise
+            # have fetched_at > now, and snapshot_age_sec below would go
+            # negative.
+            now = self._status_now()
+            if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
+                snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
+                now = self._status_now()
+        else:
+            snapshot = self._status_query_snapshot(source, deadline=deadline)
+            now = self._status_now()
+        if snapshot is None:
+            entry["error"] = "This status page has not been read yet."
+            return entry
+        entry["service"] = (
+            statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
+            or entry["source"]
+        )
+        # The per-snapshot note is dropped and stated once at the top level:
+        # repeating it per service is pure token cost.
+        entry.update(
+            {k: v for k, v in statuspage.to_tool_payload(snapshot, now=now).items() if k != "note"}
+        )
+        if (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
+            entry["stale"] = True
+            entry["error"] = "This status page is currently unreachable; this is the last reading."
+        if include_history:
+            entry["recent_incidents"] = self._status_history_payload(source, deadline=deadline)
+        return entry
+
+    def _status_single_payload(
+        self, source: str, *, include_history: bool, polled: bool
+    ) -> dict[str, Any]:
+        """Build the payload for exactly one named source (polled or queryable)."""
+        deadline = self._status_monotonic() + self._STATUS_TOOL_BUDGET
+        entry = self._status_source_entry(
+            source, deadline=deadline, include_history=include_history, polled=polled
+        )
+        payload: dict[str, Any] = {"services": [entry], "note": statuspage.UNTRUSTED_NOTE}
+        if "error" in entry:
+            payload["error"] = entry["error"]
+        return payload
+
+    def _status_tool_payload(
+        self,
+        *,
+        service: str | None = None,
+        include_history: bool = False,
+        pages: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Build the model-facing payload.
+
+        ``service`` omitted: one entry per configured POLLED source (today's
+        behaviour, pinned by production — "are Claude and Codex up?" answers
+        in one call). ``service`` named: one entry for that page alone,
+        polled or queryable, resolved from ``pages`` when the caller supplies
+        the frozen name->source mapping the tool schema was built from —
+        resolving live here instead would let config churn between the
+        model's call and its dispatch route the call somewhere the enum
+        never advertised. An unresolvable name still returns the polled set,
+        plus a top-level ``error`` naming it: service.py records any dict
+        without an "error" key as a successful tool call, so a bare note
+        would let the model answer about the wrong service.
+
+        Reads (and may refresh) the read/query caches only. Lifecycle state
+        is the poller's alone. Current status is always returned regardless
+        of ``include_history`` — history is additive.
+        """
+        if service is not None:
+            named = pages if pages is not None else self._status_named_pages(warn=False)
+            source = next(
+                (s for n, s in named.items() if n.lower() == service.strip().lower()), None
+            )
+            if source is None:
+                payload = self._status_tool_payload(include_history=include_history, pages=named)
+                payload["error"] = (
+                    f"No status page named {statuspage.sanitise_text(service, limit=40)!r} "
+                    "is configured; the services listed are the ones that are."
+                )
+                return payload
+            return self._status_single_payload(
+                source,
+                include_history=include_history,
+                polled=source in set(self._status_sources(warn=False)),
+            )
+
         # warn=False: this runs per tool call, not per poll; the poller
         # already logs a bad entry on its own ~2-minute cadence.
         sources = self._status_sources(warn=False)
@@ -1463,42 +1557,11 @@ class LLM(callbacks.Plugin):
         services: list[dict[str, Any]] = []
         readable = 0
         for source in sources:
-            entry: dict[str, Any] = {"source": self._status_host(source)}
-            snapshot = self._status_read_cache.get(source)
-            # `now` is captured per source, not once before the fan-out: a
-            # source refreshed during another source's fetch would otherwise
-            # have fetched_at > now, and snapshot_age_sec below would go
-            # negative.
-            now = self._status_now()
-            if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
-                snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
-                now = self._status_now()
-            if snapshot is None:
-                entry["error"] = "This status page has not been read yet."
-                services.append(entry)
-                continue
-            entry["service"] = (
-                statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
-                or entry["source"]
+            entry = self._status_source_entry(
+                source, deadline=deadline, include_history=include_history, polled=True
             )
-            # The per-snapshot note is dropped and stated once at the top level:
-            # repeating it per service is pure token cost.
-            entry.update(
-                {
-                    k: v
-                    for k, v in statuspage.to_tool_payload(snapshot, now=now).items()
-                    if k != "note"
-                }
-            )
-            if (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
-                entry["stale"] = True
-                entry["error"] = (
-                    "This status page is currently unreachable; this is the last reading."
-                )
-            else:
+            if "error" not in entry:
                 readable += 1
-            if include_history:
-                entry["recent_incidents"] = self._status_history_payload(source, deadline=deadline)
             services.append(entry)
 
         payload: dict[str, Any] = {"services": services, "note": statuspage.UNTRUSTED_NOTE}
