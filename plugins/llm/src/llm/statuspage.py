@@ -31,6 +31,11 @@ INCIDENT_STATUSES: frozenset[str] = frozenset(
 # reach the end of its life by either route. Both collapse to one event.
 TERMINAL_STATUSES: frozenset[str] = frozenset({"resolved", "postmortem"})
 
+# Retained as documentation of Statuspage's own component-status vocabulary.
+# parse_summary no longer enforces it — an unrecognised status keeps the
+# component instead of rejecting the whole page (see the comment at its
+# component loop) — so do not re-adopt this as a guard; that reintroduces the
+# whole-page rejection this module deliberately removed.
 COMPONENT_STATUSES: frozenset[str] = frozenset(
     {
         "operational",
@@ -233,7 +238,11 @@ def parse_summary(
         # operational" precisely because the broken one was discarded.
         # to_tool_payload lists anything != "operational" in `degraded`, so an
         # unfamiliar value still reaches the model, which reads prose anyway.
-        components[name] = comp_status
+        # "Passed through" means not mapped onto our five-literal enum — it
+        # does not mean unsanitised. Component status is now free text quoted
+        # from a third party, same as description/name/impact/update body
+        # below, so it goes through the same sanitiser and cap.
+        components[name] = sanitise_text(comp_status)
 
     incidents: dict[str, IncidentView] = {}
     for item in root.get("incidents", []):
