@@ -146,7 +146,7 @@ it is offered depends on the route that handled the message:
 
 | Route | Entry points | Tools offered |
 |-------|--------------|---------------|
-| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_code`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Six with the shipped defaults; eight when `pendingTasksEnabled` is on; one fewer in each case when `statusPageUrl` is empty. |
+| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_code`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Six with the shipped defaults; eight when `pendingTasksEnabled` is on; one fewer in each case when `statusPageUrls` is empty. |
 | verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_code`, `generate_image`, `save_memory`, `search_web` (5) |
 | code | `@code` | `fetch_url`, `generate_code`, `search_web` (3) |
 | draw | `@draw` | `generate_image` (1) |
@@ -195,10 +195,10 @@ the gate. The matching list and cancel tools are off the chat surface
 either way: users list and cancel both kinds with `@remind list`,
 `@remind del` and `@remind clear`.
 
-`check_service_status` reads the poller's cached snapshot of the page
-named by `statusPageUrl`. Clear that key and the schema leaves the
-request rather than shipping a tool that could only answer "not
-configured".
+`check_service_status` reads the poller's cached snapshot of every page
+named by `statusPageUrls`, one entry per source, its description naming the
+configured hosts. Clear that key and the schema leaves the request rather
+than shipping a tool that could only answer "not configured".
 
 Verse is a strict subset of chat: everything chat hides, plus
 `set_reminder`, `schedule_llm_task` and `check_service_status`, none of

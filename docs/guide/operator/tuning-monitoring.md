@@ -129,17 +129,23 @@ Every outbound LLM call, foreground or background, takes a slot from one bounded
 
 Lower it on small hosts or when a provider rate-limits aggressively. The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field. `queued` counts background submissions only: a foreground command waiting for a slot blocks inside `permit()` before either counter moves, so `16/0/16` does not mean nothing is waiting. `running` pinned at `max` is the signal, not `queued`.
 
-## Status page
+## Status pages
 
-The bot polls an Atlassian Statuspage-hosted status page and can answer
-questions about it in conversation, and optionally announce incidents on its
-own as they open and resolve. See [Service status](../user/service-status.md) for the
-user-facing behaviour.
+The bot polls 0..5 Atlassian Statuspage-hosted status pages and can answer
+questions about any of them in conversation, and optionally announce
+incidents on its own as they open and resolve. See
+[Service status](../user/service-status.md) for the user-facing behaviour.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
-| `statusPageUrl` | `https://status.claude.com` | global | Base URL of a Statuspage-hosted status page (no trailing path). The bot polls `{url}/api/v2/summary.json` every two minutes to answer status questions and to announce new incidents. Empty disables status awareness entirely. |
-| `statusAnnounce` | `False` | channel | Announce status-page incidents in this channel as they open and again as they resolve. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
+| `statusPageUrls` | `https://status.claude.com https://www.githubstatus.com` | global | Space-separated base URLs of Statuspage-hosted status pages, each a bare `scheme://host` (no trailing path). Entries that aren't a bare `scheme://host` are dropped with a warning; duplicate entries and same-host variants (trailing slash, case, default port) collapse to one; at most 5 are polled. The bot polls each `{url}/api/v2/summary.json` to answer status questions and to announce new incidents. Empty disables status awareness entirely. |
+| `statusAnnounce` | `False` | channel | Announce incidents from every configured status page in this channel as they open and again as they resolve — all-or-nothing per channel, not selectable per source. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
+
+Sources are polled in rotation inside a single 45-second-per-pass budget on a
+2-minute schedule, with a cursor so one slow or failing source can't starve
+the others — with several sources configured, a given one might wait more than
+one 2-minute cycle for its turn. A reading older than 10 minutes is reported
+to the model as stale.
 
 !!! warning "Turn off the RSS feed first"
 

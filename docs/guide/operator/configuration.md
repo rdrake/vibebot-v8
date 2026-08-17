@@ -179,14 +179,14 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 
 See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.
 
-## Status page
+## Status pages
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `statusPageUrl` | global | `https://status.claude.com` | Base URL of a Statuspage-hosted status page, with no trailing path. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
-| `statusAnnounce` | channel | `False` | Announce incidents in this channel as they open and again as they resolve |
+| `statusPageUrls` | global | `https://status.claude.com https://www.githubstatus.com` | Space-separated base URLs of Statuspage-hosted status pages, each a bare `scheme://host` with no trailing path. Duplicates collapse and at most 5 are polled. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
+| `statusAnnounce` | channel | `False` | Announce incidents from every configured status page in this channel as they open and again as they resolve |
 
-See [Tuning and monitoring](tuning-monitoring.md#status-page) for the poll interval and the RSS cutover order.
+See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.
 
 ## Reminders and scheduled tasks
 
