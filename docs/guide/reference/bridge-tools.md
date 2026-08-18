@@ -199,11 +199,13 @@ either way: users list and cancel both kinds with `@remind list`,
 the poller's cached snapshot: one entry per page when the model omits
 `service`, or a single named lookup. `statusQueryablePages` entries are
 answered only by name, fetched lazily and cached for 5 minutes — they never
-appear in the omitted-`service` answer. The description names every
-configured page across both keys, and the `service` argument's enum is
-built from the same names. The tool leaves the request only when both keys
-are empty, rather than shipping a tool that could only answer "not
-configured".
+appear in the omitted-`service` answer. Only `statusPageUrls` pages are named
+in the tool's description text, in a "Monitored services" sentence, since
+that sentence describes what an omitted `service` returns; the `service`
+argument's enum is wider and lists every configured name across both keys,
+which is how a queryable page gets asked for by name at all. The tool leaves
+the request only when both keys are empty, rather than shipping a tool that
+could only answer "not configured".
 
 Verse is a strict subset of chat: everything chat hides, plus
 `set_reminder`, `schedule_llm_task` and `check_service_status`, none of
