@@ -1136,6 +1136,22 @@ class TestServiceSelection:
         assert payload["services"][0]["stale"] is True
         assert "error" in payload
 
+    def test_unresolvable_service_appends_to_an_unreadable_aggregate_error(self, status_plugin):
+        """When every polled page is unreadable, the aggregate already set
+        its own diagnostic ("No configured status page could be read.").
+        `payload["services"]` is still truthy (a list of all-error entries),
+        so the unresolved-name branch must append its message rather than
+        overwrite — overwriting would claim "the services listed are the
+        ones that are", which is false: none of them are. [Finding 3]"""
+        plugin = self._plugin(status_plugin)
+        plugin._fake_error = statuspage.FetchError("boom")
+        payload = plugin._status_tool_payload(service="Nope")
+        assert "Nope" in payload["error"]
+        assert "No configured status page could be read." in payload["error"], (
+            "the aggregate's own diagnostic must survive, not be overwritten"
+        )
+        assert "services listed are the ones that are" not in payload["error"]
+
     def test_unresolvable_service_with_no_polled_sources_does_not_claim_a_list(self, status_plugin):
         """statusPageUrls empty + only statusQueryablePages configured is
         reachable from Task 4 on (it gates the tool on polled OR queryable).

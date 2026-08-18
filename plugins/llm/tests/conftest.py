@@ -653,6 +653,10 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
         plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_host = LLM._status_host.__get__(plugin)
+        # Same trap noted above for the other _status_* readers: an unbound
+        # attribute on a bare Mock silently returns a fresh Mock instead of
+        # running the real bare-URL name sanitiser.
+        plugin._status_bare_name = LLM._status_bare_name.__get__(plugin)
         plugin._status_parse_pages = LLM._status_parse_pages.__get__(plugin)
         plugin._status_polled_pages = LLM._status_polled_pages.__get__(plugin)
         plugin._status_sources = LLM._status_sources.__get__(plugin)
@@ -823,6 +827,11 @@ def status_plugin():
     obj._status_polled_pages = LLM._status_polled_pages.__get__(obj)
     obj._status_named_pages = LLM._status_named_pages.__get__(obj)
     obj._status_sources = LLM._status_sources.__get__(obj)
+    # Same trap as every other _status_* helper on this bare MagicMock: an
+    # unbound attribute access silently returns a fresh Mock instead of
+    # running the real method, which would make the bare-URL name-derivation
+    # tests pass vacuously against a Mock rather than the real sanitiser.
+    obj._status_bare_name = LLM._status_bare_name.__get__(obj)
     obj._status_state = {}
     obj._status_read_cache = {}
     obj._status_last_fetch = {}

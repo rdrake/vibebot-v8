@@ -27,14 +27,16 @@ Ask in plain language. There's no command.
 ```
 
 Ask about any configured page by name — "is GitHub down?" is meant to get
-GitHub's reading, not Claude's. Naming one page in the question returns just
-that page; leaving it unnamed returns every watched page at once, which is
-what lets "are Claude and Codex up?" get answered in a single reply. It's
+GitHub's reading, not Claude's. A question about a watched page is normally
+answered from the usual all-services reading rather than a page fetched
+alone; that's the same one-call reading that lets "are Claude and Codex up?"
+get answered in a single reply. Naming a page the bot only watches on
+request — anything in `statusQueryablePages`, the long tail like Cloudflare
+or AWS — returns just that page; that's the only way to reach one, since
+those pages never show up in an unnamed, "everything at once" answer. It's
 still the model deciding which case applies and which name to use, not
 anything that pins the page down for it, so an oddly phrased question can
-occasionally answer from the wrong entry. Pages from `statusQueryablePages`
-work the same way, by name — that's the only way to reach them, since they
-never show up in an unnamed, "everything at once" answer.
+occasionally answer from the wrong entry.
 
 The bot reads the live pages rather than answering from memory. With more
 than one configured, it polls them in rotation within a single pass, so a
@@ -57,11 +59,11 @@ Roleplay replies can't reach the status pages. Ask outside the story.
 ## Past incidents
 
 Questions about the past pull a second reading — the recent incident list,
-not just what's broken now. Left unnamed, it comes back for every watched
-page at once, the same as a current-status question would. Naming one page
-returns just that page's history — the only way to reach a
-`statusQueryablePages` page's history, since those pages never ride along in
-the "every page" answer:
+not just what's broken now. For a watched page it comes back for every
+watched page at once, the same as a current-status question would, and the
+reply still focuses on whichever page was asked about. Naming a
+`statusQueryablePages` page returns just that page's history — the only way
+to reach one, since those pages never ride along in the "every page" answer:
 
 ```
 <you>     VibeBot, has Claude been flaky lately?

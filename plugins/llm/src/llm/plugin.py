@@ -1111,8 +1111,16 @@ class LLM(callbacks.Plugin):
                 # A genuine bare url (no '=' at all) falls back to its host.
                 # An explicit but empty name ("=url") is a typo, not a bare
                 # url, and must not silently claim that page's name.
-                name = self._status_host(source)
-            if not _STATUS_PAGE_NAME_RE.match(name):
+                #
+                # The derived name is sanitised to always satisfy
+                # _STATUS_PAGE_NAME_RE rather than checked against it: a host
+                # is operator-chosen but not operator-typed, so a host that is
+                # merely long (>32 chars, e.g. some AWS regional status
+                # hosts) or carries a port must still be polled. The regex
+                # stays a hard gate only for explicit Name= entries below,
+                # where a rejection is a visible typo the operator can fix.
+                name = self._status_bare_name(source)
+            elif not _STATUS_PAGE_NAME_RE.match(name):
                 if warn:
                     self.log.warning("Ignoring %s entry with an unusable name: %s", key, text[:100])
                 continue
@@ -1185,6 +1193,29 @@ class LLM(callbacks.Plugin):
         except ValueError:
             return source
 
+    def _status_bare_name(self, source: str) -> str:
+        """Selector name for a bare-URL entry: always matches _STATUS_PAGE_NAME_RE.
+
+        The host is sanitised to the allowed charset and truncated to fit,
+        with the port appended (when present) so two ports on the same host
+        still get distinct names — e.g. ``x.example`` and ``x.example-8443``
+        for ``https://x.example`` and ``https://x.example:8443``. A genuine
+        collision (two bare URLs that land on the same derived name) is left
+        for the existing duplicate-name check to drop and log; this only
+        guarantees the name is well-formed, not unique.
+        """
+        host = self._status_host(source)
+        port = ""
+        try:
+            p = urlparse(source).port
+        except ValueError:
+            p = None
+        if p is not None:
+            port = f"-{p}"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "-", host) or "page"
+        budget = max(1, 32 - len(port))
+        return safe[:budget] + port
+
     def _status_prune_sources(self, sources: list[str], queryable: list[str] | None = None) -> None:
         """Drop state for sources no longer configured.
 
@@ -1210,8 +1241,17 @@ class LLM(callbacks.Plugin):
             (self._status_query_cache, both),
             (self._status_query_failed_at, both),
         ):
-            for stale in [k for k in holder if k not in keep]:
-                del holder[stale]
+            # list(holder) snapshots the keys before iterating: a request
+            # thread's _status_query_snapshot can insert into
+            # _status_query_cache concurrently, and iterating the live dict
+            # would raise "dictionary changed size during iteration" — which
+            # _run_status_poll's outer handler swallows, losing the whole
+            # poll pass including its announcements. pop(..., None) rather
+            # than del: another thread's own prune-adjacent write (the query
+            # evictor, or a second poll racing this one) may have already
+            # removed the key.
+            for stale in [k for k in list(holder) if k not in keep]:
+                holder.pop(stale, None)
 
     def _schedule_status_poll(self) -> None:
         """Arm the next status poll as a one-shot.
@@ -1373,13 +1413,20 @@ class LLM(callbacks.Plugin):
         return snapshot
 
     def _status_evict_query_cache(self) -> None:
-        """Keep the newest _STATUS_QUERY_CACHE_MAX readings."""
+        """Keep the newest _STATUS_QUERY_CACHE_MAX readings.
+
+        Concurrent request threads can each land here after both computing
+        the cache at (cap + 1) entries and independently pick the same
+        oldest key; a plain ``del`` would raise KeyError for the loser and
+        surface as "Could not read the service status page" to the model.
+        ``pop(..., None)`` makes the second eviction of the same key a no-op.
+        """
         excess = len(self._status_query_cache) - self._STATUS_QUERY_CACHE_MAX
         if excess <= 0:
             return
         oldest = sorted(self._status_query_cache.items(), key=lambda kv: kv[1].fetched_at)
         for source, _snap in oldest[:excess]:
-            del self._status_query_cache[source]
+            self._status_query_cache.pop(source, None)
 
     def _status_history_payload(self, source: str, *, deadline: float | None = None) -> list[dict]:
         """Lazily fetch and cache one source's resolved-incident history.
@@ -1555,15 +1602,22 @@ class LLM(callbacks.Plugin):
                     f"No status page named {statuspage.sanitise_text(service, limit=40)!r} "
                     "is configured."
                 )
-                if payload.get("services"):
+                existing = payload.get("error")
+                if payload.get("services") and existing is None:
+                    # The aggregate read succeeded (at least in part) and has
+                    # nothing to say for itself yet: describe what the
+                    # `services` list actually holds.
                     payload["error"] = f"{unresolved} The services listed are the ones that are."
+                elif existing:
+                    # The aggregate already has its own diagnostic — e.g. every
+                    # polled page was unreadable — which the "services listed
+                    # are the ones that are" wording would falsely contradict.
+                    # Append rather than overwrite so both are said.
+                    payload["error"] = f"{unresolved} {existing}"
                 else:
                     # No polled sources either: there is no list to point at,
-                    # so keep whatever the aggregate call already said
-                    # (e.g. "No status pages are configured.") rather than
-                    # implying one exists.
-                    existing = payload.get("error")
-                    payload["error"] = f"{unresolved} {existing}" if existing else unresolved
+                    # so there is nothing to append to.
+                    payload["error"] = unresolved
                 return payload
             return self._status_single_payload(
                 source,

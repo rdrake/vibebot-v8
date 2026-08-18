@@ -652,6 +652,94 @@ class TestPageGrammar:
         plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
         assert plugin._status_sources() == ["https://status.claude.com"]
 
+    def test_long_bare_host_is_still_polled(self, status_plugin):
+        """A bare URL's derived name used to be checked against
+        _STATUS_PAGE_NAME_RE unmodified: a >32-char host (some AWS regional
+        status hosts are exactly this shape) hit `continue` before the page
+        was ever added, so it silently stopped being polled. [Finding 1]"""
+        plugin = status_plugin
+        long_host_url = "https://status.us-gov-west-1.amazonaws.com"
+        assert len(plugin._status_host(long_host_url)) > 32, "fixture must exercise the >32 case"
+        plugin._registry["statusPageUrls"] = [long_host_url]
+        plugin._registry["statusQueryablePages"] = []
+        named = plugin._status_named_pages()
+        assert list(named.values()) == [long_host_url], (
+            "the long-host bare URL must still be polled"
+        )
+
+    def test_bare_urls_differing_only_by_port_both_survive(self, status_plugin):
+        """Two distinct canonical sources (different ports) used to derive
+        the same name from urlparse(...).hostname alone, so the second was
+        dropped as a duplicate name even though both were configured.
+        [Finding 1]"""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["https://x.example", "https://x.example:8443"]
+        plugin._registry["statusQueryablePages"] = []
+        named = plugin._status_named_pages()
+        assert len(named) == 2, "both ports must survive as distinct pages"
+        assert len(set(named)) == 2, "the derived names must be distinct"
+        assert set(named.values()) == {"https://x.example", "https://x.example:8443"}
+
+    def test_explicit_invalid_name_is_still_dropped(self, status_plugin):
+        """The strict regex is kept for explicit Name= entries, where a
+        rejection is a visible typo the operator can see and fix — unlike
+        a bare URL's derived name, which must always be usable. [Finding 1]"""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = [
+            "bad!name=https://x.example",
+            "Good=https://status.claude.com",
+        ]
+        plugin._registry["statusQueryablePages"] = []
+        assert plugin._status_named_pages() == {"Good": "https://status.claude.com"}
+
+
+class TestEnumIsConfigOnly:
+    """The central design invariant: selector names come from operator config
+    alone, never from a fetched payload. The design's first version was
+    rejected specifically for deriving the enum from a snapshot's page_name
+    — a compromised or renamed page could otherwise capture another page's
+    selector. Nothing pinned this before; a regression seeding names from
+    the read/query caches turned no test red. [Finding 2]"""
+
+    def test_named_pages_ignores_fetched_page_name_even_after_a_poll(self, status_plugin):
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+
+        before = plugin._status_named_pages()
+        assert before == {"Claude": CLAUDE, "CF": CF}
+
+        # The polled page's own page_name — untrusted, third-party — happens
+        # to equal the OTHER configured page's operator-chosen name. This is
+        # the exact shape an attacker or a careless page rename could
+        # produce. Setting _fake_snapshot (not just pre-seeding the cache
+        # directly) matters: _run_status_poll's own fetch would otherwise
+        # overwrite a pre-seeded entry with an unpoisoned one before the
+        # assertion below ever sees it.
+        spoofed = statuspage.Snapshot(
+            page_name="CF",
+            page_url=CLAUDE,
+            indicator="none",
+            description="All Systems Operational",
+            components={},
+            incidents={},
+            fetched_at=plugin._now,
+        )
+        plugin._fake_snapshot = spoofed
+        plugin._status_query_cache = {CF: spoofed}
+
+        plugin._run_status_poll()
+
+        assert plugin._status_read_cache[CLAUDE].page_name == "CF", (
+            "fixture must actually poison the read cache"
+        )
+
+        after = plugin._status_named_pages()
+        assert after == {"Claude": CLAUDE, "CF": CF}, (
+            "a fetched page_name must never capture another page's configured selector"
+        )
+        assert list(after) == list(before), "poll-driven cache fills must not reorder the enum"
+
 
 class TestPruneKeepsQueryableHistory:
     """The subtlest interaction in this feature. Pruning history against the
