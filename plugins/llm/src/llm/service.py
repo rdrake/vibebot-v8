@@ -127,7 +127,12 @@ def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
 def _with_status_context(
     tools: list[dict], sources: list[str], pages: dict[str, str]
 ) -> list[dict]:
-    """Name the configured pages in the description and constrain `service`.
+    """Name the POLLED pages in the description and constrain `service`.
+
+    Only ``sources`` (the polled list) reaches the description's host
+    sentence — a queryable-only config still gets the `service` enum from
+    ``pages``, but no "Monitored services: ..." sentence, because there is
+    nothing polled to name that way.
 
     Copies FOUR levels — tool, function, parameters, properties. ToolSpec's
     `as_tool()` returns a fresh outer dict but shares the module-level schema

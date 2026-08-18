@@ -602,6 +602,11 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # _status_sources() (bound below onto the plugin Mock) returns a real
         # list instead of an unconfigured Mock's auto-attribute.
         "statusPageUrls": ["https://status.claude.com"],
+        # Queryable-only allowlist (Task 4). Empty by default, matching
+        # config.py's default and keeping the "polled OR queryable" gate
+        # exercised by TestQueryableOnlyGate opt-in per test rather than
+        # incidental via this fixture's own unconfigured-key fallback.
+        "statusQueryablePages": [],
     }
     if overrides:
         defaults.update(overrides)

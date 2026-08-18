@@ -190,15 +190,26 @@ def incident(incident_id="inc1") -> statuspage.IncidentView:
 
 
 class TestToolWiringGate:
-    """service.py ~4996: status_fn must be wired only when statusPageUrls is
-    configured — with it empty, config.py says status awareness is fully
+    """service.py ~5259: status_fn must be wired when EITHER statusPageUrls
+    or statusQueryablePages is configured (the gate is polled OR queryable,
+    per TestQueryableOnlyGate) — with both empty, status awareness is fully
     disabled, so the tool must not occupy a chat-surface slot at all."""
 
-    def _run(self, mocker, make_service, *, status_page_urls: list[str]):
+    def _run(
+        self,
+        mocker,
+        make_service,
+        *,
+        status_page_urls: list[str],
+        status_queryable_pages: list[str] | None = None,
+    ):
         from llm.assistant import AssistantToolExecutor
         from llm.profile import PROFILE_CHAT
 
-        service, plugin = make_service(statusPageUrls=status_page_urls)
+        overrides: dict[str, list[str]] = {"statusPageUrls": status_page_urls}
+        if status_queryable_pages is not None:
+            overrides["statusQueryablePages"] = status_queryable_pages
+        service, plugin = make_service(**overrides)
         # Bind the real readers rather than stubbing them out: service.py's
         # gate must be exercised against the same registryValue fake the rest
         # of the request runs on, or a renamed/deleted registry key collapses
@@ -247,7 +258,12 @@ class TestToolWiringGate:
         assert status_fn.keywords == {"pages": {"status.claude.com": "https://status.claude.com"}}
 
     def test_absent_when_status_page_url_is_empty(self, mocker, make_service):
-        executor_spy, _plugin = self._run(mocker, make_service, status_page_urls=[])
+        """Neither key configured. statusQueryablePages is passed explicitly
+        (rather than relying on make_registry_side_effect's unconfigured-key
+        "" fallback) so the "neither" intent is legible here, not incidental."""
+        executor_spy, _plugin = self._run(
+            mocker, make_service, status_page_urls=[], status_queryable_pages=[]
+        )
         kwargs = executor_spy.call_args.kwargs
         assert kwargs["status_fn"] is None
 
@@ -257,10 +273,20 @@ class TestToolSchemaGateOnConfig:
     slot when the feature is unconfigured — an offered tool that can only
     answer 'not configured' still costs prompt tokens on every completion."""
 
-    def _tool_names(self, mocker, make_service, *, status_page_urls: list[str]) -> set[str]:
+    def _tool_names(
+        self,
+        mocker,
+        make_service,
+        *,
+        status_page_urls: list[str],
+        status_queryable_pages: list[str] | None = None,
+    ) -> set[str]:
         from llm.profile import PROFILE_CHAT
 
-        service, plugin = make_service(statusPageUrls=status_page_urls)
+        overrides: dict[str, list[str]] = {"statusPageUrls": status_page_urls}
+        if status_queryable_pages is not None:
+            overrides["statusQueryablePages"] = status_queryable_pages
+        service, plugin = make_service(**overrides)
         # Bind the real readers rather than stubbing them out: service.py's
         # gate must be exercised against the same registryValue fake the rest
         # of the request runs on, or a renamed/deleted registry key collapses
@@ -291,7 +317,12 @@ class TestToolSchemaGateOnConfig:
         return {(t.get("function", t) or {}).get("name") for t in tools}
 
     def test_absent_from_tool_list_when_status_page_url_is_empty(self, mocker, make_service):
-        names = self._tool_names(mocker, make_service, status_page_urls=[])
+        """Neither key configured, statusQueryablePages passed explicitly so
+        the "neither" intent is legible rather than incidental (see
+        TestToolWiringGate.test_absent_when_status_page_url_is_empty)."""
+        names = self._tool_names(
+            mocker, make_service, status_page_urls=[], status_queryable_pages=[]
+        )
         assert "check_service_status" not in names
 
     def test_present_in_tool_list_when_status_page_url_is_set(self, mocker, make_service):
@@ -355,6 +386,18 @@ class TestServiceEnum:
         fn = next(t["function"] for t in patched if t["function"]["name"] == "check_service_status")
         assert "service" not in fn["parameters"]["properties"]
 
+        # The pop-branch (no pages) must not mutate the shared base schema
+        # in place: a two-level copy would let props.pop("service", ...)
+        # strip it from the module-level object permanently, invisible
+        # unless something re-reads the base schema after this call in the
+        # same process — so do that re-read here.
+        base_fn = next(
+            t["function"]
+            for t in get_tools_for_profile("chat")
+            if t["function"]["name"] == "check_service_status"
+        )
+        assert "service" in base_fn["parameters"]["properties"]
+
 
 class TestQueryableOnlyGate:
     """The premise of the feature: polled and queryable are independent. The
@@ -407,6 +450,14 @@ class TestQueryableOnlyGate:
         tools = completion.call_args.kwargs.get("tools") or []
         names = {(t.get("function", t) or {}).get("name") for t in tools}
         assert "check_service_status" in names
+        # Name-only is not enough: a regression that dropped the third
+        # argument to _with_status_context (e.g. passing {} instead of the
+        # resolved pages) would still wire status_fn and still ship the tool
+        # by name, but with `service` stripped — the model could never
+        # select the queryable page, and the feature would be dead with a
+        # green suite otherwise. Pin the shipped enum itself.
+        fn = next(t["function"] for t in tools if t["function"]["name"] == "check_service_status")
+        assert fn["parameters"]["properties"]["service"]["enum"] == ["CF"]
 
 
 class TestToolPayloadOwnership:
