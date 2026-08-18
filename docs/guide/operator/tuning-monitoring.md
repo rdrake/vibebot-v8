@@ -131,23 +131,28 @@ Lower it on small hosts or when a provider rate-limits aggressively. The global 
 
 ## Status pages
 
-The bot polls 0..5 status pages and can answer questions about any of them in
-conversation, and optionally announce incidents on its own as they open and
-resolve. Both Atlassian Statuspage and incident.io pages work — incident.io
-is read through its Atlassian-compatible endpoints, no separate configuration
-needed. See [Service status](../user/service-status.md) for the user-facing
-behaviour.
+The bot polls up to 5 status pages and can announce incidents from them on
+its own as they open and resolve. It can also be **asked** about up to 20
+further pages it never polls or announces — the long tail like Cloudflare or
+AWS, where polling forever just to answer an occasional question is the
+wrong trade. Both Atlassian Statuspage and incident.io pages work —
+incident.io is read through its Atlassian-compatible endpoints, no separate
+configuration needed. See [Service status](../user/service-status.md) for
+the user-facing behaviour.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
-| `statusPageUrls` | `https://status.claude.com https://www.githubstatus.com https://status.openai.com` | global | Space-separated base URLs of status pages, each a bare `scheme://host` (no trailing path). Entries that aren't a bare `scheme://host` are dropped with a warning; duplicate entries and same-host variants (trailing slash, case, default port) collapse to one; at most 5 are polled. The bot polls each `{url}/api/v2/summary.json` to answer status questions and to announce new incidents. Empty disables status awareness entirely. |
-| `statusAnnounce` | `False` | channel | Announce incidents from every configured status page in this channel as they open and again as they resolve — all-or-nothing per channel, not selectable per source. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
+| `statusPageUrls` | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | global | Space-separated status pages to poll and announce, each `Name=url` or a bare `scheme://host` that takes its host as its name. Entries that don't parse are dropped with a warning; duplicate names and same-page duplicates (trailing slash, case, default port) collapse to one; at most 5 are polled. The bot polls each `{url}/api/v2/summary.json` to answer status questions and to announce new incidents. Empty stops polling and announcing, but `check_service_status` stays available if `statusQueryablePages` holds anything. |
+| `statusQueryablePages` | empty | global | Same `Name=url` grammar as `statusPageUrls`, for pages the bot only answers about when asked — never polled, never announced, no incident lifecycle. Fetched on-demand and cached for 5 minutes, with a failure backoff on an unreachable page. At most 20. Names must be unique, case-insensitively, across both keys; a name already used by `statusPageUrls` is dropped with a warning. |
+| `statusAnnounce` | `False` | channel | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve — all-or-nothing per channel, not selectable per source. `statusQueryablePages` pages never announce. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
 
 Sources are polled in rotation inside a single 45-second-per-pass budget on a
 2-minute schedule, with a cursor so one slow or failing source can't starve
 the others — with several sources configured, a given one might wait more than
 one 2-minute cycle for its turn. A reading older than 10 minutes is reported
-to the model as stale.
+to the model as stale. `statusQueryablePages` pages take no part in that
+rotation and carry no staleness state of their own — each is fetched fresh,
+subject only to its own 5-minute cache, at the moment a question needs it.
 
 !!! warning "Turn off the RSS feed first"
 

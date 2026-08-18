@@ -193,8 +193,11 @@ See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security mode
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `statusPageUrls` | global | `https://status.claude.com https://www.githubstatus.com https://status.openai.com` | Space-separated base URLs of status pages — both Atlassian Statuspage and incident.io pages work — each a bare `scheme://host` with no trailing path. Duplicates collapse and at most 5 are polled. Empty disables status awareness and drops the `check_service_status` tool from the model's surface |
-| `statusAnnounce` | channel | `False` | Announce incidents from every configured status page in this channel as they open and again as they resolve |
+| `statusPageUrls` | global | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | Space-separated status pages to poll and announce — both Atlassian Statuspage and incident.io pages work — each written as `Name=url` or as a bare url, which takes its host as its name. Names are 1-32 chars of `[A-Za-z0-9._-]`, case-insensitively unique across this key and `statusQueryablePages`, and are what the model uses to ask about one service. Unusable entries are dropped with a warning and the rest survive; at most 5 are polled |
+| `statusQueryablePages` | global | empty | Same `Name=url` grammar as `statusPageUrls`, for pages the bot can be **asked** about but never polls or announces — the long tail like Cloudflare or AWS, where polling forever to answer an occasional question is the wrong trade. Fetched lazily on request and cached for 5 minutes, with a failure backoff. At most 20 |
+| `statusAnnounce` | channel | `False` | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve. `statusQueryablePages` pages never announce, however this is set |
+
+`check_service_status` is on the model's tool surface whenever either key holds at least one page. An empty `statusPageUrls` no longer removes the tool by itself — only polling and announcing stop; a non-empty `statusQueryablePages` keeps the tool available for on-request lookups.
 
 See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.
 

@@ -2,13 +2,17 @@
 
 The bot watches one or more live status pages — Claude's, GitHub's, and
 OpenAI's by default — and can answer questions about any of them in
-conversation. Both Atlassian Statuspage pages and incident.io pages work;
-incident.io is read through its Atlassian-compatible endpoints, so it needs
-no separate setup. Which pages it watches (`statusPageUrls`, up to 5, each a
-bare `scheme://host` with duplicates collapsed), and whether a channel gets
+conversation, announcing incidents on its own where a channel has opted in.
+It can also be asked about a further set of pages an operator has configured
+but not chosen to watch — the long tail like Cloudflare or AWS — without ever
+announcing anything from them. Both Atlassian Statuspage pages and
+incident.io pages work; incident.io is read through its Atlassian-compatible
+endpoints, so it needs no separate setup. Which pages it watches
+(`statusPageUrls`, up to 5) and which it can only be asked about
+(`statusQueryablePages`, up to 20), as well as whether a channel gets
 announcements (`statusAnnounce`), are operator settings: see
-[Status pages](../operator/tuning-monitoring.md#status-pages). With no status
-page configured the bot has no status awareness at all and falls back to
+[Status pages](../operator/tuning-monitoring.md#status-pages). With neither
+key configured the bot has no status awareness at all and falls back to
 whatever the chat model already believes, which is usually months out of
 date.
 
@@ -23,9 +27,14 @@ Ask in plain language. There's no command.
 ```
 
 Ask about any configured page by name — "is GitHub down?" is meant to get
-GitHub's reading, not Claude's. There's no argument that pins the page down;
-the model reads the question and picks the right entry from the full list, so
-an oddly phrased question can occasionally answer from the wrong one.
+GitHub's reading, not Claude's. Naming one page in the question returns just
+that page; leaving it unnamed returns every watched page at once, which is
+what lets "are Claude and Codex up?" get answered in a single reply. It's
+still the model deciding which case applies and which name to use, not
+anything that pins the page down for it, so an oddly phrased question can
+occasionally answer from the wrong entry. Pages from `statusQueryablePages`
+work the same way, by name — that's the only way to reach them, since they
+never show up in an unnamed, "everything at once" answer.
 
 The bot reads the live pages rather than answering from memory. With more
 than one configured, it polls them in rotation within a single pass, so a
@@ -48,8 +57,11 @@ Roleplay replies can't reach the status pages. Ask outside the story.
 ## Past incidents
 
 Questions about the past pull a second reading — the recent incident list,
-not just what's broken now — for every configured page, not only the one
-asked about:
+not just what's broken now. Left unnamed, it comes back for every watched
+page at once, the same as a current-status question would. Naming one page
+returns just that page's history — the only way to reach a
+`statusQueryablePages` page's history, since those pages never ride along in
+the "every page" answer:
 
 ```
 <you>     VibeBot, has Claude been flaky lately?
@@ -73,9 +85,11 @@ status still answers.
 ## Announcements
 
 `statusAnnounce` is a per-channel, all-or-nothing switch: where an operator
-has enabled it, the channel hears incidents from every configured page as
-they open, and again as they clear. There's no picking and choosing individual
-pages per channel. Asking, by contrast, always works regardless of this
+has enabled it, the channel hears incidents from every `statusPageUrls` page
+as they open, and again as they clear. There's no picking and choosing
+individual pages per channel, and pages from `statusQueryablePages` are never
+part of it — they have no incidents to open or clear, however often someone
+asks about one. Asking, by contrast, always works regardless of this
 setting — a channel that never announces can still ask "is GitHub down?".
 
 ```

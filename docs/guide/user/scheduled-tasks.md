@@ -83,7 +83,7 @@ A fire runs on the reminder-action profile — the one a `@remind` action fire u
 - **Fetch** URLs.
 - **Draw and code** with the image and code tools.
 - **Bookkeeping:** read and edit your memories, read your usage, and list or cancel your other pending tasks.
-- **Status:** check the configured status pages, where `statusPageUrls` is set.
+- **Status:** check the configured status pages — both the ones it watches (`statusPageUrls`) and any it only answers about when asked (`statusQueryablePages`) — wherever either is set.
 
 The Limnoria bridge is not available at fire time — it rides `@ask`, mentions and PMs only. Neither is scheduling: a task can set a follow-up reminder, but it cannot schedule another task.
 
