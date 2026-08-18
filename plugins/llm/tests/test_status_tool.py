@@ -916,3 +916,38 @@ class TestServiceSelection:
         plugin._registry["statusQueryablePages"] = ["CF=https://other.example.com"]
         payload = plugin._status_tool_payload(service="CF", pages=frozen)
         assert payload["services"][0]["source"] == "www.cloudflarestatus.com"
+
+    def test_named_queryable_page_fetch_failure_sets_top_level_error(self, status_plugin):
+        """service.py records any dict without "error" as a SUCCESSFUL tool
+        call, so the one branch that stops the model narrating a dead
+        queryable page as answered needs its own guard, not just the
+        unresolvable-name branch's."""
+        plugin = self._plugin(status_plugin)
+        plugin._fake_error = statuspage.FetchError("boom")
+        payload = plugin._status_tool_payload(service="CF")
+        assert "error" in payload
+        assert "error" in payload["services"][0]
+
+    def test_named_polled_page_stale_cache_sets_top_level_error(self, status_plugin):
+        plugin = self._plugin(status_plugin)
+        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(0.0)}
+        plugin._now = plugin._STATUS_STALE_AFTER + 1  # past the staleness floor
+        plugin._status_last_fetch = {}  # clear the 30s fetch floor
+        plugin._fake_error = statuspage.FetchError("boom")  # refresh attempt fails
+
+        payload = plugin._status_tool_payload(service="Claude")
+
+        assert payload["services"][0]["stale"] is True
+        assert "error" in payload
+
+    def test_unresolvable_service_with_no_polled_sources_does_not_claim_a_list(self, status_plugin):
+        """statusPageUrls empty + only statusQueryablePages configured is
+        reachable from Task 4 on (it gates the tool on polled OR queryable).
+        The aggregate recursion then returns no "services" key at all, so the
+        "the services listed are the ones that are" phrasing must not be
+        glued on beside a list that doesn't exist."""
+        plugin = self._plugin(status_plugin)
+        plugin._registry["statusPageUrls"] = []
+        payload = plugin._status_tool_payload(service="Nope")
+        assert "services" not in payload
+        assert "services listed" not in payload["error"]

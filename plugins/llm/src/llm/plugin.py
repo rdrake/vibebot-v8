@@ -1473,7 +1473,14 @@ class LLM(callbacks.Plugin):
             snapshot = self._status_query_snapshot(source, deadline=deadline)
             now = self._status_now()
         if snapshot is None:
-            entry["error"] = "This status page has not been read yet."
+            # The poller-facing wording ("has not been read yet") implies a
+            # scheduled read is pending; a queryable page is never polled, so
+            # there is nothing to wait for — only a failed on-demand fetch.
+            entry["error"] = (
+                "This status page has not been read yet."
+                if polled
+                else "This status page could not be reached."
+            )
             return entry
         entry["service"] = (
             statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
@@ -1515,9 +1522,13 @@ class LLM(callbacks.Plugin):
 
         ``service`` omitted: one entry per configured POLLED source (today's
         behaviour, pinned by production — "are Claude and Codex up?" answers
-        in one call). ``service`` named: one entry for that page alone,
-        polled or queryable, resolved from ``pages`` when the caller supplies
-        the frozen name->source mapping the tool schema was built from —
+        in one call). ``pages`` is not consulted on this path — the polled
+        list always comes from ``_status_sources()`` — so it constrains
+        nothing here; pass it only alongside ``service``.
+
+        ``service`` named: one entry for that page alone, polled or
+        queryable, resolved from ``pages`` when the caller supplies the
+        frozen name->source mapping the tool schema was built from —
         resolving live here instead would let config churn between the
         model's call and its dispatch route the call somewhere the enum
         never advertised. An unresolvable name still returns the polled set,
@@ -1535,11 +1546,24 @@ class LLM(callbacks.Plugin):
                 (s for n, s in named.items() if n.lower() == service.strip().lower()), None
             )
             if source is None:
-                payload = self._status_tool_payload(include_history=include_history, pages=named)
-                payload["error"] = (
+                # `pages` is not forwarded here: the service is None branch
+                # below always resolves the polled list from
+                # _status_sources(), so a frozen mapping has nothing to
+                # constrain on this path.
+                payload = self._status_tool_payload(include_history=include_history)
+                unresolved = (
                     f"No status page named {statuspage.sanitise_text(service, limit=40)!r} "
-                    "is configured; the services listed are the ones that are."
+                    "is configured."
                 )
+                if payload.get("services"):
+                    payload["error"] = f"{unresolved} The services listed are the ones that are."
+                else:
+                    # No polled sources either: there is no list to point at,
+                    # so keep whatever the aggregate call already said
+                    # (e.g. "No status pages are configured.") rather than
+                    # implying one exists.
+                    existing = payload.get("error")
+                    payload["error"] = f"{unresolved} {existing}" if existing else unresolved
                 return payload
             return self._status_single_payload(
                 source,
