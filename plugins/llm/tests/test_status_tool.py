@@ -33,10 +33,16 @@ class TestToolSchema:
     def test_tool_is_registered(self):
         assert "check_service_status" in assistant.ASSISTANT_TOOL_REGISTRY
 
-    def test_tool_parameters_are_exactly_include_history(self):
+    def test_tool_parameters_are_include_history_and_service(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert set(spec.schema["parameters"]["properties"]) == {"include_history"}
+        assert set(spec.schema["parameters"]["properties"]) == {"include_history", "service"}
         assert spec.schema["parameters"].get("required", []) == []
+
+    def test_service_has_no_enum_at_the_module_level(self):
+        """The base schema carries no third-party or config data — the enum
+        is added per-build by _with_status_context from operator config."""
+        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
+        assert "enum" not in spec.schema["parameters"]["properties"]["service"]
 
     def test_include_history_description_mentions_past_or_resolved(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
@@ -95,11 +101,32 @@ class TestHandler:
         result = json.loads(ex._tool_check_service_status({}))
         assert "error" in result
 
-    def test_ignores_hallucinated_arguments(self):
-        """Only include_history is defined, but a model may still send extras."""
-        payload = {"indicator": "none"}
-        ex = self._executor(lambda **_: payload)
-        assert json.loads(ex._tool_check_service_status({"service": "anthropic"})) == payload
+    def test_forwards_the_service_argument(self):
+        """service is now a real, schema-defined argument: it must reach the
+        callback, not be dropped like an actually-unrecognised extra."""
+        captured = {}
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return {"indicator": "none"}
+
+        ex = self._executor(spy)
+        ex._tool_check_service_status({"service": "anthropic"})
+        assert captured["service"] == "anthropic"
+
+    def test_blank_or_absent_service_normalizes_to_none(self):
+        captured = {}
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return {"indicator": "none"}
+
+        ex = self._executor(spy)
+        ex._tool_check_service_status({"service": "   "})
+        assert captured["service"] is None
+
+        ex._tool_check_service_status({})
+        assert captured["service"] is None
 
     def test_defaults_include_history_to_false(self):
         captured = {}
@@ -172,13 +199,15 @@ class TestToolWiringGate:
         from llm.profile import PROFILE_CHAT
 
         service, plugin = make_service(statusPageUrls=status_page_urls)
-        # Bind the real reader rather than stubbing it out: service.py's gate
-        # must be exercised against the same registryValue fake the rest of
-        # the request runs on, or a renamed/deleted registry key collapses to
-        # "" here (make_registry_side_effect's fallback) while a live bot
+        # Bind the real readers rather than stubbing them out: service.py's
+        # gate must be exercised against the same registryValue fake the rest
+        # of the request runs on, or a renamed/deleted registry key collapses
+        # to "" here (make_registry_side_effect's fallback) while a live bot
         # raises NonExistentRegistryEntry — invisible until it hits prod.
         plugin._status_sources = LLM._status_sources.__get__(plugin)
+        plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         mocker.patch(
             "llm.service.litellm.completion",
@@ -205,11 +234,17 @@ class TestToolWiringGate:
         return executor_spy, plugin
 
     def test_wired_when_status_page_url_is_configured(self, mocker, make_service):
+        """status_fn is now functools.partial(_status_tool_payload, pages=...)
+        (the frozen-mapping binding from decision 5), so identity with the
+        bare callback no longer holds — assert the partial wraps the real
+        callback and freezes the resolved mapping instead."""
         executor_spy, plugin = self._run(
             mocker, make_service, status_page_urls=["https://status.claude.com"]
         )
-        kwargs = executor_spy.call_args.kwargs
-        assert kwargs["status_fn"] is plugin._status_tool_payload
+        status_fn = executor_spy.call_args.kwargs["status_fn"]
+        assert status_fn is not None
+        assert status_fn.func is plugin._status_tool_payload
+        assert status_fn.keywords == {"pages": {"status.claude.com": "https://status.claude.com"}}
 
     def test_absent_when_status_page_url_is_empty(self, mocker, make_service):
         executor_spy, _plugin = self._run(mocker, make_service, status_page_urls=[])
@@ -226,13 +261,15 @@ class TestToolSchemaGateOnConfig:
         from llm.profile import PROFILE_CHAT
 
         service, plugin = make_service(statusPageUrls=status_page_urls)
-        # Bind the real reader rather than stubbing it out: service.py's gate
-        # must be exercised against the same registryValue fake the rest of
-        # the request runs on, or a renamed/deleted registry key collapses to
-        # "" here (make_registry_side_effect's fallback) while a live bot
+        # Bind the real readers rather than stubbing them out: service.py's
+        # gate must be exercised against the same registryValue fake the rest
+        # of the request runs on, or a renamed/deleted registry key collapses
+        # to "" here (make_registry_side_effect's fallback) while a live bot
         # raises NonExistentRegistryEntry — invisible until it hits prod.
         plugin._status_sources = LLM._status_sources.__get__(plugin)
+        plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         completion = mocker.patch(
             "llm.service.litellm.completion",
@@ -261,6 +298,114 @@ class TestToolSchemaGateOnConfig:
         names = self._tool_names(
             mocker, make_service, status_page_urls=["https://status.claude.com"]
         )
+        assert "check_service_status" in names
+
+
+class TestServiceEnum:
+    def test_enum_lists_configured_names(self):
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_context
+
+        patched = _with_status_context(
+            get_tools_for_profile("chat"),
+            ["https://status.claude.com"],
+            {"Claude": "https://status.claude.com", "CF": "https://www.cloudflarestatus.com"},
+        )
+        fn = next(t["function"] for t in patched if t["function"]["name"] == "check_service_status")
+        assert fn["parameters"]["properties"]["service"]["enum"] == ["Claude", "CF"]
+
+    def test_module_schema_is_not_mutated_at_any_depth(self):
+        """The shipped two-level copy shares `parameters` and `properties`, so
+        writing a property into them would corrupt the process-wide schema.
+
+        The base schema (assistant.py) carries a bare `service` property with
+        no `enum` — that's the static part every build starts from — so the
+        risk this guards is narrower than "service" being absent entirely:
+        it's the `enum` a build injects leaking into that shared object and
+        surviving into the next `get_tools_for_profile` call that never asked
+        for it.
+        """
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_context
+
+        def props():
+            fn = next(
+                t["function"]
+                for t in get_tools_for_profile("chat")
+                if t["function"]["name"] == "check_service_status"
+            )
+            return dict(fn["parameters"]["properties"])
+
+        before = props()
+        assert "enum" not in before["service"]
+        for _ in range(3):
+            _with_status_context(
+                get_tools_for_profile("chat"),
+                ["https://status.claude.com"],
+                {"Claude": "https://status.claude.com"},
+            )
+        assert props() == before
+        assert "enum" not in props()["service"]
+
+    def test_no_pages_omits_the_property_entirely(self):
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_context
+
+        patched = _with_status_context(get_tools_for_profile("chat"), [], {})
+        fn = next(t["function"] for t in patched if t["function"]["name"] == "check_service_status")
+        assert "service" not in fn["parameters"]["properties"]
+
+
+class TestQueryableOnlyGate:
+    """The premise of the feature: polled and queryable are independent. The
+    shipped gate keys on the polled list alone, so an operator with an empty
+    statusPageUrls and a configured statusQueryablePages would get no tool at
+    all — defeating the exact separation this feature exists to provide."""
+
+    def test_tool_is_wired_with_no_polled_pages(self, mocker, make_service):
+        from llm.assistant import AssistantToolExecutor
+        from llm.profile import PROFILE_CHAT
+
+        service, plugin = make_service(
+            statusPageUrls=[], statusQueryablePages=["CF=https://www.cloudflarestatus.com"]
+        )
+        for attr in ("_STATUS_MAX_SOURCES", "_STATUS_MAX_QUERYABLE"):
+            setattr(plugin, attr, getattr(LLM, attr))
+        # Bind the REAL resolvers, not stubs: a prior review on this feature
+        # found that stubbing this exact seam made the gate structurally
+        # unable to detect a deleted registry key, which is how a broken
+        # commit reached production.
+        for meth in (
+            "_status_parse_pages",
+            "_status_polled_pages",
+            "_status_named_pages",
+            "_status_sources",
+            "_status_host",
+        ):
+            setattr(plugin, meth, getattr(LLM, meth).__get__(plugin))
+        plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
+        executor_spy = mocker.patch(
+            "llm.assistant.AssistantToolExecutor", wraps=AssistantToolExecutor
+        )
+        completion = mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("hi"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="hi",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
+        )
+
+        assert executor_spy.call_args.kwargs["status_fn"] is not None
+        tools = completion.call_args.kwargs.get("tools") or []
+        names = {(t.get("function", t) or {}).get("name") for t in tools}
         assert "check_service_status" in names
 
 
@@ -669,11 +814,11 @@ class TestToolBudget:
 class TestDescriptionInjection:
     def test_configured_hosts_reach_the_description(self):
         from llm.assistant import get_tools_for_profile
-        from llm.service import _with_status_hosts
+        from llm.service import _with_status_context
 
         tools = get_tools_for_profile("chat")
-        patched = _with_status_hosts(
-            tools, ["https://status.claude.com", "https://www.githubstatus.com"]
+        patched = _with_status_context(
+            tools, ["https://status.claude.com", "https://www.githubstatus.com"], {}
         )
         desc = next(
             t["function"]["description"]
@@ -688,7 +833,7 @@ class TestDescriptionInjection:
         SHARED module-level schema object, so an in-place edit would corrupt it
         process-wide and re-append on every completion."""
         from llm.assistant import get_tools_for_profile
-        from llm.service import _with_status_hosts
+        from llm.service import _with_status_context
 
         before = next(
             t["function"]["description"]
@@ -696,7 +841,7 @@ class TestDescriptionInjection:
             if t["function"]["name"] == "check_service_status"
         )
         for _ in range(3):
-            _with_status_hosts(get_tools_for_profile("chat"), ["https://status.claude.com"])
+            _with_status_context(get_tools_for_profile("chat"), ["https://status.claude.com"], {})
         after = next(
             t["function"]["description"]
             for t in get_tools_for_profile("chat")
@@ -706,10 +851,10 @@ class TestDescriptionInjection:
 
     def test_other_tools_pass_through_untouched(self):
         from llm.assistant import get_tools_for_profile
-        from llm.service import _with_status_hosts
+        from llm.service import _with_status_context
 
         tools = get_tools_for_profile("chat")
-        patched = _with_status_hosts(tools, ["https://status.claude.com"])
+        patched = _with_status_context(tools, ["https://status.claude.com"], {})
         assert len(patched) == len(tools)
         names = {t["function"]["name"] for t in patched}
         assert names == {t["function"]["name"] for t in tools}

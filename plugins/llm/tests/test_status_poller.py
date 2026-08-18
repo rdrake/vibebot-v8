@@ -616,6 +616,22 @@ class TestPageGrammar:
         plugin._registry["statusQueryablePages"] = ["Bar=https://status.claude.com/"]
         assert plugin._status_named_pages() == {"Foo": "https://status.claude.com"}
 
+    def test_queryable_name_case_collision_with_polled_is_dropped_not_duplicated(
+        self, status_plugin
+    ):
+        """A queryable entry may share a polled entry's NAME (case-insensitively)
+        while pointing at a different canonical source — this is not the
+        same-source collision `test_two_names_one_canonical_source_drops_the_later`
+        covers. Without the `name.lower() in lowered` guard, the source-only
+        check passes (the sources differ) and the queryable entry is added
+        under its own-case key, producing two case-variant enum entries
+        ("Claude" and "claude") that name two different services — exactly
+        the shadowing the enum's uniqueness depends on not allowing."""
+        plugin = status_plugin
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
+        plugin._registry["statusQueryablePages"] = ["claude=https://www.cloudflarestatus.com"]
+        assert plugin._status_named_pages() == {"Claude": "https://status.claude.com"}
+
     def test_polled_entries_come_first_and_win_a_collision(self, status_plugin):
         plugin = status_plugin
         plugin._registry["statusPageUrls"] = ["X=https://status.claude.com"]

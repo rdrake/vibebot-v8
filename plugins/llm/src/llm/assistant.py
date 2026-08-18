@@ -524,7 +524,18 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                             'so leave this out for "is it down right now" — current '
                             "status is always returned either way."
                         ),
-                    }
+                    },
+                    "service": {
+                        "type": "string",
+                        "description": (
+                            "Name of ONE configured service to report on, from the "
+                            "enum. Omit it to get every monitored service at once — "
+                            "that is the right choice for a general question like "
+                            "'is anything down?' or one naming several services. Use "
+                            "it only when the user asks about one specific service "
+                            "that is not among the monitored ones."
+                        ),
+                    },
                 },
                 "required": [],
             },
@@ -1113,7 +1124,9 @@ class AssistantToolExecutor:
             include_history = raw is True or (
                 isinstance(raw, str) and raw.strip().lower() in {"true", "1", "yes"}
             )
-            return json.dumps(self._status_fn(include_history=include_history))
+            service = _arguments.get("service")
+            service = service.strip() if isinstance(service, str) and service.strip() else None
+            return json.dumps(self._status_fn(include_history=include_history, service=service))
         except Exception as e:
             _log.info("check_service_status failed: %s", e)
             return json.dumps({"error": "Could not read the service status page."})

@@ -634,18 +634,24 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         plugin.log = mocker.Mock()
         plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect(overrides or None))
 
-        # Bind the real reader, not a stub returning a fixed list: a prior
-        # incident shipped a commit that read a deleted registry key, and a
-        # stubbed _status_sources would have hidden that structurally. Routing
-        # through the real method means a mistyped or removed registry key
-        # collapses to [] here too, the same as it would in production.
+        # Bind the real readers, not stubs returning a fixed list/dict: a
+        # prior incident shipped a commit that read a deleted registry key,
+        # and a stubbed _status_sources would have hidden that structurally.
+        # Routing through the real methods means a mistyped or removed
+        # registry key collapses to [] / {} here too, the same as it would
+        # in production. _status_named_pages is now the gate service.py
+        # actually reads (polled OR queryable), so every caller of
+        # assistant_completion needs it wired, not just the status-specific
+        # test classes that bind it themselves.
         from llm.plugin import LLM
 
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
+        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_host = LLM._status_host.__get__(plugin)
         plugin._status_parse_pages = LLM._status_parse_pages.__get__(plugin)
         plugin._status_polled_pages = LLM._status_polled_pages.__get__(plugin)
         plugin._status_sources = LLM._status_sources.__get__(plugin)
+        plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
 
         # Service tests dispatch scheduled-task fires synchronously to
         # assert downstream effects; with the executor migration the

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import functools
 import hashlib
 import html
 import json
@@ -123,19 +124,29 @@ def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
     return any(tool.get("function", {}).get("name") == name for tool in tools)
 
 
-def _with_status_hosts(tools: list[dict], sources: list[str]) -> list[dict]:
-    """Name the configured status pages in the check_service_status description.
+def _with_status_context(
+    tools: list[dict], sources: list[str], pages: dict[str, str]
+) -> list[dict]:
+    """Name the configured pages in the description and constrain `service`.
 
-    Without this the model has no way to know GitHub is covered and may reach
-    for search_web instead of a tool whose text never claims it.
+    Copies FOUR levels — tool, function, parameters, properties. ToolSpec's
+    `as_tool()` returns a fresh outer dict but shares the module-level schema
+    as `function`, and `parameters`/`properties` beneath it are shared too.
+    Writing a property into them would add `service` to the process-wide
+    schema permanently, and a later build that should omit it would inherit it.
 
-    Copies BOTH levels. ToolSpec.as_tool() returns a fresh outer dict but hands
-    back the shared module-level schema object as ``function``: mutating it
-    would corrupt the schema for every caller in the process and re-append the
-    host list on every completion.
+    The enum comes only from operator config: it is part of the cached prompt
+    prefix, and a page that could name itself would both churn that cache and
+    be able to capture another page's selector.
+
+    No early return on ``not sources and not pages``: the base schema
+    (assistant.py) now carries a bare ``service`` property with no enum, so
+    even the "nothing configured" case must still run the loop below to
+    strip it — an early return here would leave it in when this function is
+    called directly with a tool list that still contains the tool (the gate
+    in service.py already excludes the tool from the list in that case, but
+    this function must be correct on its own).
     """
-    if not sources:
-        return tools
     hosts = ", ".join(urlparse(s).hostname or s for s in sources)
     patched = []
     for tool in tools:
@@ -143,13 +154,20 @@ def _with_status_hosts(tools: list[dict], sources: list[str]) -> list[dict]:
         if fn.get("name") != "check_service_status":
             patched.append(tool)
             continue
+        params = {**(fn.get("parameters") or {})}
+        props = {**(params.get("properties") or {})}
+        if pages:
+            props["service"] = {**props.get("service", {}), "enum": list(pages)}
+        else:
+            props.pop("service", None)
+        params["properties"] = props
+        description = fn["description"]
+        if hosts:
+            description = f"{description} Monitored services: {hosts}."
         patched.append(
             {
                 **tool,
-                "function": {
-                    **fn,
-                    "description": f"{fn['description']} Configured services: {hosts}.",
-                },
+                "function": {**fn, "description": description, "parameters": params},
             }
         )
     return patched
@@ -5194,11 +5212,15 @@ Examples (echo → action_prompt: ""):
             if profile.temperature is not None or profile.frequency_penalty is not None:
                 optional_kwargs.setdefault("drop_params", True)
 
-            # Canonical, deduplicated, capped source list. Read once: it gates
-            # both the tool callback and the schema below, and registryValue
-            # is not free. warn=False: this runs on every chat request, not
-            # the poller's ~2-minute cadence, which already logs bad entries.
+            # Canonical, deduplicated, capped source list, plus the frozen
+            # name -> source mapping. Read once: they gate both the tool
+            # callback and the schema below, and registryValue is not free.
+            # warn=False: this runs on every chat request, not the poller's
+            # ~2-minute cadence, which already logs bad entries.
             status_sources = self.plugin._status_sources(warn=False)
+            # The whole point of the queryable allowlist is that it works with
+            # no polled pages at all, so the gate is polled OR queryable.
+            status_pages = self.plugin._status_named_pages(warn=False)
 
             executor = AssistantToolExecutor(
                 db=db,
@@ -5219,7 +5241,11 @@ Examples (echo → action_prompt: ""):
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
                 schedule_llm_task_fn=schedule_llm_task_fn,
-                status_fn=(self.plugin._status_tool_payload if status_sources else None),
+                status_fn=(
+                    functools.partial(self.plugin._status_tool_payload, pages=status_pages)
+                    if status_pages
+                    else None
+                ),
             )
 
             # check_service_status must not occupy a chat-surface slot when
@@ -5227,10 +5253,10 @@ Examples (echo → action_prompt: ""):
             # in that case, but the schema itself still shipped and cost
             # ~150 prompt tokens per completion for a tool that could only
             # ever answer "not configured".
-            if not status_sources:
+            if not status_pages:
                 exclude_tools = exclude_tools | {"check_service_status"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
-            profile_tools = _with_status_hosts(profile_tools, status_sources)
+            profile_tools = _with_status_context(profile_tools, status_sources, status_pages)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
             force_initial_search = (
