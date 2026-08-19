@@ -4655,14 +4655,31 @@ class LLM(callbacks.Plugin):
         return _ToolCallbackResult(not bool(result.error), result.content)
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
-        """Write the usage row for one image generation, under the image model.
+        """Write one usage row per provider call, under the image model.
 
-        Skips silently when nothing was spent — a prompt rejected by
-        ``validate_prompt`` or a missing API key never reaches the provider, and
-        a zero row would only dilute the averages. Never raises: an accounting
-        write must not be able to sink a picture the user is waiting for.
+        Usually that is one row. It is more when the safety-rewrite loop ran:
+        each refusal it recovered from was a real, usually billed, call to the
+        provider, and folding those into the delivered row hides both the
+        refusal and the prompt that caused it. ``blocked_attempts`` carries them
+        out, deliberately holding back the refusal that IS the returned result
+        (a draw that ran out of rewrites) so that call is not booked twice.
+
+        The bill is split, not duplicated: ``result.cost`` already includes
+        every attempt, so the blocked rows take their share and the final row
+        takes the remainder — which is where the rewriter's own text spend
+        stays, under the image model, since the row names one model and the
+        image is the one worth naming.
+
+        Skips silently when nothing was spent and nothing was refused — a prompt
+        rejected by ``validate_prompt`` or a missing API key never reaches the
+        provider, and a zero row would only dilute the averages. A refusal that
+        the provider did not charge for is not that: it reached the provider, so
+        it gets its row. Never raises: an accounting write must not be able to
+        sink a picture the user is waiting for.
         """
-        if not (result.cost or result.prompt_tokens or result.completion_tokens):
+        blocked = result.blocked_attempts
+        final_cost = max(0.0, result.cost - sum(attempt.cost for attempt in blocked))
+        if not (blocked or result.cost or result.prompt_tokens or result.completion_tokens):
             return
         try:
             if result.error is None:
@@ -4671,14 +4688,29 @@ class LLM(callbacks.Plugin):
                 status = "content_blocked"
             else:
                 status = "error"
+            nick = ircutils.nickFromHostmask(msg.prefix)
+            channel = self._get_channel(msg)
+            for attempt in blocked:
+                self.db.log_usage(
+                    nick,
+                    channel,
+                    _IMAGE_USAGE_COMMAND,
+                    result.model,
+                    0,
+                    0,
+                    attempt.cost,
+                    prompt=attempt.prompt[:200],
+                    status="content_blocked",
+                    error_detail=attempt.reason[:200],
+                )
             self.db.log_usage(
-                ircutils.nickFromHostmask(msg.prefix),
-                self._get_channel(msg),
+                nick,
+                channel,
                 _IMAGE_USAGE_COMMAND,
                 result.model,
                 result.prompt_tokens,
                 result.completion_tokens,
-                result.cost,
+                final_cost,
                 prompt=prompt[:200],
                 status=status,
                 error_detail=(result.error or "")[:200],

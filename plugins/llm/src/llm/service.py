@@ -1336,6 +1336,26 @@ class CompletionResult(NamedTuple):
     error: str | None = None
 
 
+class BlockedAttempt(NamedTuple):
+    """One image call the provider refused, superseded by a later attempt.
+
+    The rewrite loop used to swallow these. A refusal a rewrite recovered from
+    left no trace in the returned :class:`ImageResult`, so the usage table
+    booked a two-call turn as one success at the summed price, and the refused
+    prompt -- the only text known to have tripped the filter -- was never
+    written down. Carrying them out lets the accounting layer file one row per
+    provider call.
+
+    ``cost`` is that attempt's own billed refusal (see ``_billed_failure_cost``),
+    already included in ``ImageResult.cost``; the accounting layer subtracts it
+    rather than adding it, so the rows still sum to what the call spent.
+    """
+
+    prompt: str
+    reason: str
+    cost: float = 0.0
+
+
 class ImageResult(NamedTuple):
     """Result of image generation API call."""
 
@@ -1347,6 +1367,7 @@ class ImageResult(NamedTuple):
     error: str | None = None
     rewritten_prompt: str | None = None
     url: str | None = None
+    blocked_attempts: tuple[BlockedAttempt, ...] = ()
 
 
 class StorybookResult(NamedTuple):
@@ -4710,16 +4731,25 @@ Examples (echo → action_prompt: ""):
 
             timeout = self.plugin.registryValue("timeout")
 
+            # "Stay faithful" alone was not enough: two of the six recoveries
+            # measured in prod on 2026-08-19 came back LONGER than the prompt
+            # they replaced, which means the rewriter was adding scenery of its
+            # own while removing the tripwire. The user asked for a picture, and
+            # the subject of that picture is the one thing not up for revision.
             system_prompt = (
                 "You are an image prompt rewriter. A user's prompt was rejected by "
-                "content safety filters. Rewrite it to be acceptable while staying "
-                "faithful to the user's original intent. Keep it simple and close to "
-                "the original — just change what needs to change to pass the filters. "
+                "content safety filters. Return the SAME picture with only the part "
+                "that tripped the filter changed. Keep the subject, setting, style and "
+                "composition exactly as written, and reuse the original wording "
+                "wherever it is not the problem. Do not add subjects, details, "
+                "adjectives, style words or quality words that are not already there; "
+                "removing or softening the offending element is enough. The rewrite "
+                "must be no longer than the original. "
                 "Output ONLY the rewritten prompt, nothing else."
             )
 
             user_parts = [
-                f"Original prompt: {original_prompt}",
+                f"Original prompt ({len(original_prompt)} characters): {original_prompt}",
                 f"Rejected because: {error_context}",
             ]
 
@@ -4749,8 +4779,20 @@ Examples (echo → action_prompt: ""):
             if not rewritten or not rewritten.strip():
                 return None, 0, 0, 0.0
 
+            rewritten = rewritten.strip()
+            if len(rewritten) > len(original_prompt):
+                # WARNING, not INFO: prod keeps only WARNING and above, and a
+                # rewriter that has started padding again is exactly the thing
+                # nobody will notice by hand.
+                # f-string, not %-args: supybot's logger drops them and renders
+                # the format string raw. See docs and the many lines it broke.
+                self.log.warning(
+                    f"prompt_rewrite_fidelity: grew orig_chars={len(original_prompt)} "
+                    f"new_chars={len(rewritten)}"
+                )
+
             prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-            return rewritten.strip(), prompt_tokens, completion_tokens, cost
+            return rewritten, prompt_tokens, completion_tokens, cost
 
         except Exception as e:
             self.log.warning("Prompt rewrite failed: %s", self._sanitize(str(e)))
@@ -5861,6 +5903,12 @@ Examples (echo → action_prompt: ""):
             total_completion_tokens = 0
             total_cost = 0.0
 
+            # Every refusal, in order. What leaves in ``blocked_attempts`` is
+            # the refusals the returned result does NOT already stand for: on a
+            # delivered image that is all of them, and on a result that is
+            # itself a content block the last one is that result, so it stays.
+            refusals: list[BlockedAttempt] = []
+
             # --- First attempt ---
             content_blocked = False
             block_reason = ""
@@ -5872,6 +5920,7 @@ Examples (echo → action_prompt: ""):
                 # Empty data = content blocked (Google Imagen)
                 content_blocked = True
                 block_reason = "Content blocked by safety filters (empty response)"
+                refusals.append(BlockedAttempt(prompt, block_reason))
             except litellm.Timeout as e:
                 self._log_server_headers(e)
                 # Stash for background retry on first-attempt timeout only
@@ -5899,13 +5948,17 @@ Examples (echo → action_prompt: ""):
                 self._log_server_headers(e)
                 content_blocked = True
                 block_reason = self._sanitize(str(e))[:200]
-                total_cost += self._billed_failure_cost(e, model)
+                refused_cost = self._billed_failure_cost(e, model)
+                total_cost += refused_cost
+                refusals.append(BlockedAttempt(prompt, block_reason, refused_cost))
             except Exception as e:
                 self._log_server_headers(e)
                 if self._is_content_safety_error(e):
                     content_blocked = True
                     block_reason = self._sanitize(str(e))[:200]
-                    total_cost += self._billed_failure_cost(e, model)
+                    refused_cost = self._billed_failure_cost(e, model)
+                    total_cost += refused_cost
+                    refusals.append(BlockedAttempt(prompt, block_reason, refused_cost))
                 else:
                     # Non-content errors: no retry
                     error_content = self._handle_llm_error(e, "image generation")
@@ -5933,6 +5986,7 @@ Examples (echo → action_prompt: ""):
                     cost=total_cost,
                     model=model,
                     error=error_content,
+                    blocked_attempts=tuple(refusals[:-1]),
                 )
 
             self.log.info(
@@ -5970,21 +6024,27 @@ Examples (echo → action_prompt: ""):
                             model=result.model,
                             rewritten_prompt=current_prompt,
                             url=result.url,
+                            blocked_attempts=tuple(refusals),
                         )
                     # Still blocked
                     block_reason = "Content blocked by safety filters (empty response)"
                     prior_rewrites.append((current_prompt, block_reason))
+                    refusals.append(BlockedAttempt(current_prompt, block_reason))
                 except litellm.ContentPolicyViolationError as e:
                     self._log_server_headers(e)
                     block_reason = self._sanitize(str(e))[:200]
                     prior_rewrites.append((current_prompt, block_reason))
-                    total_cost += self._billed_failure_cost(e, model)
+                    refused_cost = self._billed_failure_cost(e, model)
+                    total_cost += refused_cost
+                    refusals.append(BlockedAttempt(current_prompt, block_reason, refused_cost))
                 except Exception as e:
                     self._log_server_headers(e)
                     if self._is_content_safety_error(e):
                         block_reason = self._sanitize(str(e))[:200]
                         prior_rewrites.append((current_prompt, block_reason))
-                        total_cost += self._billed_failure_cost(e, model)
+                        refused_cost = self._billed_failure_cost(e, model)
+                        total_cost += refused_cost
+                        refusals.append(BlockedAttempt(current_prompt, block_reason, refused_cost))
                     else:
                         # Non-content error during retry — stop
                         error_content = self._handle_llm_error(e, "image generation")
@@ -5995,6 +6055,7 @@ Examples (echo → action_prompt: ""):
                             cost=total_cost + self._billed_failure_cost(e, model),
                             model=model,
                             error=error_content,
+                            blocked_attempts=tuple(refusals),
                         )
 
             # Exhausted all retries
@@ -6012,6 +6073,7 @@ Examples (echo → action_prompt: ""):
                 cost=total_cost,
                 model=model,
                 error=error_content,
+                blocked_attempts=tuple(refusals[:-1]),
             )
 
         except Exception as e:

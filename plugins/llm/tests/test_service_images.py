@@ -1701,3 +1701,71 @@ class TestXaiModerationArmsTheRewrite:
 
         assert result.error is not None
         assert image_generation.call_count == 2
+
+
+class TestRewriteFidelity:
+    """The rewrite has to come back as the same picture, minus the tripwire.
+
+    Measured in prod 2026-08-19: of six recoveries, two came back LONGER than
+    the prompt they replaced (267→268 and 392→394 chars). Growing means the
+    rewriter added something of its own, and what the user asked for is the one
+    thing it is not free to change — a redraw that quietly becomes a different
+    subject reads to the channel as the bot ignoring them.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service(
+            imageModel="xai/grok-imagine-image",
+            assistantModel="gemini/gemini-flash-latest",
+            httpUrlBase="https://example.com/llm",
+            drawAutoRewriteMax=1,
+        )
+
+    def _rewrite(self, returned: str, original: str = "a cat on fire in a burning house"):
+        """Run one rewrite, return the (messages, result) the call produced."""
+        response = self.mocker.Mock()
+        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=returned))]
+        response.usage = self.mocker.Mock(prompt_tokens=10, completion_tokens=5)
+        completion = self.mocker.patch("llm.service.litellm.completion", return_value=response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        result = self.service._rewrite_prompt_for_safety(original, "content moderation", [], None)
+        return completion.call_args[1]["messages"], result
+
+    def test_rewriter_is_told_to_change_only_what_the_filter_hit(self) -> None:
+        """The instruction has to name the failure mode, not just ask nicely."""
+        messages, _ = self._rewrite("a cat in a house")
+        system = messages[0]["content"].lower()
+
+        assert "do not add" in system
+        assert "no longer than" in system
+
+    def test_rewriter_is_given_the_original_length_as_a_ceiling(self) -> None:
+        """A concrete number is checkable by the model; "keep it short" is not."""
+        original = "a cat on fire in a burning house"
+        messages, _ = self._rewrite("a cat in a house", original=original)
+
+        assert str(len(original)) in messages[1]["content"]
+
+    def test_a_padded_rewrite_is_logged_with_both_lengths(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Prod drops INFO, so the fidelity signal has to ride a WARNING.
+
+        Without it, the only way to know the rewriter is padding again is to
+        re-read the prompts by hand, which is what let two of six slip through.
+        """
+        padded = "a magnificent, highly detailed cat lounging in a sunlit house, cinematic"
+        with caplog.at_level("WARNING"):
+            self._rewrite(padded)
+
+        assert "prompt_rewrite_fidelity" in caplog.text
+        assert f"new_chars={len(padded)}" in caplog.text
+
+    def test_a_faithful_rewrite_is_not_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A rewrite that stayed inside the original is the expected case."""
+        with caplog.at_level("WARNING"):
+            self._rewrite("a cat in a house")
+
+        assert "prompt_rewrite_fidelity" not in caplog.text

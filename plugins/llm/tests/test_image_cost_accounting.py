@@ -266,3 +266,162 @@ class TestLLMServiceHelpersExist:
     def test_helpers_are_public_enough_to_test(self) -> None:
         assert hasattr(LLMService, "_image_price")
         assert hasattr(LLMService, "_billed_failure_cost")
+
+
+class TestRefusedAttemptsSurviveTheRewriteLoop:
+    """A refusal a rewrite recovered from still happened, and still billed.
+
+    Before this, the loop swallowed it: `image_generation` returned one success
+    carrying the *summed* cost, so the usage table booked a two-call turn as a
+    single $0.04 image and the refused prompt — the only text that is known to
+    have tripped the filter — was never written down. `blocked_attempts` carries
+    those calls out so the accounting layer can file one row per provider call.
+
+    The invariant, at every return: the refusals in `blocked_attempts` are the
+    ones NOT represented by the returned result. When the result is itself a
+    content block, the last refusal is that result, so it stays out.
+    """
+
+    @staticmethod
+    def _refusal():  # type: ignore[no-untyped-def]
+        import litellm as litellm_module
+
+        return litellm_module.BadRequestError(
+            message=XAI_MODERATION_ERROR, model=IMAGE_MODEL, llm_provider="xai"
+        )
+
+    def _service(self, make_service, max_rewrites: int):  # type: ignore[no-untyped-def]
+        service, _ = make_service(
+            imageModel=IMAGE_MODEL,
+            assistantModel="gemini/gemini-flash-latest",
+            drawAutoRewriteMax=max_rewrites,
+            httpUrlBase="https://example.com/llm",
+        )
+        return service
+
+    def test_recovered_refusal_is_carried_out_with_its_prompt_and_price(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """The happy path this whole change exists for: refused, rewritten, delivered."""
+        service = self._service(make_service, 1)
+        response = mocker.Mock()
+        response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        response.usage = mocker.Mock(prompt_tokens=0, completion_tokens=0)
+        mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=[self._refusal(), response],
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch.object(
+            service, "_download_and_save_image", return_value="https://example.com/llm/img_a.png"
+        )
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is None
+        assert len(result.blocked_attempts) == 1
+        blocked = result.blocked_attempts[0]
+        assert blocked.prompt == "bunga bunga party"
+        assert blocked.cost == PRICE
+        assert "content moderation" in blocked.reason
+
+    def test_exhausted_loop_leaves_the_last_refusal_to_the_final_row(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """Two refused calls are two rows, and the result IS the second one.
+
+        Carrying both out would double-book the last refusal: once as a blocked
+        attempt, once as the error the caller already writes a row for.
+        """
+        service = self._service(make_service, 1)
+        mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=[self._refusal(), self._refusal()],
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is not None
+        assert len(result.blocked_attempts) == 1
+        assert result.cost == pytest.approx(PRICE * 2)
+
+    def test_rewrites_disabled_carries_nothing(self, make_service, mocker: MockerFixture) -> None:
+        """One call, one row, and the caller already writes it. No change here."""
+        service = self._service(make_service, 0)
+        mocker.patch("llm.service.litellm.image_generation", side_effect=self._refusal())
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is not None
+        assert result.blocked_attempts == ()
+        assert result.cost == PRICE
+
+    def test_a_refusal_the_provider_did_not_bill_is_still_recorded(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """Imagen signals a block with empty data and no charge.
+
+        The prompt is the evidence, not the money — a free refusal still has to
+        leave a row behind, or the one provider that blocks for free is the one
+        provider whose blocks stay invisible.
+        """
+        service = self._service(make_service, 1)
+        empty = mocker.Mock()
+        empty.data = []
+        empty.usage = mocker.Mock(prompt_tokens=0, completion_tokens=0)
+        delivered = mocker.Mock()
+        delivered.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        delivered.usage = mocker.Mock(prompt_tokens=0, completion_tokens=0)
+        mocker.patch("llm.service.litellm.image_generation", side_effect=[empty, delivered])
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch.object(
+            service, "_download_and_save_image", return_value="https://example.com/llm/img_a.png"
+        )
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is None
+        assert len(result.blocked_attempts) == 1
+        assert result.blocked_attempts[0].cost == 0.0
+        assert result.blocked_attempts[0].prompt == "bunga bunga party"
+
+    def test_a_non_content_failure_mid_loop_keeps_the_earlier_refusal(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """The final row is a timeout, so the refusal before it is nobody else's."""
+        import litellm as litellm_module
+
+        service = self._service(make_service, 1)
+        mocker.patch(
+            "llm.service.litellm.image_generation",
+            side_effect=[
+                self._refusal(),
+                litellm_module.AuthenticationError(
+                    message="invalid key", model=IMAGE_MODEL, llm_provider="xai"
+                ),
+            ],
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.image_generation("bunga bunga party")
+
+        assert result.error is not None
+        assert len(result.blocked_attempts) == 1
+        assert result.blocked_attempts[0].cost == PRICE

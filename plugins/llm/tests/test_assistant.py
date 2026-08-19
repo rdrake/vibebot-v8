@@ -3284,6 +3284,117 @@ class TestDrawForMeta:
         assert args[6] == 0.02
         assert kwargs["status"] == "content_blocked"
 
+    def test_recovered_draw_writes_one_row_per_provider_call(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """A refusal the rewrite recovered from is a row of its own.
+
+        Booking the turn as a single success hides the refusal AND the prompt
+        that caused it, which is the only text that can answer whether the chat
+        model embellishes its own tool argument into a block.
+        """
+        from llm.service import BlockedAttempt, ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.0403,
+            rewritten_prompt="a cat",
+            blocked_attempts=(
+                BlockedAttempt("a cat, dramatically on fire", "content moderation", 0.02),
+            ),
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a cat, dramatically on fire")
+
+        assert plugin.db.log_usage.call_count == 2
+        blocked_args, blocked_kwargs = plugin.db.log_usage.call_args_list[0]
+        assert blocked_kwargs["status"] == "content_blocked"
+        assert blocked_kwargs["prompt"] == "a cat, dramatically on fire"
+        assert "content moderation" in blocked_kwargs["error_detail"]
+        assert blocked_args[6] == 0.02
+        assert plugin.db.log_usage.call_args_list[1][1]["status"] == "success"
+
+    def test_rows_of_a_recovered_draw_sum_to_what_the_call_spent(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Splitting the bill must not mint money or lose it.
+
+        ``ImageResult.cost`` is every attempt plus the rewriter; the blocked
+        rows take their own share and the delivered row takes the remainder.
+        """
+        from llm.service import BlockedAttempt, ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.0403,
+            blocked_attempts=(BlockedAttempt("a cat on fire", "content moderation", 0.02),),
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a cat on fire")
+
+        booked = sum(call[0][6] for call in plugin.db.log_usage.call_args_list)
+        assert booked == pytest.approx(0.0403)
+
+    def test_free_refusal_still_gets_its_row(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Imagen blocks by returning empty data and charges nothing for it.
+
+        The "nothing was spent, skip the row" rule is about calls that never
+        reached a provider. This one reached one and came back refused; the
+        prompt is the evidence even when the money is zero.
+        """
+        from llm.service import BlockedAttempt, ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="gemini/imagen-4.0-fast-generate-001",
+            cost=0.0,
+            blocked_attempts=(BlockedAttempt("a cat on fire", "empty response", 0.0),),
+        )
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a cat on fire")
+
+        assert plugin.db.log_usage.call_count == 2
+        assert plugin.db.log_usage.call_args_list[0][1]["status"] == "content_blocked"
+
+    def test_a_blocked_row_that_fails_to_write_does_not_sink_the_image(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """Same rule as the main row: accounting must not cost the user a picture."""
+        from llm.service import BlockedAttempt, ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.0403,
+            blocked_attempts=(BlockedAttempt("a cat on fire", "content moderation", 0.02),),
+        )
+        plugin.db.log_usage.side_effect = RuntimeError("disk full")
+
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_assistant(mock_irc, msg, "a cat on fire")
+
+        assert result.ok is True
+        assert result.message == "https://img.example/cat.png"
+
     def test_usage_logging_failure_does_not_sink_the_image(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
