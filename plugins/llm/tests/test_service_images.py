@@ -1704,13 +1704,18 @@ class TestXaiModerationArmsTheRewrite:
 
 
 class TestRewriteFidelity:
-    """The rewrite has to come back as the same picture, minus the tripwire.
+    """The rewrite has to come back as the same picture, said another way.
 
-    Measured in prod 2026-08-19: of six recoveries, two came back LONGER than
-    the prompt they replaced (267→268 and 392→394 chars). Growing means the
-    rewriter added something of its own, and what the user asked for is the one
-    thing it is not free to change — a redraw that quietly becomes a different
-    subject reads to the channel as the bot ignoring them.
+    Two failure modes, opposite directions. Timid: the rewrite is the refused
+    prompt with one synonym swapped, the filter refuses it again, and with
+    ``drawAutoRewriteMax`` at 1 in prod that was the only shot. Loose: it drifts
+    off the subject, and a redraw that quietly becomes a different picture reads
+    to the channel as the bot ignoring the request.
+
+    The user's intent is what is fixed; their wording is not. So these tests
+    hold the instruction to "keep the subject, change the wording as far as you
+    need to" and pin the padding tolerance — not a length limit, because saying
+    a thing another way is sometimes wordier.
     """
 
     @pytest.fixture(autouse=True)
@@ -1733,20 +1738,64 @@ class TestRewriteFidelity:
         result = self.service._rewrite_prompt_for_safety(original, "content moderation", [], None)
         return completion.call_args[1]["messages"], result
 
-    def test_rewriter_is_told_to_change_only_what_the_filter_hit(self) -> None:
-        """The instruction has to name the failure mode, not just ask nicely."""
+    def test_rewriter_is_told_to_keep_the_subject_and_change_the_wording(self) -> None:
+        """Both halves have to be in there, or it fails in one direction.
+
+        "Keep" alone produces a rewrite the filter refuses again; "change"
+        alone produces a different picture.
+        """
         messages, _ = self._rewrite("a cat in a house")
         system = messages[0]["content"].lower()
 
-        assert "do not add" in system
-        assert "no longer than" in system
+        assert "keep:" in system
+        assert "the subject" in system
+        assert "change:" in system
+        assert "as far as you need to" in system
 
-    def test_rewriter_is_given_the_original_length_as_a_ceiling(self) -> None:
+    def test_rewriter_is_allowed_to_go_as_far_as_the_filter_requires(self) -> None:
+        """The escape hatch: a word that cannot be softened gets said differently.
+
+        Without this the rewriter treats an unsoftenable word as a dead end and
+        hands back something the filter has already refused.
+        """
+        messages, _ = self._rewrite("a cat in a house")
+        system = messages[0]["content"].lower()
+
+        assert "different angle" in system
+        assert "another way to describe" in system
+
+    def test_rewriter_is_told_not_to_pad(self) -> None:
+        """The one thing it may not do with its freedom.
+
+        The drift this guards is style and quality words accreting onto a
+        picture the user never asked for them on.
+        """
+        messages, _ = self._rewrite("a cat in a house")
+        system = messages[0]["content"].lower()
+
+        assert "do not" in system
+        assert "pad the prompt" in system
+
+    def test_rewriter_is_given_the_original_length_as_a_target(self) -> None:
         """A concrete number is checkable by the model; "keep it short" is not."""
         original = "a cat on fire in a burning house"
         messages, _ = self._rewrite("a cat in a house", original=original)
 
         assert str(len(original)) in messages[1]["content"]
+
+    def test_rewriter_is_briefed_on_false_positives_not_evasion(self) -> None:
+        """It is re-reading a misfire, and it is told so.
+
+        The prompts this fires on are benign ones the filter misread. A
+        rewriter briefed as though it were smuggling writes like one, and the
+        instruction not to dress up a genuinely refusable request is what keeps
+        the loop pointed at false positives.
+        """
+        messages, _ = self._rewrite("a cat in a house")
+        system = messages[0]["content"].lower()
+
+        assert "misread something" in system
+        assert "genuinely should stay refused" in system
 
     def test_a_padded_rewrite_is_logged_with_both_lengths(
         self, caplog: pytest.LogCaptureFixture
@@ -1754,17 +1803,40 @@ class TestRewriteFidelity:
         """Prod drops INFO, so the fidelity signal has to ride a WARNING.
 
         Without it, the only way to know the rewriter is padding again is to
-        re-read the prompts by hand, which is what let two of six slip through.
+        re-read the prompts by hand.
         """
-        padded = "a magnificent, highly detailed cat lounging in a sunlit house, cinematic"
+        original = "a cat on fire"
+        padded = (
+            "a magnificent, highly detailed cat lounging in a sunlit house, "
+            "cinematic lighting, 8k, trending on artstation"
+        )
         with caplog.at_level("WARNING"):
-            self._rewrite(padded)
+            self._rewrite(padded, original=original)
 
         assert "prompt_rewrite_fidelity" in caplog.text
+        assert f"orig_chars={len(original)}" in caplog.text
         assert f"new_chars={len(padded)}" in caplog.text
 
-    def test_a_faithful_rewrite_is_not_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A rewrite that stayed inside the original is the expected case."""
+    def test_a_reword_that_runs_slightly_long_is_not_padding(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Saying a thing another way is sometimes wordier, and that is the job.
+
+        Both prod rewrites that prompted this tolerance grew by one character
+        (267→268, 392→394). Warning on those trains the reader to ignore the
+        warning.
+        """
+        original = "a cat on fire in a burning house"
+        reworded = "a cat beside a bonfire in a house with flames"
+        assert len(reworded) > len(original)
+
+        with caplog.at_level("WARNING"):
+            self._rewrite(reworded, original=original)
+
+        assert "prompt_rewrite_fidelity" not in caplog.text
+
+    def test_a_shorter_rewrite_is_not_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The common case: the offending clause comes out and nothing replaces it."""
         with caplog.at_level("WARNING"):
             self._rewrite("a cat in a house")
 

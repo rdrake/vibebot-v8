@@ -86,6 +86,21 @@ IMAGE_COST_PER_IMAGE: dict[str, float] = {
 # a yes/no signal that it billed, and the price comes from the table.
 _BILLED_FAILURE_MARKERS = ("cost_in_usd_ticks", "'usage'", '"usage"')
 
+# When a safety rewrite has grown enough to be worth a log line. Not a limit --
+# the rewrite is allowed to say the thing another way, and another way is
+# sometimes wordier. It flags padding, the drift where "cinematic, highly
+# detailed, 8k" accretes onto a picture nobody asked for it on.
+#
+# Both conditions, because either alone misfires. The ratio alone punishes
+# short prompts, where swapping one word for a phrase is a large fraction of
+# very little: "a cat on fire" -> "a cat beside a bonfire" is +69% and is
+# exactly the rewording this loop exists to do. The floor alone misses
+# accretion onto an already-long prompt. Together they clear the two prod
+# rewrites of 2026-08-19 that grew by a single character (267->268, 392->394)
+# and still catch a tail of style words on anything.
+_REWRITE_PADDING_RATIO = 1.2
+_REWRITE_PADDING_FLOOR_CHARS = 40
+
 _ = PluginInternationalization("LLM")
 
 # Constants
@@ -4731,20 +4746,37 @@ Examples (echo → action_prompt: ""):
 
             timeout = self.plugin.registryValue("timeout")
 
-            # "Stay faithful" alone was not enough: two of the six recoveries
-            # measured in prod on 2026-08-19 came back LONGER than the prompt
-            # they replaced, which means the rewriter was adding scenery of its
-            # own while removing the tripwire. The user asked for a picture, and
-            # the subject of that picture is the one thing not up for revision.
+            # Two failure modes pull in opposite directions, and the prompt has
+            # to name both. Too timid and the rewrite is the refused prompt with
+            # a synonym swapped, which the filter refuses again and the cap of 1
+            # means that was the only shot. Too free and it drifts: the observed
+            # drift is padding, "cinematic, highly detailed" accreting onto a
+            # picture nobody asked for it on.
+            #
+            # So: the user's INTENT is fixed and their wording is not. What has
+            # to survive is the thing they wanted to see; how it gets described
+            # is the rewriter's to change, as far as it needs to. The prompts
+            # this fires on are benign ones the filter misread -- a satirical
+            # portrait, a cartoon vegetable in boxers -- so the job is getting a
+            # false positive re-read, not disguising something that should stay
+            # refused. It is told that outright, since a rewriter that thinks it
+            # is smuggling will write like one.
             system_prompt = (
                 "You are an image prompt rewriter. A user's prompt was rejected by "
-                "content safety filters. Return the SAME picture with only the part "
-                "that tripped the filter changed. Keep the subject, setting, style and "
-                "composition exactly as written, and reuse the original wording "
-                "wherever it is not the problem. Do not add subjects, details, "
-                "adjectives, style words or quality words that are not already there; "
-                "removing or softening the offending element is enough. The rewrite "
-                "must be no longer than the original. "
+                "content safety filters, usually because the filter misread something "
+                "harmless. Rewrite it so the filter accepts it AND the user still gets "
+                "the picture they asked for.\n"
+                "Keep: the subject, what it is doing, the setting, and the mood or "
+                "style the user asked for. Someone reading your rewrite should "
+                "recognise it as the same picture.\n"
+                "Change: whatever is likely to have tripped the filter. Reword it, "
+                "soften it, describe it from a different angle, or say it in plainer "
+                "terms — go as far as you need to, and if a word cannot be softened, "
+                "find another way to describe the same thing.\n"
+                "Do not: add subjects, scenery, or style and quality words the user "
+                "did not ask for; pad the prompt out; or dress up a request that "
+                "genuinely should stay refused. Aim for about the same length as the "
+                "original.\n"
                 "Output ONLY the rewritten prompt, nothing else."
             )
 
@@ -4780,14 +4812,18 @@ Examples (echo → action_prompt: ""):
                 return None, 0, 0, 0.0
 
             rewritten = rewritten.strip()
-            if len(rewritten) > len(original_prompt):
+            grew_by = len(rewritten) - len(original_prompt)
+            if (
+                len(rewritten) > len(original_prompt) * _REWRITE_PADDING_RATIO
+                and grew_by > _REWRITE_PADDING_FLOOR_CHARS
+            ):
                 # WARNING, not INFO: prod keeps only WARNING and above, and a
                 # rewriter that has started padding again is exactly the thing
                 # nobody will notice by hand.
                 # f-string, not %-args: supybot's logger drops them and renders
                 # the format string raw. See docs and the many lines it broke.
                 self.log.warning(
-                    f"prompt_rewrite_fidelity: grew orig_chars={len(original_prompt)} "
+                    f"prompt_rewrite_fidelity: padded orig_chars={len(original_prompt)} "
                     f"new_chars={len(rewritten)}"
                 )
 
