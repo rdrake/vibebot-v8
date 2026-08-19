@@ -8,6 +8,37 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Say which kind of failure it was, and say it with a pulse (`llm`)
+- Let the safety rewrite reword, not just redact (`draw`)
+- Close the final whole-branch review gaps on the allowlist (`status`)
+- Close review gaps in the enum-constrained service argument (`status`)
+- Close review gaps in single-page status selection (`status`)
+- Close review gaps in the query-cache tests (`status`)
+- Strip a URL from the announced status, close the history parser's status gate (`statuspage`)
+- Unknown incident status stays live, not a page-wide reject (`status`)
+- Sanitise component status, harden the parser test suite (`status`)
+- Close five whole-branch review gaps in multi-source status (`status`)
+- Give make_service a real, non-empty _status_sources (`tests`)
+- Repair review-caught test gaps in the aggregate payload work (`status`)
+- Stop reading the deleted statusPageUrl key in service.py (`status`)
+- Tighten the announcer test review found under-specified (`status`)
+- Repair vacuous assertions and cover the pass-budget invariant (`status`)
+- Bill image spend to the image model, on its own row (`usage`)
+- Stop losing image spend on models LiteLLM cannot price (`usage`)
+- Arm the safety-rewrite loop for xAI, cap it at one (`draw`)
+- Deliver the image, not the retry that got there (`draw`)
+- Size the announce cap for thinking, humanise the duration (`status`)
+- Deliver an all-clear that lands in a pass with no opening (`status`)
+- Stop a truncated rewrite from replacing the announcement (`status`)
+- Deep-link the incident in status announcements (`status`)
+- Gate @remind on llm.ask like its siblings (`remind`)
+- Guard status-page timestamps and back off failed history fetches (`assistant`)
+- Close two residual guard gaps (`service,statuspage`)
+- Gate the tool when disabled, share rewrites per overlay (`status`)
+- Sanitise fields before composing, validate base URL (`statuspage`)
+- Stop SSRF guards escaping as bare exceptions (`service`)
+- Stop swallowing empty announce lines as sent (`status`)
+- Sanitise the status-page fields the review missed (`llm`)
 - Close announcer trust and budget gaps from review (`status`)
 - Arm the poller unconditionally, drop redundant re-arm race (`status`)
 - Wrap guard callables and test redirect refusal (`statuspage`)
@@ -390,6 +421,28 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- The rewrite loop is measured, the embellishment query is unblocked (`plans`)
+- Drop the handoff note, the work has landed (`plans`)
+- Fix description/enum conflation and cross-key collapse (`status`)
+- Document the queryable allowlist (`status`)
+- Handoff note for the in-progress allowlist work (`plans`)
+- Implementation plan for the queryable status allowlist (`plans`)
+- Rewrite the allowlist spec after two red-team passes (`specs`)
+- Queryable status allowlist (phase 2) (`specs`)
+- A new registry default does not reach a running bot
+- Resolve the sanitisation contradiction in the incident.io spec (`specs`)
+- Implementation plan for incident.io support (`plans`)
+- Incident.io status page support (`specs`)
+- Document multi-source monitoring (`status`)
+- Fix a tautological assertion in Task 4's host-check test (`plans`)
+- Flag the two consumers Task 2's retype left unfixed (`status`)
+- Implementation plan for multi-source service status (`plans`)
+- Record the queryable allowlist as phase 2, not a rejection (`specs`)
+- Design for multi-source service status monitoring (`specs`)
+- Park the draw refusal follow-up until there is traffic (`plans`)
+- Note the status-announce restart gap (`plans`)
+- Correct the guide against the code and cut the stale claims
+- Service status awareness
 - Fix four defects found in pre-flight scan (`plans`)
 - Service status awareness implementation plan (`plans`)
 - Service status awareness design (`specs`)
@@ -537,6 +590,21 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Book the refusal a rewrite recovered from, hold the rewriter to the picture (`draw`)
+- Enum-constrained service argument (`status`)
+- Answer about one named page on request (`status`)
+- Lazy cache for pages we never poll (`status`)
+- One Name=url grammar for both page keys (`status`)
+- Monitor status.openai.com by default (`status`)
+- Accept incident.io's Atlassian-compatible shim (`status`)
+- Describe the multi-service tool contract (`status`)
+- Aggregate the tool payload across sources (`status`)
+- Announce per source with a global burst cap (`status`)
+- Poll every source under one propagated deadline (`status`)
+- Canonical source ids and a multi-source config key (`status`)
+- Announce the all-clear when an incident resolves (`status`)
+- Let users list and cancel their own scheduled tasks (`remind`)
+- Add resolved-incident history to service-status tool (`status`)
 - Template-primary incident announcer (`status`)
 - Add the check_service_status tool (`status`)
 - Poller, config keys, and read-cache split (`status`)
@@ -930,6 +998,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Key all poller state by canonical source (`status`)
 - Move loopback allowance to conftest (`tests`)
 - Make the reply-guard stack a table (`assistant`)
 - Cut the chat tool surface from 20 to 7 (`tools`)

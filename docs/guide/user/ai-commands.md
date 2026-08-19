@@ -93,7 +93,7 @@ Generate an image from a text description.
 
 `@draw` needs an authenticated account. The bot asks you to log in first if you aren't.
 
-Image generation applies content safety filters. If a filter blocks your prompt, the bot rewrites it and retries — three times by default (`drawAutoRewriteMax`) — so a rewritten prompt may interpret your request a little differently. If every rewrite is blocked too, the bot says so.
+Image generation applies content safety filters. If a filter blocks your prompt, the bot rewords it and tries again — once by default (`drawAutoRewriteMax`). The reworded version keeps your subject, what it is doing, the setting and the style you asked for, and changes only what the filter is likely to have objected to, so you should still recognise the picture you asked for. If the reworded version is blocked too, the bot says so and tells you it already tried rewording, because rewording it again yourself is not the move — pick a different subject instead.
 
 ---
 

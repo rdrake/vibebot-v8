@@ -225,7 +225,7 @@ When an API call times out, the bot retries in the background for a bounded wind
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `drawAutoRewriteMax` | channel | `3` | Automatic prompt rewrites when a safety filter blocks a request. `0` disables |
+| `drawAutoRewriteMax` | channel | `1` | Automatic prompt rewordings when a safety filter blocks a request. `0` disables. Each rewording costs a second billed image call on top of the refused one, and every recovery observed in prod landed on the first attempt, so raising this mostly buys repeat refusals of a prompt that was never going to pass |
 | `drawContextMaxAgeSeconds` | channel | `60` | Pass conversation context to draw requests only when the last activity is this recent. `0` always starts fresh |
 
 ## Other settings

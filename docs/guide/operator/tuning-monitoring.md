@@ -192,11 +192,14 @@ Three structured lines record what a call cost, what the history guards removed,
 
 | Line | Level | Emitted | Fields |
 |------|-------|---------|--------|
-| `completion_timing` | `WARNING` | Once per model call | `op` (call-site label: `assistant_step_N`, `run_completion_<command>`, `grounded_<kind>` — `xai_responses_<kind>` instead when the resolved model is an xAI one — `image_generation`, `reminder_parse`, `pending_retry`, `status_announce`, `compaction:<op>`), `model`, `msgs`, `msg_chars`, `tools`, `prefix_hash`, `gap_s`, `elapsed_ms`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `tool_calls`. A failed call ends `result=error error_type=<class>` in place of the token fields |
+| `completion_timing` | `WARNING` | Once per model call | `op` (call-site label: `assistant_step_N`, `run_completion_<command>`, `grounded_<kind>` — `xai_responses_<kind>` instead when the resolved model is an xAI one — `image_generation`, `prompt_rewrite`, `reminder_parse`, `pending_retry`, `status_announce`, `compaction:<op>`), `model`, `msgs`, `msg_chars`, `tools`, `prefix_hash`, `gap_s`, `elapsed_ms`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `tool_calls`. A failed call ends `result=error error_type=<class>` in place of the token fields |
 | `history_strip` | `WARNING` | Once per turn that dropped poisoned history; silent when nothing was stripped | `model`, `channel`, `route`, `assistant_turns`, `removed`, then one field per guard that fired: `safety_refusal`, `image_failure`, `tool_complaint`, `degraded`, `repeat`, `verse_denial` |
+| `prompt_rewrite_fidelity` | `WARNING` | Only when a safety rewording came back padded | `orig_chars`, `new_chars`. Needs both 20% growth and 40 absolute characters, so an ordinary rewording that runs a little long stays silent |
 | `llm_executor submit` and `llm_executor done` | `INFO` | Once each per background submission | `submit`: `label`, `running`, `queued`, `max`. `done`: `label`, `elapsed_ms`, `queued_ms` |
 
 `completion_timing` and `history_strip` sit at `WARNING`, so they are present at the default log level; the `llm_executor` pair needs `logLevel` at `INFO`. Three `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=xai_responses_<kind>` omits `prefix_hash` and `gap_s`; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
+
+A refused draw that recovered is three `completion_timing` lines under one request id, in order: `op=image_generation` ending `result=error`, then `op=prompt_rewrite`, then a second `op=image_generation` with no `result=error`. Counting those is how to tell whether the rewrite loop is working. Do not grep for `Image generation blocked, attempting auto-rewrite` or `Rewrite attempt N`: both are `INFO`, so they are absent at the default log level, and their absence reads as a loop that never fired.
 
 On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` is 0: `gap_s` is the seconds since the last call on the same model and cache lane (`-1` on the first call) and is the dominant predictor of a cache hit, so a large gap means a cold cache while a changed `prefix_hash` means the cacheable head of the request moved.
 
@@ -215,6 +218,8 @@ On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` 
 ### Usage statistics
 
 `@usage` shows API usage for yourself and the channel; the global overview by PM is admin-only. One caveat: verse turns are recorded under the `ask` label, so verse traffic is displayed as `ask` rows in the report.
+
+One draw can write more than one `draw:image` row. Each row is one call to the image provider, so a prompt the filter refused and a rewording of it that succeeded are two rows: the refusal carries `status='content_blocked'` and the exact prompt the filter rejected, the delivered image carries `status='success'`. Counting rows therefore counts calls, not pictures. The bill is split rather than duplicated, so `SUM(cost)` is still the true total.
 
 The dollar figures come from LiteLLM's built-in price table, not from any provider billing API. A model LiteLLM has no price for records `$0.0000` and logs `completion_cost failed for model=…`; image models are priced from the two-entry `IMAGE_COST_PER_IMAGE` table in `plugins/llm/src/llm/service.py`. Read `@usage` as a relative signal and reconcile against the provider invoice.
 
@@ -236,6 +241,13 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
   A length of `0` means the variable is unset or empty. Compare the hash against a known-good value computed the same way, rather than eyeballing the key itself.
 - Check the key matches the model's provider; a Gemini key does not work with an `anthropic/` model.
 - Set `logLevel` to `DEBUG` and retry to see the full provider error.
+
+**The bot says a request was refused.**
+
+- A refusal is not a fault. The provider turned the content down, and the reply says so and asks the user to reword it or pick a different subject. Nothing needs restarting.
+- The provider's own category for the refusal is deliberately kept out of the channel, because these filters produce false positives and the category reads as an accusation of whoever happened to be talking. It goes to the log instead: grep `refused on content grounds`, which carries the full provider error.
+- A refusal is not the same event as an outage. Every other failure class now names itself in the reply — a timeout says it timed out, a bad key names the variable — so a generic `Error: Unable to complete` is the one that means look at the logs.
+- Refusals can arrive on the chat call itself, not just on a draw, in which case no image was ever attempted. The log line is `assistant_completion failed`, and it is one turn, not a stuck bot: successful turns in the same channel either side of it are normal, because the refused message is never written to history.
 
 **Bot does not remember previous messages.**
 
