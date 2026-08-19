@@ -8,6 +8,7 @@ import functools
 import hashlib
 import html
 import json
+import random
 import re
 import sqlite3
 import threading
@@ -98,6 +99,32 @@ _BILLED_FAILURE_MARKERS = ("cost_in_usd_ticks", "'usage'", '"usage"')
 # accretion onto an already-long prompt. Together they clear the two prod
 # rewrites of 2026-08-19 that grew by a single character (267->268, 392->394)
 # and still catch a tail of style words on anything.
+# Refusal copy. One flat line for every refusal is what the bot said before, and
+# on a channel that draws a lot it is the line people see most on a bad day.
+# Every variant has to keep the half that changes what the user does next -- a
+# joke that eats "try a different subject" is a worse message than the flat one.
+# None of them repeat the provider's category; that goes to the operator log,
+# because the filter has false positives and the category reads as an accusation
+# of whoever happened to be talking.
+_DRAW_BLOCKED_LINES = (
+    "The image filter took one look at that and said no. Try a different subject.",
+    "Blocked by the image filter. Try a different subject.",
+    "That one did not survive the image filter. Try a different subject.",
+    "The image filter has standards, apparently. Try a different subject.",
+)
+
+_DRAW_REWORDED_LINES = (
+    "Blocked twice: your version and my reworded one. Try a different subject.",
+    "The filter turned down your prompt and my tamer rewording of it. Try a different subject.",
+    "I reworded it and the filter said no to that too. Try a different subject.",
+)
+
+_CHAT_REFUSED_LINES = (
+    "The model refused that one outright. Try rewording it.",
+    "That one got refused on content grounds. Try rewording it.",
+    "The model is not touching that. Try rewording it.",
+)
+
 _REWRITE_PADDING_RATIO = 1.2
 _REWRITE_PADDING_FLOOR_CHARS = 40
 
@@ -2985,6 +3012,16 @@ class LLMService:
             return _("Error: Invalid API key for %s. Please check your configuration.") % operation
         if isinstance(error, litellm.ContentPolicyViolationError):
             return _("Error: Content violates AI safety policies. Please rephrase your request.")
+        if self._is_provider_refusal(error):
+            # Logged in full for the operator; the channel gets none of it. The
+            # provider's category is an accusation aimed at whoever happened to
+            # be talking, and this filter has false positives.
+            self.log.error(
+                "LLM %s refused on content grounds: %s",
+                operation,
+                self._sanitize(str(error))[:1000],
+            )
+            return _(random.choice(_CHAT_REFUSED_LINES))
         if isinstance(error, openai.APIError):
             sanitized = self._sanitize(str(error))[:1000]
             self.log.error("LLM API error (%s): %s", operation, sanitized)
@@ -4670,6 +4707,39 @@ Examples (echo → action_prompt: ""):
         }
 
     @staticmethod
+    def _is_provider_refusal(error: Exception) -> bool:
+        """Did the provider turn this down over the content itself?
+
+        Only ever used to pick the user-facing message. Its sibling
+        ``_is_content_safety_error`` arms the auto-rewrite loop, and these two
+        must not be merged: a prompt that tripped a hard safety check is exactly
+        the one the loop must not go back and reword. Answering "was this a
+        refusal?" and "may I retry it?" with the same predicate would turn every
+        message improvement into a retry policy change.
+
+        Matched on the prose, not on xAI's ``permission-denied`` code, which it
+        also returns for a key with no access to a model. Telling a channel to
+        reword a perfectly good prompt because the operator picked the wrong
+        model name is the failure this avoids.
+
+        Args:
+            error: The exception to check
+
+        Returns:
+            True if the provider refused over content
+        """
+        text = str(error).lower()
+        return any(
+            marker in text
+            for marker in (
+                "violates usage guidelines",
+                "content violates",
+                "safety_check",
+                "usage policies",
+            )
+        )
+
+    @staticmethod
     def _is_content_safety_error(error: Exception) -> bool:
         """Check if a BadRequestError is actually a content safety rejection.
 
@@ -5874,14 +5944,19 @@ Examples (echo → action_prompt: ""):
                 )
                 return AssistantResult(content=error_content)
             return AssistantResult(
-                content="Sorry, something went wrong.",
+                content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),
             )
 
         except Exception as e:
+            # The traceback stays here; _handle_llm_error picks the one line the
+            # channel sees. Every class of failure used to arrive as "Sorry,
+            # something went wrong.", which cannot be told apart from a crash --
+            # 113 of them in the prod log, including refusals the user could
+            # have simply reworded.
             self.log.exception("assistant_completion failed: %s", self._sanitize(str(e)))
             return AssistantResult(
-                content="Sorry, something went wrong.",
+                content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),
             )
         finally:
@@ -6098,10 +6173,19 @@ Examples (echo → action_prompt: ""):
             self.log.warning(
                 "Image generation blocked after %s rewrite attempts", len(prior_rewrites)
             )
-            error_content = _(
-                "Error: No image generated. The prompt was blocked by content safety "
-                "filters even after %d rewrite attempt(s). Try a different subject."
-            ) % len(prior_rewrites)
+            # Says the useful part first: the bot already tried rewording it, so
+            # rewording it again is not the move. Unless it did not get to --
+            # a rewriter with no API key, or one that failed, leaves
+            # prior_rewrites empty, and claiming "0 rewordings" advertises an
+            # internal counter instead of telling the user anything.
+            if not prior_rewrites:
+                error_content = _(random.choice(_DRAW_BLOCKED_LINES))
+            elif len(prior_rewrites) == 1:
+                error_content = _(random.choice(_DRAW_REWORDED_LINES))
+            else:
+                error_content = _(
+                    "The filter blocked that and %d rewordings of it. Try a different subject."
+                ) % len(prior_rewrites)
             return ImageResult(
                 content=error_content,
                 prompt_tokens=total_prompt_tokens,

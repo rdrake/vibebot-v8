@@ -927,7 +927,7 @@ class TestMetaCompletion:
         The decode-error guard only catches unparseable JSON; a valid non-dict
         flows straight into ``extra_handlers[name](args)``, where the verse /
         Limnoria-bridge handlers do ``dict(args)``/``args.get(...)`` and raise
-        out to the function-level handler ("Sorry, something went wrong.").
+        out to the function-level error handler.
         """
         spy = mocker.MagicMock(name="verse_handler")
         bad_call = make_tool_call("verse_record", bad_args, call_id="call_nd")
@@ -962,7 +962,7 @@ class TestMetaCompletion:
         """GIVEN an ``extra_handler`` that raises WHEN the loop dispatches it
         THEN the turn survives: the model sees a tool error and its follow-up
         reply is returned, rather than the exception escaping to the
-        function-level "Sorry, something went wrong." handler.
+        function-level error handler.
 
         ``AssistantToolExecutor.execute`` already wraps every registry tool in
         exactly this guard, but extra_handlers (verse tools, the Limnoria
@@ -1763,7 +1763,7 @@ class TestMetaCompletion:
         )
 
         assert result.error is not None
-        assert "something went wrong" in result.content.lower()
+        assert "timed out" in result.content.lower()
 
     def test_timeout_stash_messages_unaffected_by_tool_loop(
         self, service: LLMService, mocker: MockerFixture

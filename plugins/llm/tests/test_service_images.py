@@ -5,7 +5,9 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
+import openai
 import pytest
+from llm import service as service_module
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
@@ -910,7 +912,7 @@ class TestDrawAutoRewrite:
         assert result.rewritten_prompt == "rewrite v2"
 
     def test_auto_rewrite_exhausts_all_retries(self) -> None:
-        """GIVEN all retries fail WHEN max reached THEN returns error with attempt count."""
+        """GIVEN all retries fail WHEN max reached THEN says how many rewordings failed."""
         empty_resp = self._make_empty_response()
         rewrite1 = self._make_rewrite_response("rewrite v1")
         rewrite2 = self._make_rewrite_response("rewrite v2")
@@ -927,8 +929,8 @@ class TestDrawAutoRewrite:
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
         result = self.service.image_generation("test prompt")
 
-        assert "Error" in result.content
-        assert "3 rewrite attempt" in result.content
+        assert "3 rewordings" in result.content
+        assert "different subject" in result.content
 
     def test_auto_rewrite_disabled_when_max_zero(self) -> None:
         """GIVEN drawAutoRewriteMax=0 WHEN content blocked THEN no rewrite attempted."""
@@ -947,7 +949,11 @@ class TestDrawAutoRewrite:
         mock_completion.assert_not_called()
 
     def test_auto_rewrite_llm_failure_falls_back(self) -> None:
-        """GIVEN rewrite LLM fails WHEN retrying THEN falls back to error message."""
+        """GIVEN rewrite LLM fails WHEN retrying THEN reports the block, not a count.
+
+        No rewrite got made, so mentioning one -- or "0 rewordings" -- describes
+        an internal counter rather than anything the user can act on.
+        """
         empty_resp = self._make_empty_response()
 
         self.mocker.patch("llm.service.litellm.image_generation", return_value=empty_resp)
@@ -958,7 +964,8 @@ class TestDrawAutoRewrite:
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service.image_generation("test prompt")
 
-        assert "Error" in result.content
+        assert result.error is not None
+        assert result.content in service_module._DRAW_BLOCKED_LINES
 
     def test_auto_rewrite_skipped_when_ask_key_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -977,7 +984,8 @@ class TestDrawAutoRewrite:
         self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service.image_generation("test prompt")
 
-        assert "Error" in result.content
+        assert result.error is not None
+        assert result.content in service_module._DRAW_BLOCKED_LINES
         mock_completion.assert_not_called()
 
     def test_auto_rewrite_aggregates_costs(self) -> None:
@@ -1841,3 +1849,237 @@ class TestRewriteFidelity:
             self._rewrite("a cat in a house")
 
         assert "prompt_rewrite_fidelity" not in caplog.text
+
+
+class TestRefusalMessagesSayWhatHappened:
+    """ "Sorry, something went wrong." is what the user got for a REFUSAL.
+
+    Observed in prod 2026-08-19 21:32:39Z on request `351cc180`: xAI turned down
+    the chat completion itself with
+
+        {"code":"permission-denied",
+         "error":"Content violates usage guidelines. Failed check: ..."}
+
+    and every failure class in `assistant_completion` — malformed request,
+    unknown model, refusal — lands on the same flat string. 113 of them in the
+    log. The user cannot tell "reword this" from "the bot is broken", and the
+    two need opposite responses.
+
+    Deliberately NOT fixed by teaching `_is_content_safety_error` this shape:
+    that switch arms the rewrite loop, and a prompt that tripped a hard safety
+    check is the one thing the loop must not go back and reword. Classify for
+    the message, not for the retry.
+    """
+
+    XAI_HARD_REFUSAL = (
+        'litellm.APIError: APIError: XaiException - {"code":"permission-denied",'
+        '"error":"Content violates usage guidelines. Failed check: '
+        'SAFETY_CHECK_TYPE_EXAMPLE"}'
+    )
+
+    def test_a_refusal_is_named_as_one(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        """The one thing the user needs: it was the content, not the bot."""
+        service, _plugin = make_service()
+
+        message = service._handle_llm_error(
+            openai.APIError(self.XAI_HARD_REFUSAL, None, body=None), "chat"
+        )
+
+        assert message in service_module._CHAT_REFUSED_LINES
+        assert "check logs" not in message.lower()
+
+    def test_a_refusal_does_not_repeat_the_providers_category(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        """The category is an accusation, and the filter has false positives.
+
+        It goes to the operator in the log, not to the channel, where naming it
+        lands on whoever happened to be talking.
+        """
+        service, _plugin = make_service()
+
+        message = service._handle_llm_error(
+            openai.APIError(self.XAI_HARD_REFUSAL, None, body=None), "chat"
+        )
+
+        assert "SAFETY_CHECK" not in message
+        assert "permission-denied" not in message
+
+    def test_a_permission_error_that_is_not_about_content_is_not_a_refusal(
+        self,
+        make_service,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """A key without access to a model is a config bug, not the user's fault.
+
+        Keying on the bare "permission-denied" code would tell the channel to
+        reword a perfectly good prompt forever.
+        """
+        service, _plugin = make_service()
+        not_entitled = (
+            'litellm.APIError: APIError: XaiException - {"code":"permission-denied",'
+            '"error":"The API key does not have access to model grok-9"}'
+        )
+
+        message = service._handle_llm_error(openai.APIError(not_entitled, None, body=None), "chat")
+
+        assert message not in service_module._CHAT_REFUSED_LINES
+
+    def test_assistant_completion_stops_saying_something_went_wrong(
+        self,
+        make_service,  # type: ignore[no-untyped-def]
+        mocker: MockerFixture,
+    ) -> None:
+        """End to end on the path that produced the line in the channel."""
+        service, _plugin = make_service(assistantModel="xai/grok-4-1-fast-non-reasoning")
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=openai.APIError(self.XAI_HARD_REFUSAL, None, body=None),
+        )
+
+        result = service.assistant_completion(
+            prompt="draw something",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.content != "Sorry, something went wrong."
+        assert result.content in service_module._CHAT_REFUSED_LINES
+
+    def test_an_unrecognised_failure_still_falls_back(
+        self,
+        make_service,  # type: ignore[no-untyped-def]
+        mocker: MockerFixture,
+    ) -> None:
+        """Classifying the known shapes must not invent a diagnosis for the rest."""
+        service, _plugin = make_service()
+        mocker.patch("llm.service.litellm.completion", side_effect=RuntimeError("disk on fire"))
+
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.content not in service_module._CHAT_REFUSED_LINES
+        assert result.error is not None
+
+
+class TestExhaustedRewriteMessage:
+    """What the user asked for: the line after the loop gives up.
+
+    The old one read "Error: No image generated. The prompt was blocked by
+    content safety filters even after 1 rewrite attempt(s)." — machine voice,
+    "attempt(s)", and it buries the only useful part, which is that the bot
+    already tried rewording it once so rewording it again is not the move.
+    """
+
+    def test_it_says_the_reword_was_tried_too(self, make_service, mocker: MockerFixture) -> None:
+        import litellm as litellm_module
+
+        service, _plugin = make_service(
+            imageModel="xai/grok-imagine-image",
+            assistantModel="gemini/gemini-flash-latest",
+            drawAutoRewriteMax=1,
+            httpUrlBase="https://example.com/llm",
+        )
+        refusal = litellm_module.BadRequestError(
+            message=(
+                "litellm.BadRequestError: XaiException - {'code': 'imagine:content-moderated', "
+                "'error': 'Generated image rejected by content moderation.'}"
+            ),
+            model="xai/grok-imagine-image",
+            llm_provider="xai",
+        )
+        mocker.patch("llm.service.litellm.image_generation", side_effect=[refusal, refusal])
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.image_generation("bunga bunga party")
+
+        assert "attempt(s)" not in result.content
+        assert result.content in service_module._DRAW_REWORDED_LINES
+
+    def test_more_than_one_reword_is_counted(self, make_service, mocker: MockerFixture) -> None:
+        import litellm as litellm_module
+
+        service, _plugin = make_service(
+            imageModel="xai/grok-imagine-image",
+            assistantModel="gemini/gemini-flash-latest",
+            drawAutoRewriteMax=2,
+            httpUrlBase="https://example.com/llm",
+        )
+        refusal = litellm_module.BadRequestError(
+            message=(
+                "litellm.BadRequestError: XaiException - {'code': 'imagine:content-moderated', "
+                "'error': 'Generated image rejected by content moderation.'}"
+            ),
+            model="xai/grok-imagine-image",
+            llm_provider="xai",
+        )
+        mocker.patch(
+            "llm.service.litellm.image_generation", side_effect=[refusal, refusal, refusal]
+        )
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("something milder"),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.image_generation("bunga bunga party")
+
+        assert "2" in result.content
+        assert "attempt(s)" not in result.content
+
+
+class TestRefusalCopyHasSomeLifeInIt:
+    """A refusal is the bot's most-read line on a bad day. It can have a pulse.
+
+    The constraint is that every variant keeps the actionable half. "Try a
+    different subject" is the only part that changes what the user does next,
+    so a joke that replaces it is a worse message than the flat one it replaced.
+    """
+
+    def test_every_blocked_line_still_says_what_to_do(self) -> None:
+        for line in service_module._DRAW_BLOCKED_LINES:
+            assert "different subject" in line.lower()
+
+    def test_every_reworded_line_says_the_reword_was_tried(self) -> None:
+        for line in service_module._DRAW_REWORDED_LINES:
+            assert "reword" in line.lower() or "rewrite" in line.lower()
+
+    def test_every_refusal_line_tells_the_user_to_reword(self) -> None:
+        for line in service_module._CHAT_REFUSED_LINES:
+            assert "reword" in line.lower() or "rephras" in line.lower()
+
+    def test_no_variant_repeats_the_providers_category(self) -> None:
+        """Same rule as the flat version: the category stays in the log."""
+        every = (
+            service_module._DRAW_BLOCKED_LINES
+            + service_module._DRAW_REWORDED_LINES
+            + service_module._CHAT_REFUSED_LINES
+        )
+        for line in every:
+            assert "safety_check" not in line.lower()
+            assert "csam" not in line.lower()
+
+    def test_the_line_varies(self, make_service, mocker: MockerFixture) -> None:
+        """One line every time is the thing being fixed; pin that it rotates."""
+        service, _plugin = make_service()
+        chosen = mocker.patch("llm.service.random.choice", side_effect=lambda seq: seq[-1])
+
+        message = service._handle_llm_error(
+            openai.APIError(
+                'XaiException - {"error":"Content violates usage guidelines."}', None, body=None
+            ),
+            "chat",
+        )
+
+        assert chosen.called
+        assert message == service_module._CHAT_REFUSED_LINES[-1]
