@@ -3236,7 +3236,7 @@ class TestDrawForMeta:
         result = plugin._draw_for_assistant(mock_irc, msg, "a cat")
 
         assert not hasattr(result, "cost")
-        assert len(result) == 2
+        assert not hasattr(result, "prompt_tokens")
 
     def test_draw_for_assistant_skips_the_row_when_nothing_was_spent(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock

@@ -171,9 +171,13 @@ class TestSpendIsAttributedToTheModelThatSpentIt:
     def test_callback_result_carries_no_usage(self) -> None:
         """Deliberate: cost travels via the leaf's own row, not up the stack.
 
-        If these fields ever come back, the same spend lands in two rows.
+        If these fields ever come back, the same spend lands in two rows. The
+        rule is about SPEND, not about field count -- a signal like ``reworded``
+        costs nothing and double-books nothing, so it is allowed.
         """
-        assert ToolCallbackResult._fields == ("ok", "message")
+        assert "cost" not in ToolCallbackResult._fields
+        assert "prompt_tokens" not in ToolCallbackResult._fields
+        assert "completion_tokens" not in ToolCallbackResult._fields
 
     def test_draw_tool_returns_a_bare_string(self) -> None:
         """No ToolResult, so the executor accumulates nothing for a draw."""
@@ -425,3 +429,96 @@ class TestRefusedAttemptsSurviveTheRewriteLoop:
         assert result.error is not None
         assert len(result.blocked_attempts) == 1
         assert result.blocked_attempts[0].cost == PRICE
+
+
+class TestRewordedImagesAreMarked:
+    """A delivered image that took a reworded prompt says so, like 🌐 does.
+
+    The picture may not be quite what was asked for -- the rewrite keeps the
+    subject but is free to change the wording -- and silently handing back a
+    slightly different image is how the bot looks like it ignored the request.
+    The signal rides the same rails as `grounding_used`: callback -> executor ->
+    AssistantResult -> one icon on the reply.
+    """
+
+    def test_the_callback_reports_a_reword(self, mocker: MockerFixture) -> None:
+        from llm.service import BlockedAttempt, ImageResult
+
+        from .test_assistant_helpers import make_draw_plugin
+
+        plugin = make_draw_plugin(mocker)
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.0403,
+            rewritten_prompt="a cat beside a bonfire",
+            blocked_attempts=(BlockedAttempt("a cat on fire", "content moderation", 0.02),),
+        )
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_assistant(mocker.MagicMock(), msg, "a cat on fire")
+
+        assert result.reworded is True
+
+    def test_a_first_try_image_is_not_marked(self, mocker: MockerFixture) -> None:
+        from llm.service import ImageResult
+
+        from .test_assistant_helpers import make_draw_plugin
+
+        plugin = make_draw_plugin(mocker)
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+            cost=0.02,
+        )
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        result = plugin._draw_for_assistant(mocker.MagicMock(), msg, "a cat")
+
+        assert result.reworded is False
+
+    def test_the_executor_latches_it(self) -> None:
+        """One reworded image in a turn marks the turn, like grounding does."""
+        from llm.assistant import AssistantToolExecutor, ToolCallbackResult
+
+        executor = object.__new__(AssistantToolExecutor)
+        executor.image_reworded = False
+        executor._draw_fn = lambda _p: ToolCallbackResult(True, MINTED, reworded=True)
+
+        AssistantToolExecutor._tool_generate_image(executor, {"prompt": "a cat"})
+
+        assert executor.image_reworded is True
+
+    def test_a_reworded_draw_turn_marks_the_result(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """End to end: the short-circuit that returns the bare URL carries it."""
+        from llm.assistant import ToolCallbackResult
+
+        service, _ = make_service(assistantModel="gpt-4", httpUrlBase="https://irc.rdrake.org/llm")
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response(
+                None, tool_calls=[make_tool_call("generate_image", {"prompt": "a cat"})]
+            ),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="draw a cat on fire",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="rdrake",
+            draw_fn=lambda _p: ToolCallbackResult(True, MINTED, reworded=True),
+        )
+
+        assert result.content == MINTED
+        assert result.image_reworded is True

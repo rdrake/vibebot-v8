@@ -1467,6 +1467,7 @@ class AssistantResult(NamedTuple):
     cost: float = 0.0
     model: str = ""
     grounding_used: bool = False
+    image_reworded: bool = False
     error: str | None = None
     last_successful_tool: str | None = None
     # Internal signal only (plugin checks its emptiness to decide whether a
@@ -5647,6 +5648,7 @@ Examples (echo → action_prompt: ""):
                             cost=total_cost,
                             model=model,
                             grounding_used=executor.grounding_used,
+                            image_reworded=executor.image_reworded,
                             error="Model echoed the prompt instead of replying.",
                             last_successful_tool=last_successful_tool,
                         )
@@ -5658,6 +5660,7 @@ Examples (echo → action_prompt: ""):
                         cost=total_cost,
                         model=model,
                         grounding_used=executor.grounding_used,
+                        image_reworded=executor.image_reworded,
                         last_successful_tool=last_successful_tool,
                         final_text_after_tools=content,
                         was_verse=was_verse,
@@ -5824,6 +5827,7 @@ Examples (echo → action_prompt: ""):
                         cost=total_cost,
                         model=model,
                         grounding_used=executor.grounding_used,
+                        image_reworded=executor.image_reworded,
                         last_successful_tool="verse_storybook",
                         final_text_after_tools="",
                     )
@@ -5874,6 +5878,7 @@ Examples (echo → action_prompt: ""):
                         cost=total_cost,
                         model=model,
                         grounding_used=executor.grounding_used,
+                        image_reworded=executor.image_reworded,
                         last_successful_tool="generate_image",
                         final_text_after_tools=url,
                         was_verse=was_verse,
@@ -5895,6 +5900,7 @@ Examples (echo → action_prompt: ""):
                 cost=total_cost,
                 model=model,
                 grounding_used=executor.grounding_used,
+                image_reworded=executor.image_reworded,
                 error="Assistant exceeded maximum tool-call steps.",
                 last_successful_tool=last_successful_tool,
                 final_text_after_tools=last_assistant_text,

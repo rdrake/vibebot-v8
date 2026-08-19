@@ -242,6 +242,12 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 - Check the key matches the model's provider; a Gemini key does not work with an `anthropic/` model.
 - Set `logLevel` to `DEBUG` and retry to see the full provider error.
 
+**A reply arrived with a 🔁 in front of it.**
+
+- The image the user asked for was refused by a content filter, the bot reworded the prompt, and the second attempt landed. The icon says the wording behind the picture moved, so a picture that reads slightly off is explained rather than mysterious.
+- It is the same mechanism as the 🌐 grounding icon and rides the same path: the draw callback flags the rework, the tool executor latches it for the turn, and the reply prefixes one icon per signal raised. Both can appear together.
+- The matching usage rows are two, not one: the refusal with `status='content_blocked'` and the delivered image with `status='success'`.
+
 **The bot says a request was refused.**
 
 - A refusal is not a fault. The provider turned the content down, and the reply says so and asks the user to reword it or pick a different subject. Nothing needs restarting.

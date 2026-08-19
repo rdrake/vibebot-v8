@@ -1157,6 +1157,67 @@ class TestDispatchAssistantReply:
         )
         assert "some reply" in reply_text
 
+    @pytest.mark.parametrize("command", ["ask", "draw"])
+    def test_reworded_image_icon_prefixed_consistently(
+        self, command, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN a delivered image whose prompt the rewriter changed THEN the
+        reply carries the reworded icon, the same way grounding does.
+
+        Without it the user gets a picture that may not match what they asked
+        for and no hint as to why.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="https://img.example/cat.png",
+            image_reworded=True,
+            model="xai/grok-imagine-image",
+        )
+
+        getattr(plugin, command)(mock_irc, mock_msg, ["draw a cat"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("\U0001f501"), (
+            f"{command}: expected reworded icon prefix, got {reply_text!r}"
+        )
+        assert "https://img.example/cat.png" in reply_text
+
+    def test_a_first_try_image_gets_no_icon(self, plugin_env, mocker: MockerFixture):
+        """The icon means something only if the ordinary case is bare."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="https://img.example/cat.png",
+            model="xai/grok-imagine-image",
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["a cat"])
+
+        assert mock_irc.reply.call_args[0][0] == "https://img.example/cat.png"
+
+    def test_both_signals_chain_rather_than_choosing(self, plugin_env, mocker: MockerFixture):
+        """A grounded answer that also drew a reworded image raised both."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="https://img.example/cat.png",
+            grounding_used=True,
+            image_reworded=True,
+            model="xai/grok-imagine-image",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["what does a cat look like, draw it"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("\U0001f310 \U0001f501")
+
     # ------------------------------------------------------------------
     # Reminder-mutation suppression (ask only)
     # ------------------------------------------------------------------

@@ -555,10 +555,15 @@ class ToolCallbackResult(NamedTuple):
     invoked it, and folding its cost into the caller's total would file image
     spend under the chat model. It writes its own usage row instead; see
     ``LLM._draw_for_assistant``.
+
+    ``reworded`` is a signal, not spend: the delivered image came from a prompt
+    the safety rewriter changed, so it may not be quite what was asked for. It
+    rides to the reply the same way ``grounding_used`` does.
     """
 
     ok: bool
     message: str
+    reworded: bool = False
 
 
 @dataclass(frozen=True)
@@ -816,6 +821,7 @@ class AssistantToolExecutor:
 
         # Accumulator fields for structured returns
         self.grounding_used: bool = False
+        self.image_reworded: bool = False
         self.accumulated_prompt_tokens: int = 0
         self.accumulated_completion_tokens: int = 0
         self.accumulated_cost: float = 0.0
@@ -1090,6 +1096,10 @@ class AssistantToolExecutor:
         result = self._draw_fn(prompt)
         if not result.ok:
             return self._err(result.message)
+        # Latched, not overwritten: one reworded image in a turn marks the turn,
+        # the same rule grounding_used follows.
+        if result.reworded:
+            self.image_reworded = True
         return self._ok(result.message)
 
     def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:

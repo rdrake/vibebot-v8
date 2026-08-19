@@ -10,6 +10,16 @@ You don't need commands to ask the bot questions. Mention it by name in a channe
 
 Plain language covers questions, web lookups, images, code, service status, and saving a memory ("remember that I use Debian"). Reminders and scheduled tasks join that list where an operator has enabled `pendingTasksEnabled`. Managing memories, instructions, usage and context is command-only — use the commands below.
 
+## Icons on a reply
+
+Two icons can appear at the front of a reply. They are the bot telling you
+something about how the answer was produced, and both can show at once.
+
+| Icon | Meaning |
+|------|---------|
+| 🌐 | The answer used a live web lookup rather than the model's own knowledge |
+| 🔁 | A content filter refused the image, so the bot reworded the prompt and tried again. You got a picture, but the wording behind it moved, so it may read a little differently from what you asked for |
+
 ---
 
 ## `ask`
@@ -93,7 +103,7 @@ Generate an image from a text description.
 
 `@draw` needs an authenticated account. The bot asks you to log in first if you aren't.
 
-Image generation applies content safety filters. If a filter blocks your prompt, the bot rewords it and tries again — once by default (`drawAutoRewriteMax`). The reworded version keeps your subject, what it is doing, the setting and the style you asked for, and changes only what the filter is likely to have objected to, so you should still recognise the picture you asked for. If the reworded version is blocked too, the bot says so and tells you it already tried rewording, because rewording it again yourself is not the move — pick a different subject instead.
+Image generation applies content safety filters. If a filter blocks your prompt, the bot rewords it and tries again — once by default (`drawAutoRewriteMax`). The reworded version keeps your subject, what it is doing, the setting and the style you asked for, and changes only what the filter is likely to have objected to, so you should still recognise the picture you asked for. A reply carrying a reworded image is marked 🔁. If the reworded version is blocked too, the bot says so and tells you it already tried rewording, because rewording it again yourself is not the move — pick a different subject instead.
 
 ---
 

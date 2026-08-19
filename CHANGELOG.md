@@ -421,6 +421,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Correct the draw rewrite docs, and say what a refusal is
 - The rewrite loop is measured, the embellishment query is unblocked (`plans`)
 - Drop the handoff note, the work has landed (`plans`)
 - Fix description/enum conflation and cross-key collapse (`status`)
@@ -590,6 +591,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Mark a delivered image whose prompt was reworded (`draw`)
 - Book the refusal a rewrite recovered from, hold the rewriter to the picture (`draw`)
 - Enum-constrained service argument (`status`)
 - Answer about one named page on request (`status`)

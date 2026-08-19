@@ -85,6 +85,12 @@ _ = PluginInternationalization("LLM")
 # Icon shown when Google grounding/search was used in the response
 GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 
+# Icon shown when the delivered image came from a prompt the safety rewriter
+# changed. The picture is still the subject that was asked for -- the rewriter
+# is held to that -- but the wording around it moved, so a picture that reads
+# slightly off is explained rather than mysterious.
+REWORDED_ICON = "\U0001f501"  # 🔁 (clockwise arrows)
+
 # Commands that support long-term memory extraction
 _MEMORY_COMMANDS = frozenset({"ask", "code"})
 
@@ -3921,8 +3927,7 @@ class LLM(callbacks.Plugin):
 
         action_text = self._extract_action(irc, response)
         if action_text:
-            if result.grounding_used:
-                action_text = f"{GROUNDING_ICON} {action_text}"
+            action_text = self._prefix_reply_icons(action_text, result)
             self.log.info("sending action to %s/%s", channel, nick)
             target = channel if ircutils.isChannel(channel) else nick
             # safeArgument for the same reason as _safe_privmsg: this is a
@@ -3936,7 +3941,7 @@ class LLM(callbacks.Plugin):
             self._record_last_verse_line(irc, channel, action_text, result)
             return f"* {irc.nick} {action_text}", True
 
-        display_response = f"{GROUNDING_ICON} {response}" if result.grounding_used else response
+        display_response = self._prefix_reply_icons(response, result)
         self.log.info("replying to %s/%s", channel, nick)
         # Verse scenes that overflow to a paste render with the storybook
         # parchment theme — they're stories, not Q&A answers.
@@ -4652,7 +4657,11 @@ class LLM(callbacks.Plugin):
 
         result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
         self._log_image_usage(msg, prompt, result)
-        return _ToolCallbackResult(not bool(result.error), result.content)
+        return _ToolCallbackResult(
+            not bool(result.error),
+            result.content,
+            reworded=result.rewritten_prompt is not None,
+        )
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
@@ -4717,6 +4726,21 @@ class LLM(callbacks.Plugin):
             )
         except Exception:
             self.log.exception("image usage logging failed")
+
+    @staticmethod
+    def _prefix_reply_icons(text: str, result: AssistantResult) -> str:
+        """Prefix the reply with an icon per signal the turn raised.
+
+        Both can apply at once — a grounded answer that also drew a reworded
+        image — so they chain rather than choosing. Order is fixed so the same
+        turn always renders the same way.
+        """
+        icons = []
+        if getattr(result, "grounding_used", False):
+            icons.append(GROUNDING_ICON)
+        if getattr(result, "image_reworded", False):
+            icons.append(REWORDED_ICON)
+        return f"{' '.join(icons)} {text}" if icons else text
 
     def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
         """Generate code and save to HTTP for the generate_code tool."""
