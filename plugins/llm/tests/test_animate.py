@@ -22,6 +22,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from .conftest import make_completion_response, make_tool_call
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -765,3 +767,88 @@ class TestJobMarkerPoisoning:
 
         assert guard.detect(ctx)
         assert "generate_video" in guard.nudge
+
+
+class TestAnimateForcesTheTool:
+    """On the @animate route, step 0 has no choice about calling generate_video.
+
+    The user ran the command; deciding whether to make a video is not the
+    planner's call. Without this it can answer in text — which on 2026-08-21
+    meant copying a "[Video job: …]" marker out of history and acknowledging a
+    clip nobody queued.
+    """
+
+    @pytest.fixture
+    def service(self, make_service, animate_env):  # type: ignore[no-untyped-def]
+        svc, _plugin = _service(make_service, assistantModel="gpt-4")
+        return svc
+
+    def _run(self, service, mocker, profile: str):
+        """One assistant_completion on ``profile``, returning step 0's kwargs."""
+        from llm.assistant import ToolCallbackResult
+
+        tool_call = make_tool_call(
+            "generate_video", {"prompt": "three men wade into surf"}, call_id="call_vid"
+        )
+        completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                make_completion_response(None, tool_calls=[tool_call]),
+                make_completion_response("Rendering your clip."),
+            ],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="the stinky lads at the beach",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=profile,
+            animate_fn=lambda p: ToolCallbackResult(True, "Rendering your video."),
+        )
+        return completion.call_args_list[0].kwargs
+
+    def test_animate_route_forces_generate_video(self, service, mocker) -> None:
+        """GIVEN the animate profile WHEN step 0 runs THEN the tool is forced."""
+        kwargs = self._run(service, mocker, "animate")
+        assert kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "generate_video"},
+        }
+
+    def test_chat_route_is_not_forced(self, service, mocker) -> None:
+        """Chat keeps its judgement: "what's a good clip idea?" is not a request
+        for 70 seconds of GPU time."""
+        kwargs = self._run(service, mocker, "chat")
+        assert "tool_choice" not in kwargs
+
+    def test_unconfigured_box_forces_nothing(self, make_service, mocker) -> None:
+        """Forcing a tool that was excluded from the list is a provider error.
+
+        The box being unwired drops generate_video from profile_tools, so the
+        gate has to be tool presence, not the profile alone.
+        """
+        from llm.assistant import ToolCallbackResult
+
+        service, _plugin = make_service(assistantModel="gpt-4")  # no animateApiUrl
+        completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[make_completion_response("I can't make videos right now.")],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        service.assistant_completion(
+            prompt="the stinky lads at the beach",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile="animate",
+            animate_fn=lambda p: ToolCallbackResult(True, "queued"),
+        )
+
+        assert "tool_choice" not in completion.call_args_list[0].kwargs

@@ -40,6 +40,7 @@ from . import apikeys
 from .context import Role
 from .persistence import ScheduledLlmTaskRow
 from .profile import (
+    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_VERSE,
     PROFILES,
@@ -5570,6 +5571,18 @@ Examples (echo → action_prompt: ""):
                 and EXPLICIT_STORYBOOK_RE.search(prompt) is not None
             )
 
+            # @animate is not a request the model gets to interpret: the user
+            # ran the command, so step 0 has no business deciding whether to
+            # make a video. Without this the planner can answer in text —
+            # including by copying a "[Video job: …]" marker out of history,
+            # which is how #afternet got two acknowledgements for a clip
+            # nobody queued (2026-08-21). Tool presence is the gate: the box
+            # being unconfigured drops generate_video above, and forcing a
+            # tool that is not in the list is a provider error.
+            force_initial_video = profile.id == PROFILE_ANIMATE and _has_tool(
+                profile_tools, "generate_video"
+            )
+
             last_assistant_text = ""
             # Tracks the most recent tool call that completed without an
             # error sentinel — used downstream by the chat reply path to
@@ -5618,6 +5631,11 @@ Examples (echo → action_prompt: ""):
                     completion_kwargs["tool_choice"] = {
                         "type": "function",
                         "function": {"name": "generate_image"},
+                    }
+                elif _step == 0 and force_initial_video:
+                    completion_kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": "generate_video"},
                     }
                 elif _step == 0 and force_initial_storybook:
                     completion_kwargs["tool_choice"] = {
