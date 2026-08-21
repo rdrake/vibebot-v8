@@ -245,9 +245,9 @@ When an API call times out, the bot retries in the background for a bounded wind
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `animateSteps` | channel | `25` | Denoising steps, and the dominant cost knob — latency is roughly linear in it. Measured on the reference box: 25 steps rendered a four-second clip in 68s, 50 steps in 171s |
+| `animateSteps` | channel | `25` | Denoising steps, and the dominant cost knob — latency is roughly linear in it. Measured on the reference box at 1280x704: a four-second clip took 68s at 25 steps and 171s at 50; at 25 steps a seven-second clip took 135s |
 | `animateSize` | channel | `1280x704` | Output resolution. Must be a geometry the loaded model supports |
-| `animateDuration` | channel | `4` | Clip length in seconds. The whole clip is exclusive GPU time, so raising it slows every queued request behind it |
+| `animateDuration` | channel | `7` | Clip length in seconds. The whole clip is exclusive GPU time, so raising it slows every queued request behind it. Also watch the file size: a 7s clip measured 8.87 MB, leaving about 1 MB under the uploader's 10 MB ceiling, and a clip over it falls back to local storage instead of `imageUploadUrl` |
 | `animateAudio` | channel | `True` | Generate a soundtrack with the video. `False` requests silent video |
 | `animateModel` | channel | empty | Model to request. Empty sends no model field, letting a single-model box pick its own — usually right |
 | `animateFlowShift` | global | `12` | Flow-matching shift for the video sampler |

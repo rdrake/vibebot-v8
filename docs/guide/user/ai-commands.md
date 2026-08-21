@@ -120,7 +120,7 @@ Generate a short video from a text description. Also available as `@video`.
 
 `@animate` needs an authenticated account. The bot asks you to log in first if you aren't.
 
-Rendering takes a minute or two — about 70 seconds for a four-second clip at the default settings. The bot confirms it has started and posts the link in the same place when the clip is ready, so there's no need to wait for it. Clips have sound by default.
+Rendering takes a minute or two — about 135 seconds for the default seven-second clip. The bot confirms it has started and posts the link in the same place when the clip is ready, so there's no need to wait for it. Clips have sound by default.
 
 Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
 

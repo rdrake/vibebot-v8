@@ -313,10 +313,12 @@ conf.registerChannelValue(
     LLM,
     "animateDuration",
     registry.PositiveInteger(
-        4,
+        7,
         _("""Clip length in seconds. Generation time scales with this, and the
         whole clip is exclusive GPU time, so raising it slows every queued
-        request behind it."""),
+        request behind it. Watch the file size too: clips over the uploader's
+        10 MB ceiling silently fall back to local storage instead of the
+        configured image host."""),
     ),
 )
 
