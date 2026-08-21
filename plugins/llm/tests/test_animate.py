@@ -1023,7 +1023,7 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()
 
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "active")
-        assert plugin._render_typing_holds("#chan")
+        assert plugin._render_typing_holds("afternet", "#chan")
 
     def test_target_dropping_out_gets_one_done(self, plugin_env, mocker) -> None:
         """The clip landed: exactly one done, and not repeated next pass."""
@@ -1038,7 +1038,7 @@ class TestTypingRefreshPass:
         plugin.db.active_animate_targets.return_value = []
         plugin._typing_refresh_pass()
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "done")
-        assert not plugin._render_typing_holds("#chan")
+        assert not plugin._render_typing_holds("afternet", "#chan")
 
         plugin.llm_service.send_typing_indicator.reset_mock()
         plugin._typing_refresh_pass()
@@ -1054,7 +1054,7 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()
 
         plugin.llm_service.send_typing_indicator.assert_not_called()
-        assert not plugin._render_typing_holds("#chan")
+        assert not plugin._render_typing_holds("afternet", "#chan")
 
     def test_pm_target_uses_the_first_connection(self, plugin_env, mocker) -> None:
         """A PM has no channel membership to check."""
@@ -1124,7 +1124,7 @@ class TestTypingRefreshPass:
 
         plugin._typing_refresh_pass()  # must not raise
 
-        assert not plugin._render_typing_holds("#chan")
+        assert not plugin._render_typing_holds("afternet", "#chan")
 
     def test_one_targets_resolution_failure_does_not_abort_the_pass(
         self, plugin_env, mocker
@@ -1144,8 +1144,85 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()  # must not raise
 
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "alice", "active")
-        assert plugin._render_typing_holds("alice")
-        assert not plugin._render_typing_holds("#chan")
+        assert plugin._render_typing_holds("afternet", "alice")
+        assert not plugin._render_typing_holds("afternet", "#chan")
+
+    def test_a_hold_on_another_network_does_not_suppress_done(self, plugin_env) -> None:
+        """#chan on afternet and #chan elsewhere are different rooms.
+
+        The set is keyed by (network, target) precisely so a render on one
+        network cannot swallow a planner turn's +typing=done on another.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        plugin._render_typing_active = {("other", "#chan")}
+
+        assert plugin._render_typing_holds("other", "#chan")
+        assert not plugin._render_typing_holds("afternet", "#chan")
+
+    def test_a_pass_that_found_work_reports_it(self, plugin_env, mocker) -> None:
+        """The return value is the database's answer, not the send's."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        assert plugin._typing_refresh_pass() is True
+
+        plugin.db.active_animate_targets.return_value = []
+        assert plugin._typing_refresh_pass() is False
+
+    def test_an_unresolvable_target_still_reports_work(self, plugin_env, mocker) -> None:
+        """Nothing could be typed, but something is still rendering."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker, channels=())
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        assert plugin._typing_refresh_pass() is True
+        plugin.llm_service.send_typing_indicator.assert_not_called()
+
+    def test_persistent_read_failure_clears_the_holds_and_parks(self, plugin_env, mocker) -> None:
+        """A dead connection must not strand the set and spin a 4s log cycle.
+
+        A zombie refresher (die()'s join timed out, then db.close() ran) sees
+        RuntimeError("LLMDatabase is closed") on every pass. Returning early
+        without recomputing left _render_typing_active populated forever,
+        which suppresses the +typing=done of every ordinary chat reply on
+        that target.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+        plugin._typing_refresh_pass()
+        assert plugin._render_typing_holds("afternet", "#chan")
+
+        plugin.db.active_animate_targets.side_effect = RuntimeError("LLMDatabase is closed")
+
+        # A blip is worth retrying through...
+        assert plugin._typing_refresh_pass() is True
+        assert plugin._typing_refresh_pass() is True
+        # ...but a persistent failure gives up and lets go of the set.
+        assert plugin._typing_refresh_pass() is False
+        assert not plugin._render_typing_holds("afternet", "#chan")
+
+    def test_a_recovered_read_resets_the_failure_budget(self, plugin_env, mocker) -> None:
+        """Two failures then a good read must not leave the loop one strike from parking."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.side_effect = RuntimeError("db is busy")
+        plugin._typing_refresh_pass()
+        plugin._typing_refresh_pass()
+
+        plugin.db.active_animate_targets.side_effect = None
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+        assert plugin._typing_refresh_pass() is True
+
+        plugin.db.active_animate_targets.side_effect = RuntimeError("db is busy")
+        assert plugin._typing_refresh_pass() is True
+        assert plugin._typing_refresh_pass() is True
+        assert plugin._typing_refresh_pass() is False
 
 
 class TestTypingRefresherLifecycle:
@@ -1198,16 +1275,21 @@ class TestTypingRefresherLifecycle:
 
         assert not plugin._render_typing_wake.is_set()
 
-    def test_loop_runs_passes_until_the_set_empties(self, plugin_env, mocker) -> None:
-        """Woken → pass; empty set → back to blocking, wake flag cleared."""
+    def test_loop_runs_passes_until_nothing_is_rendering(self, plugin_env, mocker) -> None:
+        """Woken → pass; a pass reporting no work → back to blocking, wake flag cleared.
+
+        Control flow only — the pass is mocked, so this says nothing about
+        where the loop gets its answer from; see
+        test_loop_keeps_going_when_the_target_cannot_be_resolved_yet.
+        """
         plugin, _mock_irc, _mock_msg = plugin_env
         self._quiesce_refresher(plugin)
         calls = []
 
-        def fake_pass() -> None:
+        def fake_pass() -> bool:
             calls.append(1)
-            # Two passes with work, then nothing left to type.
-            plugin._render_typing_active = set() if len(calls) >= 2 else {("afternet", "#chan")}
+            # Two passes with work, then nothing left to render.
+            return len(calls) < 2
 
         mocker.patch.object(plugin, "_typing_refresh_pass", side_effect=fake_pass)
         plugin._RENDER_TYPING_INTERVAL = 0.01
@@ -1231,11 +1313,11 @@ class TestTypingRefresherLifecycle:
         plugin, _mock_irc, _mock_msg = plugin_env
         self._quiesce_refresher(plugin)
 
-        def fake_pass() -> None:
-            plugin._render_typing_active = set()
+        def fake_pass() -> bool:
             # A submission lands mid-pass, after the SELECT found nothing
             # left, before this pass finishes.
             plugin._render_typing_wake.set()
+            return False
 
         mocker.patch.object(plugin, "_typing_refresh_pass", side_effect=fake_pass)
         plugin._RENDER_TYPING_INTERVAL = 0.01
@@ -1244,6 +1326,63 @@ class TestTypingRefresherLifecycle:
         plugin._render_typing_loop(max_cycles=1)
 
         assert plugin._render_typing_wake.is_set()
+
+    def test_loop_keeps_going_when_the_target_cannot_be_resolved_yet(
+        self, plugin_env, mocker
+    ) -> None:
+        """Cold start: the database says a clip is rendering before the bot has joined.
+
+        This is the auto-deploy path. __init__ presets the wake event, so the
+        first pass runs about a second in, while state.channels is still
+        empty — nothing can be typed. Parking on that would leave a real
+        two-minute render in silence, which is the exact failure this feature
+        exists to remove. The database is what says whether anything is
+        rendering; whether a send resolved is a separate question.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        self._quiesce_refresher(plugin)
+        irc = mocker.MagicMock()
+        irc.network = "afternet"
+        irc.state.channels = {}
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+        plugin._RENDER_TYPING_INTERVAL = 0.01
+
+        passes: list[int] = []
+        real_pass = plugin._typing_refresh_pass
+
+        def counting_pass() -> bool:
+            passes.append(1)
+            result = real_pass()
+            if len(passes) >= 3:
+                # Enough to prove the loop did not park; let it exit.
+                plugin._render_typing_stop.set()
+            return result
+
+        mocker.patch.object(plugin, "_typing_refresh_pass", side_effect=counting_pass)
+        plugin._render_typing_wake.set()
+
+        plugin._render_typing_loop(max_cycles=1)
+
+        assert len(passes) == 3
+        plugin.llm_service.send_typing_indicator.assert_not_called()
+
+    def test_die_warns_when_the_refresher_outlives_the_join(self, plugin_env, mocker) -> None:
+        """A thread still alive after die() is a zombie against a closed database.
+
+        die() cannot force it down, but an unlogged zombie is a traceback
+        every four seconds with nothing naming its cause.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        self._quiesce_refresher(plugin)
+        plugin._render_typing_thread = mocker.MagicMock()
+        plugin._render_typing_thread.is_alive.return_value = True
+        log = mocker.patch.object(plugin, "log")
+
+        plugin.die()
+
+        assert log.warning.called
+        assert "typing" in " ".join(str(call.args[0]) for call in log.warning.call_args_list)
 
     def test_die_stops_the_thread(self, plugin_env, mocker) -> None:
         """An orphaned daemon thread would keep typing into a dead plugin."""
@@ -1276,7 +1415,7 @@ class TestPlannerDoneSuppression:
         msg = mocker.MagicMock(args=("#chan", "hi"))
         send = mocker.patch.object(service, "send_typing_indicator")
 
-        stop = service._begin_typing(irc, msg, suppress_done_if=lambda target: True)
+        stop = service._begin_typing(irc, msg, suppress_done_if=lambda network, target: True)
         stop()
 
         assert "done" not in [call.args[2] for call in send.call_args_list]
@@ -1287,7 +1426,7 @@ class TestPlannerDoneSuppression:
         msg = mocker.MagicMock(args=("#chan", "hi"))
         send = mocker.patch.object(service, "send_typing_indicator")
 
-        stop = service._begin_typing(irc, msg, suppress_done_if=lambda target: False)
+        stop = service._begin_typing(irc, msg, suppress_done_if=lambda network, target: False)
         stop()
 
         assert "done" in [call.args[2] for call in send.call_args_list]
@@ -1310,7 +1449,7 @@ class TestPlannerDoneSuppression:
         msg = mocker.MagicMock(args=("#chan", "hi"))
         send = mocker.patch.object(service, "send_typing_indicator")
 
-        def boom(target: str) -> bool:
+        def boom(network: str, target: str) -> bool:
             raise RuntimeError("lock is gone")
 
         service._begin_typing(irc, msg, suppress_done_if=boom)()
@@ -1337,6 +1476,29 @@ class TestAnimateDeliveryLine:
         plugin, _mock_irc, _mock_msg = plugin_env
 
         line = plugin._format_animate_delivery("rdrake", "corgi " * 200, self._URL, "#chan")
+
+        assert line.endswith(self._URL)
+        assert len(line.encode("utf-8")) <= 400
+
+    def test_a_large_configured_mores_length_is_still_capped(self, plugin_env) -> None:
+        """mores.length is not the wire limit, and this path bypasses the wrapper.
+
+        A deployed bot.conf with, say, 470 plus a 60-100 byte PRIVMSG prefix
+        blows past 512 and the server truncates — taking the URL, the one
+        part this formatter exists to protect. The cap is local to the
+        formatter; _reply_mores_length's other callers keep the configured
+        value.
+        """
+        import supybot.conf as conf
+
+        plugin, _mock_irc, _mock_msg = plugin_env
+        chan_value = conf.supybot.reply.mores.length.get("#chan")
+        original = chan_value()
+        chan_value.setValue(470)
+        try:
+            line = plugin._format_animate_delivery("rdrake", "corgi " * 200, self._URL, "#chan")
+        finally:
+            chan_value.setValue(original)
 
         assert line.endswith(self._URL)
         assert len(line.encode("utf-8")) <= 400

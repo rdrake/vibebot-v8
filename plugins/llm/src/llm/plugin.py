@@ -852,6 +852,9 @@ class LLM(callbacks.Plugin):
         # every other mutable map in this class.
         self._render_typing_active: set[tuple[str, str]] = set()
         self._render_typing_lock = threading.Lock()
+        # Consecutive database read failures. Touched only by the refresher
+        # thread, so it rides outside the lock.
+        self._render_typing_read_failures = 0
 
         # The refresher blocks on _render_typing_wake instead of querying the
         # database every four seconds forever; a submission sets it. Set once
@@ -993,6 +996,16 @@ class LLM(callbacks.Plugin):
             self._render_typing_stop.set()
             self._render_typing_wake.set()
             self._render_typing_thread.join(timeout=2.0)
+            if self._render_typing_thread.is_alive():
+                # Mid-pass and blocked (usually on _irc_send_lock behind a
+                # slow driver). It survives the @reload and then meets the
+                # closed database below; _typing_refresh_pass gives up after
+                # _RENDER_TYPING_MAX_READ_FAILURES, but a zombie thread from a
+                # dead plugin instance should not be invisible.
+                self.log.warning(
+                    "render typing: refresher thread still alive after die(); "
+                    "it will park once its database reads fail"
+                )
 
         # Clean up expired reminders from database
         if hasattr(self, "db"):
@@ -2172,6 +2185,11 @@ class LLM(callbacks.Plugin):
     # (1800s), and nobody should watch that.
     _RENDER_TYPING_INTERVAL: float = 4.0
     _RENDER_TYPING_MAX_AGE: float = 360.0
+    # Consecutive pending-task read failures the refresher tolerates before it
+    # drops its holds and parks. Three ticks (~12s) rides out a transient
+    # lock; a permanently closed database (a zombie refresher outliving its
+    # plugin) then stops rather than logging a traceback every four seconds.
+    _RENDER_TYPING_MAX_READ_FAILURES: int = 3
 
     def _deliver_pending_result(self, r) -> None:
         """Deliver a single pending task result to the correct target.
@@ -3520,6 +3538,13 @@ class LLM(callbacks.Plugin):
         try:
             return conf.get(conf.supybot.reply.mores.length, channel=target, network=network) or 400
         except Exception:
+            # Swallowed on purpose (a scoped read must never break a reply),
+            # but logged: otherwise a genuinely broken registry value looks
+            # exactly like a bot that has never been configured.
+            self.log.warning(
+                "reply mores length: scoped read failed, falling back to the global value",
+                exc_info=True,
+            )
             return conf.supybot.reply.mores.length() or 400
 
     def _format_animate_delivery(self, nick: str, prompt: str, url: str, target: str) -> str:
@@ -3539,11 +3564,18 @@ class LLM(callbacks.Plugin):
         line reaches the wire unmodified. The pending-delivery path still runs
         ``_collapse_for_irc`` on the result afterward — harmless today because
         ``prompt`` is a 100-char slice of a single IRC line and can't carry a
-        real newline (``sanitize_output`` maps literal ``\n`` to a space
+        real newline (``sanitize_output`` maps literal ``\\n`` to a space
         upstream), but a future change to either end that lets a newline
         through would silently inflate the line past this budget.
         """
-        allowed = self._reply_mores_length(target)
+        # Capped at 400 because supybot.reply.mores.length is not the wire
+        # limit: a bot.conf setting it to, say, 470 plus the 60-100 byte
+        # PRIVMSG prefix puts this line over 512 and the server truncates the
+        # URL — the one thing this formatter exists to protect. This path
+        # writes a raw _safe_privmsg, so nothing downstream re-fits it. The
+        # cap is local on purpose; _reply_mores_length's other callers hand
+        # their result to _finish_irc_line and want the configured value.
+        allowed = min(self._reply_mores_length(target), 400)
 
         head = f"{nick}: your video is ready!"
         tail = f" → {url}"
@@ -4836,8 +4868,17 @@ class LLM(callbacks.Plugin):
         Two nested waits rather than a flat poll: the outer one parks the
         thread on ``_render_typing_wake`` so an idle bot does no database work
         at all, and the inner one paces the passes while something is
-        actually rendering. A pass that ends with nothing held drops back to
-        the outer wait.
+        actually rendering. A pass that reports no rendering job drops back
+        to the outer wait.
+
+        The park decision comes from what the pass read out of the database,
+        never from ``_render_typing_active`` (the targets a send was
+        *attempted* for). On the auto-deploy restart path the first pass runs
+        about a second in, before the bot has joined anything, so nothing
+        resolves and nothing is typed — but a clip really is rendering, and
+        parking there would leave it silent for its whole two minutes. Same
+        shape for a netsplit or a kick mid-render. The 360s ``max_age``
+        predicate caps how long an unresolvable row can keep the loop awake.
 
         ``max_cycles`` bounds the outer loop for tests; production passes
         None and runs until ``die()``.
@@ -4857,24 +4898,34 @@ class LLM(callbacks.Plugin):
                 # some unrelated later submission wakes the loop.
                 self._render_typing_wake.clear()
                 try:
-                    self._typing_refresh_pass()
+                    still_rendering = self._typing_refresh_pass()
                 except Exception:
+                    # _typing_refresh_pass swallows its own errors, so this is
+                    # belt-and-braces. Let go of the holds on the way out:
+                    # a stale set suppresses every ordinary reply's
+                    # +typing=done on those targets.
                     self.log.exception("render typing: refresh pass failed")
-                with self._render_typing_lock:
-                    still_typing = bool(self._render_typing_active)
-                if not still_typing:
+                    with self._render_typing_lock:
+                        self._render_typing_active = set()
+                    still_rendering = False
+                if not still_rendering:
                     break
                 self._render_typing_stop.wait(timeout=self._RENDER_TYPING_INTERVAL)
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
 
-    def _render_typing_holds(self, target: str) -> bool:
-        """True when the render refresher is typing at ``target`` right now."""
-        with self._render_typing_lock:
-            return any(held == target for _network, held in self._render_typing_active)
+    def _render_typing_holds(self, network: str, target: str) -> bool:
+        """True when the render refresher is typing at ``target`` right now.
 
-    def _typing_refresh_pass(self) -> None:
+        Keyed by ``(network, target)`` because ``#chan`` on afternet and
+        ``#chan`` somewhere else are different rooms: a render on one must not
+        swallow a planner turn's ``+typing=done`` on the other.
+        """
+        with self._render_typing_lock:
+            return (network, target) in self._render_typing_active
+
+    def _typing_refresh_pass(self) -> bool:
         """Send one round of +typing for every clip still rendering.
 
         The whole state comes from the database each pass (see
@@ -4890,12 +4941,31 @@ class LLM(callbacks.Plugin):
 
         Never raises. This runs on a daemon thread whose death would be
         invisible.
+
+        Returns whether the database says anything is still rendering — the
+        loop's park decision. A read that keeps failing (a zombie refresher
+        surviving ``die()``'s join, then meeting a closed database) gets
+        ``_RENDER_TYPING_MAX_READ_FAILURES`` retries and then reports False,
+        because the alternative is a traceback every four seconds forever
+        with the holds stranded on.
         """
         try:
             targets = self.db.active_animate_targets(time.time(), self._RENDER_TYPING_MAX_AGE)
         except Exception:
-            self.log.exception("render typing: pending-task read failed")
-            return
+            self._render_typing_read_failures += 1
+            failures = self._render_typing_read_failures
+            self.log.exception(f"render typing: pending-task read failed ({failures} in a row)")
+            if failures < self._RENDER_TYPING_MAX_READ_FAILURES:
+                # A blip: keep the holds and the loop, retry next tick.
+                return True
+            # Give up. The set has to go with the loop — the 360s ceiling on
+            # how long the bot may appear to type lives only in the SQL we
+            # can no longer run, and a stranded hold silently eats the
+            # +typing=done of every ordinary reply on that target.
+            with self._render_typing_lock:
+                self._render_typing_active = set()
+            return False
+        self._render_typing_read_failures = 0
 
         active: set[tuple[str, str]] = set()
         for target in targets:
@@ -4936,6 +5006,10 @@ class LLM(callbacks.Plugin):
                     break
             except Exception:
                 self.log.exception("render typing: done resolution failed")
+
+        # What the database reported, not what resolved: a target the bot
+        # cannot reach yet is still a clip that is rendering.
+        return bool(targets)
 
     def _animate_for_assistant(
         self,

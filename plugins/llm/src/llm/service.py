@@ -2461,7 +2461,7 @@ class LLMService:
         msg: IrcMsg | None,
         *,
         refresh: float = 4.0,
-        suppress_done_if: Callable[[str], bool] | None = None,
+        suppress_done_if: Callable[[str, str], bool] | None = None,
     ) -> Callable[[], None]:
         """Start an IRCv3 +typing=active indicator with periodic refresh.
 
@@ -2471,11 +2471,12 @@ class LLMService:
         callable that cancels the thread and sends +typing=done. Safe to call
         without irc/msg — returns a no-op stopper.
 
-        ``suppress_done_if`` is checked when the stopper runs: when it returns
-        True for this target, the final ``+typing=done`` is skipped because
-        somebody else is still legitimately typing there. The @animate paths
-        pass it so a planner turn ending mid-render does not cancel the
-        render's own indicator.
+        ``suppress_done_if`` is called with ``(network, target)`` when the
+        stopper runs: when it returns True, the final ``+typing=done`` is
+        skipped because somebody else is still legitimately typing there. The
+        @animate paths pass it so a planner turn ending mid-render does not
+        cancel the render's own indicator. The network is part of the key
+        because ``#chan`` on two networks is two rooms.
         """
         target = msg.args[0] if (irc and msg and msg.args) else None
         if not irc or not target:
@@ -2499,7 +2500,7 @@ class LLMService:
             stop.set()
             thread.join(timeout=1.0)
             try:
-                if suppress_done_if is not None and suppress_done_if(target):
+                if suppress_done_if is not None and suppress_done_if(irc.network, target):
                     return
             except Exception:
                 # A broken predicate must not strand the indicator on; fall

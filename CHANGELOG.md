@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Park the typing refresher on the database, not on the sends (`animate`)
 - Guard delivery-branch arg order and untested formatter paths (`animate`)
 - Keep the planner's done from cancelling the render's typing (`animate`)
 - Clear the typing wake before the pass, not after (`animate`)
