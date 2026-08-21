@@ -217,3 +217,46 @@ class TestChatVideoWithReference:
 
         plugin.llm_service.fetch_reference_image.assert_not_called()
         assert plugin.llm_service.video_generation.call_args.kwargs.get("reference") is None
+
+
+class TestDeliveryNick:
+    """The clip is addressed to a person in a channel, so use their nick.
+
+    #afternet 2026-08-21: Larry asked for a clip and the delivery line came
+    back "lstrong2k: your video is ready!" — the account, which is not what
+    anyone in the channel calls them and not what their client highlights on.
+    Every other stashed task type already stores msg.nick (_msg_stash_context);
+    animate was the outlier because the command threads the account-resolved
+    PreflightResult.nick all the way down.
+    """
+
+    def test_stashed_nick_is_the_irc_nick(self, animate_plugin) -> None:
+        """GIVEN an account that differs from the nick WHEN queued THEN the nick is stored."""
+        plugin, mock_irc, mock_msg = animate_plugin
+        mock_msg.nick = "Larry"
+        mock_msg.prefix = "Larry!user@host"
+        mock_irc.state.nickToAccount.return_value = "lstrong2k"
+
+        plugin.animate(mock_irc, mock_msg, ["teletubbies", "on", "a", "smoke", "break"])
+        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn("Four costumed figures loiter behind a studio wall...")
+
+        kwargs = plugin.llm_service.video_generation.call_args.kwargs
+        assert kwargs["nick"] == "Larry"
+
+    def test_account_is_still_stored_for_identity(self, animate_plugin) -> None:
+        """GIVEN a resolved account WHEN queued THEN it rides along separately.
+
+        The display nick must not cost the account: ownership, rate limits and
+        delivery-time logging all read the account column.
+        """
+        plugin, mock_irc, mock_msg = animate_plugin
+        mock_msg.nick = "Larry"
+        mock_msg.prefix = "Larry!user@host"
+        mock_irc.state.nickToAccount.return_value = "lstrong2k"
+
+        plugin.animate(mock_irc, mock_msg, ["teletubbies", "on", "a", "smoke", "break"])
+        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn("Four costumed figures loiter behind a studio wall...")
+
+        assert plugin.llm_service.video_generation.call_args.kwargs["account"] == "lstrong2k"

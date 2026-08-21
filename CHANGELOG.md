@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Address the clip delivery to the nick, not the account (`animate`)
 - Keep the user's names and objects in the video prompt (`animate`)
 - Park the typing refresher on the database, not on the sends (`animate`)
 - Guard delivery-branch arg order and untested formatter paths (`animate`)

@@ -5071,8 +5071,16 @@ class LLM(callbacks.Plugin):
         The single place a video job is booked, so the tool callback and the
         reference command cannot drift apart on which of the reply target, the
         msgid, the URL stripping or the wake flag they remember to do.
+
+        The stashed nick is the IRC nick, not ``nick`` — which arrives here as
+        the account-resolved identity and is what the delivery line was
+        addressing minutes later. An account is not what the channel calls
+        someone and not what their client highlights on. Identity still travels
+        as ``account``; this only decides who the line greets. Every other
+        stash site already does it this way (``_msg_stash_context``).
         """
         reply_target = msg.args[0] if msg.args else ""
+        display_nick = getattr(msg, "nick", "") or nick
         # Strip URLs from the prompt whether or not one becomes the reference:
         # the video model renders stray text on screen, so a URL the planner
         # copied through would end up in the picture.
@@ -5086,7 +5094,7 @@ class LLM(callbacks.Plugin):
             prompt = _ANIMATE_DEFAULT_MOTION
         result = self.llm_service.video_generation(
             prompt,
-            nick=nick,
+            nick=display_nick,
             reply_target=reply_target,
             is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
             channel=channel,
