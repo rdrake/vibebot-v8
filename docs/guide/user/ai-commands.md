@@ -122,6 +122,8 @@ Generate a short video from a text description. Also available as `@video`.
 
 Rendering takes a minute or two — about 135 seconds for the default seven-second clip. The bot confirms it has started, then posts the link as a reply to your original request when the clip is ready, so your client threads it back to what you asked for and there's no need to wait around. Clips have sound by default.
 
+While the clip renders the bot shows as typing continuously, not just for the first few seconds, so a working render still looks different from a failed one without another line appearing in the channel. Typing stops after six minutes even if the render is still going; the clip still arrives once it's ready. The delivered link also carries your nick and the prompt you gave it — `rdrake: your video is ready! "a corgi riding a unicorn" → https://…mp4` — so it's clear which request it answers even in clients that don't show reply threads.
+
 Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
 
 `@animate` writes the video model's prompt from your request, the same way `@draw` does for pictures. In a channel with the verse enabled, that means naming someone or something from the world gets you a clip of the actual character: the bot looks the canon up and hands the model a description, since the model has never heard of your cast and a bare name would render as words on screen. The shot you asked for, the action, the camera move and the mood, is left alone.

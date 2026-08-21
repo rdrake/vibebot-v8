@@ -430,6 +430,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Document the render typing indicator and delivery line (`animate`)
 - Implementation plan for the animate UX work (`plans`)
 - Rework the animate UX design after codex red team (`plans`)
 - Design the @animate progress and delivery UX (`plans`)

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, Limnoria (supybot), sqlite3, pytest, uv, ruff, ty.
 
-**Design doc:** `docs/plans/2026-08-21-animate-ux.md` — read it first, especially the "Red-team findings" table, which records what was rejected and why.
+**Design doc:** `docs/plans/archive/2026-08-21-animate-ux.md` — read it first, especially the "Red-team findings" table, which records what was rejected and why.
 
 ## Global Constraints
 
@@ -1016,7 +1016,7 @@ The human deploys; do not push. Once the new revision is live:
 
 ## Self-review notes
 
-Checked against `docs/plans/2026-08-21-animate-ux.md`:
+Checked against `docs/plans/archive/2026-08-21-animate-ux.md`:
 
 - Derived-from-database state → Task 1 + Task 2.
 - Read-only reader, not `claim_due_pending_tasks` → Task 1, in the docstring and the Global Constraints.
