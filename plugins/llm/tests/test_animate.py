@@ -807,6 +807,8 @@ class TestAnimateForcesTheTool:
             context=mocker.MagicMock(),
             bot_nick="VibeBot",
             route_profile=profile,
+            account="tester",
+            capabilities=frozenset({"llm.animate"}),
             animate_fn=lambda p: ToolCallbackResult(True, "Rendering your video."),
         )
         return completion.call_args_list[0].kwargs
@@ -852,3 +854,104 @@ class TestAnimateForcesTheTool:
         )
 
         assert "tool_choice" not in completion.call_args_list[0].kwargs
+
+
+class TestNoInventedLinks:
+    """No link may leave the @animate route, whatever host it names.
+
+    The image guard next door ignores URLs on hosts that are not ours — in
+    chat, somebody else's picture is none of our business. Here the only tool
+    is generate_video, which never returns a URL, so a link in the reply is
+    invented. #afternet, 2026-08-21:
+
+        <rdrake> vibebot animate baby prince harry riding a corgi
+        <vibebot> https://files.oaiusercontent.com/file-VlKq…harry-corgi.gif
+
+    Four seconds after the request, for a render that takes 135, on a host the
+    bot has never published to.
+    """
+
+    _FAKE = (
+        "https://files.oaiusercontent.com/file-VlKqN8pL3jXvR2mW9bTqYh"
+        "?se=2026-08-22T00%3A00%3A00Z&rscd=attachment%3B%20filename%3D%22harry-corgi.gif%22"
+    )
+
+    @pytest.fixture
+    def service(self, make_service, animate_env):  # type: ignore[no-untyped-def]
+        svc, _plugin = _service(make_service, assistantModel="gpt-4")
+        return svc
+
+    def _run(self, service, mocker, reply: str, *, profile: str = "animate", tool: bool = True):
+        """One completion on ``profile`` whose final text is ``reply``."""
+        from llm.assistant import ToolCallbackResult
+
+        responses = []
+        if tool:
+            responses.append(
+                make_completion_response(
+                    None,
+                    tool_calls=[
+                        make_tool_call("generate_video", {"prompt": "a corgi"}, call_id="call_vid")
+                    ],
+                )
+            )
+        responses.append(make_completion_response(reply))
+        mocker.patch("llm.service.litellm.completion", side_effect=responses)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        return service.assistant_completion(
+            prompt="baby prince harry riding a corgi around the throne",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=profile,
+            account="tester",
+            capabilities=frozenset({"llm.animate"}),
+            animate_fn=lambda p: ToolCallbackResult(True, "Rendering your video."),
+        )
+
+    def test_bare_invented_link_becomes_the_real_outcome(self, service, mocker) -> None:
+        """The transcript case: the reply was the link and nothing else."""
+        from llm.service import _VIDEO_FABRICATION_FALLBACK
+
+        result = self._run(service, mocker, self._FAKE)
+
+        assert "http" not in result.content
+        assert result.content == _VIDEO_FABRICATION_FALLBACK
+
+    def test_link_is_stripped_from_an_otherwise_fine_reply(self, service, mocker) -> None:
+        """A real sentence keeps its words; only the invented link goes."""
+        result = self._run(service, mocker, f"Here's your clip! {self._FAKE} Enjoy.")
+
+        assert "http" not in result.content
+        assert result.content == "Here's your clip! Enjoy."
+
+    def test_nothing_queued_says_so(self, service, mocker) -> None:
+        """A link invented with no tool call behind it means no clip is coming.
+
+        Saying "it's rendering" here would be the same lie in nicer words.
+        """
+        from llm.service import _VIDEO_FABRICATION_NOTHING_QUEUED
+
+        result = self._run(service, mocker, self._FAKE, tool=False)
+
+        assert result.content == _VIDEO_FABRICATION_NOTHING_QUEUED
+
+    def test_chat_route_keeps_its_links(self, service, mocker) -> None:
+        """Deliberately narrow: chat can legitimately cite somebody's URL.
+
+        The invariant that makes stripping safe — the only tool returns no
+        URL — is a property of the animate route, not of the bot.
+        """
+        result = self._run(service, mocker, f"Found it: {self._FAKE}", profile="chat")
+
+        assert self._FAKE in result.content
+
+    def test_strip_tidies_the_whitespace_it_leaves(self) -> None:
+        """A stripped link must not leave a double space or a ragged tail."""
+        from llm.service import _strip_urls
+
+        assert _strip_urls("Here you go:  https://x.test/a.gif  done") == "Here you go: done"
+        assert _strip_urls("https://x.test/a.gif") == ""

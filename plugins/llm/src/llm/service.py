@@ -461,6 +461,38 @@ _ANY_IMAGE_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpe?g|webp|gif)\b", re.IG
 # One forced retry. If the model writes a URL, is told to call the tool, and
 # still will not, a second nudge will not change that -- deliver the honest
 # failure instead of burning image spend on a loop.
+# Video-link fabrication. The image guard next door deliberately ignores URLs
+# on hosts that are not ours — in chat, somebody else's picture is none of our
+# business. On the @animate route that reasoning does not hold: the only tool
+# there is generate_video, which NEVER returns a URL (the clip does not exist
+# for another two minutes; the poller delivers it later). So a link in an
+# @animate reply is invented, whoever it names. #afternet, 2026-08-21:
+#
+#   <rdrake> vibebot animate baby prince harry riding a corgi round the throne
+#   <vibebot> https://files.oaiusercontent.com/file-VlKq…harry-corgi.gif
+#
+# Four seconds after the request, for a render that takes 135, on a host the
+# bot has never published to.
+_ANY_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+# Said when a queued clip's reply had to be thrown away. Deliberately not the
+# submission ack's wording: this one is written after the fact, about a job
+# already accepted.
+_VIDEO_FABRICATION_FALLBACK = "Your video is rendering — I'll post the link here when it's ready."
+# Said when the reply invented a link AND no clip was queued behind it, so
+# there is nothing coming.
+_VIDEO_FABRICATION_NOTHING_QUEUED = "I couldn't queue that video."
+
+
+def _strip_urls(content: str) -> str:
+    """Remove every URL from ``content``, tidying the whitespace it leaves.
+
+    Blunt on purpose, and only ever called where a URL cannot be legitimate.
+    A retry is the wrong tool here: the model has no link to give, so asking
+    it again just buys a second invention at the cost of the user's latency.
+    """
+    return " ".join(_ANY_URL_RE.sub("", content).split())
+
+
 _MAX_IMAGE_FABRICATION_RETRIES = 1
 _IMAGE_FABRICATION_RETRY_NUDGE = (
     "Stop — you wrote an image link without generating an image, so that link "
@@ -5600,6 +5632,10 @@ Examples (echo → action_prompt: ""):
             minted_image_urls: set[str] = set()
             image_tool_error: str | None = None
             image_tool_called = False
+            # Whether generate_video ran this turn. The difference between "the
+            # clip is coming, the reply was just wrong" and "nothing was
+            # queued", which are two different things to tell the user.
+            video_tool_called = False
             own_image_hosts = self.own_image_hosts()
             # Retries spent forcing generate_image after the model wrote an
             # image URL without calling it (see _MAX_IMAGE_FABRICATION_RETRIES).
@@ -5747,6 +5783,29 @@ Examples (echo → action_prompt: ""):
                             channel,
                         )
                         content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
+                        last_assistant_text = content
+
+                    # No link may leave the @animate route. generate_video is
+                    # the only tool there and it never returns a URL, so a link
+                    # in this reply was invented — see _ANY_URL_RE. Stripped
+                    # rather than retried: the model has no link to give, and a
+                    # re-roll buys a second invention. What is left depends on
+                    # whether a clip is actually coming.
+                    if route_profile == PROFILE_ANIMATE and _ANY_URL_RE.search(content):
+                        self.log.warning(
+                            "assistant_completion: @animate reply invented a link "
+                            "(video_tool_called=%s); stripping it model=%s channel=%s",
+                            video_tool_called,
+                            model,
+                            channel,
+                        )
+                        content = _strip_urls(content)
+                        if not content:
+                            content = (
+                                _VIDEO_FABRICATION_FALLBACK
+                                if video_tool_called
+                                else _VIDEO_FABRICATION_NOTHING_QUEUED
+                            )
                         last_assistant_text = content
 
                     # The turn delivered an image and also narrated a draw that
@@ -5946,6 +6005,8 @@ Examples (echo → action_prompt: ""):
                         last_successful_tool = tc.function.name
                         if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
+                        if tc.function.name == "generate_video":
+                            video_tool_called = True
                         if tc.function.name == "generate_image":
                             # Record what this turn actually minted, so the
                             # stale-image guard below can tell a fresh image
