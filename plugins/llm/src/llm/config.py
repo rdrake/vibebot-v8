@@ -226,6 +226,53 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "imageFallbackApiBase",
+    registry.String(
+        "",
+        _("""Base URL of an OpenAI-shaped image endpoint to draw against when the
+        primary provider REFUSES a prompt on content grounds. Empty disables
+        the fallback and a refusal reaches the user as an error, which is the
+        behaviour without this set. Authenticates with ANIMATE_API_KEY. The
+        fallback is sent the user's ORIGINAL prompt, never a safety rewrite:
+        an endpoint that does not refuse has nothing to be talked around."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageFallbackModel",
+    registry.String(
+        "",
+        _("""Model for imageFallbackApiBase. A plain string, not a validated
+        model name, because a self-hosted server names its models whatever it
+        likes — a filesystem path, for instance. Prefix with the wire format
+        LiteLLM should speak, e.g. openai//work/models/Some-Model."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageFallbackSteps",
+    registry.NonNegativeInteger(
+        0,
+        _("""Denoising steps for the fallback endpoint. 0 lets the server
+        choose. See imageSteps: this is the dominant cost of a fallback
+        draw."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageFallbackSize",
+    registry.String(
+        "",
+        _("""Output geometry as WxH for the fallback endpoint. Empty lets the
+        server choose."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "searchModel",
     ValidatedModelName(
         "",

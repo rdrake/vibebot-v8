@@ -607,6 +607,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Redraw a refused prompt on a fallback endpoint (`draw`)
 - Let @draw target a self-hosted image endpoint (`draw`)
 - Script-style prompts, and the planner sees the reference (`animate`)
 - Animate a picture by pasting its URL in the line (`animate`)

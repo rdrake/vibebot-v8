@@ -5156,17 +5156,75 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Prompt rewrite failed: %s", self._sanitize(str(e)))
             return None, 0, 0, 0.0
 
-    def _image_api_base(self, channel: str | None = None) -> str:
+    def _image_api_base(self, channel: str | None = None, *, fallback: bool = False) -> str:
         """Configured self-hosted image endpoint, or "" for the hosted path.
 
         Rejected the same way the video URL is: a malformed or unsafe value
         disables the override rather than pointing a credentialed request at
         something that is not an image server.
         """
-        base = (self.plugin.registryValue("imageApiBase", channel) or "").strip().rstrip("/")
+        key = "imageFallbackApiBase" if fallback else "imageApiBase"
+        base = (self.plugin.registryValue(key, channel) or "").strip().rstrip("/")
         if not base or not validate_external_url(base):
             return ""
         return base
+
+    def _try_image_fallback(
+        self,
+        prompt: str,
+        *,
+        channel: str | None,
+        timeout: int,
+        refusals: list[BlockedAttempt],
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost: float,
+    ) -> ImageResult | None:
+        """One draw against the fallback endpoint, or None if it cannot help.
+
+        Called only where a refusal would otherwise reach the user. ``prompt``
+        is the user's original — a rewrite exists to talk a filter around, and
+        the endpoint this reaches has no filter to talk around.
+
+        Returns None for every kind of "no": not configured, no token, refused
+        again, or the box is down. The caller then reports the refusal it
+        already had, because which of two backends disappointed the user is not
+        something they asked about.
+        """
+        base = self._image_api_base(channel, fallback=True)
+        model = (self.plugin.registryValue("imageFallbackModel", channel) or "").strip()
+        if not base or not model or not apikeys.animate_api_key():
+            return None
+
+        self.log.info("Image refused by the primary; trying the fallback endpoint")
+        try:
+            result = self._attempt_image_generation(prompt, model, timeout, channel, fallback=True)
+        except Exception as e:  # noqa: BLE001 — a broken fallback must not mask the refusal
+            self.log.warning("Image fallback failed: %s", self._sanitize(str(e))[:200])
+            return None
+        if result is None or result.error:
+            self.log.warning("Image fallback produced no image")
+            return None
+
+        # WARNING because prod keeps WARNING and above, and how often the
+        # primary refuses something the fallback will happily draw is the whole
+        # reason this exists — it should be countable from the logs.
+        self.log.warning(
+            f"image_fallback_served model={model} refusals={len(refusals)} "
+            f"prompt_chars={len(prompt)}"
+        )
+        return ImageResult(
+            content=result.content,
+            prompt_tokens=prompt_tokens + result.prompt_tokens,
+            completion_tokens=completion_tokens + result.completion_tokens,
+            cost=cost + result.cost,
+            model=result.model,
+            url=result.url,
+            # Every refusal that led here, kept whole: content_blocked rows are
+            # how the refusal rate is measured, and a recovery that swallowed
+            # them would blind the measurement it was built from.
+            blocked_attempts=tuple(refusals),
+        )
 
     def _missing_image_key_error(self, model: str, channel: str | None = None) -> str | None:
         """Message for a draw whose credential is unset, or None if it is fine.
@@ -5191,6 +5249,8 @@ Examples (echo → action_prompt: ""):
         model: str,
         timeout: int,
         channel: str | None = None,
+        *,
+        fallback: bool = False,
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -5199,23 +5259,35 @@ Examples (echo → action_prompt: ""):
             model: Model identifier string
             timeout: Timeout in seconds
             channel: Channel for per-channel endpoint config
+            fallback: Read the imageFallback* endpoint keys instead of the
+                primary ones. One lookup path, one flag choosing the key set —
+                a second endpoint resolver would be two ways to say the same
+                thing, and they drift.
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
             Raises exceptions for other errors.
         """
         kwargs: dict[str, object] = {}
-        api_base = self._image_api_base(channel)
+        api_base = self._image_api_base(channel, fallback=fallback)
         if api_base:
             # Aimed at the box: its own bearer token, and the generation knobs
             # under extra_body because num_inference_steps is not an OpenAI
             # image parameter and LiteLLM drops what it does not recognise.
             kwargs["api_base"] = api_base
             api_key = apikeys.animate_api_key()
-            steps = int(self.plugin.registryValue("imageSteps", channel) or 0)
+            steps = int(
+                self.plugin.registryValue(
+                    "imageFallbackSteps" if fallback else "imageSteps", channel
+                )
+                or 0
+            )
             if steps:
                 kwargs["extra_body"] = {"num_inference_steps": steps}
-            size = (self.plugin.registryValue("imageSize", channel) or "").strip()
+            size = (
+                self.plugin.registryValue("imageFallbackSize" if fallback else "imageSize", channel)
+                or ""
+            ).strip()
             if size:
                 kwargs["size"] = size
         else:
@@ -6389,7 +6461,7 @@ Examples (echo → action_prompt: ""):
             block_reason = ""
 
             try:
-                result = self._attempt_image_generation(prompt, model, timeout)
+                result = self._attempt_image_generation(prompt, model, timeout, channel)
                 if result is not None:
                     return result
                 # Empty data = content blocked (Google Imagen)
@@ -6447,6 +6519,18 @@ Examples (echo → action_prompt: ""):
             # --- Auto-rewrite loop ---
             if not content_blocked or max_rewrites <= 0:
                 self.log.warning("Image generation returned no data. Prompt: %s", prompt[:100])
+                if content_blocked:
+                    served = self._try_image_fallback(
+                        original_prompt,
+                        channel=channel,
+                        timeout=timeout,
+                        refusals=refusals,
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost,
+                    )
+                    if served is not None:
+                        return served
                 error_content = _(
                     "Error: No image generated. The prompt may have been blocked by "
                     "content safety filters. Try rephrasing your request."
@@ -6488,7 +6572,7 @@ Examples (echo → action_prompt: ""):
 
                 # Retry image generation with rewritten prompt
                 try:
-                    result = self._attempt_image_generation(current_prompt, model, timeout)
+                    result = self._attempt_image_generation(current_prompt, model, timeout, channel)
                     if result is not None:
                         # Success! Aggregate costs and set rewritten_prompt
                         return ImageResult(
@@ -6537,6 +6621,17 @@ Examples (echo → action_prompt: ""):
             self.log.warning(
                 "Image generation blocked after %s rewrite attempts", len(prior_rewrites)
             )
+            served = self._try_image_fallback(
+                original_prompt,
+                channel=channel,
+                timeout=timeout,
+                refusals=refusals,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                cost=total_cost,
+            )
+            if served is not None:
+                return served
             # Says the useful part first: the bot already tried rewording it, so
             # rewording it again is not the move. Unless it did not get to --
             # a rewriter with no API key, or one that failed, leaves

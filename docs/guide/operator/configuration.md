@@ -70,6 +70,30 @@ Two things to weigh before switching a busy channel over:
 
 Spend is recorded as `$0.00`, which is accurate for your own hardware — and unlike an unpriced hosted model, it does not log the "no price in `IMAGE_COST_PER_IMAGE`" warning, so that warning still means what it says.
 
+### Falling back when a provider refuses
+
+The same endpoint can sit behind a hosted provider instead of replacing it. Set `imageFallbackApiBase` and a refusal on content grounds is redrawn against your own box rather than reaching the user as an error:
+
+```
+@config channel #chan supybot.plugins.LLM.imageFallbackApiBase http://host:port/v1
+@config channel #chan supybot.plugins.LLM.imageFallbackModel openai//path/to/model
+@config channel #chan supybot.plugins.LLM.imageFallbackSteps 8
+@config channel #chan supybot.plugins.LLM.imageFallbackSize 1024x576
+```
+
+The fallback is sent the **original prompt**, never a safety rewrite. A rewrite exists to talk a filter around, and an endpoint with no filter has nothing to be talked around — so the picture that arrives is the one that was asked for, and it carries no 🔁 marker because nothing was reworded.
+
+This interacts with `drawAutoRewriteMax` (default `1`), and the two orderings buy different things:
+
+| `drawAutoRewriteMax` | What a refused prompt does |
+|---|---|
+| `1` (default) | Rewrites once and redraws on the provider. If that is refused too, the fallback draws the original. Fast when it works, but the user gets a softened version of their request, and the rewrite costs a second billed call |
+| `0` | Skips rewriting and goes straight to the fallback. Slower per refusal (a self-hosted draw is tens of seconds), free, and faithful to what was asked |
+
+Refusals are still recorded either way. A recovered draw carries its `blocked_attempts` through to the usage table, so the refusal rate stays measurable, and the fallback logs `image_fallback_served` at WARNING so you can count how often it earns its keep.
+
+If the fallback also fails — refused again, misconfigured, or the box is down — the user gets the original refusal message. Which of two backends disappointed them is not something they asked about.
+
 ### Video generation
 
 `@animate` talks to a self-hosted vLLM video server rather than a LiteLLM provider, so it needs both halves of its own credential and stays off until it has them:
@@ -95,6 +119,10 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `imageApiBase` | channel | empty | Draw against an OpenAI-shaped endpoint of your own instead of the provider `imageModel` names — see [Drawing against a self-hosted endpoint](#drawing-against-a-self-hosted-endpoint) |
 | `imageSteps` | channel | `0` | Denoising steps for a self-hosted endpoint. `0` lets the server choose. Ignored unless `imageApiBase` is set |
 | `imageSize` | channel | empty | Output geometry as `WxH` for a self-hosted endpoint. Ignored unless `imageApiBase` is set |
+| `imageFallbackApiBase` | channel | empty | Endpoint to redraw against when the primary provider refuses a prompt — see [Falling back when a provider refuses](#falling-back-when-a-provider-refuses) |
+| `imageFallbackModel` | channel | empty | Model for `imageFallbackApiBase`. A plain string, not a validated model name |
+| `imageFallbackSteps` | channel | `0` | Denoising steps for the fallback endpoint |
+| `imageFallbackSize` | channel | empty | Output geometry as `WxH` for the fallback endpoint |
 | `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 | `verseCompactionModel` | global | `gemini/gemini-flash-lite-latest` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
