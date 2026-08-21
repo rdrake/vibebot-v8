@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Guard delivery-branch arg order and untested formatter paths (`animate`)
 - Keep the planner's done from cancelling the render's typing (`animate`)
 - Clear the typing wake before the pass, not after (`animate`)
 - Guard the typing refresh pass against a bad target or connection (`animate`)

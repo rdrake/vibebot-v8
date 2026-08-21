@@ -1371,3 +1371,24 @@ class TestAnimateDeliveryLine:
 
         assert "\x02" not in line and "\x03" not in line
         assert "boldred corgi" in line
+
+    def test_blank_prompt_returns_the_bare_line(self, plugin_env) -> None:
+        """An empty or whitespace-only prompt has nothing worth quoting."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+
+        line = plugin._format_animate_delivery("rdrake", "   ", self._URL, "#chan")
+
+        assert line == f"rdrake: your video is ready! → {self._URL}"
+
+    def test_pm_target_skips_the_channel_scoped_lookup(self, plugin_env, mocker) -> None:
+        """A PM target is not a channel, so the channel-scoped conf.get lookup
+        is skipped in favour of the plain global mores.length()."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        conf_get = mocker.patch("llm.plugin.conf.get")
+
+        line = plugin._format_animate_delivery(
+            "rdrake", "a corgi riding a unicorn", self._URL, "rdrake"
+        )
+
+        conf_get.assert_not_called()
+        assert line == f'rdrake: your video is ready! "a corgi riding a unicorn" → {self._URL}'

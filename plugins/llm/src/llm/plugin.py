@@ -3512,12 +3512,23 @@ class LLM(callbacks.Plugin):
         Formatting codes are stripped from the echoed prompt: ``sanitize_output``
         deliberately keeps them, and a delivery line is not the place to let a
         requester colour the bot's output.
+
+        Note for callers: the byte budget computed here assumes the returned
+        line reaches the wire unmodified. The pending-delivery path still runs
+        ``_collapse_for_irc`` on the result afterward — harmless today because
+        ``prompt`` is a 100-char slice of a single IRC line and can't carry a
+        real newline (``sanitize_output`` maps literal ``\n`` to a space
+        upstream), but a future change to either end that lets a newline
+        through would silently inflate the line past this budget.
         """
-        allowed = (
-            conf.get(conf.supybot.reply.mores.length, channel=target)
-            if target and ircutils.isChannel(target)
-            else conf.supybot.reply.mores.length()
-        ) or 400
+        try:
+            allowed = (
+                conf.get(conf.supybot.reply.mores.length, channel=target)
+                if target and ircutils.isChannel(target)
+                else conf.supybot.reply.mores.length()
+            ) or 400
+        except Exception:
+            allowed = conf.supybot.reply.mores.length() or 400
 
         head = f"{nick}: your video is ready!"
         tail = f" → {url}"
