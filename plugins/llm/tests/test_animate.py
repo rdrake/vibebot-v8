@@ -1256,3 +1256,63 @@ class TestTypingRefresherLifecycle:
         assert plugin._render_typing_stop.is_set()
         plugin._render_typing_thread.join(timeout=2.0)
         assert not plugin._render_typing_thread.is_alive()
+
+
+class TestPlannerDoneSuppression:
+    """The planner's stopper must not cancel the render's indicator.
+
+    The planner turn ends seconds after the render refresher starts on the
+    same target; without this its +typing=done shows as a visible flicker.
+    """
+
+    def _irc(self, mocker):
+        irc = mocker.MagicMock()
+        irc.state.capabilities_ack = {"message-tags"}
+        return irc
+
+    def test_done_is_skipped_when_the_render_holds_the_target(self, make_service, mocker) -> None:
+        service, _plugin = make_service()
+        irc = self._irc(mocker)
+        msg = mocker.MagicMock(args=("#chan", "hi"))
+        send = mocker.patch.object(service, "send_typing_indicator")
+
+        stop = service._begin_typing(irc, msg, suppress_done_if=lambda target: True)
+        stop()
+
+        assert "done" not in [call.args[2] for call in send.call_args_list]
+
+    def test_done_is_sent_when_nothing_holds_the_target(self, make_service, mocker) -> None:
+        service, _plugin = make_service()
+        irc = self._irc(mocker)
+        msg = mocker.MagicMock(args=("#chan", "hi"))
+        send = mocker.patch.object(service, "send_typing_indicator")
+
+        stop = service._begin_typing(irc, msg, suppress_done_if=lambda target: False)
+        stop()
+
+        assert "done" in [call.args[2] for call in send.call_args_list]
+
+    def test_default_still_sends_done(self, make_service, mocker) -> None:
+        """Every other caller passes no predicate and must be unaffected."""
+        service, _plugin = make_service()
+        irc = self._irc(mocker)
+        msg = mocker.MagicMock(args=("#chan", "hi"))
+        send = mocker.patch.object(service, "send_typing_indicator")
+
+        service._begin_typing(irc, msg)()
+
+        assert "done" in [call.args[2] for call in send.call_args_list]
+
+    def test_a_failing_predicate_does_not_swallow_done(self, make_service, mocker) -> None:
+        """If the check itself breaks, err toward stopping the indicator."""
+        service, _plugin = make_service()
+        irc = self._irc(mocker)
+        msg = mocker.MagicMock(args=("#chan", "hi"))
+        send = mocker.patch.object(service, "send_typing_indicator")
+
+        def boom(target: str) -> bool:
+            raise RuntimeError("lock is gone")
+
+        service._begin_typing(irc, msg, suppress_done_if=boom)()
+
+        assert "done" in [call.args[2] for call in send.call_args_list]

@@ -5821,7 +5821,9 @@ class LLM(callbacks.Plugin):
         # before any DB work (verse route lookup, history fetch, memory
         # fetch, executor permit acquisition). Otherwise the user waits
         # several seconds before "is composing" appears.
-        stop_typing = self.llm_service._begin_typing(irc, msg)
+        stop_typing = self.llm_service._begin_typing(
+            irc, msg, suppress_done_if=self._render_typing_holds
+        )
         try:
             # Slice 3: sticky @rp promotes ambient "just talk" messages to
             # roleplay turns while a session is live (explicit @ask/@rp untouched).
@@ -6450,7 +6452,9 @@ class LLM(callbacks.Plugin):
         # turn in front of the submission is a completion like any other, and
         # the submission itself no longer ends the command — the model's reply
         # does.
-        stop_typing = self.llm_service._begin_typing(irc, msg)
+        stop_typing = self.llm_service._begin_typing(
+            irc, msg, suppress_done_if=self._render_typing_holds
+        )
         try:
             request_context = self._build_request_context(
                 irc,

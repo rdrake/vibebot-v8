@@ -2527,7 +2527,7 @@ class TestChatProfileBridgeWiring:
         plugin, mock_irc, mock_msg = plugin_env
         events: list[str] = []
 
-        def begin_typing(_irc, _msg):
+        def begin_typing(_irc, _msg, **_kwargs):
             events.append("typing_active")
             return lambda: events.append("typing_done")
 

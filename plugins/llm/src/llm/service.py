@@ -2461,6 +2461,7 @@ class LLMService:
         msg: IrcMsg | None,
         *,
         refresh: float = 4.0,
+        suppress_done_if: Callable[[str], bool] | None = None,
     ) -> Callable[[], None]:
         """Start an IRCv3 +typing=active indicator with periodic refresh.
 
@@ -2469,6 +2470,12 @@ class LLMService:
         it every `refresh` seconds from a daemon thread, and returns a stop
         callable that cancels the thread and sends +typing=done. Safe to call
         without irc/msg — returns a no-op stopper.
+
+        ``suppress_done_if`` is checked when the stopper runs: when it returns
+        True for this target, the final ``+typing=done`` is skipped because
+        somebody else is still legitimately typing there. The @animate paths
+        pass it so a planner turn ending mid-render does not cancel the
+        render's own indicator.
         """
         target = msg.args[0] if (irc and msg and msg.args) else None
         if not irc or not target:
@@ -2491,6 +2498,13 @@ class LLMService:
         def stopper() -> None:
             stop.set()
             thread.join(timeout=1.0)
+            try:
+                if suppress_done_if is not None and suppress_done_if(target):
+                    return
+            except Exception:
+                # A broken predicate must not strand the indicator on; fall
+                # through and send done.
+                self.log.exception("typing suppress predicate failed")
             try:
                 self.send_typing_indicator(irc, target, "done")
             except Exception:
