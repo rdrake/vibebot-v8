@@ -673,3 +673,95 @@ class TestAnimatePlanner:
 
         mock_irc.error.assert_called_once()
         plugin.llm_service.assistant_request.assert_not_called()
+
+
+class TestJobMarkerPoisoning:
+    """The bot must never answer with a job id it copied out of its history.
+
+    Earlier revisions stored "[Video job: <id>]" as the assistant's side of an
+    @animate turn — a bookkeeping string, in the slot the model reads as "how I
+    answer requests like this". #afternet, 2026-08-21: two identical requests
+    four minutes apart both answered with the SAME id, which two real
+    submissions cannot share. No video was queued either time.
+    """
+
+    _MARKER = "[Video job: video_gen_0b5b4e3a1e6e48b3a9e5f1c0d2b4a6e7]"
+
+    def test_marker_only_reply_is_detected(self) -> None:
+        """The copied-marker reply, exactly as it reached the channel."""
+        from llm.service import _is_job_marker_reply
+
+        assert _is_job_marker_reply(self._MARKER)
+        assert _is_job_marker_reply(f"  {self._MARKER}  ")
+        assert _is_job_marker_reply("[Video job: rejected]")
+        assert _is_job_marker_reply("[Generated image: https://example.com/img_a.png]")
+
+    def test_a_real_reply_is_left_alone(self) -> None:
+        """Narrow on purpose: only a reply that is NOTHING but markers counts.
+
+        A reply that says something to the user and happens to name the job is
+        chatty, not broken, and rewriting it would be the guard overreaching.
+        """
+        from llm.service import _is_job_marker_reply
+
+        assert not _is_job_marker_reply("Rendering your clip — I'll post it here.")
+        assert not _is_job_marker_reply(f"Rendering now. {self._MARKER}")
+        assert not _is_job_marker_reply("")
+
+    def test_markers_are_stripped_from_history(self) -> None:
+        """Stripped at read time, so the poisoned rows need no DB surgery."""
+        from llm.context import Role
+        from llm.service import _strip_job_markers
+
+        history = [
+            {"role": Role.USER, "content": "animate a stinky lad in a theatre"},
+            {"role": Role.ASSISTANT, "content": self._MARKER},
+            {"role": Role.USER, "content": "animate a stinky lad in a theatre"},
+        ]
+
+        kept = _strip_job_markers(history)
+
+        assert [m["content"] for m in kept] == [
+            "animate a stinky lad in a theatre",
+            "animate a stinky lad in a theatre",
+        ]
+
+    def test_user_turns_are_never_stripped(self) -> None:
+        """A user quoting a marker back is a premise, not the model's own output."""
+        from llm.context import Role
+        from llm.service import _strip_job_markers
+
+        history = [{"role": Role.USER, "content": self._MARKER}]
+        assert _strip_job_markers(history) == history
+
+    def test_strip_runs_on_every_route(self) -> None:
+        """Registered in the shared strip table, not wired into one path.
+
+        The poisoned turns sit in both the personal thread and the shared
+        channel window, and every route reads one or both.
+        """
+        from llm.service import _EVERY_ROUTE_STRIPS
+
+        assert "job_marker" in dict(_EVERY_ROUTE_STRIPS)
+
+    def test_guard_catches_a_marker_that_survives_to_the_reply(self) -> None:
+        """Belt to the strip's braces: a marker must not reach the channel.
+
+        The nudge has to send the model back to the tool, not just tell it to
+        reword — nothing was queued, so a politely-worded version of the same
+        reply is still a lie about a clip that is not rendering.
+        """
+        from llm.profile import PROFILE_CHAT
+        from llm.service import REPLY_GUARDS, _ReplyGuardContext
+
+        guard = REPLY_GUARDS["job_marker"]
+        ctx = _ReplyGuardContext(
+            content=self._MARKER,
+            prompt="animate a stinky lad in a theatre",
+            route_profile=PROFILE_CHAT,
+            any_tool_ran=False,
+            prior_replies=(),
+        )
+
+        assert guard.detect(ctx)
+        assert "generate_video" in guard.nudge

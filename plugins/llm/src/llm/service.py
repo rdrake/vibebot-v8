@@ -609,6 +609,56 @@ def _strip_image_failures(
     return _strip_assistant_turns(history, _is_image_failure)
 
 
+# Internal bookkeeping markers that some routes used to store in place of the
+# reply the user actually saw: "[Video job: video_gen_0b5b…]", and the
+# "[Generated image: <url>]" form before it. Nothing writes them any more, but
+# they are sitting in every conversation and channel window that predates that
+# change, where a non-reasoning model reads them as the house style for
+# answering a media request. #afternet, 2026-08-21:
+#
+#   <fc42> vibebot animate year 7 stinky lad having norovirus in a theatre
+#   <vibebot> [Video job: video_gen_0b5b4e3a1e6e48b3a9e5f1c0d2b4a6e7]
+#   <fc42> vibebot animate year 7 stinky lad having norovirus in a theatre
+#   <vibebot> [Video job: video_gen_0b5b4e3a1e6e48b3a9e5f1c0d2b4a6e7]
+#
+# The same id twice is the tell: two submissions cannot share one, so no video
+# was queued either time. The model was copying a marker out of its history and
+# nobody's clip was rendering.
+_JOB_MARKER_RE = re.compile(
+    r"\[\s*(?:video\s+job|generated\s+image|image|video)\s*:[^\]]*\]",
+    re.IGNORECASE,
+)
+
+
+def _is_job_marker_reply(content: str) -> bool:
+    """Return True iff a reply is nothing but internal job markers.
+
+    Deliberately narrow. A reply that mentions a job id while saying something
+    to the user ("your clip is rendering — job video_gen_0b5b…") is chatty, not
+    broken, and the guard has no business rewriting it. What has to be caught
+    is the reply that is ONLY the marker, because that is the copied-from-
+    history case and it tells the user nothing.
+    """
+    if not content:
+        return False
+    return not _JOB_MARKER_RE.sub("", content).strip()
+
+
+def _strip_job_markers(
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]] | None:
+    """Drop stored bookkeeping markers from history.
+
+    Mirrors :func:`_strip_image_failures`, and matters for the same reason:
+    the marker is only ever true of the turn that produced it, and leaving it
+    in place is what teaches the model to answer the next media request with a
+    stale job id instead of calling the tool. Running it at read time also
+    means the already-poisoned rows in the database need no surgery — they stop
+    reaching the model the moment this ships.
+    """
+    return _strip_assistant_turns(history, _is_job_marker_reply)
+
+
 # Failed-attempt narration guard. The sibling above spares any reply carrying
 # an image URL, deliberately — that turn delivered, so it is not a failure
 # report. But a turn can deliver AND narrate, and the narration is what the
@@ -734,6 +784,15 @@ _MAX_TOOL_COMPLAINT_RETRIES = 1
 # told a verifiable fact about THIS turn (no tool ran), which is what makes the
 # retry land. Telling it "stop complaining" would leave it free to complain in
 # fresh words, which is exactly how the spiral kept moving.
+_MAX_JOB_MARKER_RETRIES = 1
+_JOB_MARKER_RETRY_NUDGE = (
+    "Stop — you answered with an internal job marker copied from an earlier "
+    "turn, and the id in it is not yours. Nothing was queued. If the user "
+    "asked for a video, call generate_video now; then say in one plain "
+    "sentence that it is rendering. Never print a bracketed marker or a job id."
+)
+
+
 _TOOL_COMPLAINT_RETRY_NUDGE = (
     "Stop — you reported that a tool failed, but no tool ran on this turn and "
     "nothing failed. That line is copied from an earlier turn, not something "
@@ -1002,6 +1061,13 @@ _PRE_IMAGE_REPLY_GUARDS: tuple[_ReplyGuard, ...] = (
 
 _POST_IMAGE_REPLY_GUARDS: tuple[_ReplyGuard, ...] = (
     _ReplyGuard(
+        key="job_marker",
+        summary="reply was an internal job marker copied from history",
+        detect=lambda g: _is_job_marker_reply(g.content),
+        nudge=_JOB_MARKER_RETRY_NUDGE,
+        max_retries=_MAX_JOB_MARKER_RETRIES,
+    ),
+    _ReplyGuard(
         key="tool_complaint",
         summary="reply blamed a tool that never ran",
         detect=lambda g: not g.any_tool_ran and _is_tool_complaint(g.content),
@@ -1049,6 +1115,7 @@ REPLY_GUARDS: dict[str, _ReplyGuard] = {
 _EVERY_ROUTE_STRIPS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("safety_refusal", _strip_safety_refusals),
     ("image_failure", _strip_image_failures),
+    ("job_marker", _strip_job_markers),
     ("tool_complaint", _strip_tool_complaints),
 )
 

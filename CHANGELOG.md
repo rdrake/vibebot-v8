@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Stop the bot answering with a job marker copied from history (`chat`)
 - Poll a running render at a flat cadence, not exponential backoff (`animate`)
 - Say which kind of failure it was, and say it with a pulse (`llm`)
 - Let the safety rewrite reword, not just redact (`draw`)

@@ -46,6 +46,7 @@ class TestTableShape:
         """Order is behaviour — the first guard to fire wins the turn."""
         assert [g.key for g in _PRE_IMAGE_REPLY_GUARDS] == ["echo", "verse_denial"]
         assert [g.key for g in _POST_IMAGE_REPLY_GUARDS] == [
+            "job_marker",
             "tool_complaint",
             "safety_refusal",
             "degraded",
