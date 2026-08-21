@@ -602,6 +602,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Deliver the clip with its nick and prompt (`animate`)
 - Hold the typing indicator for the whole render (`animate`)
 - One refresher pass for clips still rendering (`animate`)
 - Read which reply targets have a clip rendering (`persistence`)

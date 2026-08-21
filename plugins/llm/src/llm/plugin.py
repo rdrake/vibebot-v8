@@ -2222,13 +2222,13 @@ class LLM(callbacks.Plugin):
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
             elif r.task_type == "animate":
-                # Bare URL, exactly as @draw answers an image request. The
-                # nick and the prompt used to be spelled out here because a
-                # deferred line had nothing tying it to a request; the
-                # +draft/reply tag attached below carries that now, and
-                # repeating it in the body just restates what the client is
-                # already showing above the message.
-                text = content
+                # Nick and prompt, matching draw and code. The +draft/reply
+                # tag below still threads this under the request — that is
+                # additive, not a substitute: a client that does not render
+                # replies would otherwise get a naked URL two minutes later
+                # attached to nothing. Reverses 84dbb67 deliberately; see
+                # docs/plans/2026-08-21-animate-ux.md.
+                text = self._format_animate_delivery(nick, prompt_preview, content, target)
             else:
                 # ask or fallback (incl. recovered verse, which is unbounded —
                 # verse timeouts recover under the "ask" task_type). Long content
@@ -3499,6 +3499,45 @@ class LLM(callbacks.Plugin):
     def _collapse_for_irc(text: str) -> str:
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
+
+    def _format_animate_delivery(self, nick: str, prompt: str, url: str, target: str) -> str:
+        """One wire-line clip delivery, with the URL budgeted first.
+
+        The link is the only part that must survive. ``prompt_preview`` is
+        capped at 100 *characters*, which can be several hundred bytes, and
+        the pending-delivery path does no length fitting — so a long prompt in
+        front of the URL would let Limnoria's wire-limit truncation eat the
+        link. Everything else gives way to it.
+
+        Formatting codes are stripped from the echoed prompt: ``sanitize_output``
+        deliberately keeps them, and a delivery line is not the place to let a
+        requester colour the bot's output.
+        """
+        allowed = (
+            conf.get(conf.supybot.reply.mores.length, channel=target)
+            if target and ircutils.isChannel(target)
+            else conf.supybot.reply.mores.length()
+        ) or 400
+
+        head = f"{nick}: your video is ready!"
+        tail = f" → {url}"
+        bare = f"{head}{tail}"
+
+        clean = ircutils.stripFormatting(prompt or "").strip()
+        if not clean:
+            return bare
+
+        # ' ""' is the quoting the prompt would add on top of the bare line.
+        budget = allowed - len(bare.encode("utf-8")) - 3
+        if budget <= 0:
+            return bare
+
+        clipped = truncate_to_word_boundary(clean, budget)
+        while clipped and len(clipped.encode("utf-8")) > budget:
+            clipped = clipped[:-1].rstrip()
+        if not clipped:
+            return bare
+        return f'{head} "{clipped}"{tail}'
 
     def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
         """Build the per-request Limnoria bridge tool schemas + handlers.

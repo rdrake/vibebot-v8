@@ -1316,3 +1316,58 @@ class TestPlannerDoneSuppression:
         service._begin_typing(irc, msg, suppress_done_if=boom)()
 
         assert "done" in [call.args[2] for call in send.call_args_list]
+
+
+class TestAnimateDeliveryLine:
+    """The delivered clip says who asked and for what, and never loses the URL."""
+
+    _URL = "https://paste.boxlabs.uk/img/vid_6a8830b21af1d.mp4"
+
+    def test_line_carries_nick_prompt_and_url(self, plugin_env) -> None:
+        plugin, _mock_irc, _mock_msg = plugin_env
+
+        line = plugin._format_animate_delivery(
+            "rdrake", "a corgi riding a unicorn", self._URL, "#chan"
+        )
+
+        assert line == f'rdrake: your video is ready! "a corgi riding a unicorn" → {self._URL}'
+
+    def test_long_prompt_never_costs_the_url(self, plugin_env) -> None:
+        """The URL is the one indispensable part; it is budgeted first."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+
+        line = plugin._format_animate_delivery("rdrake", "corgi " * 200, self._URL, "#chan")
+
+        assert line.endswith(self._URL)
+        assert len(line.encode("utf-8")) <= 400
+
+    def test_multibyte_prompt_is_budgeted_in_bytes(self, plugin_env) -> None:
+        """100 characters of emoji is 400 bytes — a character count is not a budget."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+
+        line = plugin._format_animate_delivery("rdrake", "\U0001f600" * 100, self._URL, "#chan")
+
+        assert line.endswith(self._URL)
+        assert len(line.encode("utf-8")) <= 400
+
+    def test_prompt_is_dropped_when_it_cannot_fit(self, plugin_env) -> None:
+        """Better a bare-but-attributed line than a truncated link."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        long_url = "https://paste.boxlabs.uk/img/" + ("x" * 340) + ".mp4"
+
+        line = plugin._format_animate_delivery(
+            "rdrake", "a corgi riding a unicorn", long_url, "#chan"
+        )
+
+        assert line == f"rdrake: your video is ready! → {long_url}"
+
+    def test_formatting_codes_are_stripped_from_the_echo(self, plugin_env) -> None:
+        """A requester does not get to colour the bot's output."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+
+        line = plugin._format_animate_delivery(
+            "rdrake", "\x02bold\x03,4red\x0f corgi", self._URL, "#chan"
+        )
+
+        assert "\x02" not in line and "\x03" not in line
+        assert "boldred corgi" in line
