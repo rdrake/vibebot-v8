@@ -114,6 +114,12 @@ _ANIMATE_DEFAULT_MOTION = "the scene comes to life with subtle natural motion"
 # brackets crash Limnoria's nested-command tokenizer.
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# CTCP ACTION frame (a "/me" line). The \x01 delimiters live inside the
+# range _CTRL_CHAR_RE scrubs, so both inFilter and doPrivmsg unwrap the
+# payload explicitly rather than letting the scrub flatten "/me waves"
+# into the literal text "ACTION waves".
+_ACTION_RE = re.compile(r"^\x01ACTION\s+(.*)\x01$", re.DOTALL)
+
 # Selector name for a status page, shared by statusPageUrls and
 # statusQueryablePages. ASCII-only, so plain .lower() is sufficient for
 # case-insensitive uniqueness.
@@ -2367,15 +2373,21 @@ class LLM(callbacks.Plugin):
             return msg
 
         text = msg.args[1]
-        cleaned = _CTRL_CHAR_RE.sub("", text)
+        # A CTCP ACTION is scrubbed inside its frame: the \x01 delimiters sit
+        # in _CTRL_CHAR_RE's range, and stripping them would turn "/me waves"
+        # into a plain message reading "ACTION waves".
+        action_body = self._action_payload(msg)
+        raw = text if action_body is None else action_body
+        cleaned = _CTRL_CHAR_RE.sub("", raw)
 
         # Escape unbalanced brackets that would crash the tokenizer
         if cleaned.count("[") != cleaned.count("]"):
             cleaned = cleaned.replace("[", "\uff3b").replace("]", "\uff3d")
 
-        if cleaned != text:
-            msg = ircmsgs.IrcMsg(msg=msg, args=(msg.args[0], cleaned))
-            text = cleaned
+        if cleaned != raw:
+            rewritten = cleaned if action_body is None else f"\x01ACTION {cleaned}\x01"
+            msg = ircmsgs.IrcMsg(msg=msg, args=(msg.args[0], rewritten))
+            text = rewritten
 
         # Gate Limnoria's command dispatcher: only messages prefixed with
         # the configured command character reach Owner.doPrivmsg's
@@ -2427,16 +2439,29 @@ class LLM(callbacks.Plugin):
         if not text:
             return
 
-        prefix_chars = conf.supybot.reply.whenAddressedBy.chars()
-        if text[0] in prefix_chars:
-            # Explicit command — Limnoria's dispatcher handles it.
-            return
+        # An ACTION carries its text inside a \x01ACTION … \x01 frame. Unwrap
+        # it so "/me prods vibebot" is matched and stored as prose, and so a
+        # leading command char inside an action stays prose too.
+        action_body = self._action_payload(msg)
+        if action_body is not None:
+            text = action_body
+            if not text:
+                return
+        else:
+            prefix_chars = conf.supybot.reply.whenAddressedBy.chars()
+            if text[0] in prefix_chars:
+                # Explicit command — Limnoria's dispatcher handles it.
+                return
 
         target = msg.args[0]
         is_pm = ircutils.nickEqual(target, irc.nick)
-        addressed_text = text.strip() if is_pm else self._strip_nick_prefix(irc.nick, text)
+        addressed_text = text.strip() if is_pm else self._strip_nick_address(irc.nick, text)
 
         if addressed_text:
+            if action_body is not None:
+                # Keep the action framing the model already speaks: the
+                # "* Nick does something" form _extract_action emits.
+                addressed_text = f"* {msg.nick} {addressed_text}"
             self._route_addressed_to_assistant(irc, msg, addressed_text)
             return
 
@@ -2452,7 +2477,7 @@ class LLM(callbacks.Plugin):
 
         display_nick = msg.nick
         caller = self._resolve_identity(irc, msg)
-        message_text = msg.args[1] if len(msg.args) > 1 else ""
+        message_text = text if action_body is None else f"* {display_nick} {action_body}"
 
         # Store in conversation context for richer follow-up questions
         # Use display nick for channel context (what the LLM sees) so it
@@ -3229,26 +3254,55 @@ class LLM(callbacks.Plugin):
         self._dispatch_addressed_async(irc, msg, text, preflight, entry_route="invalid_command")
 
     @staticmethod
-    def _strip_nick_prefix(bot_nick: str, text: str) -> str | None:
-        """Return ``text`` with a leading bot-nick mention stripped, or None.
+    def _strip_nick_address(bot_nick: str, text: str) -> str | None:
+        """Return ``text`` with a bot-nick address removed, or None if unaddressed.
 
-        Matches Limnoria's nick-addressing rules: optional leading whitespace,
-        the bot's nick (case-insensitive), then a separator (whitespace, ``:``,
-        ``,``, or ``;``). The nick must terminate at a non-alnum boundary so
-        ``vibebotter`` is not treated as ``vibebot``.
+        Matches Limnoria's nick-addressing rules at BOTH ends of the line:
+
+        - leading (``supybot.reply.whenAddressedBy.nick``) — ``vibebot: hi``,
+          ``vibebot, hi``, ``vibebot hi`` all yield ``hi``.
+        - trailing (``supybot.reply.whenAddressedBy.nick.atEnd``) — ``hi,
+          vibebot``, ``prods vibebot``, ``what time is it vibebot?``. Sentence
+          punctuation after the nick is allowed; Limnoria's own matcher stops
+          at it.
+
+        The nick must sit on a non-alnum boundary at both ends, so neither
+        ``vibebotter`` (leading) nor ``reboot`` for nick ``bot`` (trailing) is
+        an address. A mention with running text on both sides — "I asked
+        vibebot about it" — is deliberately NOT an address: third-person talk
+        about the bot should not summon it.
         """
-        stripped = text.lstrip()
+        stripped = text.strip()
         if not stripped:
             return None
         nick_len = len(bot_nick)
-        if not ircutils.strEqual(stripped[:nick_len], bot_nick):
+
+        if ircutils.strEqual(stripped[:nick_len], bot_nick):
+            rest = stripped[nick_len:]
+            if not rest:
+                return None
+            if rest[0] in " \t,:;":
+                return rest.lstrip(" \t,:;").strip() or None
+
+        head = stripped.rstrip(" \t.!?,:;")
+        if not ircutils.strEqual(head[-nick_len:], bot_nick):
             return None
-        rest = stripped[nick_len:]
-        if not rest:
+        rest = head[:-nick_len]
+        if not rest or rest[-1] not in " \t,:;":
             return None
-        if rest[0] not in " \t,:;":
-            return None
-        return rest.lstrip(" \t,:;").strip() or None
+        return rest.rstrip(" \t,:;").strip() or None
+
+    @staticmethod
+    def _action_payload(msg: IrcMsg) -> str | None:
+        """Return the text of a CTCP ACTION (``/me``) PRIVMSG, else ``None``.
+
+        Read straight off the wire text rather than via ``ircmsgs.unAction``,
+        which asserts ``isAction`` and then raises ``AttributeError`` on the
+        degenerate empty action ``\x01ACTION\x01``.
+        """
+        text = msg.args[1] if len(msg.args) > 1 else ""
+        match = _ACTION_RE.match(text)
+        return match.group(1) if match else None
 
     def _route_addressed_to_assistant(self, irc: callbacks.Irc, msg: IrcMsg, text: str) -> None:
         """Run preflight and dispatch addressed text through ``_ask_impl``."""

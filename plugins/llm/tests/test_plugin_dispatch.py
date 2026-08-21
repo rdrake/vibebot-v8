@@ -1003,3 +1003,167 @@ class TestWrapCapabilityGate:
         plugin.llm_service.assistant_request.assert_not_called()
         # The wrap checkCapability converter surfaced the denial.
         assert mock_irc.errorNoCapability.called
+
+
+class TestNickAtEndAddressing:
+    """A trailing nick mention addresses the bot, including inside a CTCP ACTION.
+
+    Regression: ``* Hemingray prods vibebot`` produced no reply — the nick
+    matcher was prefix-only, and inFilter's control-character scrub ate the
+    CTCP ``\\x01`` delimiters so the payload reached context as the literal
+    string ``ACTION prods vibebot``.
+    """
+
+    @pytest.fixture
+    def plugin_with_mocks(self, mocker: MockerFixture):
+        import supybot.conf as supy_conf
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.nick = "botname"
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "usernick!user@host"
+        mock_msg.nick = "usernick"
+        mock_msg.command = "PRIVMSG"
+        mock_msg.args = ("#channel", "hello world")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#channel"
+        mock_msg.server_tags = {}
+
+        chars_value = supy_conf.supybot.reply.whenAddressedBy.chars
+        original_chars = chars_value()
+        chars_value.setValue("@")
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        plugin.registryValue = mocker.MagicMock(return_value=True)
+        plugin.context = mocker.MagicMock()
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
+        plugin._migrated_nicks = set()
+        plugin._migrated_nicks_lock = threading.Lock()
+        plugin._route_addressed_to_assistant = mocker.MagicMock()
+        plugin._loom = None
+        plugin._loom_bridge = None
+        plugin._loom_channel_cache = None
+        plugin._loom_network_cache = None
+        plugin._loom_bot_nicks_cache = ()
+
+        try:
+            yield plugin, mock_irc, mock_msg
+        finally:
+            chars_value.setValue(original_chars)
+
+    def test_trailing_nick_routes_to_assistant(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN 'draw a cat, botname' WHEN doPrivmsg THEN routes without the nick."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "draw a cat, botname")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "draw a cat"
+        )
+        plugin.context.add_message.assert_not_called()
+
+    def test_trailing_nick_with_sentence_punctuation(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN 'what time is it, botname?' WHEN doPrivmsg THEN routes."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "what time is it, botname?")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "what time is it"
+        )
+
+    def test_action_with_trailing_nick_routes_as_action(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN '/me prods botname' WHEN doPrivmsg THEN routes '* usernick prods'."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION prods botname\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "* usernick prods"
+        )
+        plugin.context.add_message.assert_not_called()
+
+    def test_unaddressed_action_is_tracked_as_readable_action(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN '/me waves' WHEN doPrivmsg THEN context stores '* usernick waves'."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION waves at everyone\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        assert plugin.context.add_message.call_args[0][3] == "* usernick waves at everyone"
+        assert plugin.context.add_channel_message.call_args[0][3] == "* usernick waves at everyone"
+
+    def test_action_starting_with_command_char_is_not_a_command(
+        self, plugin_with_mocks: tuple
+    ) -> None:
+        """GIVEN '/me @search things, botname' WHEN doPrivmsg THEN still routes to chat."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION @search things, botname\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "* usernick @search things"
+        )
+
+    def test_third_person_mention_mid_sentence_stays_silent(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN 'botnamesomething is weird' WHEN doPrivmsg THEN plain chatter."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "I think botnamesomething is weird")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_called_once()
+
+
+class TestInFilterPreservesActions:
+    """inFilter must scrub an ACTION's interior without eating its \\x01 frame."""
+
+    @pytest.fixture
+    def plugin(self, mocker: MockerFixture) -> object:
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        return LLM.__new__(LLM)
+
+    @pytest.fixture
+    def irc(self, mocker: MockerFixture) -> object:
+        mock_irc = mocker.MagicMock()
+        mock_irc.nick = "botname"
+        return mock_irc
+
+    @staticmethod
+    def _privmsg(text: str, channel: str = "#test") -> object:
+        import supybot.ircmsgs as ircmsgs
+
+        return ircmsgs.IrcMsg(s=f":n!u@h PRIVMSG {channel} :{text}\r\n")
+
+    def test_clean_action_survives_untouched(self, plugin, irc) -> None:
+        msg = self._privmsg("\x01ACTION prods botname\x01")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.args[1] == "\x01ACTION prods botname\x01"
+
+    def test_action_interior_is_scrubbed_but_stays_an_action(self, plugin, irc) -> None:
+        import supybot.ircmsgs as ircmsgs
+
+        msg = self._privmsg("\x01ACTION prods \x1b[6nbotname\x01")
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result.args[1] == "\x01ACTION prods ［6nbotname\x01"
+        assert ircmsgs.isAction(result)

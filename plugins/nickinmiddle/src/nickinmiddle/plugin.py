@@ -13,10 +13,16 @@ Example (bot nick = ``vibebot``):
 The rewrite only fires when:
 
 - The message is a channel PRIVMSG (not a PM).
-- The nick is *not* already the first or last word (those cases are handled
-  natively by ``supybot.reply.whenAddressedBy.nick`` and ``.nick.atEnd``).
+- The nick is *not* already the first or last word. Both of those are
+  handled by the LLM plugin's own ``_strip_nick_address``, which is what
+  actually decides addressing here — its ``inFilter`` tags every non-command
+  line ``addressed=''``, so Limnoria's ``whenAddressedBy.nick`` /
+  ``.nick.atEnd`` never get consulted.
 - There is a word-boundary separator (space, comma, colon, semicolon) on
   both sides of the nick.
+
+CTCP messages are skipped, so a nick in the middle of a ``/me`` line is not
+recognised. A nick at the START or END of an action is (LLM plugin).
 """
 
 from __future__ import annotations

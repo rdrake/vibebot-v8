@@ -13,10 +13,14 @@ On AfterNet, and in most casual IRC channels, people naturally write:
 can you, vibebot, tell me the weather
 ```
 
-Stock Limnoria only matches the bot's nick at the start or end of a
-message (through `supybot.reply.whenAddressedBy.nick` and
-`.nick.atEnd`). NickInMiddle handles the in-the-middle case, so the bot
-still responds naturally.
+The LLM plugin matches the bot's nick at the start or the end of a
+message, including inside a `/me` action. NickInMiddle handles the
+in-the-middle case, so the bot still responds naturally.
+
+Limnoria's own `supybot.reply.whenAddressedBy.nick` and `.nick.atEnd`
+settings do not decide this: the LLM plugin's `inFilter` tags every
+non-command line `addressed=''` to keep plain English out of the command
+tokenizer, so its own matcher is the one that runs.
 
 ## What it does
 

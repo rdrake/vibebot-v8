@@ -924,48 +924,78 @@ class TestBuildBridgeTool:
         assert "later.tell" in desc_open.lower()
 
 
-class TestStripNickPrefix:
-    """Direct unit coverage for the nick-prefix-stripping helper."""
+class TestStripNickAddress:
+    """Direct unit coverage for the nick-address-stripping helper."""
 
     def test_colon_separator(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bot: hello") == "hello"
+        assert LLM._strip_nick_address("bot", "bot: hello") == "hello"
 
     def test_comma_separator(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bot, hello") == "hello"
+        assert LLM._strip_nick_address("bot", "bot, hello") == "hello"
 
     def test_whitespace_separator(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bot hello") == "hello"
+        assert LLM._strip_nick_address("bot", "bot hello") == "hello"
 
     def test_case_insensitive_match(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "BOT, hi") == "hi"
+        assert LLM._strip_nick_address("bot", "BOT, hi") == "hi"
 
     def test_returns_none_when_nick_is_part_of_word(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bottle of wine") is None
+        assert LLM._strip_nick_address("bot", "bottle of wine") is None
 
     def test_returns_none_when_no_text_after_nick(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bot") is None
-
-    def test_returns_none_when_text_does_not_start_with_nick(self) -> None:
-        from llm.plugin import LLM
-
-        assert LLM._strip_nick_prefix("bot", "hello bot") is None
+        assert LLM._strip_nick_address("bot", "bot") is None
 
     def test_returns_none_when_only_separators_after_nick(self) -> None:
         from llm.plugin import LLM
 
-        assert LLM._strip_nick_prefix("bot", "bot:   ") is None
+        assert LLM._strip_nick_address("bot", "bot:   ") is None
+
+    def test_trailing_nick_after_whitespace(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "hello bot") == "hello"
+
+    def test_trailing_nick_after_comma(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "draw a cat, bot") == "draw a cat"
+
+    def test_trailing_nick_with_sentence_punctuation(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "what time is it, bot?") == "what time is it"
+
+    def test_trailing_nick_is_case_insensitive(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "prods BOT") == "prods"
+
+    def test_returns_none_when_nick_is_a_word_suffix(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "time for a reboot") is None
+
+    def test_returns_none_for_mention_mid_sentence(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "I asked bot about it") is None
+
+    def test_returns_none_when_trailing_nick_is_the_whole_line(self) -> None:
+        from llm.plugin import LLM
+
+        assert LLM._strip_nick_address("bot", "bot!") is None
 
 
 class TestInitContext:
