@@ -49,6 +49,7 @@ from .service import (
     AssistantRequestContext,
     AssistantResult,
     CompletionResult,
+    GroundedPrompt,
     ImageResult,
     LLMService,
     VideoResult,
@@ -100,6 +101,12 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # and counting draws by row would otherwise double. One image generated, one
 # row: `WHERE command = 'draw:image'` is the image bill.
 _IMAGE_USAGE_COMMAND = "draw:image"
+
+# Usage-row label for the canon-grounding rewrite that @animate runs before
+# submission. Namespaced for the same reason as the image row: the animate row
+# names the video model and books nothing, so folding a text-model rewrite into
+# it would hide real spend under a model that never spends.
+_ANIMATE_GROUND_USAGE_COMMAND = "animate:ground"
 
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
@@ -4752,6 +4759,31 @@ class LLM(callbacks.Plugin):
         )
         return _ToolCallbackResult(not bool(result.error), result.content)
 
+    def _log_ground_usage(self, nick: str, channel: str, grounded: GroundedPrompt) -> None:
+        """Book the @animate canon-grounding rewrite under the model that spent.
+
+        Its own row, under the text model, carrying the prompt it produced —
+        the animate row books $0.00 against the video model by design, and the
+        grounding call is the only real money @animate spends. Skips a zero
+        row (grounding declined or fell over) and never raises: an accounting
+        write must not sink a clip the user is waiting for.
+        """
+        if not (grounded.cost or grounded.prompt_tokens or grounded.completion_tokens):
+            return
+        try:
+            self.db.log_usage(
+                nick,
+                channel,
+                _ANIMATE_GROUND_USAGE_COMMAND,
+                grounded.model,
+                grounded.prompt_tokens,
+                grounded.completion_tokens,
+                grounded.cost,
+                prompt=grounded.prompt[:200],
+            )
+        except Exception:
+            self.log.exception("Failed to log animate grounding usage")
+
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
 
@@ -6268,13 +6300,42 @@ class LLM(callbacks.Plugin):
         reply_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
 
         with self._trace_request("animate", nick, channel):
-            # No typing indicator and no executor permit: submission is a
-            # sub-second HTTP POST, and the render that follows happens on the
-            # video box, not in this thread. Holding an LLM permit for it would
-            # block a real completion for nothing.
+            # Verse grounding: the same canon layer @draw gets, applied where it
+            # has to be applied here. Draw hands the lore to the assistant,
+            # which writes the image prompt from it; nothing composes an animate
+            # prompt, so "@animate the stinky lads at the beach" would reach a
+            # text-to-video model that renders those five words as five words.
+            # Folding the lore in before submission is the equivalent stage.
+            # Skipped — no completion spent — when the channel has no verse, the
+            # message references no canon, or the box is not wired up and there
+            # is no clip to ground.
+            video_prompt = text
+            verse_ctx = (
+                self._verse_context_for(pf, text) if self.llm_service.animate_available() else None
+            )
+            if verse_ctx:
+                # Typing and a permit cover the grounding call and nothing else:
+                # it is an ordinary completion, so it queues like one, and it
+                # puts a second or two of silence in front of a command that
+                # used to answer instantly.
+                stop_typing = self.llm_service._begin_typing(irc, msg)
+                try:
+                    with self._allow_concurrent(), self._llm_executor.permit():
+                        grounded = self.llm_service.ground_video_prompt(
+                            text, verse_ctx, channel=channel
+                        )
+                finally:
+                    stop_typing()
+                video_prompt = grounded.prompt
+                self._log_ground_usage(nick, channel, grounded)
+
+            # No typing indicator and no executor permit for the submission
+            # itself: it is a sub-second HTTP POST, and the render that follows
+            # happens on the video box, not in this thread. Holding an LLM
+            # permit for it would block a real completion for nothing.
             with self._allow_concurrent():
                 result = self.llm_service.video_generation(
-                    text,
+                    video_prompt,
                     nick=nick,
                     reply_target=reply_target,
                     is_channel=is_channel,

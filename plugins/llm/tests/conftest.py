@@ -586,6 +586,14 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,
         "drawUnregRateLimitWindow": 60,
+        # animate (mirrors config.py: stricter than draw on every tier, since a
+        # clip is ~70s of exclusive GPU time and the box serialises)
+        "animateRateLimitCount": 2,
+        "animateRateLimitWindow": 900,
+        "animateTrustedRateLimitCount": 4,
+        "animateTrustedRateLimitWindow": 300,
+        "animateUnregRateLimitCount": 1,
+        "animateUnregRateLimitWindow": 7200,
         # story (mirrors draw — expensive image command)
         "storyRateLimitCount": 2,
         "storyRateLimitWindow": 300,

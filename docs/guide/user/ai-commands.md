@@ -124,6 +124,8 @@ Rendering takes a minute or two — about 135 seconds for the default seven-seco
 
 Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
 
+In a channel with the verse enabled, naming someone or something from the world gets you a clip of the actual character. The video model has never heard of your cast, so a bare name would render as words on screen; the bot looks the canon up first and hands the model a description instead. This works like `@draw`'s canon grounding, and leaves the shot you asked for — the action, the camera move, the mood — alone.
+
 You can also just ask for a video in conversation — the bot has a tool for it and will queue one the same way.
 
 ---

@@ -558,3 +558,194 @@ class TestGenerateVideoTool:
         assert "generate_video" in names(PROFILE_CHAT)
         assert "generate_video" not in names(PROFILE_VERSE)
         assert "generate_video" not in names(PROFILE_REMIND_ACTION)
+
+
+class TestCanonGrounding:
+    """A t2v model renders words, so canon names have to become bodies first.
+
+    ``@draw the stinky lads`` works because the draw path hands the lore block
+    to the assistant and the assistant writes the image prompt. Nothing writes
+    an animate prompt, so without this stage the video box is handed the words
+    "the stinky lads" and renders whatever those four words look like.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker) -> None:
+        self.mocker = mocker
+        self.service, self.plugin = _service(make_service)
+
+    def _ground(
+        self,
+        returned: str,
+        prompt: str = "the stinky lads at the beach",
+        canon: str = "Established characters:\n- Archie: a stout windbag in a cardigan",
+    ):
+        """Run one grounding, returning the (messages, result) it produced."""
+        response = self.mocker.Mock()
+        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=returned))]
+        response.usage = self.mocker.Mock(prompt_tokens=10, completion_tokens=5)
+        completion = self.mocker.patch("llm.service.litellm.completion", return_value=response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.002)
+        result = self.service.ground_video_prompt(prompt, canon, channel="#chan")
+        return completion.call_args[1]["messages"], result
+
+    def test_grounded_prompt_replaces_the_request(self) -> None:
+        """GIVEN canon WHEN grounding succeeds THEN the rewrite is what ships."""
+        _, result = self._ground("A stout man in a cardigan wades into grey surf.")
+        assert result.prompt == "A stout man in a cardigan wades into grey surf."
+        assert result.cost == 0.002
+        assert (result.prompt_tokens, result.completion_tokens) == (10, 5)
+
+    def test_canon_and_request_both_reach_the_model(self) -> None:
+        """Both halves are needed: the lore says who, the request says what shot."""
+        messages, _ = self._ground("a man in a cardigan on a beach")
+        user = messages[1]["content"]
+        assert "Archie: a stout windbag in a cardigan" in user
+        assert "the stinky lads at the beach" in user
+
+    def test_grounder_is_told_names_render_as_nothing(self) -> None:
+        """The instruction that does the work: swap the name for its appearance.
+
+        Without it the rewrite comes back with the names still in it, which is
+        the same prompt the box could not render in the first place.
+        """
+        messages, _ = self._ground("a man in a cardigan on a beach")
+        system = messages[0]["content"].lower()
+        assert "never heard of these characters" in system
+        assert "what it looks like" in system
+
+    def test_grounder_is_told_to_keep_the_shot(self) -> None:
+        """The opposite failure: a grounder that treats canon as a writing prompt."""
+        messages, _ = self._ground("a man in a cardigan on a beach")
+        system = messages[0]["content"].lower()
+        assert "keep the shot the user asked for" in system
+        assert "not writing a better one" in system
+
+    def test_newlines_are_flattened(self) -> None:
+        """The multipart field is one line; a stray newline would ship verbatim."""
+        _, result = self._ground("A stout man in a cardigan\nwades into grey surf.")
+        assert "\n" not in result.prompt
+        assert result.prompt == "A stout man in a cardigan wades into grey surf."
+
+    def test_empty_completion_keeps_the_original(self) -> None:
+        """GIVEN an empty rewrite WHEN grounding runs THEN the user's words ship."""
+        _, result = self._ground("   ")
+        assert result.prompt == "the stinky lads at the beach"
+        assert result.cost == 0.0
+
+    def test_failure_keeps_the_original(self) -> None:
+        """A grounding call that falls over costs canon accuracy, not the clip."""
+        self.mocker.patch("llm.service.litellm.completion", side_effect=RuntimeError("boom"))
+        result = self.service.ground_video_prompt("the stinky lads", "canon", channel="#chan")
+        assert result.prompt == "the stinky lads"
+        assert (result.model, result.cost) == ("", 0.0)
+
+    def test_verse_model_is_preferred_over_the_chat_model(self, make_service) -> None:
+        """A reasoning assistantModel burns a reasoning budget to write 60 words.
+
+        Same reason verse prose runs on verseModel: the channel's own choice of
+        a non-reasoning model should carry to the canon-voiced rewrite too.
+        """
+        service, _plugin = _service(make_service, verseModel="gemini/gemini-flash-latest")
+        response = self.mocker.Mock()
+        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content="a beach"))]
+        response.usage = self.mocker.Mock(prompt_tokens=1, completion_tokens=1)
+        completion = self.mocker.patch("llm.service.litellm.completion", return_value=response)
+        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.ground_video_prompt("the lads", "canon", channel="#chan")
+
+        assert completion.call_args[1]["model"] == "gemini/gemini-flash-latest"
+        assert result.model == "gemini/gemini-flash-latest"
+
+    def test_chat_model_is_the_fallback(self) -> None:
+        """An empty verseModel — the default — still grounds, on assistantModel."""
+        messages, result = self._ground("a beach")
+        assert result.model == self.plugin.registryValue("assistantModel")
+        assert messages  # the call went out rather than being skipped
+
+
+class TestAnimateCommandGrounding:
+    """Where the lore gets folded in: before submission, not after."""
+
+    def _wire(self, plugin, mocker, *, available: bool = True, canon: str | None = None):
+        """A plugin whose animate box is up and whose verse returns ``canon``."""
+        from llm.service import GroundedPrompt, VideoResult
+
+        plugin.llm_service.animate_available.return_value = available
+        plugin.llm_service.video_generation.return_value = VideoResult(
+            content="Rendering your video.", job_id="job-1", queued=True
+        )
+        plugin.llm_service.ground_video_prompt.return_value = GroundedPrompt(
+            "Three stout men in cardigans wade into grey surf.", "gpt-4", 120, 40, 0.0012
+        )
+        mocker.patch.object(plugin, "_verse_context_for", return_value=canon)
+
+    def test_canon_reference_ships_the_grounded_prompt(self, plugin_env, mocker) -> None:
+        """GIVEN a canon mention WHEN @animate runs THEN the box gets the rewrite."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker, canon="Established characters:\n- Archie: a windbag")
+
+        plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads"])
+
+        ground = plugin.llm_service.ground_video_prompt.call_args
+        assert ground.args[0] == "the stinky lads"
+        assert "Archie: a windbag" in ground.args[1]
+        submitted = plugin.llm_service.video_generation.call_args
+        assert submitted.args[0] == "Three stout men in cardigans wade into grey surf."
+
+    def test_no_canon_reference_ships_the_user_text(self, plugin_env, mocker) -> None:
+        """No verse, or nothing referenced → no completion spent, words unchanged."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker, canon=None)
+
+        plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest", "at", "sunrise"])
+
+        plugin.llm_service.ground_video_prompt.assert_not_called()
+        assert plugin.llm_service.video_generation.call_args.args[0] == "a pine forest at sunrise"
+
+    def test_unconfigured_box_grounds_nothing(self, plugin_env, mocker) -> None:
+        """A clip that cannot be rendered is not worth a grounding call."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker, available=False, canon="Established characters:\n- Archie")
+
+        plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads"])
+
+        plugin.llm_service.ground_video_prompt.assert_not_called()
+
+    def test_grounding_spend_is_booked_under_the_text_model(self, plugin_env, mocker) -> None:
+        """The animate row books $0.00 against the video model, by design.
+
+        Folding a text-model rewrite into that row would hide the only money
+        @animate actually spends under a model that spends none — the same
+        misattribution that left draw reading as $0.00 for four months.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker, canon="Established characters:\n- Archie")
+
+        plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads"])
+
+        rows = [c.args for c in plugin.db.log_usage.call_args_list]
+        ground_rows = [r for r in rows if r[2] == "animate:ground"]
+        assert len(ground_rows) == 1
+        assert ground_rows[0][3] == "gpt-4"
+        assert ground_rows[0][4:7] == (120, 40, 0.0012)
+
+    def test_declined_grounding_books_no_row(self, plugin_env, mocker) -> None:
+        """A grounding that never reached a provider is not a usage event."""
+        from llm.service import GroundedPrompt
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker, canon="Established characters:\n- Archie")
+        plugin.llm_service.ground_video_prompt.return_value = GroundedPrompt("the stinky lads")
+
+        plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads"])
+
+        rows = [c.args for c in plugin.db.log_usage.call_args_list]
+        assert not [r for r in rows if r[2] == "animate:ground"]
+        assert plugin.llm_service.video_generation.call_args.args[0] == "the stinky lads"

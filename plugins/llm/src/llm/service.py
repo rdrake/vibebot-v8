@@ -128,6 +128,11 @@ _CHAT_REFUSED_LINES = (
 _REWRITE_PADDING_RATIO = 1.2
 _REWRITE_PADDING_FLOOR_CHARS = 40
 
+# A canon-grounded video prompt that has grown past this has stopped grounding
+# and started writing a screenplay. Instrument only; see ``ground_video_prompt``
+# for why it is not truncated.
+_VIDEO_GROUND_PADDING_CHARS = 800
+
 _ = PluginInternationalization("LLM")
 
 # Constants
@@ -1437,6 +1442,22 @@ class VideoResult(NamedTuple):
     # _store_context_and_log_usage contract. The video box is self-hosted and
     # reports no token accounting, so a usage row for animate records that the
     # request happened, not what it cost.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+
+
+class GroundedPrompt(NamedTuple):
+    """A video prompt rewritten against canon, plus what that rewrite cost.
+
+    The model rides along because the spend belongs to the text model that did
+    the grounding, not to the video box that renders the result — booking it
+    under the clip's model is the misattribution the image path already had to
+    dig itself out of.
+    """
+
+    prompt: str
+    model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
@@ -6422,6 +6443,105 @@ Examples (echo → action_prompt: ""):
             except Exception:
                 detail = {"error": {"message": f"HTTP {e.code}"}}
             return e.code, detail
+
+    def ground_video_prompt(
+        self,
+        prompt: str,
+        verse_context: str,
+        *,
+        channel: str | None = None,
+    ) -> GroundedPrompt:
+        """Rewrite a video prompt so canon references become visible things.
+
+        ``@draw the stinky lads`` lands because the draw path hands the lore
+        block to the assistant, which writes the image prompt from it. The
+        video path has no such stage: whatever ``@animate`` is given goes
+        straight to a text-to-video model that has never heard of the lads and
+        renders the words as words. This is that missing stage — one completion
+        that swaps names for appearances and leaves the shot alone.
+
+        Args:
+            prompt: The user's ``@animate`` text.
+            verse_context: Facts-only canon block from ``_verse_context_for``.
+            channel: Channel for per-channel model lookup.
+
+        Returns:
+            A GroundedPrompt. On any failure it carries the ORIGINAL prompt and
+            zero spend: a grounding call that falls over costs the user a
+            canon-accurate clip, and must not cost them the clip.
+        """
+        try:
+            target = self._channel_target(channel)
+            # verseModel first: this is a canon-voiced rewrite, and the same
+            # reasoning models that crater verse prose burn a reasoning budget
+            # here to produce sixty words. Falls back to assistantModel when the
+            # channel leaves verseModel empty.
+            model = self.plugin.registryValue("verseModel", target) or self.plugin.registryValue(
+                "assistantModel", target
+            )
+            if self._missing_key_error(model):
+                return GroundedPrompt(prompt)
+
+            # The failure this prompt exists to prevent is literalism: a t2v
+            # model given "the stinky lads" renders a caption, or three
+            # strangers. Names have to become bodies. The opposite failure is
+            # the grounder taking the canon as a writing assignment and
+            # returning a scene the user never asked for, so the shot they DID
+            # ask for is named as the thing that survives.
+            system_prompt = (
+                "You turn a user's video request into a prompt for a "
+                "text-to-video model, grounded in the canon below.\n"
+                "The video model has never heard of these characters or places, so "
+                "a name on its own renders as nothing. Replace every canon "
+                "reference with what it LOOKS like — build, age, clothing, setting "
+                "— taking the details from the canon and inventing nothing that "
+                "contradicts it. A name may stay alongside its description, never "
+                "instead of one.\n"
+                "Keep the shot the user asked for: the action, the camera move, "
+                "the setting, the mood. You are describing their video, not "
+                "writing a better one.\n"
+                "One paragraph, about 60 words, plainly describing what is on "
+                "screen. No dialogue, no backstory, no scene headings, no style or "
+                "quality words the user did not ask for.\n"
+                "Output ONLY the prompt."
+            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"{verse_context}\n\nVideo request: {prompt}"},
+            ]
+
+            response = self._timed_completion(
+                "video_prompt_ground",
+                model=model,
+                messages=messages,
+                channel=channel,
+                timeout=self.plugin.registryValue("timeout"),
+                metadata=self._get_litellm_metadata(),
+            )
+
+            grounded = (response.choices[0].message.content or "").strip()
+            if not grounded:
+                return GroundedPrompt(prompt)
+            # The form field is a single line; a multi-line prompt would be sent
+            # verbatim and read as one run-on string by the box anyway.
+            grounded = _LINE_BREAK_RE.sub(" ", grounded).strip()
+
+            if len(grounded) > _VIDEO_GROUND_PADDING_CHARS:
+                # Not truncated: a prompt cut mid-clause renders worse than a
+                # long one. WARNING because prod keeps WARNING and above, and a
+                # grounder that has started writing essays is otherwise
+                # invisible. f-string, not %-args — supybot's logger drops them.
+                self.log.warning(
+                    f"video_ground_fidelity: padded orig_chars={len(prompt)} "
+                    f"new_chars={len(grounded)}"
+                )
+
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+            self.log.info("video prompt grounded in canon: %s", grounded[:200])
+            return GroundedPrompt(grounded, model, prompt_tokens, completion_tokens, cost)
+        except Exception as e:
+            self.log.warning("Video prompt grounding failed: %s", self._sanitize(str(e)))
+            return GroundedPrompt(prompt)
 
     def video_generation(
         self,
