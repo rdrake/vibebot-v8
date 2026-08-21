@@ -38,6 +38,7 @@ from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
 from .persistence import LLMDatabase, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
+    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
@@ -49,7 +50,6 @@ from .service import (
     AssistantRequestContext,
     AssistantResult,
     CompletionResult,
-    GroundedPrompt,
     ImageResult,
     LLMService,
     VideoResult,
@@ -101,12 +101,6 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # and counting draws by row would otherwise double. One image generated, one
 # row: `WHERE command = 'draw:image'` is the image bill.
 _IMAGE_USAGE_COMMAND = "draw:image"
-
-# Usage-row label for the canon-grounding rewrite that @animate runs before
-# submission. Namespaced for the same reason as the image row: the animate row
-# names the video model and books nothing, so folding a text-model rewrite into
-# it would hide real spend under a model that never spends.
-_ANIMATE_GROUND_USAGE_COMMAND = "animate:ground"
 
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
@@ -4191,6 +4185,26 @@ class LLM(callbacks.Plugin):
             self.log.exception("verse context injection failed (non-fatal) channel=%s", channel)
             return None
 
+    def _verse_grounded_overlay(self, profile: str, channel: str, verse_context: str) -> str:
+        """Lore block layered onto a profile's channel overlay, for the overlay slot.
+
+        ``system_prompt=`` on an assistant_request is the personality-overlay
+        slot; the profile's framework prompt and tools are still added
+        downstream by assistant_completion. So a media planner that wants its
+        request grounded in canon puts the facts-only block here, on top of
+        whatever overlay the channel configures for that profile.
+
+        The media profiles currently set ``overlay_setting=None`` — they build
+        their system prompt without reading a channel key — and ``None`` is not
+        a registry name: passing it to registryValue raises TypeError inside
+        Limnoria's own ``registry.split``. Hence the guard rather than a
+        straight lookup, so this keeps working whichever way a profile is
+        configured.
+        """
+        overlay_key = PROFILES[profile].overlay_setting
+        overlay = self.registryValue(overlay_key, channel) if overlay_key else ""
+        return "\n\n".join(p for p in [overlay, verse_context] if p)
+
     @staticmethod
     def _ambient_verse_intent(text: str) -> str:
         """Classify an ambient verse-mention by requested OUTPUT.
@@ -4758,31 +4772,6 @@ class LLM(callbacks.Plugin):
             reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
         )
         return _ToolCallbackResult(not bool(result.error), result.content)
-
-    def _log_ground_usage(self, nick: str, channel: str, grounded: GroundedPrompt) -> None:
-        """Book the @animate canon-grounding rewrite under the model that spent.
-
-        Its own row, under the text model, carrying the prompt it produced —
-        the animate row books $0.00 against the video model by design, and the
-        grounding call is the only real money @animate spends. Skips a zero
-        row (grounding declined or fell over) and never raises: an accounting
-        write must not sink a clip the user is waiting for.
-        """
-        if not (grounded.cost or grounded.prompt_tokens or grounded.completion_tokens):
-            return
-        try:
-            self.db.log_usage(
-                nick,
-                channel,
-                _ANIMATE_GROUND_USAGE_COMMAND,
-                grounded.model,
-                grounded.prompt_tokens,
-                grounded.completion_tokens,
-                grounded.cost,
-                prompt=grounded.prompt[:200],
-            )
-        except Exception:
-            self.log.exception("Failed to log animate grounding usage")
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
@@ -6202,8 +6191,7 @@ class LLM(callbacks.Plugin):
         draw_system_prompt: str | None = None
         verse_ctx = self._verse_context_for(pf, text)
         if verse_ctx:
-            draw_overlay = self.registryValue(PROFILES[PROFILE_DRAW].overlay_setting, channel)
-            draw_system_prompt = "\n\n".join(p for p in [draw_overlay, verse_ctx] if p)
+            draw_system_prompt = self._verse_grounded_overlay(PROFILE_DRAW, channel, verse_ctx)
 
         # Typing fires immediately after preflight so users see "is
         # composing" before history fetch / executor permit / image
@@ -6295,69 +6283,81 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
-        reply_target = msg.args[0] if msg.args else ""
-        is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
-        reply_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
-
-        with self._trace_request("animate", nick, channel):
-            # Verse grounding: the same canon layer @draw gets, applied where it
-            # has to be applied here. Draw hands the lore to the assistant,
-            # which writes the image prompt from it; nothing composes an animate
-            # prompt, so "@animate the stinky lads at the beach" would reach a
-            # text-to-video model that renders those five words as five words.
-            # Folding the lore in before submission is the equivalent stage.
-            # Skipped — no completion spent — when the channel has no verse, the
-            # message references no canon, or the box is not wired up and there
-            # is no clip to ground.
-            video_prompt = text
-            verse_ctx = (
-                self._verse_context_for(pf, text) if self.llm_service.animate_available() else None
+        # Verse grounding: if the prompt references canon, layer the facts-only
+        # lore block onto the animate overlay so "@animate the stinky lads"
+        # renders the canon cast. It has to be layered somewhere a planner can
+        # read it, because the video box takes the prompt literally: names go to
+        # a model that has never heard of them. None when nothing is referenced
+        # → the default animate prompt, unchanged.
+        animate_system_prompt: str | None = None
+        verse_ctx = self._verse_context_for(pf, text)
+        if verse_ctx:
+            animate_system_prompt = self._verse_grounded_overlay(
+                PROFILE_ANIMATE, channel, verse_ctx
             )
-            if verse_ctx:
-                # Typing and a permit cover the grounding call and nothing else:
-                # it is an ordinary completion, so it queues like one, and it
-                # puts a second or two of silence in front of a command that
-                # used to answer instantly.
-                stop_typing = self.llm_service._begin_typing(irc, msg)
-                try:
-                    with self._allow_concurrent(), self._llm_executor.permit():
-                        grounded = self.llm_service.ground_video_prompt(
-                            text, verse_ctx, channel=channel
-                        )
-                finally:
-                    stop_typing()
-                video_prompt = grounded.prompt
-                self._log_ground_usage(nick, channel, grounded)
 
-            # No typing indicator and no executor permit for the submission
-            # itself: it is a sub-second HTTP POST, and the render that follows
-            # happens on the video box, not in this thread. Holding an LLM
-            # permit for it would block a real completion for nothing.
-            with self._allow_concurrent():
-                result = self.llm_service.video_generation(
-                    video_prompt,
-                    nick=nick,
-                    reply_target=reply_target,
-                    is_channel=is_channel,
-                    channel=channel,
-                    account=pf.account,
-                    reply_msgid=reply_msgid,
-                )
-                irc.reply(self.llm_service.sanitize_output(result.content))
-
-            # Booked at submission rather than on delivery. The row records
-            # that the request was made and accepted; the poller has no usage
-            # of its own to add, since the video box bills no tokens.
-            self._store_context_and_log_usage(
-                nick,
-                channel,
-                "animate",
-                text,
-                f"[Video job: {result.job_id or 'rejected'}]",
-                result,
+        # Typing fires immediately after preflight, same as @draw: the planner
+        # turn in front of the submission is a completion like any other, and
+        # the submission itself no longer ends the command — the model's reply
+        # does.
+        stop_typing = self.llm_service._begin_typing(irc, msg)
+        try:
+            request_context = self._build_request_context(
                 irc,
                 msg,
+                pf,
+                entry_route=PROFILE_ANIMATE,
+                profile=PROFILE_ANIMATE,
             )
+
+            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
+
+            with self._trace_request("animate", nick, channel):
+                history, channel_history = self._gather_history(
+                    nick,
+                    channel,
+                    max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
+                )
+
+                with self._allow_concurrent(), self._llm_executor.permit():
+                    result = self.llm_service.assistant_request(
+                        text,
+                        request_context=request_context,
+                        db=self.db,
+                        context=self.context,
+                        bot_nick=irc.nick,
+                        history=history,
+                        channel_history=channel_history,
+                        irc=irc,
+                        msg=msg,
+                        memories=[],
+                        system_prompt=animate_system_prompt,
+                        animate_fn=lambda p: self._animate_for_assistant(
+                            irc, msg, p, nick=nick, channel=channel, account=pf.account
+                        ),
+                        manage_typing=False,
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                    )
+
+                    response, should_log = self._dispatch_assistant_reply(
+                        irc,
+                        msg,
+                        result,
+                        nick=nick,
+                        channel=channel,
+                        response=result.content,
+                    )
+
+                # One row per turn, booked at submission. The planner's text is
+                # the only thing @animate spends: the video box is self-hosted
+                # and reports no token accounting, so the poller that delivers
+                # the clip minutes later has no usage of its own to add.
+                if should_log:
+                    self._store_context_and_log_usage(
+                        nick, channel, "animate", text, response, result, irc, msg
+                    )
+        finally:
+            stop_typing()
 
     animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
 

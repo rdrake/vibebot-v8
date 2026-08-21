@@ -1006,6 +1006,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Plan @animate through the assistant, like @draw (`animate`)
 - Key all poller state by canonical source (`status`)
 - Move loopback allowance to conftest (`tests`)
 - Make the reply-guard stack a table (`assistant`)

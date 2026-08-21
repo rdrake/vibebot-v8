@@ -20,13 +20,14 @@ class TestPromptsRegistry:
             "chat",
             "code",
             "draw",
+            "animate",
             "verse",
             "remind_action",
         }
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "verse", "remind_action"],
+        ["chat", "code", "draw", "animate", "verse", "remind_action"],
     )
     def test_every_prompt_is_nonempty(self, name):
         """Each registered prompt is a non-empty string."""
@@ -50,7 +51,7 @@ class TestProfilePromptInvariants:
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "verse", "remind_action"],
+        ["chat", "code", "draw", "animate", "verse", "remind_action"],
     )
     def test_profile_prompts_contain_bot_nick_placeholder(self, name):
         """Profile prompts are formatted with .format(bot_nick=...)."""

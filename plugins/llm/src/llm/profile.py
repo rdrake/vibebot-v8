@@ -2,10 +2,10 @@
 
 This module owns:
 
-- The five **chat-loop profile identifiers** (``PROFILE_CHAT``,
-  ``PROFILE_CODE``, ``PROFILE_DRAW``, ``PROFILE_VERSE``,
-  ``PROFILE_REMIND_ACTION``) that route requests through
-  ``service.assistant_completion``.
+- The six **chat-loop profile identifiers** (``PROFILE_CHAT``,
+  ``PROFILE_CODE``, ``PROFILE_DRAW``, ``PROFILE_ANIMATE``,
+  ``PROFILE_VERSE``, ``PROFILE_REMIND_ACTION``) that route requests
+  through ``service.assistant_completion``.
 - The :class:`Profile` frozen dataclass that bundles every per-mode fact
   for one of those routes: which Limnoria registry key holds the model,
   which ``prompts.PROMPTS`` key supplies the framework system prompt,
@@ -41,6 +41,7 @@ from dataclasses import dataclass
 PROFILE_CHAT = "chat"
 PROFILE_CODE = "code"
 PROFILE_DRAW = "draw"
+PROFILE_ANIMATE = "animate"
 PROFILE_VERSE = "verse"
 PROFILE_REMIND_ACTION = "remind_action"
 
@@ -114,6 +115,17 @@ PROFILES: dict[str, Profile] = {
         prompt_id="draw",
         # Same pattern as PROFILE_CODE: planner constructs its system_prompt
         # without reading a channel overlay key.
+        overlay_setting=None,
+        max_output_tokens=None,
+        force_search_on_explicit=False,
+    ),
+    PROFILE_ANIMATE: Profile(
+        id=PROFILE_ANIMATE,
+        model_setting="assistantModel",
+        # Same shape as PROFILE_DRAW, one media type over: a planner that
+        # writes the prompt the generator actually sees. The @animate wrapper
+        # constructs its system_prompt without a channel overlay key.
+        prompt_id="animate",
         overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,

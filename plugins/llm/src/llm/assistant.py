@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .profile import (
+    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
@@ -644,17 +645,17 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
         "require_account": True,
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_DRAW, PROFILE_REMIND_ACTION}),
     },
-    # Chat only, deliberately. Every other profile that could host this is a
-    # place the bot generates unprompted: verse narrates ambiently, and
-    # remind_action fires "as you" with nobody present. A video is ~70s of
-    # exclusive GPU time on a shared box, which is the one cost here that
-    # cannot be undone by ignoring the output, so it stays on the route where
-    # a human just asked for it. require_account matches @animate — the clip
-    # is delivered later, so there must be an identity to deliver it to.
+    # Chat and the @animate planner, deliberately nowhere else. The profiles
+    # left out are the ones where the bot generates unprompted: verse narrates
+    # ambiently, and remind_action fires "as you" with nobody present. A video
+    # is ~70s of exclusive GPU time on a shared box, which is the one cost here
+    # that cannot be undone by ignoring the output, so it stays on the routes
+    # where a human just asked for it. require_account matches @animate — the
+    # clip is delivered later, so there must be an identity to deliver it to.
     "generate_video": {
         "capability": "llm.animate",
         "require_account": True,
-        "visible_in": frozenset({PROFILE_CHAT}),
+        "visible_in": frozenset({PROFILE_CHAT, PROFILE_ANIMATE}),
     },
     "search_web": {
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),

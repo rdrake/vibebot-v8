@@ -833,6 +833,34 @@ class TestDrawCommand:
 
         assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
 
+    def test_canon_grounding_survives_a_profile_with_no_overlay_key(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """The media profiles set overlay_setting=None, and None is not a name.
+
+        Limnoria's registryValue calls registry.split(name), which raises
+        TypeError on None — so handing a profile's None overlay_setting
+        straight to registryValue turns every canon-referencing @draw in a
+        verse channel into an error reply instead of a picture. The plain
+        MagicMock every other test uses swallows that (it accepts None
+        happily), so this one enforces the real contract.
+        """
+        from llm.profile import PROFILE_ANIMATE, PROFILE_DRAW
+
+        plugin, _mock_irc, _mock_msg = plugin_env
+        permissive = plugin.registryValue.side_effect
+
+        def strict(name, *args):
+            if not isinstance(name, str):
+                raise TypeError("expected string or bytes-like object")
+            return permissive(name, *args)
+
+        plugin.registryValue = mocker.MagicMock(side_effect=strict)
+
+        for profile_id in (PROFILE_DRAW, PROFILE_ANIMATE):
+            overlay = plugin._verse_grounded_overlay(profile_id, "#test", "CANON: the lads")
+            assert overlay == "CANON: the lads"
+
     def test_draw_requires_account(self, plugin_env, mocker: MockerFixture):
         """@draw still requires authenticated account."""
         plugin, mock_irc, mock_msg = plugin_env
