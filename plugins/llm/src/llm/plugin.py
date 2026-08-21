@@ -3500,6 +3500,28 @@ class LLM(callbacks.Plugin):
         """Collapse multi-line text into a single IRC-safe line."""
         return " | ".join(line for line in text.splitlines() if line.strip())
 
+    def _reply_mores_length(self, target: str | None, network: str | None = None) -> int:
+        """The wire-line budget (``supybot.reply.mores.length``), scoped.
+
+        Read the same way in three places — this delivery formatter, the
+        pending-completed-reply formatter, and the live long-reply path — and
+        the three copies had already drifted before this was extracted (one
+        was missing the exception guard the others had). ``getSpecific``
+        (underneath ``conf.get``) already treats a non-channel ``target``
+        (e.g. a PM nick) as no channel scope, so callers do not need to
+        pre-check with ``ircutils.isChannel`` themselves. ``network`` is
+        optional because the pending-delivery poller has no ``irc`` handle
+        to scope by; the live reply path does and passes it.
+
+        Falls back to the unscoped default on any registry error, and to
+        ``400`` when the registry value itself is unset — its default is
+        ``0``, which several tests rely on this method to paper over.
+        """
+        try:
+            return conf.get(conf.supybot.reply.mores.length, channel=target, network=network) or 400
+        except Exception:
+            return conf.supybot.reply.mores.length() or 400
+
     def _format_animate_delivery(self, nick: str, prompt: str, url: str, target: str) -> str:
         """One wire-line clip delivery, with the URL budgeted first.
 
@@ -3521,14 +3543,7 @@ class LLM(callbacks.Plugin):
         upstream), but a future change to either end that lets a newline
         through would silently inflate the line past this budget.
         """
-        try:
-            allowed = (
-                conf.get(conf.supybot.reply.mores.length, channel=target)
-                if target and ircutils.isChannel(target)
-                else conf.supybot.reply.mores.length()
-            ) or 400
-        except Exception:
-            allowed = conf.supybot.reply.mores.length() or 400
+        allowed = self._reply_mores_length(target)
 
         head = f"{nick}: your video is ready!"
         tail = f" → {url}"
@@ -3827,14 +3842,7 @@ class LLM(callbacks.Plugin):
         # Channel-scoped like _send_long_reply (no irc handle here, so no
         # network scope) — the global read gave channels with a custom mores
         # length inconsistent inline-vs-pastebin decisions on recovery.
-        try:
-            allowed = (
-                conf.get(conf.supybot.reply.mores.length, channel=target)
-                if target and ircutils.isChannel(target)
-                else conf.supybot.reply.mores.length()
-            ) or 400
-        except Exception:
-            allowed = conf.supybot.reply.mores.length() or 400
+        allowed = self._reply_mores_length(target)
         return self._finish_irc_line(
             content,
             inline=collapsed,
@@ -3964,9 +3972,7 @@ class LLM(callbacks.Plugin):
         multi-line body.
         """
         target = msg.channel if msg.channel else msg.nick
-        allowed = (
-            conf.get(conf.supybot.reply.mores.length, channel=target, network=irc.network) or 400
-        )
+        allowed = self._reply_mores_length(target, network=irc.network)
 
         # Multi-line answers pastebin unconditionally (never collapsed into
         # one line); only a sole non-blank logical line may go inline, and

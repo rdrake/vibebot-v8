@@ -1021,6 +1021,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Extract _reply_mores_length, unify three drifted copies (`llm`)
 - Plan @animate through the assistant, like @draw (`animate`)
 - Key all poller state by canonical source (`status`)
 - Move loopback allowance to conftest (`tests`)

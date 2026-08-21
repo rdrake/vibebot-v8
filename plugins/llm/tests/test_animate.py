@@ -1380,15 +1380,34 @@ class TestAnimateDeliveryLine:
 
         assert line == f"rdrake: your video is ready! → {self._URL}"
 
-    def test_pm_target_skips_the_channel_scoped_lookup(self, plugin_env, mocker) -> None:
-        """A PM target is not a channel, so the channel-scoped conf.get lookup
-        is skipped in favour of the plain global mores.length()."""
+    def test_pm_target_does_not_pick_up_a_channel_override(self, plugin_env) -> None:
+        """A PM target is not a channel, so a channel-scoped override on some
+        other channel must not leak into it.
+
+        ``getSpecific`` (underneath ``conf.get``, and now ``_reply_mores_length``)
+        silently drops a non-channel ``channel=`` argument rather than raising,
+        so this can't be pinned by asserting ``conf.get`` was skipped — it is
+        always called now. What matters is the *value* it resolves to for a
+        PM target, so this sets a tiny override on an unrelated channel and
+        checks it has no effect on the nick-targeted call.
+        """
+        import supybot.conf as conf
+
         plugin, _mock_irc, _mock_msg = plugin_env
-        conf_get = mocker.patch("llm.plugin.conf.get")
+        chan_value = conf.supybot.reply.mores.length.get("#chan")
+        original = chan_value()
+        chan_value.setValue(40)  # too small to fit the prompt at all
+        try:
+            pm_line = plugin._format_animate_delivery(
+                "rdrake", "a corgi riding a unicorn", self._URL, "rdrake"
+            )
+            chan_line = plugin._format_animate_delivery(
+                "rdrake", "a corgi riding a unicorn", self._URL, "#chan"
+            )
+        finally:
+            chan_value.setValue(original)
 
-        line = plugin._format_animate_delivery(
-            "rdrake", "a corgi riding a unicorn", self._URL, "rdrake"
-        )
-
-        conf_get.assert_not_called()
-        assert line == f'rdrake: your video is ready! "a corgi riding a unicorn" → {self._URL}'
+        # PM ignores the #chan-scoped override entirely and keeps the prompt...
+        assert pm_line == f'rdrake: your video is ready! "a corgi riding a unicorn" → {self._URL}'
+        # ...while the channel path is genuinely constrained by it.
+        assert chan_line == f"rdrake: your video is ready! → {self._URL}"
