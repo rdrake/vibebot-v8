@@ -151,6 +151,25 @@ EXPLICIT_STORYBOOK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit "I want a moving picture" cues, and the reason they are needed is
+# the same one behind EXPLICIT_STORYBOOK_RE: grok does not reliably call
+# generate_video from prompt guidance. "vibebot animate X" is not a command —
+# inFilter suppresses Limnoria's dispatcher for anything without the prefix
+# char, so it arrives here as ordinary chat — and on 2026-08-21 the model
+# answered two of them by writing an acknowledgement and a plausible-looking
+# link instead of calling the tool. Nothing was ever queued.
+#
+# Deliberately tight, because a false positive costs ~70s of exclusive GPU
+# time: either the message OPENS with the ask ("animate a corgi", "video of
+# the lads"), or it pairs a generation verb with a video noun. Talking about a
+# video ("did you see that video of the cat") must not match.
+EXPLICIT_VIDEO_RE = re.compile(
+    r"^\s*(?:animate|video)\b"
+    r"|\b(?:make|create|generate|render|do)\s+(?:me\s+|us\s+)?"
+    r"(?:a|an|the)?\s*(?:short\s+|quick\s+|wee\s+)?(?:video|clip|animation)\b",
+    re.IGNORECASE,
+)
+
 # Line-break characters that could let untrusted text (e.g. a channel topic)
 # start a new "instruction line" in a prompt. Excludes IRC formatting codes
 # (color/bold/etc.) which are not line separators.
@@ -5611,8 +5630,15 @@ Examples (echo → action_prompt: ""):
             # nobody queued (2026-08-21). Tool presence is the gate: the box
             # being unconfigured drops generate_video above, and forcing a
             # tool that is not in the list is a provider error.
-            force_initial_video = profile.id == PROFILE_ANIMATE and _has_tool(
-                profile_tools, "generate_video"
+            # Two ways a video request becomes non-negotiable: the @animate
+            # command route, where the user already said what they wanted, and
+            # an explicit ask in chat, which is where they actually say it —
+            # "vibebot animate X" never reaches the command (see inFilter).
+            # Tool presence is the gate in both cases: an unconfigured box
+            # drops generate_video above, and forcing a tool that is not in
+            # the list is a provider error.
+            force_initial_video = _has_tool(profile_tools, "generate_video") and (
+                profile.id == PROFILE_ANIMATE or EXPLICIT_VIDEO_RE.search(prompt) is not None
             )
 
             last_assistant_text = ""

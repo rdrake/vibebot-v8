@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Force generate_video when chat is explicitly asked for a video (`chat`)
 - Never let an invented link leave the @animate route (`animate`)
 - Force generate_video on step 0 of the @animate route (`animate`)
 - Stop the bot answering with a job marker copied from history (`chat`)

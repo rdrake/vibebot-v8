@@ -783,7 +783,7 @@ class TestAnimateForcesTheTool:
         svc, _plugin = _service(make_service, assistantModel="gpt-4")
         return svc
 
-    def _run(self, service, mocker, profile: str):
+    def _run(self, service, mocker, profile: str, prompt: str = "the stinky lads at the beach"):
         """One assistant_completion on ``profile``, returning step 0's kwargs."""
         from llm.assistant import ToolCallbackResult
 
@@ -800,7 +800,7 @@ class TestAnimateForcesTheTool:
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         service.assistant_completion(
-            prompt="the stinky lads at the beach",
+            prompt=prompt,
             nick="testuser",
             channel="#test",
             db=mocker.MagicMock(),
@@ -821,11 +821,54 @@ class TestAnimateForcesTheTool:
             "function": {"name": "generate_video"},
         }
 
-    def test_chat_route_is_not_forced(self, service, mocker) -> None:
-        """Chat keeps its judgement: "what's a good clip idea?" is not a request
-        for 70 seconds of GPU time."""
-        kwargs = self._run(service, mocker, "chat")
-        assert "tool_choice" not in kwargs
+    def test_explicit_chat_request_is_forced(self, service, mocker) -> None:
+        """The case that was actually broken.
+
+        "vibebot animate X" is not a command — inFilter suppresses Limnoria's
+        dispatcher for anything without the prefix char — so it lands here, on
+        the chat route, where the model answered by inventing a link instead of
+        calling the tool. An explicit ask leaves it no choice.
+        """
+        kwargs = self._run(
+            service,
+            mocker,
+            "chat",
+            prompt="animate baby prince harry riding a corgi around the throne",
+        )
+        assert kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "generate_video"},
+        }
+
+    def test_chat_without_an_explicit_ask_is_not_forced(self, service, mocker) -> None:
+        """Chat keeps its judgement everywhere else: mentioning the lads, or a
+        video someone else made, is not a request for 70 seconds of GPU time."""
+        assert "tool_choice" not in self._run(service, mocker, "chat")
+        assert "tool_choice" not in self._run(
+            service, mocker, "chat", prompt="did you see that video of the cat"
+        )
+
+    def test_trigger_is_tight_enough_to_be_safe(self) -> None:
+        """A false positive costs a real render, so pin both directions."""
+        from llm.service import EXPLICIT_VIDEO_RE
+
+        for asks in (
+            "animate year 7 stinky lad having norovirus in a crowded theatre",
+            "video of the lads at the beach",
+            "make me a video of a corgi",
+            "can you generate a short clip of the throne room",
+            "render an animation of the lads",
+        ):
+            assert EXPLICIT_VIDEO_RE.search(asks), asks
+
+        for chats in (
+            "did you see that video of the cat",
+            "what is a good animation studio",
+            "the video was great",
+            "draw a corgi",
+            "tell me about video codecs",
+        ):
+            assert not EXPLICIT_VIDEO_RE.search(chats), chats
 
     def test_unconfigured_box_forces_nothing(self, make_service, mocker) -> None:
         """Forcing a tool that was excluded from the list is a provider error.
