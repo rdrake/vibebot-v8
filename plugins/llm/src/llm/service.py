@@ -158,6 +158,14 @@ _LINE_BREAK_RE = re.compile("[\r\n\v\f\x1c-\x1e\u2028\u2029]+")
 # Pending task retry constants
 PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
+
+# How often to ask the video box whether a render has landed. Deliberately
+# much tighter than PENDING_INITIAL_BACKOFF_SECONDS: this is not a retry after
+# a failure, it is a progress check on a job we know is running, and the delay
+# lands entirely on a user watching the channel for their clip. The cost is one
+# GET returning a few hundred bytes of JSON, six times a minute per in-flight
+# job, which is nothing next to the render it is waiting on.
+ANIMATE_POLL_INTERVAL_SECONDS = 10
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
 
@@ -3214,16 +3222,18 @@ class LLMService:
         """Compute next retry delay.
 
         Exponential for the retry paths, where a repeated failure means
-        something is wrong and backing off is the point. Flat for animate,
-        where it is not a retry at all: the job is known to be running on the
-        video box and "not ready yet" is the expected answer on every pass
-        until it lands, so doubling the wait only adds dead air AFTER the
-        render has already finished. Measured in prod on 2026-08-21 — a clip
-        submitted at 00:18:55 polled at 30/60/120 and was delivered at
-        00:23:02, roughly 75s after the render itself completed.
+        something is wrong and backing off is the point. Flat, and much
+        tighter, for animate, where it is not a retry at all: the job is known
+        to be running on the video box and "not ready yet" is the expected
+        answer on every pass until it lands, so doubling the wait only adds
+        dead air AFTER the render has already finished. Measured in prod on
+        2026-08-21 — a clip whose render finished at 00:26:15 sat on the
+        ladder and was not delivered until 00:28:05.
 
-        A poll is one cheap GET returning small JSON, so a flat cadence costs
-        nothing and lands the clip within one scheduler tick of it being ready.
+        This value is the poll cadence, not just a floor on it: after each
+        pass the plugin arms a one-shot wakeup at the earliest
+        ``next_attempt_at`` (LLM._schedule_queue_wakeup), so whatever is
+        returned here is how long the user waits past the render finishing.
 
         Args:
             attempt_count: Number of attempts already made.
@@ -3233,7 +3243,7 @@ class LLMService:
             Delay in seconds before next retry.
         """
         if task_type == "animate":
-            return PENDING_INITIAL_BACKOFF_SECONDS
+            return ANIMATE_POLL_INTERVAL_SECONDS
         return min(
             PENDING_INITIAL_BACKOFF_SECONDS * (2**attempt_count),
             PENDING_MAX_BACKOFF_SECONDS,
@@ -3391,7 +3401,10 @@ class LLMService:
     def check_pending_tasks(self, deliverable_channels: set[str]) -> list[PendingTaskResult]:
         """Poll and retry pending tasks, returning results for delivery.
 
-        Called by the plugin scheduler every 30 seconds.  Operates in two phases:
+        Driven by a one-shot wakeup the plugin arms at the earliest pending
+        ``next_attempt_at``, so the cadence is whatever ``_compute_backoff``
+        last returned; ``LLM._SAFETY_POLL_INTERVAL`` (300s) is only the
+        backstop for when no wakeup is armed.  Operates in two phases:
 
         1. **Provider phase** — claims ``delivery_state='pending'`` tasks, calls
            the upstream provider, and stores the result in the DB

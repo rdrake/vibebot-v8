@@ -991,6 +991,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Performance
 
+- Poll the video box every 10s instead of every 30 (`animate`)
 - Split xAI cache lanes per op to stop self-eviction (`llm`)
 - Stabilize cacheable prefix across users and turns (`llm`)
 - Hide scheduling/usage/instruction tools from verse mode (`llm/verse`)

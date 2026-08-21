@@ -3,10 +3,10 @@
 Animate is the only generation path where the media does not exist when the
 command returns. A 4s clip measured 67.7s at 25 steps and 171s at 50 on the
 reference box (2026-08-20), so submission and delivery are split: the command
-stashes a job id in ``pending_tasks`` and the poller that already runs every
-30s publishes the clip when it lands. Most of what is worth testing here is
-that seam — that a submission is either stashed or honestly reported as
-untracked, and that polling distinguishes "not yet" from "never".
+stashes a job id in ``pending_tasks`` and the existing pending-task machinery
+polls until the clip lands. Most of what is worth testing here is that seam —
+that a submission is either stashed or honestly reported as untracked, and
+that polling distinguishes "not yet" from "never".
 
 The other half is the promise made to the user. ``generate_video`` returns an
 acknowledgement and never a URL, because a tool that hands back a link to a
@@ -376,11 +376,13 @@ class TestPollCadence:
         curve here is applied to the expected case rather than a fault. In
         prod on 2026-08-21 that put a 135s render on a 30/60/120 ladder and
         delivered it at 210s — over a minute of dead air after the video was
-        already sitting on the box.
+        already sitting on the box. The value is also the poll cadence, since
+        the plugin arms its next wakeup from it, so it is what the user waits
+        past the render finishing.
         """
         service, _ = _service(make_service)
         delays = [service._compute_backoff(n, "animate") for n in range(5)]
-        assert delays == [30, 30, 30, 30, 30]
+        assert delays == [10, 10, 10, 10, 10]
 
     def test_other_task_types_keep_exponential_backoff(self, make_service) -> None:
         """GIVEN a draw retry WHEN backoff is computed THEN it still doubles.
