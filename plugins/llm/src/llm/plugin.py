@@ -52,9 +52,11 @@ from .service import (
     CompletionResult,
     ImageResult,
     LLMService,
+    ReferenceImage,
     VideoResult,
     account_from_server_tags,
     irc_has_caps,
+    split_reference_url,
     truncate_to_word_boundary,
     validate_external_url,
 )
@@ -101,6 +103,11 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # and counting draws by row would otherwise double. One image generated, one
 # row: `WHERE command = 'draw:image'` is the image bill.
 _IMAGE_USAGE_COMMAND = "draw:image"
+
+# What a reference image gets animated with when the line carried nothing but
+# the URL. "@animate <url>" is a request people make, and the server requires a
+# prompt, so this is the do-something-gentle default rather than an error.
+_ANIMATE_DEFAULT_MOTION = "the scene comes to life with subtle natural motion"
 
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
@@ -5020,6 +5027,7 @@ class LLM(callbacks.Plugin):
         nick: str,
         channel: str,
         account: str | None,
+        reference: ReferenceImage | None = None,
     ) -> ToolCallbackResult:
         """Queue a video for the generate_video tool.
 
@@ -5027,6 +5035,12 @@ class LLM(callbacks.Plugin):
         The submission is stashed against the requester's nick and channel so
         the pending-task poller delivers the clip to the same place the
         conversation happened, minutes after this turn has ended.
+
+        ``reference`` comes pre-fetched from the @animate command. On the chat
+        route there is nobody to pass it, so an image URL is looked for in the
+        user's own line here: "vibebot animate <url> ..." never reaches the
+        command, and a picture that only works with the @ prefix is a picture
+        that looks ignored.
 
         No usage row is written here. The reason the image callback logs its
         own is that image spend belongs to the image model; the video box
@@ -5036,7 +5050,40 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
+        result = self._submit_video(
+            irc, msg, prompt, nick=nick, channel=channel, account=account, reference=reference
+        )
+        return _ToolCallbackResult(not bool(result.error), result.content)
+
+    def _submit_video(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        prompt: str,
+        *,
+        nick: str,
+        channel: str,
+        account: str | None,
+        reference: ReferenceImage | None = None,
+    ) -> VideoResult:
+        """Submit one clip and wake the render-typing refresher on success.
+
+        The single place a video job is booked, so the tool callback and the
+        reference command cannot drift apart on which of the reply target, the
+        msgid, the URL stripping or the wake flag they remember to do.
+        """
         reply_target = msg.args[0] if msg.args else ""
+        # Strip URLs from the prompt whether or not one becomes the reference:
+        # the video model renders stray text on screen, so a URL the planner
+        # copied through would end up in the picture.
+        _, prompt = split_reference_url(prompt)
+        if reference is None:
+            user_line = msg.args[1] if len(msg.args) > 1 else ""
+            url, _rest = split_reference_url(user_line)
+            if url:
+                reference = self.llm_service.fetch_reference_image(url)
+        if not prompt.strip():
+            prompt = _ANIMATE_DEFAULT_MOTION
         result = self.llm_service.video_generation(
             prompt,
             nick=nick,
@@ -5045,13 +5092,14 @@ class LLM(callbacks.Plugin):
             channel=channel,
             account=account,
             reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
+            reference=reference,
         )
         if not result.error:
             # A clip is on the box now, so the refresher has something to do.
             # Only on success: a rejected submission means nothing is
             # rendering and typing would be a lie.
             self._render_typing_wake.set()
-        return _ToolCallbackResult(not bool(result.error), result.content)
+        return result
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
@@ -6565,6 +6613,16 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
+        # An image URL in the line is a reference frame, and it changes the
+        # shape of the whole command: the picture already fixes the subject, so
+        # the planner turn that exists to turn names into descriptions has
+        # nothing left to do and everything to drift from. Fetch, submit what
+        # the user typed, done — no model sees the prompt on this path.
+        reference_url, reference_prompt = split_reference_url(text)
+        if reference_url:
+            self._animate_with_reference(irc, msg, pf, url=reference_url, prompt=reference_prompt)
+            return
+
         # Verse grounding: if the prompt references canon, layer the facts-only
         # lore block onto the animate overlay so "@animate the stinky lads"
         # renders the canon cast. It has to be layered somewhere a planner can
@@ -6644,6 +6702,70 @@ class LLM(callbacks.Plugin):
             stop_typing()
 
     animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
+
+    def _animate_with_reference(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        pf: PreflightResult,
+        *,
+        url: str,
+        prompt: str,
+    ) -> None:
+        """Render @animate from a user-supplied still, with no planner turn.
+
+        Typing runs for the fetch and the submission only — the render's own
+        indicator is the refresher, woken by ``_animate_for_assistant`` once
+        the box has accepted the job.
+
+        A reference that will not fetch ends the command. Rendering the words
+        alone would quietly drop the picture the user chose, and a clip that
+        ignores half the request is worse than a line saying why.
+        """
+        nick, channel = pf.nick, pf.channel
+        stop_typing = self.llm_service._begin_typing(
+            irc, msg, suppress_done_if=self._render_typing_holds
+        )
+        try:
+            with self._trace_request("animate", nick, channel):
+                reference = self.llm_service.fetch_reference_image(url)
+                if reference is None:
+                    self._safe_error(
+                        irc,
+                        _(
+                            "Could not use that image — it has to be a public "
+                            "PNG, JPEG, WebP or GIF link under 10 MB."
+                        ),
+                    )
+                    return
+
+                result = self._submit_video(
+                    irc,
+                    msg,
+                    prompt,
+                    nick=nick,
+                    channel=channel,
+                    account=pf.account,
+                    reference=reference,
+                )
+                self._safe_reply(irc, result.content)
+
+                # Zero tokens and zero cost by construction — no model ran on
+                # this path. The row is the record that the request happened,
+                # which is the only record there is: the video box reports no
+                # accounting of its own.
+                self._store_context_and_log_usage(
+                    nick,
+                    channel,
+                    "animate",
+                    f"{url} {prompt}".strip(),
+                    result.content,
+                    result,
+                    irc,
+                    msg,
+                )
+        finally:
+            stop_typing()
 
     # Alias: @video works the same as @animate
     video = animate

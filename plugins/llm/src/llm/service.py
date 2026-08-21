@@ -476,6 +476,32 @@ _IMAGE_URL_RE = re.compile(r"https?://\S+?/(?:img_)[0-9a-zA-Z_]+\.(?:png|jpe?g|w
 # did not mint cannot be anything but stale or invented, whatever its shape.
 _ANY_IMAGE_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
 
+# Reference-image URLs as a user would paste them, query string and all. Kept
+# module-level, not on the service, so the plugin can split a line without a
+# service instance — and so a mocked service in a test cannot silently stand in
+# for the real parse.
+_REFERENCE_URL_RE = re.compile(
+    r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:[?#][^\s]*)?",
+    re.IGNORECASE,
+)
+
+
+def split_reference_url(text: str) -> tuple[str | None, str]:
+    """Split a prompt into (reference image URL, prompt without any URL).
+
+    Nobody should have to learn a flag: an image URL sitting in an @animate
+    line is the reference, wherever in the line it sits. Only image URLs
+    qualify — a link that is not an image is a subject the user typed, and
+    deleting it is the exact failure this path exists to stop.
+
+    Every image URL is stripped, not just the one used. A leftover URL goes to
+    a model that renders text on screen, so it would appear in the clip.
+    """
+    urls = _REFERENCE_URL_RE.findall(text)
+    if not urls:
+        return None, text
+    return urls[0], " ".join(_REFERENCE_URL_RE.sub(" ", text).split())
+
 
 # One forced retry. If the model writes a URL, is told to call the tool, and
 # still will not, a second nudge will not change that -- deliver the honest
@@ -1537,6 +1563,17 @@ class ImageResult(NamedTuple):
     rewritten_prompt: str | None = None
     url: str | None = None
     blocked_attempts: tuple[BlockedAttempt, ...] = ()
+
+
+class ReferenceImage(NamedTuple):
+    """A user-supplied still, fetched and re-encoded, ready to condition a clip.
+
+    ``data`` is always the bot's own encode of the decoded pixels, never the
+    bytes fetched from the URL — see ``fetch_reference_image``.
+    """
+
+    data: bytes
+    extension: str = "jpg"
 
 
 class VideoResult(NamedTuple):
@@ -6511,11 +6548,92 @@ Examples (echo → action_prompt: ""):
             "User-Agent": "VibeBot/8",
         }
 
-    def _animate_form(self, prompt: str, channel: str | None) -> dict[str, str]:
+    # A reference image is a file chosen by whoever typed the line, fetched by
+    # the bot from a host of their choosing. Both caps are on the bot's side of
+    # that trust boundary: the byte cap bounds the download, the edge cap
+    # bounds the decode, and everything forwarded is Pillow's re-encode rather
+    # than the bytes that came off the wire.
+    _REFERENCE_MAX_BYTES = 10 * 1024 * 1024
+    _REFERENCE_MAX_EDGE = 1920
+
+    def fetch_reference_image(self, url: str) -> ReferenceImage | None:
+        """Fetch a user-supplied image and re-encode it for the video box.
+
+        Returns None for anything that is not plainly a public, decodable
+        image — the caller reports that rather than rendering without it.
+
+        The guards, in order: ``validate_image_url`` (scheme, extension, no
+        traversal, no literal private IPs, every resolved A/AAAA globally
+        routable), no redirects (a 3xx Location could name a host the original
+        URL was rejected for), a bounded read, a magic-byte sniff, then a
+        Pillow decode and fresh JPEG encode. That last step is what makes a
+        polyglot file or an EXIF-borne payload moot: what leaves here is pixels
+        re-encoded by us, not the file the server sent.
+        """
+        import urllib.request
+
+        try:
+            if not self.validate_image_url(url):
+                self.log.warning("Refusing unsafe reference image URL: %s", url[:200])
+                return None
+        except Exception:  # noqa: BLE001 — a raising guard must fail closed
+            self.log.warning("Reference URL validation raised for: %s", url[:200])
+            return None
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect())
+        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})
+            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+                data = resp.read(self._REFERENCE_MAX_BYTES + 1)
+        except Exception as e:  # noqa: BLE001 — any fetch failure is just "no reference"
+            self.log.warning("Reference image fetch failed: %s", str(e)[:200])
+            return None
+
+        if len(data) > self._REFERENCE_MAX_BYTES:
+            self.log.warning("Reference image too large: %s", url[:200])
+            return None
+        if self._detect_image_format(data) is None:
+            self.log.warning("Reference image is not an image: %s", url[:200])
+            return None
+
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(data)) as img:
+                img.load()
+                frame = img.convert("RGB")
+            if max(frame.size) > self._REFERENCE_MAX_EDGE:
+                frame.thumbnail((self._REFERENCE_MAX_EDGE, self._REFERENCE_MAX_EDGE), Image.LANCZOS)
+            buf = BytesIO()
+            frame.save(buf, format="JPEG", quality=92)
+        except Exception as e:  # noqa: BLE001 — undecodable is indistinguishable from hostile
+            self.log.warning("Reference image would not decode: %s", str(e)[:200])
+            return None
+
+        return ReferenceImage(data=buf.getvalue(), extension="jpg")
+
+    def _animate_form(
+        self, prompt: str, channel: str | None, *, has_reference: bool = False
+    ) -> dict[str, str]:
         """Build the multipart form for a submission.
 
         Every field is a string because the endpoint takes multipart/form-data,
         not JSON — including the ints, which FastAPI coerces on the way in.
+
+        ``has_reference`` moves the task, not the audio setting. Measured
+        against the box on 2026-08-21, the served FL2VA checkpoint partition
+        accepts exactly ['fl2va', 't2va'], and a submission with a file
+        attached under t2va fails with "t2va does not accept an image
+        condition". So a reference forces fl2va whichever way animateAudio is
+        set: silent audio is not on the menu for image-conditioned clips.
         """
         size = (self.plugin.registryValue("animateSize", channel) or "1280x704").strip()
         duration = int(self.plugin.registryValue("animateDuration", channel))
@@ -6526,10 +6644,10 @@ Examples (echo → action_prompt: ""):
         # length and the t2v/t2va selection out of extra_params, and sending
         # both invites the two disagreeing.
         extra: dict[str, object] = {
-            "task": "t2va" if audio else "t2v",
+            "task": "fl2va" if has_reference else ("t2va" if audio else "t2v"),
             "duration": duration,
         }
-        if audio:
+        if audio or has_reference:
             extra["audio_flow_shift"] = int(self.plugin.registryValue("animateAudioFlowShift"))
 
         form = {
@@ -6545,14 +6663,30 @@ Examples (echo → action_prompt: ""):
         return form
 
     @staticmethod
-    def _multipart_body(fields: dict[str, str]) -> tuple[bytes, str]:
-        """Encode plain (non-file) form fields as multipart/form-data."""
+    def _multipart_body(
+        fields: dict[str, str],
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> tuple[bytes, str]:
+        """Encode form fields, and optionally file parts, as multipart/form-data.
+
+        ``files`` maps a field name to ``(filename, data, content_type)``. The
+        file parts go last so a server reading the stream has every plain field
+        before it starts buffering megabytes.
+        """
         boundary = f"----VibeBot{uuid.uuid4().hex}"
         parts = []
         for name, value in fields.items():
             parts.append(f"--{boundary}\r\n".encode())
             parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
             parts.append(str(value).encode())
+            parts.append(b"\r\n")
+        for name, (filename, data, content_type) in (files or {}).items():
+            parts.append(f"--{boundary}\r\n".encode())
+            parts.append(
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
+            )
+            parts.append(f"Content-Type: {content_type}\r\n\r\n".encode())
+            parts.append(data)
             parts.append(b"\r\n")
         parts.append(f"--{boundary}--\r\n".encode())
         return b"".join(parts), boundary
@@ -6620,6 +6754,7 @@ Examples (echo → action_prompt: ""):
         channel: str | None = None,
         account: str | None = None,
         reply_msgid: str = "",
+        reference: ReferenceImage | None = None,
     ) -> VideoResult:
         """Submit a video job and stash it for background delivery.
 
@@ -6637,6 +6772,8 @@ Examples (echo → action_prompt: ""):
             reply_msgid: msgid of the requesting message, so the clip is
                 delivered as an IRCv3 threaded reply minutes later rather than
                 as a bare line with nothing tying it to the request.
+            reference: Optional still to use as the clip's first frame. Its
+                presence moves the task to fl2va — see ``_animate_form``.
 
         Returns:
             VideoResult whose ``content`` is the acknowledgement to print now.
@@ -6649,7 +6786,21 @@ Examples (echo → action_prompt: ""):
         submitted_at = time.time()
 
         try:
-            body, boundary = self._multipart_body(self._animate_form(prompt, channel))
+            files = (
+                {
+                    "input_reference": (
+                        f"reference.{reference.extension}",
+                        reference.data,
+                        self._IMAGE_MIME_TYPES.get(reference.extension, "image/jpeg"),
+                    )
+                }
+                if reference
+                else None
+            )
+            body, boundary = self._multipart_body(
+                self._animate_form(prompt, channel, has_reference=reference is not None),
+                files=files,
+            )
             status, payload = self._animate_request(
                 "/v1/videos",
                 method="POST",

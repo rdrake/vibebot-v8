@@ -606,6 +606,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Animate a picture by pasting its URL in the line (`animate`)
 - Deliver the clip with its nick and prompt (`animate`)
 - Hold the typing indicator for the whole render (`animate`)
 - One refresher pass for clips still rendering (`animate`)
