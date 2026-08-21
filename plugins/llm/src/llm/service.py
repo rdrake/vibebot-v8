@@ -6556,6 +6556,38 @@ Examples (echo → action_prompt: ""):
     _REFERENCE_MAX_BYTES = 10 * 1024 * 1024
     _REFERENCE_MAX_EDGE = 1920
 
+    # The planner's copy is for seeing what is in frame, not for reading the
+    # pixels. Small: a full-size still would be the dominant cost of a turn
+    # whose whole output is ~150 words.
+    _REFERENCE_VISION_EDGE = 768
+
+    def reference_vision_url(self, reference: ReferenceImage) -> str | None:
+        """Inline data URL of a reference, small enough to hand a planner.
+
+        Inline rather than the user's original link: those bytes have already
+        been fetched, size-checked and re-encoded here, and passing the URL
+        instead would re-open a fetch — by the provider this time — that this
+        path deliberately closed.
+        """
+        try:
+            import base64
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(reference.data)) as img:
+                frame = img.convert("RGB")
+            if max(frame.size) > self._REFERENCE_VISION_EDGE:
+                frame.thumbnail(
+                    (self._REFERENCE_VISION_EDGE, self._REFERENCE_VISION_EDGE), Image.LANCZOS
+                )
+            buf = BytesIO()
+            frame.save(buf, format="JPEG", quality=80)
+        except Exception as e:  # noqa: BLE001 — no vision copy just means a blind planner
+            self.log.warning("Reference vision copy failed: %s", str(e)[:200])
+            return None
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
     def fetch_reference_image(self, url: str) -> ReferenceImage | None:
         """Fetch a user-supplied image and re-encode it for the video box.
 
@@ -7581,10 +7613,19 @@ Examples (echo → action_prompt: ""):
             return None
 
     def _filter_images(self, images: list[str] | None) -> list[str] | None:
-        """Drop invalid URLs, log how many were dropped, return None if empty."""
+        """Drop invalid URLs, log how many were dropped, return None if empty.
+
+        Inline ``data:image/...`` URLs pass without the URL policy because they
+        are not fetched from anywhere: the only thing that mints one is
+        ``reference_vision_url``, from bytes this service already validated.
+        Anything else inline is still dropped — a data URL is a fine way to
+        smuggle a non-image past a filter that only reads schemes.
+        """
         if not images:
             return None
-        valid = [url for url in images if self.validate_image_url(url)]
+        valid = [
+            url for url in images if url.startswith("data:image/") or self.validate_image_url(url)
+        ]
         if len(valid) != len(images):
             self.log.warning("Filtered out %i invalid image URLs", len(images) - len(valid))
         return valid or None

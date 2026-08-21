@@ -126,7 +126,7 @@ While the clip renders the bot shows as typing continuously, not just for the fi
 
 Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
 
-`@animate` writes the video model's prompt from your request, the same way `@draw` does for pictures. The video model has never heard of your cast, so a name on its own would render as words on screen: the bot keeps the name you wrote and adds a description of what that subject looks like beside it. In a channel with the verse enabled, that description comes from canon, so naming someone from the world gets you a clip of the actual character. Everything else you named — the people, the objects, the costumes — goes through as you wrote it, and the shot you asked for, the action, the camera move and the mood, is left alone.
+`@animate` writes the video model's prompt from your request, the same way `@draw` does for pictures, and it writes a lot of it: this model follows detail, so a two-word ask renders generic while a shot description renders what you asked for. Your line becomes a paragraph covering the subject, what it does beat by beat, the camera, the setting and the light — the shot you asked for, spelled out, not a different one. The video model has never heard of your cast, so a name on its own would render as words on screen: the bot keeps the name you wrote and adds a description of what that subject looks like beside it. In a channel with the verse enabled, that description comes from canon, so naming someone from the world gets you a clip of the actual character. Everything else you named — the people, the objects, the costumes — goes through as you wrote it, and the shot you asked for, the action, the camera move and the mood, is left alone.
 
 **Animating a picture.** Put an image URL anywhere in the line and that picture becomes the clip's first frame:
 
@@ -136,7 +136,7 @@ Because each clip occupies the video hardware exclusively while it renders, `@an
 
 There's no flag to remember — a link ending in `.png`, `.jpg`, `.webp`, `.gif` or `.bmp` is taken as the reference, and the rest of the line is the prompt. It works in conversation too, so `vibebot animate <url> make it dance` does the same thing.
 
-With a picture attached your words are sent to the video model exactly as you typed them — no rewriting, because the picture already fixes who and what is on screen, so describe the *motion* you want rather than the subject. A URL on its own still works; you get gentle ambient movement. Clips built this way always carry sound.
+With a picture attached the bot still writes the video model's prompt, and it can see your picture while it does: it describes what's actually in frame and turns your words into the motion. So describe what should *happen* rather than what's in the shot — the picture already settled that. A URL on its own still works; you get gentle ambient movement. Clips built this way always carry sound.
 
 The image has to be a public link the bot can fetch, under 10 MB. The bot downloads it, decodes it and re-encodes it before anything is sent to the video box, so files that are not really images are refused rather than forwarded; very large pictures are scaled down to 1920 px on the long edge. If the link can't be used the bot says so instead of quietly rendering without it.
 

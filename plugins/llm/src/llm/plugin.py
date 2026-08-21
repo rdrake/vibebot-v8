@@ -6613,37 +6613,52 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
-        # An image URL in the line is a reference frame, and it changes the
-        # shape of the whole command: the picture already fixes the subject, so
-        # the planner turn that exists to turn names into descriptions has
-        # nothing left to do and everything to drift from. Fetch, submit what
-        # the user typed, done — no model sees the prompt on this path.
-        reference_url, reference_prompt = split_reference_url(text)
-        if reference_url:
-            self._animate_with_reference(irc, msg, pf, url=reference_url, prompt=reference_prompt)
-            return
-
-        # Verse grounding: if the prompt references canon, layer the facts-only
-        # lore block onto the animate overlay so "@animate the stinky lads"
-        # renders the canon cast. It has to be layered somewhere a planner can
-        # read it, because the video box takes the prompt literally: names go to
-        # a model that has never heard of them. None when nothing is referenced
-        # → the default animate prompt, unchanged.
-        animate_system_prompt: str | None = None
-        verse_ctx = self._verse_context_for(pf, text)
-        if verse_ctx:
-            animate_system_prompt = self._verse_grounded_overlay(
-                PROFILE_ANIMATE, channel, verse_ctx
-            )
-
         # Typing fires immediately after preflight, same as @draw: the planner
         # turn in front of the submission is a completion like any other, and
         # the submission itself no longer ends the command — the model's reply
-        # does.
+        # does. It covers the reference fetch too, which is a network round trip
+        # to somebody else's host and can take seconds on its own.
         stop_typing = self.llm_service._begin_typing(
             irc, msg, suppress_done_if=self._render_typing_holds
         )
         try:
+            # An image URL in the line is the clip's first frame. It does NOT
+            # skip the planner: H3 renders a two-word ask badly whether or not
+            # a picture is attached, so the rewrite is worth more here, not
+            # less. What the picture changes is the planner's job — the subject
+            # is settled, so the words become the motion — and that is what the
+            # reference overlay says. The planner is handed the picture too,
+            # since a script written blind can only guess at what it scripts.
+            resolved = self._animate_reference_for(irc, text)
+            if resolved is None:
+                return  # unusable image; the user has already been told why
+            text, reference = resolved
+
+            # Verse grounding: if the prompt references canon, layer the
+            # facts-only lore block onto the animate overlay so "@animate the
+            # stinky lads" renders the canon cast. It has to be layered
+            # somewhere a planner can read it, because the video box takes the
+            # prompt literally: names go to a model that has never heard of
+            # them. Empty when nothing is referenced and no picture is attached
+            # → the default animate prompt, unchanged.
+            from .prompts import ANIMATE_REFERENCE_OVERLAY
+
+            overlay_parts: list[str] = []
+            if reference is not None:
+                overlay_parts.append(ANIMATE_REFERENCE_OVERLAY)
+            verse_ctx = self._verse_context_for(pf, text)
+            if verse_ctx:
+                overlay_parts.append(
+                    self._verse_grounded_overlay(PROFILE_ANIMATE, channel, verse_ctx)
+                )
+            animate_system_prompt = "\n\n".join(overlay_parts) or None
+            reference_images = (
+                [url]
+                if reference is not None
+                and (url := self.llm_service.reference_vision_url(reference))
+                else None
+            )
+
             request_context = self._build_request_context(
                 irc,
                 msg,
@@ -6673,9 +6688,16 @@ class LLM(callbacks.Plugin):
                         irc=irc,
                         msg=msg,
                         memories=[],
+                        images=reference_images,
                         system_prompt=animate_system_prompt,
                         animate_fn=lambda p: self._animate_for_assistant(
-                            irc, msg, p, nick=nick, channel=channel, account=pf.account
+                            irc,
+                            msg,
+                            p,
+                            nick=nick,
+                            channel=channel,
+                            account=pf.account,
+                            reference=reference,
                         ),
                         manage_typing=False,
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
@@ -6703,69 +6725,31 @@ class LLM(callbacks.Plugin):
 
     animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
 
-    def _animate_with_reference(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        pf: PreflightResult,
-        *,
-        url: str,
-        prompt: str,
-    ) -> None:
-        """Render @animate from a user-supplied still, with no planner turn.
+    def _animate_reference_for(
+        self, irc: callbacks.Irc, text: str
+    ) -> tuple[str, ReferenceImage | None] | None:
+        """Resolve an image URL in an @animate line into a fetched reference.
 
-        Typing runs for the fetch and the submission only — the render's own
-        indicator is the refresher, woken by ``_animate_for_assistant`` once
-        the box has accepted the job.
-
-        A reference that will not fetch ends the command. Rendering the words
-        alone would quietly drop the picture the user chose, and a clip that
-        ignores half the request is worse than a line saying why.
+        Returns ``(prompt_without_url, reference_or_None)``, or ``None`` when a
+        URL was there but could not be used — the user has been told why by
+        then. Failing the command is deliberate: rendering the words alone
+        would quietly drop the picture they chose, and a clip that answers half
+        the request is worse than a line saying what went wrong.
         """
-        nick, channel = pf.nick, pf.channel
-        stop_typing = self.llm_service._begin_typing(
-            irc, msg, suppress_done_if=self._render_typing_holds
-        )
-        try:
-            with self._trace_request("animate", nick, channel):
-                reference = self.llm_service.fetch_reference_image(url)
-                if reference is None:
-                    self._safe_error(
-                        irc,
-                        _(
-                            "Could not use that image — it has to be a public "
-                            "PNG, JPEG, WebP or GIF link under 10 MB."
-                        ),
-                    )
-                    return
-
-                result = self._submit_video(
-                    irc,
-                    msg,
-                    prompt,
-                    nick=nick,
-                    channel=channel,
-                    account=pf.account,
-                    reference=reference,
-                )
-                self._safe_reply(irc, result.content)
-
-                # Zero tokens and zero cost by construction — no model ran on
-                # this path. The row is the record that the request happened,
-                # which is the only record there is: the video box reports no
-                # accounting of its own.
-                self._store_context_and_log_usage(
-                    nick,
-                    channel,
-                    "animate",
-                    f"{url} {prompt}".strip(),
-                    result.content,
-                    result,
-                    irc,
-                    msg,
-                )
-        finally:
-            stop_typing()
+        url, prompt = split_reference_url(text)
+        if not url:
+            return text, None
+        reference = self.llm_service.fetch_reference_image(url)
+        if reference is None:
+            self._safe_error(
+                irc,
+                _(
+                    "Could not use that image — it has to be a public "
+                    "PNG, JPEG, WebP or GIF link under 10 MB."
+                ),
+            )
+            return None
+        return prompt, reference
 
     # Alias: @video works the same as @animate
     video = animate

@@ -43,6 +43,15 @@ def _service(make_service: Callable[..., tuple[LLMService, Mock]], **overrides: 
     return make_service(**overrides)
 
 
+def _png_jpeg_bytes(width: int = 64, height: int = 48):
+    """A real JPEG, the shape fetch_reference_image returns."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 120, 200)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
 def _png_bytes(width: int = 64, height: int = 48, colour: tuple[int, int, int] = (10, 120, 200)):
     """A real PNG, built by Pillow so the decode path under test is honest."""
     from PIL import Image
@@ -306,3 +315,72 @@ class TestVideoGenerationWithReference:
         assert b"\xff\xd8\xffcatbytes" in body
         assert b'name="input_reference"' in body
         assert b'"task": "fl2va"' in body
+
+
+class TestReferenceVisionCopy:
+    """The planner gets its own small copy; the box gets the full-size one."""
+
+    def test_vision_copy_is_a_data_url(self, make_service, animate_env) -> None:
+        """GIVEN a reference WHEN a vision copy is made THEN it is an inline data URL.
+
+        Inline, not the user's URL: the bytes are already fetched, validated
+        and re-encoded here, so handing the provider the original link would
+        re-open a fetch this path deliberately closed.
+        """
+        from llm.service import ReferenceImage
+
+        service, _ = _service(make_service)
+        ref = ReferenceImage(data=_png_jpeg_bytes(), extension="jpg")
+
+        url = service.reference_vision_url(ref)
+
+        assert url is not None
+        assert url.startswith("data:image/jpeg;base64,")
+
+    def test_vision_copy_is_downscaled(self, make_service, animate_env) -> None:
+        """GIVEN a large reference WHEN a vision copy is made THEN it is shrunk.
+
+        The planner needs to see what is in frame, not read the pixels — a
+        full-size still would be the dominant cost of a turn that exists to
+        write 150 words.
+        """
+        import base64
+        import io
+
+        from llm.service import ReferenceImage
+        from PIL import Image
+
+        service, _ = _service(make_service)
+        ref = ReferenceImage(data=_png_jpeg_bytes(2400, 1200), extension="jpg")
+
+        url = service.reference_vision_url(ref)
+
+        raw = base64.b64decode(url.split(",", 1)[1])
+        with Image.open(io.BytesIO(raw)) as img:
+            assert max(img.size) == service._REFERENCE_VISION_EDGE
+
+    def test_undecodable_reference_has_no_vision_copy(self, make_service, animate_env) -> None:
+        """GIVEN bytes that will not decode WHEN a copy is asked for THEN None."""
+        from llm.service import ReferenceImage
+
+        service, _ = _service(make_service)
+
+        assert service.reference_vision_url(ReferenceImage(data=b"junk", extension="jpg")) is None
+
+
+class TestVisionImageFilter:
+    """Our own inline copy has to survive the URL filter that guards vision."""
+
+    def test_our_data_url_survives(self, make_service, animate_env) -> None:
+        """GIVEN an inline image WHEN filtered THEN it is kept."""
+        service, _ = _service(make_service)
+
+        assert service._filter_images(["data:image/jpeg;base64,Y2F0"]) == [
+            "data:image/jpeg;base64,Y2F0"
+        ]
+
+    def test_non_image_data_url_is_dropped(self, make_service, animate_env) -> None:
+        """GIVEN a data URL that is not an image WHEN filtered THEN it is dropped."""
+        service, _ = _service(make_service)
+
+        assert service._filter_images(["data:text/html;base64,PHNjcmlwdD4="]) is None

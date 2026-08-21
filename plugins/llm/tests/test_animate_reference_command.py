@@ -1,9 +1,11 @@
 """@animate with an image URL in the line — the command and chat entry points.
 
-The rewrite that makes text-only @animate work is the wrong move once a
-reference image is attached: the picture already fixes the subject, so a
-planner turn can only drift from it. With a URL in the line the command skips
-the planner entirely and sends what the user typed.
+A reference image does NOT skip the planner. MiniMax-H3 rewards prompts written
+like a shot script — "more detail means more adherence" (ps, #afternet
+2026-08-21) — and a two-word ask renders poorly whether or not a picture is
+attached. So the reference path runs the same planner turn as text-only
+@animate, with two additions: the planner SEES the picture, and it is told the
+first frame is already fixed so its job is the motion, not the subject.
 
 The two entry points both matter. "@animate <url> ..." is the command;
 "vibebot animate <url> ..." never reaches it and arrives as chat, which is the
@@ -13,17 +15,25 @@ has to pick the reference out of the user's message too.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import pytest
-
-if TYPE_CHECKING:
-    pass
 
 _IMG = "https://pics.example.com/cat.png"
 
 
-def _video_result(mocker, content: str = "Rendering your video — I'll post the link here."):
+def _assistant_result(content: str = "Queued that up, it is rendering now."):
+    from llm.service import AssistantResult
+
+    return AssistantResult(
+        content=content,
+        grounding_used=False,
+        prompt_tokens=120,
+        completion_tokens=40,
+        cost=0.0012,
+        model="gemini/gemini-flash-latest",
+    )
+
+
+def _video_result(content: str = "Rendering your video — I'll post the link here."):
     from llm.service import VideoResult
 
     return VideoResult(content=content, job_id="video_gen_1", queued=True, model="")
@@ -37,53 +47,92 @@ def animate_plugin(plugin_env, mocker):
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
     plugin.llm_service.assistant_request.side_effect = None
-    plugin.llm_service.video_generation.return_value = _video_result(mocker)
+    plugin.llm_service.assistant_request.return_value = _assistant_result()
+    plugin.llm_service.video_generation.return_value = _video_result()
     # No split_reference_url stub: the plugin calls the real module-level
     # parser, so these tests exercise the same URL handling production does.
     plugin.llm_service.fetch_reference_image.return_value = ReferenceImage(
         data=b"\xff\xd8\xffcat", extension="jpg"
     )
+    plugin.llm_service.reference_vision_url.return_value = "data:image/jpeg;base64,Y2F0"
     mocker.patch.object(plugin, "_verse_context_for", return_value=None)
     return plugin, mock_irc, mock_msg
 
 
 class TestAnimateCommandWithReference:
-    """A URL in the line means: use the picture, and do not reword the ask."""
+    """The picture fixes the subject; the planner still writes the script."""
 
-    def test_reference_skips_the_planner(self, animate_plugin) -> None:
-        """GIVEN a URL in the prompt WHEN @animate runs THEN no planner turn happens."""
-        plugin, mock_irc, mock_msg = animate_plugin
+    def test_reference_still_plans(self, animate_plugin) -> None:
+        """GIVEN a URL in the prompt WHEN @animate runs THEN the planner turn happens.
 
-        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
-
-        plugin.llm_service.assistant_request.assert_not_called()
-        plugin.llm_service.video_generation.assert_called_once()
-
-    def test_users_words_reach_the_box_verbatim(self, animate_plugin) -> None:
-        """GIVEN a URL and words WHEN it submits THEN the words are unrewritten."""
-        plugin, mock_irc, mock_msg = animate_plugin
-
-        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
-
-        call = plugin.llm_service.video_generation.call_args
-        assert call.args[0] == "make the cat dance"
-        assert call.kwargs["reference"].data == b"\xff\xd8\xffcat"
-
-    def test_url_only_line_still_animates(self, animate_plugin) -> None:
-        """GIVEN only a URL WHEN it submits THEN a default motion prompt is used.
-
-        The server requires a prompt, and "animate this" with no words is a
-        request people will make.
+        A bare "make it dance" is exactly the prompt shape H3 renders worst.
         """
         plugin, mock_irc, mock_msg = animate_plugin
 
-        plugin.animate(mock_irc, mock_msg, [_IMG])
+        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        prompt = plugin.llm_service.video_generation.call_args.args[0]
-        assert prompt.strip()
-        assert "http" not in prompt
+        plugin.llm_service.assistant_request.assert_called_once()
+        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
+        assert ctx.profile == "animate"
 
-    def test_unfetchable_reference_spends_no_gpu(self, animate_plugin) -> None:
+    def test_planner_sees_the_picture(self, animate_plugin) -> None:
+        """GIVEN a reference WHEN the planner runs THEN the image rides the request.
+
+        A planner writing blind can only guess what is in frame, and any guess
+        it gets wrong is detail the video model has to reconcile against the
+        actual first frame.
+        """
+        plugin, mock_irc, mock_msg = animate_plugin
+
+        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
+
+        images = plugin.llm_service.assistant_request.call_args.kwargs["images"]
+        assert images == ["data:image/jpeg;base64,Y2F0"]
+
+    def test_planner_is_told_the_first_frame_is_fixed(self, animate_plugin) -> None:
+        """GIVEN a reference WHEN the planner runs THEN its overlay says so."""
+        plugin, mock_irc, mock_msg = animate_plugin
+
+        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
+
+        overlay = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert overlay and "first frame" in overlay.lower()
+
+    def test_url_is_not_in_the_planners_prompt(self, animate_plugin) -> None:
+        """GIVEN a URL WHEN the planner runs THEN it plans on the words alone."""
+        plugin, mock_irc, mock_msg = animate_plugin
+
+        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
+
+        assert plugin.llm_service.assistant_request.call_args.args[0] == "make the cat dance"
+
+    def test_submission_carries_the_reference(self, animate_plugin) -> None:
+        """GIVEN a reference WHEN the planner calls the tool THEN the file is attached."""
+        plugin, mock_irc, mock_msg = animate_plugin
+
+        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
+
+        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn("A ginger cat on a kitchen counter rises onto its hind legs...")
+
+        call = plugin.llm_service.video_generation.call_args
+        assert call.kwargs["reference"].data == b"\xff\xd8\xffcat"
+        assert call.args[0].startswith("A ginger cat")
+
+    def test_canon_layers_with_the_reference_block(self, animate_plugin, mocker) -> None:
+        """GIVEN canon and a reference WHEN it plans THEN the overlay carries both."""
+        plugin, mock_irc, mock_msg = animate_plugin
+        mocker.patch.object(
+            plugin, "_verse_context_for", return_value="Established characters:\n- Archie: windbag"
+        )
+
+        plugin.animate(mock_irc, mock_msg, [_IMG, "the", "stinky", "lads", "run"])
+
+        overlay = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert "Archie: windbag" in overlay
+        assert "first frame" in overlay.lower()
+
+    def test_unfetchable_reference_spends_nothing(self, animate_plugin) -> None:
         """GIVEN a reference that will not fetch WHEN @animate runs THEN it says so.
 
         Rendering the text alone would silently ignore the picture the user
@@ -101,28 +150,16 @@ class TestAnimateCommandWithReference:
         )
         assert "image" in said.lower()
 
-    def test_reference_turn_is_still_booked(self, animate_plugin, mocker) -> None:
-        """GIVEN a reference render WHEN it is submitted THEN a usage row is written.
-
-        No planner means no tokens, but the request still happened and the
-        animate row is the only record that it did.
-        """
-        plugin, mock_irc, mock_msg = animate_plugin
-        logged = mocker.patch.object(plugin, "_store_context_and_log_usage")
-
-        plugin.animate(mock_irc, mock_msg, [_IMG, "make", "it", "dance"])
-
-        assert logged.call_args.args[2] == "animate"
-        assert logged.call_args.args[5].job_id == "video_gen_1"
-
-    def test_plain_prompt_still_plans(self, animate_plugin) -> None:
+    def test_plain_prompt_sends_no_image(self, animate_plugin) -> None:
         """GIVEN no URL WHEN @animate runs THEN the planner path is untouched."""
         plugin, mock_irc, mock_msg = animate_plugin
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        plugin.llm_service.video_generation.assert_not_called()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert not kwargs.get("images")
+        assert kwargs.get("system_prompt") is None
+        plugin.llm_service.fetch_reference_image.assert_not_called()
 
 
 class TestChatVideoWithReference:

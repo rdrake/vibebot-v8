@@ -606,6 +606,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Script-style prompts, and the planner sees the reference (`animate`)
 - Animate a picture by pasting its URL in the line (`animate`)
 - Deliver the clip with its nick and prompt (`animate`)
 - Hold the typing indicator for the whole render (`animate`)

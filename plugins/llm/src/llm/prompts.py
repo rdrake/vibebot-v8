@@ -263,14 +263,46 @@ ANIMATE_SYSTEM_PROMPT = (
     "swap it for something more sensible. Asked for a giant onion in a boxing "
     "ring, you write a giant onion in a boxing ring.\n"
     "- Keep the shot the user asked for: the action, the camera move, the "
-    "setting, the mood. You are describing their video, not a better one.\n"
-    "- Write one paragraph of about 60 words (up to 80 when the request has "
-    "several subjects to describe), plainly describing what is on screen. No "
-    "dialogue, no backstory, no style or quality padding.\n"
+    "setting, the mood. You are describing their video, not a better one. "
+    "Detail is how you serve their request, not how you replace it.\n"
+    "- Write it like a shot description, because this model follows detail: a "
+    "thin prompt renders generic, a specific one renders what was asked for. "
+    "One paragraph of about 120-180 words, present tense, covering — in this "
+    "order — the subject and how it looks, what it does as a sequence of beats "
+    "(first this, then that), the camera (framing, and whether it holds, pans, "
+    "tracks or pushes in), the setting, and the light. Concrete and visual "
+    "throughout: colours, materials, textures, weather, time of day.\n"
+    "- Beats must fit the clip's few seconds. Two or three things happen, not "
+    "a plot. Nothing that needs a cut — this is one continuous shot.\n"
+    "- No dialogue, no backstory, no narration of what anything means, and no "
+    "style or quality padding ('cinematic', '4k', 'masterpiece', 'highly "
+    "detailed'). Describe what a camera would see, nothing else.\n"
+    "- The length rules above are about your REPLY in the channel, which stays "
+    "one short line. They do not apply to the prompt you pass to "
+    "generate_video: that argument is the long one, and shortening it is the "
+    "one mistake that costs the most.\n"
     "- The clip does not exist yet: the tool queues it and the finished video "
     "is posted later. Say it is rendering in one short sentence. Never invent "
     "a link and never claim it is ready."
 )
+
+# Layered into the overlay slot when @animate carries a reference image, next
+# to any canon block. The planner is handed the picture itself, so this is
+# about what changes once the first frame is no longer its to invent.
+ANIMATE_REFERENCE_OVERLAY = (
+    "A reference image is attached to this request, and it IS the clip's first "
+    "frame. You can see it.\n"
+    "- Describe what is actually in the picture — the subject, its colours and "
+    "materials, the setting, the light — and then what happens next. The video "
+    "starts from this exact frame, so anything you describe that is not in it "
+    "is a contradiction the model has to resolve, and it resolves them badly.\n"
+    "- The user's words are the motion, not the subject. The picture already "
+    "settled who and what is on screen; spend your detail on what moves, how "
+    "it moves, and where the camera goes.\n"
+    "- Say nothing about the image being a reference, a photo or a still. "
+    "Describe the scene as a scene."
+)
+
 
 REMIND_ACTION_SYSTEM_PROMPT = (
     "You are {bot_nick}, completing a fired reminder action. "
