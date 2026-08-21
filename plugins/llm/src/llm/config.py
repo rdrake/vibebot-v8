@@ -188,6 +188,44 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "imageApiBase",
+    registry.String(
+        "",
+        _("""Base URL of an OpenAI-shaped image endpoint to draw against instead
+        of the model's own provider, e.g. http://host:port/v1 for the
+        self-hosted box. Empty means draw through the provider LiteLLM infers
+        from imageModel, which is the hosted default. When set, the bearer
+        token is ANIMATE_API_KEY — the self-hosted server's credential — not
+        the provider key imageModel's name would imply."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageSteps",
+    registry.NonNegativeInteger(
+        0,
+        _("""Denoising steps for a self-hosted image endpoint. 0 leaves the
+        choice to the server. Ignored unless imageApiBase is set, since hosted
+        providers do not take this parameter. Steps are the dominant cost:
+        measured on the reference box at 1024x576, 8 steps took ~27s and 25
+        took ~94s on an idle server."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "imageSize",
+    registry.String(
+        "",
+        _("""Output geometry as WxH for a self-hosted image endpoint, e.g.
+        1024x576. Empty lets the server choose. Ignored unless imageApiBase is
+        set: hosted providers are tuned through their own knobs instead."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "searchModel",
     ValidatedModelName(
         "",

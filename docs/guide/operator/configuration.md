@@ -50,6 +50,26 @@ Vertex AI is not the default, but it remains a supported `imageModel` (and gener
 
 Vertex AI takes no bearer key from this plugin — no `VERTEX_AI_API_KEY` exists; it authenticates through ADC and IAM only.
 
+### Drawing against a self-hosted endpoint
+
+`imageApiBase` points `@draw` at any OpenAI-shaped `/v1/images/generations` endpoint — including the same box `@animate` uses, which serves images as well as video. Set it and three things change: the request carries an `api_base`, it authenticates with `ANIMATE_API_KEY` instead of the provider key `imageModel`'s name would imply, and `imageSteps`/`imageSize` ride along in the request body. Leave it empty and nothing changes; the hosted provider path is untouched.
+
+```
+@config channel #chan supybot.plugins.LLM.imageApiBase http://host:port/v1
+@config channel #chan supybot.plugins.LLM.imageModel openai//path/to/model
+@config channel #chan supybot.plugins.LLM.imageSteps 8
+@config channel #chan supybot.plugins.LLM.imageSize 1024x576
+```
+
+The `openai/` prefix tells LiteLLM which wire format to speak; everything after it is the model name your server expects, which is why a filesystem path with slashes in it is fine.
+
+Two things to weigh before switching a busy channel over:
+
+- **Steps are the whole latency budget.** Measured against the reference box at 1024x576 on an idle server: 8 steps ≈ 32 seconds, 25 steps ≈ 94 seconds. Compare a hosted provider answering in a few seconds. Raise `drawTimeout` (default 120) to cover whatever you pick, or draws will fall into the stash-and-deliver-later path.
+- **A busy box is much slower than an idle one.** That server runs jobs concurrently rather than queueing, so a draw submitted while clips are rendering can take well over twice as long, and every other job on the box slows down too.
+
+Spend is recorded as `$0.00`, which is accurate for your own hardware — and unlike an unpriced hosted model, it does not log the "no price in `IMAGE_COST_PER_IMAGE`" warning, so that warning still means what it says.
+
 ### Video generation
 
 `@animate` talks to a self-hosted vLLM video server rather than a LiteLLM provider, so it needs both halves of its own credential and stays off until it has them:
@@ -72,6 +92,9 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `assistantModel` | channel | `gemini/gemini-flash-latest` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
 | `codeModel` | channel | `gemini/gemini-flash-latest` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
 | `imageModel` | channel | `gemini/imagen-4.0-fast-generate-001` | Model for `@draw` |
+| `imageApiBase` | channel | empty | Draw against an OpenAI-shaped endpoint of your own instead of the provider `imageModel` names — see [Drawing against a self-hosted endpoint](#drawing-against-a-self-hosted-endpoint) |
+| `imageSteps` | channel | `0` | Denoising steps for a self-hosted endpoint. `0` lets the server choose. Ignored unless `imageApiBase` is set |
+| `imageSize` | channel | empty | Output geometry as `WxH` for a self-hosted endpoint. Ignored unless `imageApiBase` is set |
 | `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 | `verseCompactionModel` | global | `gemini/gemini-flash-lite-latest` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |

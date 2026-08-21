@@ -2960,7 +2960,7 @@ class LLMService:
 
         return prompt_tokens, completion_tokens, cost
 
-    def _image_price(self, model: str) -> float:
+    def _image_price(self, model: str, *, self_hosted: bool = False) -> float:
         """Per-image price for ``model``, or 0.0 with a warning if unpriced.
 
         Every image model in use is invisible to LiteLLM's cost map, so a miss
@@ -2970,7 +2970,15 @@ class LLMService:
         out loud. Warned once per model rather than per call: the whole point is
         that it fires on a model swap, and a per-call warning on a busy channel
         would be scrolled past.
+
+        ``self_hosted`` is the one case where zero is the true price rather than
+        a missing one — the box is our own hardware and bills nothing. Warning
+        about it would put a permanent WARNING in the prod log (which keeps
+        WARNING and above) and teach everyone to scroll past the one warning
+        that means real money is going unrecorded.
         """
+        if self_hosted:
+            return 0.0
         price = IMAGE_COST_PER_IMAGE.get(model)
         if price is not None:
             return price
@@ -3531,8 +3539,11 @@ class LLMService:
             )
 
         # Same persisted-column caveat as _retry_completion: unmanaged resolves
-        # to no error and the call proceeds.
-        key_error = self._missing_key_error(task.model)
+        # to no error and the call proceeds. The channel comes off the row so a
+        # recovered draw is redrawn against the same endpoint the original was
+        # aimed at, not whatever the global default happens to be.
+        retry_channel = task.reply_target if task.is_channel else None
+        key_error = self._missing_image_key_error(task.model, retry_channel)
         if key_error:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -3546,7 +3557,7 @@ class LLMService:
             )
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
-        result = self._attempt_image_generation(prompt, task.model, timeout)
+        result = self._attempt_image_generation(prompt, task.model, timeout, retry_channel)
         if result is None:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -4856,7 +4867,7 @@ Examples (echo → action_prompt: ""):
             raises, so one failed draw can't sink the whole batch."""
             try:
                 styled = f"{style_prefix}: {it['image_prompt']}"
-                return it, self._attempt_image_generation(styled, model, timeout)
+                return it, self._attempt_image_generation(styled, model, timeout, channel)
             except Exception as e:  # noqa: BLE001 — isolate per-image failures
                 self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
                 return it, None
@@ -5145,11 +5156,41 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Prompt rewrite failed: %s", self._sanitize(str(e)))
             return None, 0, 0, 0.0
 
+    def _image_api_base(self, channel: str | None = None) -> str:
+        """Configured self-hosted image endpoint, or "" for the hosted path.
+
+        Rejected the same way the video URL is: a malformed or unsafe value
+        disables the override rather than pointing a credentialed request at
+        something that is not an image server.
+        """
+        base = (self.plugin.registryValue("imageApiBase", channel) or "").strip().rstrip("/")
+        if not base or not validate_external_url(base):
+            return ""
+        return base
+
+    def _missing_image_key_error(self, model: str, channel: str | None = None) -> str | None:
+        """Message for a draw whose credential is unset, or None if it is fine.
+
+        Splits from ``_missing_key_error`` because the self-hosted endpoint
+        breaks that function's one assumption: there, the model name names the
+        provider, and the provider names the environment variable. Pointed at
+        the box, ``openai/<path>`` would demand OPENAI_API_KEY — a real
+        credential for a different service that this request never touches.
+        """
+        if self._image_api_base(channel):
+            if apikeys.animate_api_key():
+                return None
+            return _("no API key configured for the self-hosted image server (set %s)") % (
+                apikeys.ANIMATE_ENV_VAR
+            )
+        return self._missing_key_error(model)
+
     def _attempt_image_generation(
         self,
         prompt: str,
         model: str,
         timeout: int,
+        channel: str | None = None,
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -5157,23 +5198,39 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
+            channel: Channel for per-channel endpoint config
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
             Raises exceptions for other errors.
         """
         kwargs: dict[str, object] = {}
-        if model.startswith("xai/"):
-            kwargs["aspect_ratio"] = "9:16"
-            kwargs["quality"] = "high"
-            kwargs["resolution"] = "2k"
+        api_base = self._image_api_base(channel)
+        if api_base:
+            # Aimed at the box: its own bearer token, and the generation knobs
+            # under extra_body because num_inference_steps is not an OpenAI
+            # image parameter and LiteLLM drops what it does not recognise.
+            kwargs["api_base"] = api_base
+            api_key = apikeys.animate_api_key()
+            steps = int(self.plugin.registryValue("imageSteps", channel) or 0)
+            if steps:
+                kwargs["extra_body"] = {"num_inference_steps": steps}
+            size = (self.plugin.registryValue("imageSize", channel) or "").strip()
+            if size:
+                kwargs["size"] = size
+        else:
+            api_key = apikeys.api_key_for(model)
+            if model.startswith("xai/"):
+                kwargs["aspect_ratio"] = "9:16"
+                kwargs["quality"] = "high"
+                kwargs["resolution"] = "2k"
 
         t0 = time.monotonic()
         try:
             response = litellm.image_generation(
                 prompt=prompt,
                 model=model,
-                api_key=apikeys.api_key_for(model),
+                api_key=api_key,
                 n=1,
                 timeout=timeout,
                 metadata=self._get_litellm_metadata(),
@@ -5197,7 +5254,7 @@ Examples (echo → action_prompt: ""):
 
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
         if cost == 0.0:
-            cost = self._image_price(model)
+            cost = self._image_price(model, self_hosted=bool(api_base))
 
         if response.data and len(response.data) > 0:
             image_data = response.data[0]
@@ -6304,7 +6361,7 @@ Examples (echo → action_prompt: ""):
             # resolved from the model itself, below, not stored in a local var)
             channel = msg.args[0] if msg and msg.args else None
             model = self.plugin.registryValue("imageModel", channel)
-            key_error = self._missing_key_error(model)
+            key_error = self._missing_image_key_error(model, channel)
             if key_error:
                 error_content = _("Error: %s") % key_error
                 return ImageResult(content=error_content, error=error_content)
