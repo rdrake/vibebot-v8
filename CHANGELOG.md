@@ -600,6 +600,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Hold the typing indicator for the whole render (`animate`)
 - One refresher pass for clips still rendering (`animate`)
 - Read which reply targets have a clip rendering (`persistence`)
 - Ground @animate prompts in verse canon, like @draw (`animate`)

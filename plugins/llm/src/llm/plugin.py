@@ -853,6 +853,20 @@ class LLM(callbacks.Plugin):
         self._render_typing_active: set[tuple[str, str]] = set()
         self._render_typing_lock = threading.Lock()
 
+        # The refresher blocks on _render_typing_wake instead of querying the
+        # database every four seconds forever; a submission sets it. Set once
+        # here so a restart mid-render picks the job back up from the
+        # database on the first pass.
+        self._render_typing_wake = threading.Event()
+        self._render_typing_wake.set()
+        self._render_typing_stop = threading.Event()
+        self._render_typing_thread = threading.Thread(
+            target=self._render_typing_loop,
+            name="animate-typing-refresher",
+            daemon=True,
+        )
+        self._render_typing_thread.start()
+
         # Recency-attributed verse reaction signal (see verse/reactions.py).
         # Last verse line the bot said per (network, channel); read by doTagmsg.
         self._last_bot_line: dict[tuple[str, str], dict] = {}
@@ -971,6 +985,14 @@ class LLM(callbacks.Plugin):
         if hasattr(self, "_llm_executor"):
             self._llm_executor.shutdown()
             self._llm_executor.drain(timeout=2.0)
+
+        # Stop the render-typing refresher. It cannot send +typing=done on the
+        # way out — _safe_queue drops sends once shutdown has begun — and it
+        # does not need to: clients expire the state after about six seconds.
+        if hasattr(self, "_render_typing_stop"):
+            self._render_typing_stop.set()
+            self._render_typing_wake.set()
+            self._render_typing_thread.join(timeout=2.0)
 
         # Clean up expired reminders from database
         if hasattr(self, "db"):
@@ -4752,6 +4774,36 @@ class LLM(callbacks.Plugin):
             reworded=result.rewritten_prompt is not None,
         )
 
+    def _render_typing_loop(self, max_cycles: int | None = None) -> None:
+        """Refresh typing while clips render; block when none are.
+
+        Two nested waits rather than a flat poll: the outer one parks the
+        thread on ``_render_typing_wake`` so an idle bot does no database work
+        at all, and the inner one paces the passes while something is
+        actually rendering. A pass that ends with nothing held drops back to
+        the outer wait.
+
+        ``max_cycles`` bounds the outer loop for tests; production passes
+        None and runs until ``die()``.
+        """
+        cycles = 0
+        while not self._render_typing_stop.is_set():
+            if not self._render_typing_wake.wait(timeout=1.0):
+                continue
+            if self._render_typing_stop.is_set():
+                return
+            while not self._render_typing_stop.is_set():
+                self._typing_refresh_pass()
+                with self._render_typing_lock:
+                    still_typing = bool(self._render_typing_active)
+                if not still_typing:
+                    self._render_typing_wake.clear()
+                    break
+                self._render_typing_stop.wait(timeout=self._RENDER_TYPING_INTERVAL)
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                return
+
     def _render_typing_holds(self, target: str) -> bool:
         """True when the render refresher is typing at ``target`` right now."""
         with self._render_typing_lock:
@@ -4855,6 +4907,11 @@ class LLM(callbacks.Plugin):
             account=account,
             reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
         )
+        if not result.error:
+            # A clip is on the box now, so the refresher has something to do.
+            # Only on success: a rejected submission means nothing is
+            # rendering and typing would be a lie.
+            self._render_typing_wake.set()
         return _ToolCallbackResult(not bool(result.error), result.content)
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:

@@ -1146,3 +1146,85 @@ class TestTypingRefreshPass:
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "alice", "active")
         assert plugin._render_typing_holds("alice")
         assert not plugin._render_typing_holds("#chan")
+
+
+class TestTypingRefresherLifecycle:
+    """The thread idles instead of polling, and dies with the plugin."""
+
+    def _quiesce_refresher(self, plugin) -> None:
+        """Stop the __init__-started refresher so a test can drive the loop itself.
+
+        The plugin starts a live daemon thread on the same two events these
+        tests manipulate. Left running, it races the test for the wake flag
+        and calls _typing_refresh_pass on its own schedule, so a test that
+        counts passes or asserts on the wake flag is measuring two drivers.
+        """
+        plugin._render_typing_stop.set()
+        plugin._render_typing_wake.set()
+        plugin._render_typing_thread.join(timeout=2.0)
+        assert not plugin._render_typing_thread.is_alive()
+        plugin._render_typing_stop.clear()
+        plugin._render_typing_wake.clear()
+
+    def test_submission_wakes_the_refresher(self, plugin_env, mocker) -> None:
+        """GIVEN a queued clip WHEN the tool callback runs THEN the loop wakes."""
+        from llm.service import VideoResult
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.video_generation.return_value = VideoResult(
+            content="Rendering your video.", job_id="job-1", queued=True
+        )
+        self._quiesce_refresher(plugin)
+
+        plugin._animate_for_assistant(
+            mock_irc, mock_msg, "a corgi", nick="alice", channel="#test", account="acct"
+        )
+
+        assert plugin._render_typing_wake.is_set()
+
+    def test_rejected_submission_does_not_wake(self, plugin_env, mocker) -> None:
+        """Nothing is rendering, so nothing should type."""
+        from llm.service import VideoResult
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.video_generation.return_value = VideoResult(
+            content="Error: video server rejected the request.", error="rejected"
+        )
+        self._quiesce_refresher(plugin)
+
+        plugin._animate_for_assistant(
+            mock_irc, mock_msg, "a corgi", nick="alice", channel="#test", account="acct"
+        )
+
+        assert not plugin._render_typing_wake.is_set()
+
+    def test_loop_runs_passes_until_the_set_empties(self, plugin_env, mocker) -> None:
+        """Woken → pass; empty set → back to blocking, wake flag cleared."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        self._quiesce_refresher(plugin)
+        calls = []
+
+        def fake_pass() -> None:
+            calls.append(1)
+            # Two passes with work, then nothing left to type.
+            plugin._render_typing_active = set() if len(calls) >= 2 else {("afternet", "#chan")}
+
+        mocker.patch.object(plugin, "_typing_refresh_pass", side_effect=fake_pass)
+        plugin._RENDER_TYPING_INTERVAL = 0.01
+        plugin._render_typing_wake.set()
+
+        plugin._render_typing_loop(max_cycles=1)
+
+        assert len(calls) == 2
+        assert not plugin._render_typing_wake.is_set()
+
+    def test_die_stops_the_thread(self, plugin_env, mocker) -> None:
+        """An orphaned daemon thread would keep typing into a dead plugin."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        assert plugin._render_typing_thread.is_alive()
+
+        plugin.die()
+
+        assert plugin._render_typing_stop.is_set()
+        plugin._render_typing_thread.join(timeout=2.0)
+        assert not plugin._render_typing_thread.is_alive()
