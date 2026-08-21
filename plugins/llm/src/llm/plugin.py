@@ -845,6 +845,14 @@ class LLM(callbacks.Plugin):
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
 
+        # (network, target) pairs typed on the most recent refresher pass, so
+        # the next pass can send exactly one +typing=done to whatever dropped
+        # out. Written by the refresher thread, read by _begin_typing's
+        # suppress predicate on worker threads — hence the lock, following
+        # every other mutable map in this class.
+        self._render_typing_active: set[tuple[str, str]] = set()
+        self._render_typing_lock = threading.Lock()
+
         # Recency-attributed verse reaction signal (see verse/reactions.py).
         # Last verse line the bot said per (network, channel); read by doTagmsg.
         self._last_bot_line: dict[tuple[str, str], dict] = {}
@@ -2134,6 +2142,14 @@ class LLM(callbacks.Plugin):
     _DELIVERY_BASE_BACKOFF = 15
     _DELIVERY_MAX_BACKOFF = 120
     _DELIVERY_MAX_ATTEMPTS = 10
+
+    # Render-typing refresher. The interval matches _begin_typing's keepalive
+    # because the constraint is the same: clients expire +typing=active after
+    # roughly six seconds. The max age is a deliberate ceiling on how long the
+    # bot will appear to type — a job can stay pending for animateExpiry
+    # (1800s), and nobody should watch that.
+    _RENDER_TYPING_INTERVAL: float = 4.0
+    _RENDER_TYPING_MAX_AGE: float = 360.0
 
     def _deliver_pending_result(self, r) -> None:
         """Deliver a single pending task result to the correct target.
@@ -4735,6 +4751,62 @@ class LLM(callbacks.Plugin):
             result.content,
             reworded=result.rewritten_prompt is not None,
         )
+
+    def _render_typing_holds(self, target: str) -> bool:
+        """True when the render refresher is typing at ``target`` right now."""
+        with self._render_typing_lock:
+            return any(held == target for _network, held in self._render_typing_active)
+
+    def _typing_refresh_pass(self) -> None:
+        """Send one round of +typing for every clip still rendering.
+
+        The whole state comes from the database each pass (see
+        ``active_animate_targets``), so a restart, a reload, a redelivered
+        row, or a job that fails ten delivery attempts all resolve themselves
+        on the next tick rather than needing a code path each.
+
+        Resolves the connection per pass instead of capturing one: a zombie
+        Irc makes queueMsg return False rather than raise, so a captured
+        object would silently stop typing while looking fine. Mirrors the
+        delivery path's resolution (channel membership, else first
+        connection).
+
+        Never raises. This runs on a daemon thread whose death would be
+        invisible.
+        """
+        try:
+            targets = self.db.active_animate_targets(time.time(), self._RENDER_TYPING_MAX_AGE)
+        except Exception:
+            self.log.exception("render typing: pending-task read failed")
+            return
+
+        active: set[tuple[str, str]] = set()
+        for target in targets:
+            is_channel = ircutils.isChannel(target)
+            for irc_conn in world.ircs:
+                if is_channel and target not in irc_conn.state.channels:
+                    continue
+                try:
+                    self.llm_service.send_typing_indicator(irc_conn, target, "active")
+                except Exception:
+                    self.log.exception("render typing: active send failed")
+                else:
+                    active.add((irc_conn.network, target))
+                break
+
+        with self._render_typing_lock:
+            stale = self._render_typing_active - active
+            self._render_typing_active = active
+
+        for network, target in stale:
+            for irc_conn in world.ircs:
+                if irc_conn.network != network:
+                    continue
+                try:
+                    self.llm_service.send_typing_indicator(irc_conn, target, "done")
+                except Exception:
+                    self.log.exception("render typing: done send failed")
+                break
 
     def _animate_for_assistant(
         self,

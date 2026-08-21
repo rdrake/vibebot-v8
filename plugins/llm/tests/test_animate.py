@@ -998,3 +998,98 @@ class TestNoInventedLinks:
 
         assert _strip_urls("Here you go:  https://x.test/a.gif  done") == "Here you go: done"
         assert _strip_urls("https://x.test/a.gif") == ""
+
+
+class TestTypingRefreshPass:
+    """One pass of the render-typing refresher.
+
+    State is derived from pending_tasks every pass rather than tracked, so
+    there is no release to get wrong — see docs/plans/2026-08-21-animate-ux.md.
+    """
+
+    def _irc(self, mocker, network: str = "afternet", channels=("#chan",)):
+        irc = mocker.MagicMock()
+        irc.network = network
+        irc.state.channels = dict.fromkeys(channels, mocker.MagicMock())
+        return irc
+
+    def test_active_target_is_typed(self, plugin_env, mocker) -> None:
+        """GIVEN a rendering clip WHEN a pass runs THEN the target gets active."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        plugin._typing_refresh_pass()
+
+        plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "active")
+        assert plugin._render_typing_holds("#chan")
+
+    def test_target_dropping_out_gets_one_done(self, plugin_env, mocker) -> None:
+        """The clip landed: exactly one done, and not repeated next pass."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+        plugin._typing_refresh_pass()
+        plugin.llm_service.send_typing_indicator.reset_mock()
+
+        plugin.db.active_animate_targets.return_value = []
+        plugin._typing_refresh_pass()
+        plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "done")
+        assert not plugin._render_typing_holds("#chan")
+
+        plugin.llm_service.send_typing_indicator.reset_mock()
+        plugin._typing_refresh_pass()
+        plugin.llm_service.send_typing_indicator.assert_not_called()
+
+    def test_channel_the_bot_has_left_is_skipped(self, plugin_env, mocker) -> None:
+        """No membership, no typing — mirrors the delivery path's resolution."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker, channels=("#other",))
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        plugin._typing_refresh_pass()
+
+        plugin.llm_service.send_typing_indicator.assert_not_called()
+        assert not plugin._render_typing_holds("#chan")
+
+    def test_pm_target_uses_the_first_connection(self, plugin_env, mocker) -> None:
+        """A PM has no channel membership to check."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker, channels=())
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["alice"]
+
+        plugin._typing_refresh_pass()
+
+        plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "alice", "active")
+
+    def test_holds_are_keyed_by_network(self, plugin_env, mocker) -> None:
+        """The key is (network, target), and resolution stops at the first hit.
+
+        Keying on the bare target would merge #chan on one network with #chan
+        on another; stopping at the first connection carrying it matches how
+        the delivery path picks a connection.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        a = self._irc(mocker, network="afternet")
+        b = self._irc(mocker, network="other")
+        mocker.patch("llm.plugin.world.ircs", [a, b])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        plugin._typing_refresh_pass()
+
+        # Resolution stops at the first connection carrying the target, same
+        # as the delivery path, so only one network is held.
+        assert plugin._render_typing_active == {("afternet", "#chan")}
+
+    def test_db_failure_does_not_raise(self, plugin_env, mocker) -> None:
+        """A read failure must not kill the refresher thread."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        mocker.patch("llm.plugin.world.ircs", [])
+        plugin.db.active_animate_targets.side_effect = RuntimeError("db is gone")
+
+        plugin._typing_refresh_pass()  # must not raise

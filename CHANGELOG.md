@@ -599,6 +599,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- One refresher pass for clips still rendering (`animate`)
 - Read which reply targets have a clip rendering (`persistence`)
 - Ground @animate prompts in verse canon, like @draw (`animate`)
 - Deliver the clip as an IRCv3 reply, like @draw's image (`animate`)
