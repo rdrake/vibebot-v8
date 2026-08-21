@@ -4793,11 +4793,20 @@ class LLM(callbacks.Plugin):
             if self._render_typing_stop.is_set():
                 return
             while not self._render_typing_stop.is_set():
-                self._typing_refresh_pass()
+                # Cleared before the pass, not after: a submission's set()
+                # landing during the pass (the SELECT, or the done sends for
+                # stale targets) must survive so the next pass picks the row
+                # up. Clearing after the pass would erase that signal for a
+                # job the pass never saw, stalling its typing indicator until
+                # some unrelated later submission wakes the loop.
+                self._render_typing_wake.clear()
+                try:
+                    self._typing_refresh_pass()
+                except Exception:
+                    self.log.exception("render typing: refresh pass failed")
                 with self._render_typing_lock:
                     still_typing = bool(self._render_typing_active)
                 if not still_typing:
-                    self._render_typing_wake.clear()
                     break
                 self._render_typing_stop.wait(timeout=self._RENDER_TYPING_INTERVAL)
             cycles += 1

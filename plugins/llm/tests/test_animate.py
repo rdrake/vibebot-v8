@@ -1218,10 +1218,38 @@ class TestTypingRefresherLifecycle:
         assert len(calls) == 2
         assert not plugin._render_typing_wake.is_set()
 
+    def test_a_wake_arriving_during_the_final_pass_is_not_lost(self, plugin_env, mocker) -> None:
+        """A submission landing mid-pass must not be erased by that pass's own clear.
+
+        Simulates a worker thread writing a new pending row and calling
+        _render_typing_wake.set() while the refresher's final pass (the one
+        that empties _render_typing_active) is still in flight. If the wake
+        flag is cleared *after* the pass runs, that set() is stomped and the
+        new clip renders with no typing indicator until an unrelated later
+        submission wakes the loop.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        self._quiesce_refresher(plugin)
+
+        def fake_pass() -> None:
+            plugin._render_typing_active = set()
+            # A submission lands mid-pass, after the SELECT found nothing
+            # left, before this pass finishes.
+            plugin._render_typing_wake.set()
+
+        mocker.patch.object(plugin, "_typing_refresh_pass", side_effect=fake_pass)
+        plugin._RENDER_TYPING_INTERVAL = 0.01
+        plugin._render_typing_wake.set()
+
+        plugin._render_typing_loop(max_cycles=1)
+
+        assert plugin._render_typing_wake.is_set()
+
     def test_die_stops_the_thread(self, plugin_env, mocker) -> None:
         """An orphaned daemon thread would keep typing into a dead plugin."""
         plugin, _mock_irc, _mock_msg = plugin_env
         assert plugin._render_typing_thread.is_alive()
+        assert plugin._render_typing_thread.daemon
 
         plugin.die()
 
