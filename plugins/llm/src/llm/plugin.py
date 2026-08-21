@@ -4782,31 +4782,43 @@ class LLM(callbacks.Plugin):
 
         active: set[tuple[str, str]] = set()
         for target in targets:
-            is_channel = ircutils.isChannel(target)
-            for irc_conn in world.ircs:
-                if is_channel and target not in irc_conn.state.channels:
-                    continue
-                try:
-                    self.llm_service.send_typing_indicator(irc_conn, target, "active")
-                except Exception:
-                    self.log.exception("render typing: active send failed")
-                else:
-                    active.add((irc_conn.network, target))
-                break
+            try:
+                is_channel = ircutils.isChannel(target)
+                for irc_conn in world.ircs:
+                    if is_channel and target not in irc_conn.state.channels:
+                        continue
+                    try:
+                        self.llm_service.send_typing_indicator(irc_conn, target, "active")
+                    except Exception:
+                        self.log.exception("render typing: active send failed")
+                    else:
+                        # A hold means the send was attempted, not confirmed
+                        # delivered: send_typing_indicator returns None and
+                        # can no-op without raising (no message-tags cap, or
+                        # a closing executor). Harmless here — the set is
+                        # rederived every pass, and the matching done no-ops
+                        # the same way.
+                        active.add((irc_conn.network, target))
+                    break
+            except Exception:
+                self.log.exception("render typing: active resolution failed")
 
         with self._render_typing_lock:
             stale = self._render_typing_active - active
             self._render_typing_active = active
 
         for network, target in stale:
-            for irc_conn in world.ircs:
-                if irc_conn.network != network:
-                    continue
-                try:
-                    self.llm_service.send_typing_indicator(irc_conn, target, "done")
-                except Exception:
-                    self.log.exception("render typing: done send failed")
-                break
+            try:
+                for irc_conn in world.ircs:
+                    if irc_conn.network != network:
+                        continue
+                    try:
+                        self.llm_service.send_typing_indicator(irc_conn, target, "done")
+                    except Exception:
+                        self.log.exception("render typing: done send failed")
+                    break
+            except Exception:
+                self.log.exception("render typing: done resolution failed")
 
     def _animate_for_assistant(
         self,

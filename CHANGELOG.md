@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Guard the typing refresh pass against a bad target or connection (`animate`)
 - Force generate_video when chat is explicitly asked for a video (`chat`)
 - Never let an invented link leave the @animate route (`animate`)
 - Force generate_video on step 0 of the @animate route (`animate`)

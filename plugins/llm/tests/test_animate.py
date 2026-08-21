@@ -1093,3 +1093,56 @@ class TestTypingRefreshPass:
         plugin.db.active_animate_targets.side_effect = RuntimeError("db is gone")
 
         plugin._typing_refresh_pass()  # must not raise
+
+    def test_membership_check_walks_to_the_carrying_connection(self, plugin_env, mocker) -> None:
+        """A `continue` must fall through to the next connection, not stop early.
+
+        A `continue`-to-`break` mutation would pass every other test here
+        since the carrying connection is always first or the only one; this
+        puts the non-carrying connection first to catch that mutant.
+        """
+        plugin, _mock_irc, _mock_msg = plugin_env
+        a = self._irc(mocker, network="a", channels=())
+        b = self._irc(mocker, network="b", channels=("#chan",))
+        mocker.patch("llm.plugin.world.ircs", [a, b])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+
+        plugin._typing_refresh_pass()
+
+        plugin.llm_service.send_typing_indicator.assert_called_once_with(b, "#chan", "active")
+        assert plugin._render_typing_active == {("b", "#chan")}
+
+    def test_active_send_failure_does_not_raise_and_leaves_target_unheld(
+        self, plugin_env, mocker
+    ) -> None:
+        """A failed active send must not raise, and the target stays unheld."""
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan"]
+        plugin.llm_service.send_typing_indicator.side_effect = RuntimeError("queue closed")
+
+        plugin._typing_refresh_pass()  # must not raise
+
+        assert not plugin._render_typing_holds("#chan")
+
+    def test_one_targets_resolution_failure_does_not_abort_the_pass(
+        self, plugin_env, mocker
+    ) -> None:
+        """A membership check that raises must not stop a later, healthy target."""
+
+        class _RaisingChannels:
+            def __contains__(self, _item: object) -> bool:
+                raise RuntimeError("state is half-initialized")
+
+        plugin, _mock_irc, _mock_msg = plugin_env
+        irc = self._irc(mocker)
+        irc.state.channels = _RaisingChannels()
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin.db.active_animate_targets.return_value = ["#chan", "alice"]
+
+        plugin._typing_refresh_pass()  # must not raise
+
+        plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "alice", "active")
+        assert plugin._render_typing_holds("alice")
+        assert not plugin._render_typing_holds("#chan")
