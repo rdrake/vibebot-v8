@@ -24,7 +24,7 @@ To grant the `trusted` capability, see the [Limnoria capabilities documentation]
 
 ### Setting pattern
 
-The rate-limited commands are `ask`, `code`, `draw`, and `story`. Each has three setting pairs, one per non-exempt tier:
+The rate-limited commands are `ask`, `code`, `draw`, `story`, and `animate`. Each has three setting pairs, one per non-exempt tier:
 
 - `{cmd}RateLimitCount` and `{cmd}RateLimitWindow`: registered users.
 - `{cmd}TrustedRateLimitCount` and `{cmd}TrustedRateLimitWindow`: trusted users.
@@ -42,8 +42,11 @@ Buckets are keyed by account name for identified users and by nick for everyone 
 | `code` | 10 per 60 s | Unlimited | 2 per 60 s |
 | `draw` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
 | `story` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
+| `animate` | 2 per 900 s | 4 per 300 s | 1 per 7200 s |
 
-`draw` and `story` also require an authenticated account regardless of tier, so image generation is always attributable and the unregistered tier is unreachable in practice. It stays a small positive number rather than `0`, because `0` means "no limit" and would hand accountless users unlimited access to the most expensive command.
+`draw`, `story`, and `animate` also require an authenticated account regardless of tier, so media generation is always attributable and the unregistered tier is unreachable in practice. It stays a small positive number rather than `0`, because `0` means "no limit" and would hand accountless users unlimited access to the most expensive commands.
+
+`animate` is the strictest of the three. A clip is over a minute of exclusive GPU time on a single shared box, and the video server renders one job at a time, so each accepted request delays every later one; the caps are what stops a busy channel booking an hour of queue in a minute.
 
 `@rp` has no keys of its own; it draws on the `ask` bucket.
 
@@ -58,6 +61,7 @@ The AI and verse command surfaces require a Limnoria capability:
 | `llm.ask` | `@ask`, `@forget`, `@remind`, and general assistant tool access |
 | `llm.code` | `@code` and the code-generation tool |
 | `llm.draw` | `@draw`, `@story`, and the image-generation tool |
+| `llm.animate` | `@animate`, `@video`, and the video-generation tool |
 | `llm.verse` | Verse participation: `@verseopt`, `@rp`, `@verse`, `@look`, `@who` |
 | `llm.verse.edit` | Canon editing: `@versedit`, `@canon`, the `verse_edit` tool |
 | `llm.verse.gm` | Game-moderator (GM) operations: `@versedump`, `@versepurge`, `@versecompact` |

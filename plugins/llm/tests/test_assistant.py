@@ -66,7 +66,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 21
+        assert len(ASSISTANT_TOOLS) == 22
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""

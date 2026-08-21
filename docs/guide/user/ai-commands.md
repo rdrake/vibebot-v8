@@ -107,6 +107,27 @@ Image generation applies content safety filters. If a filter blocks your prompt,
 
 ---
 
+## `animate`
+
+Generate a short video from a text description. Also available as `@video`.
+
+**Usage:** `@animate <prompt>`
+
+```
+@animate A slow aerial shot over a pine forest at sunrise, mist in the valleys
+@animate A neon sign flickering on a rainy street at night
+```
+
+`@animate` needs an authenticated account. The bot asks you to log in first if you aren't.
+
+Rendering takes a minute or two — about 70 seconds for a four-second clip at the default settings. The bot confirms it has started and posts the link in the same place when the clip is ready, so there's no need to wait for it. Clips have sound by default.
+
+Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
+
+You can also just ask for a video in conversation — the bot has a tool for it and will queue one the same way.
+
+---
+
 ## `story`
 
 Generate an illustrated page from a short brief and post a link when it's ready. The bot picks one of two modes from your brief:
@@ -156,7 +177,7 @@ The bot carries no usage tool and no usage figures in its prompt, so asking in c
 
 ## Rate limits
 
-Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Image commands (`@draw`, `@story`) have the tightest limits. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
+Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images, and `@animate` tighter still, since a clip holds the video hardware for over a minute. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
 
 ---
 

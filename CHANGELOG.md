@@ -591,6 +591,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Bring back @animate on a self-hosted vLLM video server (`animate`)
 - Mark a delivered image whose prompt was reworded (`draw`)
 - Book the refusal a rewrite recovered from, hold the rewriter to the picture (`draw`)
 - Enum-constrained service argument (`status`)

@@ -266,6 +266,127 @@ conf.registerChannelValue(
 )
 
 # ============================================================================
+# Video Generation (animate)
+# ============================================================================
+# Not a LiteLLM provider: a self-hosted vLLM box exposing an OpenAI-shaped
+# /v1/videos job API. Submit returns a job id immediately and the job survives
+# client disconnect, so animate never blocks a turn — it stashes the id in
+# pending_tasks and the existing 30s poller delivers the link when it lands.
+# The bearer token lives in ANIMATE_API_KEY, not here: the registry is
+# bot.conf, which the bot rewrites on shutdown, and _API_KEY suffixes are
+# already covered by log redaction (apikeys.SECRET_SUFFIXES).
+
+conf.registerGlobalValue(
+    LLM,
+    "animateApiUrl",
+    registry.String(
+        "",
+        _("""Base URL of the vLLM video server, e.g. http://host:14205 — no
+        trailing /v1. Empty disables the animate command and hides the
+        generate_video tool. The bearer token is read from the ANIMATE_API_KEY
+        environment variable, never from this registry."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "animateModel",
+    registry.String(
+        "",
+        _("""Model to request from the video server. Empty (default) sends no
+        model field, letting the server pick the one it has loaded — which is
+        the right default for a single-model box."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "animateSize",
+    registry.String(
+        "1280x704",
+        _("""Output resolution as WxH. Must be a geometry the loaded model
+        supports; the server rejects anything else."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "animateDuration",
+    registry.PositiveInteger(
+        4,
+        _("""Clip length in seconds. Generation time scales with this, and the
+        whole clip is exclusive GPU time, so raising it slows every queued
+        request behind it."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "animateSteps",
+    registry.PositiveInteger(
+        # 25, not the 50 the endpoint's own example uses. Steps are the main
+        # lever on latency and it is close to linear: 50 steps measured ~138s
+        # for a 4s clip, which is a long time to make a channel wait. 25 buys
+        # most of the quality back at roughly half the wall clock.
+        25,
+        _("""Denoising steps. The dominant cost knob — latency is roughly linear
+        in this. Raise for quality, lower for turnaround."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "animateAudio",
+    registry.Boolean(
+        True,
+        _("""Generate a soundtrack alongside the video (the t2va task). The
+        loaded FL2VA model is built for it. False requests silent video."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateFlowShift",
+    registry.NonNegativeInteger(
+        12,
+        _("""Flow-matching shift for the video sampler. Tuning knob — leave at
+        the default unless the model card says otherwise."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateAudioFlowShift",
+    registry.NonNegativeInteger(
+        3,
+        _("""Flow-matching shift for the audio track. Ignored when animateAudio
+        is False."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateTimeout",
+    registry.PositiveInteger(
+        60,
+        _("""Timeout in seconds for individual HTTP calls to the video server
+        (submit, poll, download). NOT the generation budget — generation is
+        asynchronous and bounded by animateExpiry instead."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateExpiry",
+    registry.PositiveInteger(
+        1800,
+        _("""How long to keep polling a submitted video job before giving up and
+        telling the user it expired. Generous by design: a queued job behind
+        several others can wait a long time before it starts."""),
+    ),
+)
+
+# ============================================================================
 # Memory Extraction
 # ============================================================================
 
@@ -852,6 +973,17 @@ _register_rate_limit_block(
     "story",
     counts=(2, 5, 1),
     windows=(300, 60, 3600),
+)
+
+# --- animate (most expensive: ~70s of exclusive GPU time per clip) ---
+# Stricter than draw on every tier. The video box serialises work internally, so
+# each accepted request delays every later one; the caps are what stops a busy
+# channel from booking an hour of queue in a minute. Same reason as draw for
+# keeping Unreg at 1 rather than 0 — 0 means "no limit", not "no access".
+_register_rate_limit_block(
+    "animate",
+    counts=(2, 4, 1),
+    windows=(900, 300, 7200),
 )
 
 # ============================================================================

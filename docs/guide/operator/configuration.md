@@ -50,6 +50,17 @@ Vertex AI is not the default, but it remains a supported `imageModel` (and gener
 
 Vertex AI takes no bearer key from this plugin — no `VERTEX_AI_API_KEY` exists; it authenticates through ADC and IAM only.
 
+### Video generation
+
+`@animate` talks to a self-hosted vLLM video server rather than a LiteLLM provider, so it needs both halves of its own credential and stays off until it has them:
+
+| Setting | Where | Notes |
+|---------|-------|-------|
+| `ANIMATE_API_KEY` | Environment | Bearer token for the video server. Covered by log redaction like every other `*_API_KEY` |
+| `animateApiUrl` | Registry | Base URL, e.g. `http://videohost:14205` — no trailing `/v1`. Empty (the default) disables `@animate` and hides the `generate_video` tool |
+
+With either half missing the command returns a configuration error and the tool never reaches the model, so it cannot promise a clip the bot has no way to render.
+
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
 ## Model selection
@@ -149,7 +160,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 
 ## Rate limiting
 
-Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, and `story`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
+Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, `story`, and `animate`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
 
 ## Web and HTTP output
 
@@ -227,6 +238,24 @@ When an API call times out, the bot retries in the background for a bounded wind
 |---------|-------|---------|-------------|
 | `drawAutoRewriteMax` | channel | `1` | Automatic prompt rewordings when a safety filter blocks a request. `0` disables. Each rewording costs a second billed image call on top of the refused one, and every recovery observed in prod landed on the first attempt, so raising this mostly buys repeat refusals of a prompt that was never going to pass |
 | `drawContextMaxAgeSeconds` | channel | `60` | Pass conversation context to draw requests only when the last activity is this recent. `0` always starts fresh |
+
+## Animate behaviour
+
+`@animate` renders on a self-hosted video box (see [Video generation](#video-generation) for the credential). Generation is asynchronous: the command submits a job and returns, and the pending-task poller publishes the clip when it lands, so a bot restart mid-render does not lose the video.
+
+| Setting | Scope | Default | Description |
+|---------|-------|---------|-------------|
+| `animateSteps` | channel | `25` | Denoising steps, and the dominant cost knob — latency is roughly linear in it. Measured on the reference box: 25 steps rendered a four-second clip in 68s, 50 steps in 171s |
+| `animateSize` | channel | `1280x704` | Output resolution. Must be a geometry the loaded model supports |
+| `animateDuration` | channel | `4` | Clip length in seconds. The whole clip is exclusive GPU time, so raising it slows every queued request behind it |
+| `animateAudio` | channel | `True` | Generate a soundtrack with the video. `False` requests silent video |
+| `animateModel` | channel | empty | Model to request. Empty sends no model field, letting a single-model box pick its own — usually right |
+| `animateFlowShift` | global | `12` | Flow-matching shift for the video sampler |
+| `animateAudioFlowShift` | global | `3` | Flow-matching shift for the audio track. Ignored when `animateAudio` is off |
+| `animateTimeout` | global | `60` | Timeout for individual HTTP calls to the video server. **Not** the generation budget — that is `animateExpiry` |
+| `animateExpiry` | global | `1800` | Seconds to keep polling a submitted job before reporting it expired. Generous on purpose: a queued job can wait a long time before it starts |
+
+Clips are published to `imageUploadUrl` when one is configured — the reference host accepts MP4 on the same `images[]` field and files it as `vid_*.mp4` — and fall back to local storage otherwise, including when a clip exceeds the 10 MB upload ceiling.
 
 ## Other settings
 

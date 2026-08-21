@@ -739,6 +739,7 @@ class TestCommandRegistry:
             "ask",
             "code",
             "draw",
+            "animate",
             "story",
             "forget",
             "memories",
@@ -806,6 +807,7 @@ class TestCommandRegistryCompleteness:
         from supybot.callbacks import canonicalName
 
         registry_names = {cmd.name for cmd in COMMAND_REGISTRY}
+        registry_names |= {alias for cmd in COMMAND_REGISTRY for alias in cmd.aliases}
         command_args = ["self", "irc", "msg", "args"]
 
         for name in dir(LLM):

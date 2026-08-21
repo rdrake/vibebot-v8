@@ -51,6 +51,7 @@ from .service import (
     CompletionResult,
     ImageResult,
     LLMService,
+    VideoResult,
     account_from_server_tags,
     irc_has_caps,
     truncate_to_word_boundary,
@@ -113,6 +114,7 @@ _STATUS_PAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {
         "llm.ask",
+        "llm.animate",
         "llm.code",
         "llm.draw",
         "llm.verse",
@@ -288,6 +290,12 @@ class CommandInfo:
     description: str
     examples: tuple[str, ...]
     category: str  # "generation", "memory", "utility"
+    # Alternate names bound to the same method (``video = animate``). Limnoria
+    # sees these as commands in their own right, so they are recorded here to
+    # keep the "every command is in the registry" check honest — but they get
+    # no help entry of their own, because a second copy of the same text is
+    # noise rather than documentation.
+    aliases: tuple[str, ...] = ()
 
 
 COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
@@ -327,6 +335,21 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "@draw A cyberpunk cityscape at night",
         ),
         category="generation",
+    ),
+    CommandInfo(
+        name="animate",
+        args="<prompt>",
+        description=(
+            "Generate a short video from a text description. Rendering takes a "
+            "minute or two; the link is posted here when it's ready, so there's "
+            "no need to wait around for it. Also available as @video."
+        ),
+        examples=(
+            "@animate A slow aerial shot over a pine forest at sunrise",
+            "@animate A neon sign flickering on a rainy street at night",
+        ),
+        category="generation",
+        aliases=("video",),
     ),
     CommandInfo(
         name="story",
@@ -2159,6 +2182,8 @@ class LLM(callbacks.Plugin):
                     text = f"{nick}: {content}"
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
+            elif r.task_type == "animate":
+                text = f'{nick}: your video is ready! "{prompt_preview}" \u2192 {content}'
             else:
                 # ask or fallback (incl. recovered verse, which is unbounded —
                 # verse timeouts recover under the "ask" task_type). Long content
@@ -4663,6 +4688,42 @@ class LLM(callbacks.Plugin):
             reworded=result.rewritten_prompt is not None,
         )
 
+    def _animate_for_assistant(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        prompt: str,
+        *,
+        nick: str,
+        channel: str,
+        account: str | None,
+    ) -> ToolCallbackResult:
+        """Queue a video for the generate_video tool.
+
+        Unlike ``_draw_for_assistant`` this returns before the media exists.
+        The submission is stashed against the requester's nick and channel so
+        the pending-task poller delivers the clip to the same place the
+        conversation happened, minutes after this turn has ended.
+
+        No usage row is written here. The reason the image callback logs its
+        own is that image spend belongs to the image model; the video box
+        reports no tokens and no cost, so there is nothing to misattribute —
+        the @animate wrapper books the request and this path rides the turn's
+        row like every other leaf tool.
+        """
+        from .assistant import ToolCallbackResult as _ToolCallbackResult
+
+        reply_target = msg.args[0] if msg.args else ""
+        result = self.llm_service.video_generation(
+            prompt,
+            nick=nick,
+            reply_target=reply_target,
+            is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
+            channel=channel,
+            account=account,
+        )
+        return _ToolCallbackResult(not bool(result.error), result.content)
+
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
 
@@ -5392,7 +5453,7 @@ class LLM(callbacks.Plugin):
         command: str,
         text: str,
         response: str,
-        result: CompletionResult | ImageResult | AssistantResult,
+        result: CompletionResult | ImageResult | VideoResult | AssistantResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
     ) -> None:
@@ -5905,6 +5966,9 @@ class LLM(callbacks.Plugin):
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                    animate_fn=lambda p: self._animate_for_assistant(
+                        irc, msg, p, nick=nick, channel=channel, account=pf.account
+                    ),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
                     extra_handlers=combined_handlers,
@@ -6138,6 +6202,76 @@ class LLM(callbacks.Plugin):
             stop_typing()
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
+
+    def animate(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<prompt>
+
+        Generate a short video from a text description. The clip takes a
+        minute or two to render; the link is posted here when it is ready,
+        so there is no need to wait around for it.
+
+        Examples:
+          @animate A slow aerial shot over a pine forest at sunrise
+          @animate A neon sign flickering on a rainy street at night
+        """
+        # Skip ZNC playback messages
+        if self._is_old_message(msg):
+            return
+
+        pf = self._run_preflight(
+            irc,
+            msg,
+            text,
+            "animate",
+            require_account=True,
+        )
+        if pf.blocked:
+            return
+        nick, channel = pf.nick, pf.channel
+
+        reply_target = msg.args[0] if msg.args else ""
+        is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+
+        with self._trace_request("animate", nick, channel):
+            # No typing indicator and no executor permit: submission is a
+            # sub-second HTTP POST, and the render that follows happens on the
+            # video box, not in this thread. Holding an LLM permit for it would
+            # block a real completion for nothing.
+            with self._allow_concurrent():
+                result = self.llm_service.video_generation(
+                    text,
+                    nick=nick,
+                    reply_target=reply_target,
+                    is_channel=is_channel,
+                    channel=channel,
+                    account=pf.account,
+                )
+                irc.reply(self.llm_service.sanitize_output(result.content))
+
+            # Booked at submission rather than on delivery. The row records
+            # that the request was made and accepted; the poller has no usage
+            # of its own to add, since the video box bills no tokens.
+            self._store_context_and_log_usage(
+                nick,
+                channel,
+                "animate",
+                text,
+                f"[Video job: {result.job_id or 'rejected'}]",
+                result,
+                irc,
+                msg,
+            )
+
+    animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
+
+    # Alias: @video works the same as @animate
+    video = animate
 
     def story(
         self,

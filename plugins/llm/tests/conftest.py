@@ -444,6 +444,7 @@ def plugin_env(mocker: MockerFixture):
         fetch_fn=None,
         code_fn=None,
         draw_fn=None,
+        animate_fn=None,
         cleanup_fn=None,
         set_reminder_fn=None,
         list_pending_tasks_fn=None,
@@ -530,10 +531,23 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
         "drawContextMaxAgeSeconds": 60,
+        # Animate command. animateApiUrl is empty by default so the feature is
+        # OFF unless a test opts in — the same posture as production before an
+        # operator points it at a box.
+        "animateApiUrl": "",
+        "animateModel": "",
+        "animateSize": "1280x704",
+        "animateDuration": 4,
+        "animateSteps": 25,
+        "animateAudio": True,
+        "animateFlowShift": 12,
+        "animateAudioFlowShift": 3,
+        "animateTimeout": 60,
         # Expiry (pending task retry)
         "askExpiry": 60,
         "codeExpiry": 60,
         "drawExpiry": 60,
+        "animateExpiry": 1800,
         # Memory extraction
         "memoryEnabled": True,
         "memoryMaxPerUser": 50,
