@@ -3210,15 +3210,30 @@ class LLMService:
         )
 
     @staticmethod
-    def _compute_backoff(attempt_count: int) -> float:
-        """Compute next retry delay with exponential backoff.
+    def _compute_backoff(attempt_count: int, task_type: str = "") -> float:
+        """Compute next retry delay.
+
+        Exponential for the retry paths, where a repeated failure means
+        something is wrong and backing off is the point. Flat for animate,
+        where it is not a retry at all: the job is known to be running on the
+        video box and "not ready yet" is the expected answer on every pass
+        until it lands, so doubling the wait only adds dead air AFTER the
+        render has already finished. Measured in prod on 2026-08-21 — a clip
+        submitted at 00:18:55 polled at 30/60/120 and was delivered at
+        00:23:02, roughly 75s after the render itself completed.
+
+        A poll is one cheap GET returning small JSON, so a flat cadence costs
+        nothing and lands the clip within one scheduler tick of it being ready.
 
         Args:
             attempt_count: Number of attempts already made.
+            task_type: Command type, to separate polling from retrying.
 
         Returns:
             Delay in seconds before next retry.
         """
+        if task_type == "animate":
+            return PENDING_INITIAL_BACKOFF_SECONDS
         return min(
             PENDING_INITIAL_BACKOFF_SECONDS * (2**attempt_count),
             PENDING_MAX_BACKOFF_SECONDS,
@@ -3520,7 +3535,7 @@ class LLMService:
                     # top-of-pass ``now`` is stale and would shorten (or invert)
                     # the backoff window. Anchor next_attempt_at to the current
                     # time so the retry is actually deferred by the full delay.
-                    delay = self._compute_backoff(task.attempt_count)
+                    delay = self._compute_backoff(task.attempt_count, task.task_type)
                     db.release_pending_task(
                         task.id,
                         time.time() + delay,

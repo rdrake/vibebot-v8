@@ -366,6 +366,38 @@ class TestRetryVideo:
         assert result.status == "failed_terminal"
 
 
+class TestPollCadence:
+    """Animate polls a running job; it does not retry a failing one."""
+
+    def test_animate_backoff_is_flat(self, make_service) -> None:
+        """GIVEN repeated animate polls WHEN backoff is computed THEN it stays flat.
+
+        Every poll before the clip lands raises Timeout, so an exponential
+        curve here is applied to the expected case rather than a fault. In
+        prod on 2026-08-21 that put a 135s render on a 30/60/120 ladder and
+        delivered it at 210s — over a minute of dead air after the video was
+        already sitting on the box.
+        """
+        service, _ = _service(make_service)
+        delays = [service._compute_backoff(n, "animate") for n in range(5)]
+        assert delays == [30, 30, 30, 30, 30]
+
+    def test_other_task_types_keep_exponential_backoff(self, make_service) -> None:
+        """GIVEN a draw retry WHEN backoff is computed THEN it still doubles.
+
+        There a repeat means the provider call keeps failing, which is exactly
+        when backing off is the right move.
+        """
+        service, _ = _service(make_service)
+        delays = [service._compute_backoff(n, "draw") for n in range(4)]
+        assert delays == [30, 60, 120, 240]
+
+    def test_backoff_is_capped_for_retry_paths(self, make_service) -> None:
+        """GIVEN many failed attempts WHEN backoff is computed THEN it caps."""
+        service, _ = _service(make_service)
+        assert service._compute_backoff(20, "ask") == 300
+
+
 class TestVideoUpload:
     """Video rides the image uploader, but the two are not interchangeable."""
 
