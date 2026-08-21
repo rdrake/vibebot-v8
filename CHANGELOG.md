@@ -608,6 +608,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Recognise the nick mid-way through a /me (`chat`)
 - Redraw a refused prompt on a fallback endpoint (`draw`)
 - Let @draw target a self-hosted image endpoint (`draw`)
 - Script-style prompts, and the planner sees the reference (`animate`)

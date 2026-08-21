@@ -15,7 +15,13 @@ can you, vibebot, tell me the weather
 
 The LLM plugin matches the bot's nick at the start or the end of a
 message, including inside a `/me` action. NickInMiddle handles the
-in-the-middle case, so the bot still responds naturally.
+in-the-middle case for ordinary messages, so the bot still responds
+naturally.
+
+`/me` lines are the LLM plugin's job throughout: NickInMiddle skips CTCP
+because moving the nick to the front would invert the sentence — `asks
+vibebot for a beer` would become `vibebot asks for a beer`. The LLM
+plugin cuts the nick out in place instead, leaving `asks for a beer`.
 
 Limnoria's own `supybot.reply.whenAddressedBy.nick` and `.nick.atEnd`
 settings do not decide this: the LLM plugin's `inFilter` tags every

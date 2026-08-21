@@ -120,6 +120,12 @@ _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # into the literal text "ACTION waves".
 _ACTION_RE = re.compile(r"^\x01ACTION\s+(.*)\x01$", re.DOTALL)
 
+# Characters that may sit between a bot-nick address and the rest of the
+# line. Same set NickInMiddle uses, so the two matchers agree on what a
+# word boundary is.
+_ADDRESS_SEPARATORS = " \t,:;"
+_NICK_TOKEN_RE = re.compile(r"[^\s,;:]+")
+
 # Selector name for a status page, shared by statusPageUrls and
 # statusQueryablePages. ASCII-only, so plain .lower() is sufficient for
 # case-insensitive uniqueness.
@@ -2456,6 +2462,8 @@ class LLM(callbacks.Plugin):
         target = msg.args[0]
         is_pm = ircutils.nickEqual(target, irc.nick)
         addressed_text = text.strip() if is_pm else self._strip_nick_address(irc.nick, text)
+        if not addressed_text and action_body is not None and not is_pm:
+            addressed_text = self._strip_nick_mention(irc.nick, text)
 
         if addressed_text:
             if action_body is not None:
@@ -3281,16 +3289,44 @@ class LLM(callbacks.Plugin):
             rest = stripped[nick_len:]
             if not rest:
                 return None
-            if rest[0] in " \t,:;":
-                return rest.lstrip(" \t,:;").strip() or None
+            if rest[0] in _ADDRESS_SEPARATORS:
+                return rest.lstrip(_ADDRESS_SEPARATORS).strip() or None
 
-        head = stripped.rstrip(" \t.!?,:;")
+        head = stripped.rstrip(_ADDRESS_SEPARATORS + ".!?")
         if not ircutils.strEqual(head[-nick_len:], bot_nick):
             return None
         rest = head[:-nick_len]
-        if not rest or rest[-1] not in " \t,:;":
+        if not rest or rest[-1] not in _ADDRESS_SEPARATORS:
             return None
-        return rest.rstrip(" \t,:;").strip() or None
+        return rest.rstrip(_ADDRESS_SEPARATORS).strip() or None
+
+    @staticmethod
+    def _strip_nick_mention(bot_nick: str, text: str) -> str | None:
+        """Return ``text`` with a mid-line bot-nick token cut out, or ``None``.
+
+        The ACTION-only counterpart to the NickInMiddle plugin. That plugin
+        skips CTCP on purpose: it addresses the bot by shifting the nick to the
+        front, which would turn "asks vibebot for a beer" into "vibebot asks
+        for a beer" and invert who is asking. Here the nick is cut in place,
+        leaving "asks for a beer".
+
+        Plain messages are left alone — NickInMiddle owns that rewrite and is
+        switchable per channel, and matching it here too would defeat the
+        switch.
+        """
+        for match in _NICK_TOKEN_RE.finditer(text):
+            start, end = match.span()
+            if start == 0 or end == len(text):
+                continue
+            if text[start - 1] not in _ADDRESS_SEPARATORS or text[end] not in _ADDRESS_SEPARATORS:
+                continue
+            if not ircutils.nickEqual(match.group(0).rstrip("?.!"), bot_nick):
+                continue
+            before = text[:start].rstrip(_ADDRESS_SEPARATORS)
+            after = text[end:].lstrip(_ADDRESS_SEPARATORS)
+            if before and after:
+                return f"{before} {after}"
+        return None
 
     @staticmethod
     def _action_payload(msg: IrcMsg) -> str | None:

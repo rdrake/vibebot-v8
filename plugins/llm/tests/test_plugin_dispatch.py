@@ -1167,3 +1167,105 @@ class TestInFilterPreservesActions:
 
         assert result.args[1] == "\x01ACTION prods ［6nbotname\x01"
         assert ircmsgs.isAction(result)
+
+
+class TestNickInMiddleOfAction:
+    """A nick mid-way through a ``/me`` addresses the bot too.
+
+    NickInMiddle skips CTCP by design — its front-shifting rewrite would turn
+    "asks vibebot for a beer" into "vibebot asks for a beer" and invert who is
+    asking. The action path cuts the nick in place instead.
+    """
+
+    @pytest.fixture
+    def plugin_with_mocks(self, mocker: MockerFixture):
+        import supybot.conf as supy_conf
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.nick = "botname"
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+
+        mock_msg = mocker.MagicMock()
+        mock_msg.prefix = "usernick!user@host"
+        mock_msg.nick = "usernick"
+        mock_msg.command = "PRIVMSG"
+        mock_msg.args = ("#channel", "hello world")
+        mock_msg.time = time.time() + 100
+        mock_msg.channel = "#channel"
+        mock_msg.server_tags = {}
+
+        chars_value = supy_conf.supybot.reply.whenAddressedBy.chars
+        original_chars = chars_value()
+        chars_value.setValue("@")
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin.startup_time = time.time()
+        plugin.registryValue = mocker.MagicMock(return_value=True)
+        plugin.context = mocker.MagicMock()
+        plugin.llm_service = mocker.MagicMock()
+        plugin.db = mocker.MagicMock()
+        plugin._migrated_nicks = set()
+        plugin._migrated_nicks_lock = threading.Lock()
+        plugin._route_addressed_to_assistant = mocker.MagicMock()
+        plugin._loom = None
+        plugin._loom_bridge = None
+        plugin._loom_channel_cache = None
+        plugin._loom_network_cache = None
+        plugin._loom_bot_nicks_cache = ()
+
+        try:
+            yield plugin, mock_irc, mock_msg
+        finally:
+            chars_value.setValue(original_chars)
+
+    def test_mid_action_nick_is_cut_in_place(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN '/me asks botname for a beer' THEN routes '* usernick asks for a beer'."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION asks botname for a beer\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "* usernick asks for a beer"
+        )
+        plugin.context.add_message.assert_not_called()
+
+    def test_mid_action_nick_with_comma_separator(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN '/me pokes botname, gently' THEN routes '* usernick pokes gently'."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION pokes botname, gently\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "* usernick pokes gently"
+        )
+
+    def test_mid_action_nick_needs_word_boundaries(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN '/me waves at botnamesomething today' THEN plain chatter."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "\x01ACTION waves at botnamesomething today\x01")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        assert (
+            plugin.context.add_message.call_args[0][3]
+            == "* usernick waves at botnamesomething today"
+        )
+
+    def test_plain_message_mid_nick_is_left_to_nickinmiddle(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN a non-action mid-sentence mention THEN this plugin stays out of it.
+
+        NickInMiddle owns that rewrite, and it is per-channel switchable.
+        Matching it here too would defeat that switch.
+        """
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        mock_msg.args = ("#channel", "can you, botname, tell me the weather")
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_called_once()

@@ -17,7 +17,7 @@ Mention the bot by name in a channel, or send it a private message:
           a multi-day trek.
 ```
 
-Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in the second question above, needs the [NickInMiddle plugin](../plugins/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick; mid-sentence naming inside a `/me` line is not recognised.
+Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in the second question above, needs the [NickInMiddle plugin](../plugins/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick. Inside a `/me` line the bot handles mid-sentence naming itself, and that one is not switchable per channel.
 
 Long answers never flood the channel. Anything that will not fit on one IRC line comes back as a one-line summary plus a link to the full text on the bot's web page.
 
