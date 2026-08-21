@@ -592,6 +592,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Deliver the clip as an IRCv3 reply, like @draw's image (`animate`)
 - Default clips to 7 seconds (`animate`)
 - Bring back @animate on a self-hosted vLLM video server (`animate`)
 - Mark a delivered image whose prompt was reworded (`draw`)

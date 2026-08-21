@@ -1540,6 +1540,10 @@ class PendingTaskResult(NamedTuple):
     task_id: int | None = None  # DB row ID for delivery acknowledgment
     delivery_attempt_count: int = 0  # current persisted delivery retry count
     account: str | None = None
+    # msgid of the request this answers, for the IRCv3 +draft/reply tag. Empty
+    # when the submitting path had no msgid (no message-tags, or a synthetic
+    # msg), in which case delivery falls back to an untagged PRIVMSG.
+    reply_msgid: str = ""
 
 
 class ReminderParseResult(NamedTuple):
@@ -3580,6 +3584,16 @@ class LLMService:
             except (json.JSONDecodeError, TypeError):
                 payload = {}
 
+            # Read from request_data rather than the result payload: the msgid
+            # is a property of the ORIGINAL request, so it belongs with what
+            # was asked, not with what came back. Any task type that stashes
+            # one gets threaded delivery for free.
+            try:
+                stashed = json.loads(task.request_data) if task.request_data else {}
+            except (json.JSONDecodeError, TypeError):
+                stashed = {}
+            reply_msgid = stashed.get("reply_msgid") if isinstance(stashed, dict) else None
+
             results.append(
                 PendingTaskResult(
                     status=payload.get("status", "completed"),
@@ -3597,6 +3611,7 @@ class LLMService:
                     task_id=task.id,
                     delivery_attempt_count=task.delivery_attempt_count,
                     account=task.account,
+                    reply_msgid=reply_msgid if isinstance(reply_msgid, str) else "",
                 )
             )
 
@@ -6417,6 +6432,7 @@ Examples (echo → action_prompt: ""):
         is_channel: bool = False,
         channel: str | None = None,
         account: str | None = None,
+        reply_msgid: str = "",
     ) -> VideoResult:
         """Submit a video job and stash it for background delivery.
 
@@ -6431,6 +6447,9 @@ Examples (echo → action_prompt: ""):
             is_channel: True when reply_target is a channel.
             channel: Channel for per-channel config lookups.
             account: Resolved account at submission, persisted with the task.
+            reply_msgid: msgid of the requesting message, so the clip is
+                delivered as an IRCv3 threaded reply minutes later rather than
+                as a bare line with nothing tying it to the request.
 
         Returns:
             VideoResult whose ``content`` is the acknowledgement to print now.
@@ -6482,7 +6501,7 @@ Examples (echo → action_prompt: ""):
             is_channel=is_channel,
             prompt=prompt,
             model=model,
-            request_data={"job_id": job_id, "prompt": prompt},
+            request_data={"job_id": job_id, "prompt": prompt, "reply_msgid": reply_msgid},
             submitted_at=submitted_at,
             account=account,
         )

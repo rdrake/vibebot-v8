@@ -2183,7 +2183,13 @@ class LLM(callbacks.Plugin):
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
             elif r.task_type == "animate":
-                text = f'{nick}: your video is ready! "{prompt_preview}" \u2192 {content}'
+                # Bare URL, exactly as @draw answers an image request. The
+                # nick and the prompt used to be spelled out here because a
+                # deferred line had nothing tying it to a request; the
+                # +draft/reply tag attached below carries that now, and
+                # repeating it in the body just restates what the client is
+                # already showing above the message.
+                text = content
             else:
                 # ask or fallback (incl. recovered verse, which is unbounded —
                 # verse timeouts recover under the "ask" task_type). Long content
@@ -2205,14 +2211,23 @@ class LLM(callbacks.Plugin):
         delivered = False
         try:
             for irc_conn in world.ircs:
+                # Thread the answer under the original request when the server
+                # negotiated message-tags and we kept the msgid. Degrades to a
+                # plain PRIVMSG otherwise — the tag is an improvement to how
+                # the line is displayed, never a precondition for sending it.
+                reply_to = (
+                    r.reply_msgid
+                    if r.reply_msgid and irc_has_caps(irc_conn, "message-tags")
+                    else None
+                )
                 if r.is_channel:
                     if target in irc_conn.state.channels:
-                        if self._safe_queue(irc_conn, self._safe_privmsg(target, text)):
+                        if self._safe_queue(irc_conn, self._safe_privmsg(target, text, reply_to)):
                             delivered = True
                         break
                 else:
                     # PM delivery — use first available connection
-                    if self._safe_queue(irc_conn, self._safe_privmsg(target, text)):
+                    if self._safe_queue(irc_conn, self._safe_privmsg(target, text, reply_to)):
                         delivered = True
                     break
         except Exception as e:
@@ -3765,8 +3780,17 @@ class LLM(callbacks.Plugin):
         return True
 
     @staticmethod
-    def _safe_privmsg(target: str, text: str) -> IrcMsg:
+    def _safe_privmsg(target: str, text: str, reply_to: str | None = None) -> IrcMsg:
         """Build a PRIVMSG whose body is neutralized against IRC injection.
+
+        ``reply_to`` is the msgid of the message being answered. Supplying it
+        attaches the IRCv3 ``+draft/reply`` tag, which is what makes a client
+        thread the line under the original request instead of dropping it into
+        the channel unattached. The chat path gets this free from
+        ``irc.reply``; a deferred delivery has no ``msg`` to reply to, so the
+        msgid has to be carried from submission and re-attached here. Callers
+        must check ``message-tags`` is ACKed before passing it — a tag the
+        server never negotiated has no business on the wire.
 
         Routes the body through Limnoria's ``ircutils.safeArgument`` (which
         repr()s any string containing CR, LF, or NUL) so model- or
@@ -3778,7 +3802,10 @@ class LLM(callbacks.Plugin):
         Callers should still ``_collapse_for_irc`` multi-line bodies first so a
         legitimate answer is split into a readable line rather than repr()'d.
         """
-        return ircmsgs.privmsg(target, ircutils.safeArgument(text))
+        out = ircmsgs.privmsg(target, ircutils.safeArgument(text))
+        if reply_to:
+            out = ircmsgs.IrcMsg(msg=out, server_tags={"+draft/reply": reply_to})
+        return out
 
     def _safe_reply(
         self,
@@ -4721,6 +4748,7 @@ class LLM(callbacks.Plugin):
             is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
             channel=channel,
             account=account,
+            reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
         )
         return _ToolCallbackResult(not bool(result.error), result.content)
 
@@ -6237,6 +6265,7 @@ class LLM(callbacks.Plugin):
 
         reply_target = msg.args[0] if msg.args else ""
         is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+        reply_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
 
         with self._trace_request("animate", nick, channel):
             # No typing indicator and no executor permit: submission is a
@@ -6251,6 +6280,7 @@ class LLM(callbacks.Plugin):
                     is_channel=is_channel,
                     channel=channel,
                     account=pf.account,
+                    reply_msgid=reply_msgid,
                 )
                 irc.reply(self.llm_service.sanitize_output(result.content))
 

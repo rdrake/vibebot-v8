@@ -400,6 +400,56 @@ class TestPollCadence:
         assert service._compute_backoff(20, "ask") == 300
 
 
+class TestThreadedDelivery:
+    """The clip arrives as an IRCv3 reply to the request, like @draw's image."""
+
+    def test_msgid_is_stashed_with_the_job(self, make_service, animate_env, mocker) -> None:
+        """GIVEN a msgid WHEN submitting THEN it rides along in request_data.
+
+        Delivery happens minutes later in another process lifetime, so the
+        msgid has to be durable — holding it in memory would lose the thread
+        across the restart the design otherwise survives.
+        """
+        service, _ = _service(make_service)
+        mocker.patch.object(service, "_animate_request", return_value=(200, {"id": "video_gen_1"}))
+        stash = mocker.patch.object(service, "_stash_timeout", return_value=True)
+
+        service.video_generation("a forest", reply_target="#chan", reply_msgid="abc123")
+
+        assert stash.call_args.kwargs["request_data"]["reply_msgid"] == "abc123"
+
+    def test_privmsg_carries_the_reply_tag(self) -> None:
+        """GIVEN a msgid WHEN the message is built THEN +draft/reply is attached."""
+        from llm.plugin import LLM
+
+        out = LLM._safe_privmsg("#chan", "https://paste.example/img/vid_a.mp4", "abc123")
+
+        assert out.server_tags.get("+draft/reply") == "abc123"
+        assert out.args[1] == "https://paste.example/img/vid_a.mp4"
+
+    def test_privmsg_without_msgid_is_untagged(self) -> None:
+        """GIVEN no msgid WHEN the message is built THEN it is a plain PRIVMSG.
+
+        The tag improves how the line renders; it is never a precondition for
+        sending one, so a server without message-tags still gets the clip.
+        """
+        from llm.plugin import LLM
+
+        out = LLM._safe_privmsg("#chan", "https://paste.example/img/vid_a.mp4")
+
+        assert not (out.server_tags or {}).get("+draft/reply")
+        assert out.args[1] == "https://paste.example/img/vid_a.mp4"
+
+    def test_reply_tag_does_not_defeat_injection_safety(self) -> None:
+        """GIVEN a body with CRLF WHEN tagged THEN it is still neutralised."""
+        from llm.plugin import LLM
+
+        out = LLM._safe_privmsg("#chan", "ok\r\nQUIT :bye", "abc123")
+
+        assert "\r\n" not in out.args[1]
+        assert out.server_tags.get("+draft/reply") == "abc123"
+
+
 class TestVideoUpload:
     """Video rides the image uploader, but the two are not interchangeable."""
 
