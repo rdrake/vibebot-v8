@@ -1361,6 +1361,40 @@ class LLMDatabase:
             ).fetchall()
         return [PendingTaskRow(*row) for row in rows]
 
+    def active_animate_targets(self, now: float, max_age_seconds: float) -> list[str]:
+        """Reply targets with a video still rendering.
+
+        The typing refresher's whole state, read fresh each pass instead of
+        tracked in memory: a row is ``pending`` while the box renders and
+        ``ready`` once the clip is in hand, so this is exactly "clips still
+        rendering". Deriving it means nothing has to be released, which is
+        what makes at-least-once delivery and ``delivery_failed`` harmless
+        here.
+
+        Read-only on purpose. ``claim_due_pending_tasks`` accepts a
+        ``delivery_state`` filter and looks like the right tool, but it opens
+        BEGIN IMMEDIATE and leases the rows it returns — calling it from a
+        four-second loop would steal work from the pending-task poller.
+
+        Args:
+            now: Current epoch seconds.
+            max_age_seconds: Ignore rows submitted longer ago than this. A job
+                can stay pending for ``animateExpiry`` (1800s by default);
+                typing should give up long before that.
+
+        Returns:
+            Distinct reply targets, sorted by target name.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT DISTINCT reply_target FROM pending_tasks "
+            "WHERE task_type = 'animate' AND delivery_state = 'pending' "
+            "AND submitted_at > ? AND reply_target <> '' "
+            "ORDER BY reply_target",
+            (now - max_age_seconds,),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
     # ------------------------------------------------------------------
     # Usage migration
     # ------------------------------------------------------------------

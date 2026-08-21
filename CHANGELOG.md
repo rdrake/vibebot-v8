@@ -426,6 +426,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Implementation plan for the animate UX work (`plans`)
+- Rework the animate UX design after codex red team (`plans`)
+- Design the @animate progress and delivery UX (`plans`)
 - Correct the draw rewrite docs, and say what a refusal is
 - The rewrite loop is measured, the embellishment query is unblocked (`plans`)
 - Drop the handoff note, the work has landed (`plans`)
@@ -596,6 +599,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Read which reply targets have a clip rendering (`persistence`)
 - Ground @animate prompts in verse canon, like @draw (`animate`)
 - Deliver the clip as an IRCv3 reply, like @draw's image (`animate`)
 - Default clips to 7 seconds (`animate`)

@@ -2588,3 +2588,81 @@ class TestMigrateUserData:
         test_db.save_instruction("bob", "x")
         assert test_db.migrate_user_data("Bob", "bob") == 0
         assert test_db.get_instruction("bob") == "x"
+
+
+class TestActiveAnimateTargets:
+    """Which targets have a clip still rendering, for the typing refresher."""
+
+    def _animate_row(self, test_db, target: str, submitted_at: float, nick: str = "alice") -> int:
+        return test_db.save_pending_task(
+            task_type="animate",
+            nick=nick,
+            reply_target=target,
+            is_channel=True,
+            prompt_preview="a corgi riding a unicorn",
+            model="wan",
+            request_data='{"job_id": "video_gen_abc"}',
+            submitted_at=submitted_at,
+            expires_at=submitted_at + 1800,
+            next_attempt_at=submitted_at + 10,
+        )
+
+    def test_rendering_clip_is_listed(self, test_db) -> None:
+        now = time.time()
+        self._animate_row(test_db, "#chan", now)
+        assert test_db.active_animate_targets(now, 360) == ["#chan"]
+
+    def test_ready_clip_is_excluded(self, test_db) -> None:
+        """'ready' means the clip exists and is awaiting delivery — stop typing."""
+        now = time.time()
+        task_id = self._animate_row(test_db, "#chan", now)
+        test_db.update_delivery_attempt(
+            task_id=task_id,
+            delivery_state="ready",
+            last_delivery_error="",
+            delivery_attempt_count=0,
+            next_attempt_at=now,
+        )
+        assert test_db.active_animate_targets(now, 360) == []
+
+    def test_delivery_failed_is_excluded(self, test_db) -> None:
+        """The fourth end state: ten failed sends must not leave the bot typing."""
+        now = time.time()
+        task_id = self._animate_row(test_db, "#chan", now)
+        test_db.update_delivery_attempt(
+            task_id=task_id,
+            delivery_state="delivery_failed",
+            last_delivery_error="IRC delivery failed",
+            delivery_attempt_count=10,
+            next_attempt_at=now,
+        )
+        assert test_db.active_animate_targets(now, 360) == []
+
+    def test_stale_row_is_excluded(self, test_db) -> None:
+        """A job may stay pending for 1800s; nobody watches the bot type that long."""
+        now = time.time()
+        self._animate_row(test_db, "#chan", now - 400)
+        assert test_db.active_animate_targets(now, 360) == []
+
+    def test_other_task_types_are_excluded(self, test_db) -> None:
+        now = time.time()
+        test_db.save_pending_task(
+            task_type="draw",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="a corgi",
+            model="dall-e-3",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 60,
+            next_attempt_at=now,
+        )
+        assert test_db.active_animate_targets(now, 360) == []
+
+    def test_two_clips_on_one_target_collapse(self, test_db) -> None:
+        """DISTINCT: one target, one typing indicator, however many jobs."""
+        now = time.time()
+        self._animate_row(test_db, "#chan", now, nick="alice")
+        self._animate_row(test_db, "#chan", now, nick="bob")
+        assert test_db.active_animate_targets(now, 360) == ["#chan"]
