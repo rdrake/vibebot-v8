@@ -13,6 +13,7 @@ today, never a silenced user.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -235,27 +236,64 @@ class TestBotLoopCap:
 
         assert dispatch.call_count == 3
 
-    def test_a_human_turn_frees_the_bot(self, wired, mocker: MockerFixture) -> None:
-        """A person joining the thread clears the count for that channel.
+    def test_a_human_addressing_the_bot_frees_it(self, wired, mocker: MockerFixture) -> None:
+        """A person talking TO the bot clears the count for that channel.
 
         The guard exists to stop two robots talking to themselves, not to end
         a conversation someone is actually part of.
         """
         plugin, mock_irc, mock_msg, dispatch = wired
         plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "LarryBot", "HxzB")))
-        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "rdrake", "Hxz")))
         self._as(mock_msg, "LarryBot")
         for _ in range(5):
             plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
         assert dispatch.call_count == 3
 
-        human = mocker.MagicMock(nick="rdrake", args=("#test", "oi"), channel="#test")
-        plugin._note_channel_speaker(mock_irc, human)
+        self._as(mock_msg, "rdrake")
+        plugin._route_addressed_to_assistant(mock_irc, mock_msg, "oi bot")
+        assert dispatch.call_count == 4
 
         self._as(mock_msg, "LarryBot")
         plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
 
-        assert dispatch.call_count == 4
+        assert dispatch.call_count == 5
+
+    def test_humans_talking_about_the_spam_do_not_free_it(
+        self, wired, mocker: MockerFixture
+    ) -> None:
+        """The regression that made the first cut of this guard near-useless.
+
+        #afternet, 2026-08-24 21:47-21:49: while grok and vibebot looped, the
+        humans present said "wtf", "jesus", "but really?" — six lines in two
+        minutes, none of them addressed to the bot. Resetting on any human
+        line would have licensed three more replies after each, roughly
+        eighteen in all, which is not a cap.
+        """
+        plugin, mock_irc, mock_msg, dispatch = wired
+        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "LarryBot", "HxzB")))
+        self._as(mock_msg, "LarryBot")
+        for _ in range(5):
+            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
+        assert dispatch.call_count == 3
+
+        for chatter in ("wtf", "jesus", "but really?"):
+            plugin.doPrivmsg(
+                mock_irc,
+                mocker.MagicMock(
+                    nick="eck",
+                    prefix="eck!hexdroid@eck.Users.AfterNET.Org",
+                    args=("#test", chatter),
+                    channel="#test",
+                    server_tags={},
+                    time=time.time() + 100,
+                ),
+            )
+
+        self._as(mock_msg, "LarryBot")
+        for _ in range(3):
+            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
+
+        assert dispatch.call_count == 3
 
     def test_an_unflagged_nick_is_never_capped(self, wired) -> None:
         """Nobody who has not been proven a bot is ever silenced."""

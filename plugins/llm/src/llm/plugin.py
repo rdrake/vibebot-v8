@@ -2461,14 +2461,6 @@ class LLM(callbacks.Plugin):
         if not text:
             return
 
-        # Any human line in a target frees the bots capped there. Runs before
-        # the addressed/chatter split so a person saying anything at all counts,
-        # not only a person talking to us.
-        try:
-            self._note_channel_speaker(irc, msg)
-        except Exception:
-            self.log.exception("bot loop speaker note failed nick=%s", getattr(msg, "nick", ""))
-
         # An ACTION carries its text inside a \x01ACTION … \x01 frame. Unwrap
         # it so "/me prods vibebot" is matched and stored as prose, and so a
         # leading command char inside an action stays prose too.
@@ -2609,12 +2601,17 @@ class LLM(callbacks.Plugin):
             self._bot_probed_at[key] = now
         irc.queueMsg(ircmsgs.who(nick, args=("%tuhnairf,1",)))
 
-    def _note_channel_speaker(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
-        """Clear a target's bot counts when a human speaks there.
+    def _note_human_turn(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Clear a target's bot counts when a human ADDRESSES the bot.
 
-        The guard is aimed at two robots talking to themselves. The moment a
-        person joins in, the exchange is a conversation again and the count
-        that would have silenced the bot has no business surviving.
+        Only addressed lines, which is why this hangs off the addressed route
+        rather than doPrivmsg. Resetting on any human line at all reads well
+        and fails badly: what people actually say during a bot loop is "wtf",
+        "jesus", "but really?" — commentary ON the spam. #afternet,
+        2026-08-24 21:47-21:49 carried six such lines in two minutes, and a
+        reset on each would have licensed three more replies apiece, roughly
+        eighteen in all. A person talking TO the bot is a conversation; a
+        person talking about the noise is the noise being a problem.
         """
         nick = getattr(msg, "nick", "")
         target = msg.args[0] if msg.args else ""
@@ -3512,6 +3509,7 @@ class LLM(callbacks.Plugin):
         try:
             if self._bot_loop_blocked(irc, msg):
                 return
+            self._note_human_turn(irc, msg)
         except Exception:
             self.log.exception("bot loop guard failed nick=%s", getattr(msg, "nick", ""))
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
