@@ -5931,6 +5931,7 @@ class LLM(callbacks.Plugin):
         result: CompletionResult | ImageResult | VideoResult | AssistantResult,
         irc: callbacks.Irc,
         msg: IrcMsg,
+        rendered_prompt: str = "",
     ) -> None:
         """Store conversation context and log API usage for a command.
 
@@ -5946,6 +5947,10 @@ class LLM(callbacks.Plugin):
             result: Result with usage metadata
             irc: IRC connection instance
             msg: IRC message
+            rendered_prompt: What the generator was actually asked for, when a
+                planner rewrote ``text`` on the way there. @animate is the only
+                caller that passes it; every other command sends the user's
+                words through unchanged.
         """
         # Store conversation context if enabled and no error occurred
         if result.error is None and self._get_context_enabled(channel):
@@ -5976,6 +5981,7 @@ class LLM(callbacks.Plugin):
             prompt=text,
             status=status,
             error_detail=error_detail,
+            rendered_prompt=rendered_prompt,
         )
 
         # Schedule background memory extraction for eligible commands
@@ -6767,6 +6773,26 @@ class LLM(callbacks.Plugin):
 
             caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
 
+            # What the planner actually sent the video box. The usage row below
+            # would otherwise record only the ask, and the ask is not what was
+            # rendered — the planner turn in front of the submission rewrites
+            # it into a script. The other copy (pending_tasks.request_data) is
+            # deleted the moment the clip is delivered.
+            rendered_prompts: list[str] = []
+
+            def _animate_tool(planned: str) -> ToolCallbackResult:
+                if planned.strip():
+                    rendered_prompts.append(planned.strip())
+                return self._animate_for_assistant(
+                    irc,
+                    msg,
+                    planned,
+                    nick=nick,
+                    channel=channel,
+                    account=pf.account,
+                    reference=reference,
+                )
+
             with self._trace_request("animate", nick, channel):
                 history, channel_history = self._gather_history(
                     nick,
@@ -6788,15 +6814,7 @@ class LLM(callbacks.Plugin):
                         memories=[],
                         images=reference_images,
                         system_prompt=animate_system_prompt,
-                        animate_fn=lambda p: self._animate_for_assistant(
-                            irc,
-                            msg,
-                            p,
-                            nick=nick,
-                            channel=channel,
-                            account=pf.account,
-                            reference=reference,
-                        ),
+                        animate_fn=_animate_tool,
                         manage_typing=False,
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                     )
@@ -6816,7 +6834,15 @@ class LLM(callbacks.Plugin):
                 # the clip minutes later has no usage of its own to add.
                 if should_log:
                     self._store_context_and_log_usage(
-                        nick, channel, "animate", text, response, result, irc, msg
+                        nick,
+                        channel,
+                        "animate",
+                        text,
+                        response,
+                        result,
+                        irc,
+                        msg,
+                        rendered_prompt=" | ".join(rendered_prompts),
                     )
         finally:
             stop_typing()

@@ -105,6 +105,8 @@ If the fallback also fails — refused again, misconfigured, or the box is down 
 
 With either half missing the command returns a configuration error and the tool never reaches the model, so it cannot promise a clip the bot has no way to render.
 
+`@animate` never sends the words the user typed. A planner turn rewrites the ask into a script the video server can render, so the usage row records both: `prompt` holds the request and `rendered_prompt` holds what was submitted. Every other command leaves `rendered_prompt` empty. Rows written before this landed have it empty too — the rendered wording was only ever held in `pending_tasks`, which is cleared as each clip is delivered.
+
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
 ## Model selection

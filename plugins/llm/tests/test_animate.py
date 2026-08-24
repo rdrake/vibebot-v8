@@ -666,6 +666,63 @@ class TestAnimatePlanner:
         assert logged.call_args.args[2] == "animate"
         assert logged.call_args.args[5].cost == 0.0012
 
+    def test_rendered_prompt_is_booked_with_the_ask(self, plugin_env, mocker) -> None:
+        """The row carries the planner's script, not just what the user typed.
+
+        The video box renders the planner's rewrite; the pending_tasks row that
+        holds it is deleted on delivery, so the usage row is the only place the
+        rendered wording can survive the render.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker)
+        mocker.patch.object(plugin, "_animate_for_assistant")
+        logged = mocker.patch.object(plugin, "_store_context_and_log_usage")
+
+        def _plan(*args, **kwargs):
+            kwargs["animate_fn"]("Three men wade into grey surf at dawn, handheld.")
+            return self._result(mocker)
+
+        plugin.llm_service.assistant_request.side_effect = _plan
+
+        plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
+
+        assert logged.call_args.args[3] == "a pine forest"
+        assert (
+            logged.call_args.kwargs["rendered_prompt"]
+            == "Three men wade into grey surf at dawn, handheld."
+        )
+
+    def test_two_submissions_in_one_turn_are_both_booked(self, plugin_env, mocker) -> None:
+        """A planner that calls the tool twice must not lose the first script."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker)
+        mocker.patch.object(plugin, "_animate_for_assistant")
+        logged = mocker.patch.object(plugin, "_store_context_and_log_usage")
+
+        def _plan(*args, **kwargs):
+            kwargs["animate_fn"]("first script")
+            kwargs["animate_fn"]("second script")
+            return self._result(mocker)
+
+        plugin.llm_service.assistant_request.side_effect = _plan
+
+        plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
+
+        assert logged.call_args.kwargs["rendered_prompt"] == "first script | second script"
+
+    def test_no_submission_leaves_the_rendered_prompt_empty(self, plugin_env, mocker) -> None:
+        """A planner turn that never calls the tool rendered nothing."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "test_account"
+        self._wire(plugin, mocker)
+        logged = mocker.patch.object(plugin, "_store_context_and_log_usage")
+
+        plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
+
+        assert logged.call_args.kwargs["rendered_prompt"] == ""
+
     def test_animate_requires_account(self, plugin_env, mocker) -> None:
         """Unauthenticated → no planner turn and no clip."""
         plugin, mock_irc, mock_msg = plugin_env

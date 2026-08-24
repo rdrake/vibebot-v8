@@ -152,6 +152,16 @@ class TestDatabaseInit:
         finally:
             conn.close()
 
+    def test_usage_table_has_rendered_prompt_column(self, test_db: LLMDatabase) -> None:
+        """GIVEN a new database WHEN initialized THEN usage table has rendered_prompt column."""
+        conn = test_db._connect()
+        try:
+            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
+            column_names = [col[1] for col in columns]
+            assert "rendered_prompt" in column_names
+        finally:
+            conn.close()
+
     def test_creates_conversations_table(self, test_db: LLMDatabase) -> None:
         """GIVEN a new database WHEN initialized THEN conversations table exists."""
         conn = test_db._connect()
@@ -481,6 +491,44 @@ class TestUsageTracking:
         assert summary.total_prompt_tokens == 300
         assert summary.total_completion_tokens == 150
         assert summary.total_cost == pytest.approx(0.03)
+
+    def test_rendered_prompt_is_stored_beside_the_ask(self, test_db: LLMDatabase) -> None:
+        """The user's words and the planner's rewrite are both audit-visible.
+
+        @animate never sends what the user typed: a planner turn rewrites it
+        into a script the video box can render. Without this column the row
+        records the ask and nothing about what was actually rendered.
+        """
+        test_db.log_usage(
+            "alice",
+            "#chan",
+            "animate",
+            "grok",
+            10,
+            5,
+            0.0,
+            prompt="teletubby gunkata",
+            rendered_prompt="Four costumed figures trade slow-motion pistol strikes...",
+        )
+
+        conn = test_db._connect()
+        try:
+            row = conn.execute("SELECT prompt, rendered_prompt FROM usage").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == "teletubby gunkata"
+        assert row[1].startswith("Four costumed figures")
+
+    def test_rendered_prompt_defaults_to_empty(self, test_db: LLMDatabase) -> None:
+        """Paths with no rewrite (every command but @animate) leave it blank."""
+        test_db.log_usage("alice", "#chan", "ask", "gpt-4", 100, 50, 0.01, prompt="hello")
+
+        conn = test_db._connect()
+        try:
+            row = conn.execute("SELECT rendered_prompt FROM usage").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == ""
 
     def test_summary_with_since_filter(self, test_db: LLMDatabase) -> None:
         """GIVEN old and new usage WHEN summarizing with since THEN only counts recent."""
@@ -1362,13 +1410,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_17(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 17."""
+    def test_schema_version_is_18(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 18."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 17
+            assert row[0] == 18
         finally:
             conn.close()
 

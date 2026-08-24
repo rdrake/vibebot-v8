@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -581,6 +581,18 @@ class LLMDatabase:
                 )
                 conn.execute(f"UPDATE {table} SET nick = lower(nick)")  # noqa: S608
             conn.execute("DROP INDEX IF EXISTS idx_usage_nick_status")
+            conn.commit()
+
+        if current_version < 18:
+            # What the user typed and what was rendered are two different
+            # strings on the @animate route: a planner turn rewrites the ask
+            # into a script before the video box ever sees it. The only other
+            # copy lives in pending_tasks.request_data, which is deleted the
+            # moment the clip is delivered — so without this column the
+            # rendered wording is unrecoverable minutes after the render.
+            self._add_column_if_missing(
+                conn, "usage", "rendered_prompt", "rendered_prompt TEXT NOT NULL DEFAULT ''"
+            )
             conn.commit()
 
         # Stamp the schema version so future opens skip completed migrations.
@@ -1521,6 +1533,7 @@ class LLMDatabase:
         prompt: str = "",
         status: str = "success",
         error_detail: str = "",
+        rendered_prompt: str = "",
     ) -> None:
         """Log a usage event.
 
@@ -1537,13 +1550,16 @@ class LLMDatabase:
                 ``"error"``, ``"content_blocked"``,
                 ``"auth_failure"``, ``"rate_limited"``.
             error_detail: Additional error context when status is not success.
+            rendered_prompt: What the generator was actually asked for, when a
+                planner rewrote the user's words on the way there (@animate).
+                Empty on every path that sends the prompt through unchanged.
         """
         with self._write_txn() as conn:
             conn.execute(
                 "INSERT INTO usage "
                 "(timestamp, nick, channel, command, model, prompt_tokens, "
-                "completion_tokens, cost, prompt, status, error_detail) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "completion_tokens, cost, prompt, status, error_detail, rendered_prompt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     time.time(),
                     nick,
@@ -1556,6 +1572,7 @@ class LLMDatabase:
                     prompt,
                     status,
                     error_detail,
+                    rendered_prompt,
                 ),
             )
 
