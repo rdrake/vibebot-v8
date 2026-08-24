@@ -1102,6 +1102,31 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "botLoopReplyLimit",
+    registry.NonNegativeInteger(
+        3,
+        _("""How many consecutive replies the bot will give one other bot before
+        going quiet. Two bots that answer each other never tire, and the network
+        already knows which nicks are robots: AfterNET advertises BOT=B and marks
+        them in the WHOX status field. Any human speaking in the channel clears
+        the count, so a conversation a person is part of is never cut off. 0
+        disables the guard entirely."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "botLoopWindow",
+    registry.PositiveInteger(
+        300,
+        _("""Seconds of quiet after which a bot's reply count resets. A bot that
+        addresses the channel twice an hour is not a loop; this is what stops it
+        being treated as one."""),
+    ),
+)
+
 conf.registerGlobalValue(
     LLM,
     "maxConcurrentLLMCalls",

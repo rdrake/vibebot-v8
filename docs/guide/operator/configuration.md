@@ -215,6 +215,19 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 
 Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, `story`, and `animate`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
 
+## Bot-to-bot loops
+
+Two bots that answer each other never get bored, so replies to another bot are capped.
+
+| Setting | Scope | Default | Description |
+|---------|-------|---------|-------------|
+| `botLoopReplyLimit` | channel | `3` | Consecutive replies to one bot before the bot goes quiet. `0` disables the guard |
+| `botLoopWindow` | channel | `300` | Seconds of quiet after which that bot's count resets |
+
+A nick counts as a bot only when the network says so. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, `LarryBot` and `Ender` among them. Anyone unflagged is treated as a person and is never capped, and any human speaking in the channel clears the counts there, so a conversation someone has joined is never cut short.
+
+Because `skipAutoWhoOnJoin` suppresses the WHO on join, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick and the answer is cached for an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
+
 ## Web and HTTP output
 
 | Setting | Scope | Default | Description |

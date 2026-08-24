@@ -56,6 +56,13 @@ class TestDoPrivmsg:
         plugin._loom_channel_cache = None
         plugin._loom_network_cache = None
         plugin._loom_bot_nicks_cache = ()
+        # Bot-loop guard state (normally built in __init__, which these
+        # bare-instance fixtures skip). Empty flags = every speaker reads
+        # as a person, so the guard never fires in dispatch tests.
+        plugin._bot_flags = {}
+        plugin._bot_probed_at = {}
+        plugin._bot_reply_counts = {}
+        plugin._bot_loop_lock = threading.Lock()
 
         try:
             yield plugin, mock_irc, mock_msg
@@ -1051,6 +1058,13 @@ class TestNickAtEndAddressing:
         plugin._loom_channel_cache = None
         plugin._loom_network_cache = None
         plugin._loom_bot_nicks_cache = ()
+        # Bot-loop guard state (normally built in __init__, which these
+        # bare-instance fixtures skip). Empty flags = every speaker reads
+        # as a person, so the guard never fires in dispatch tests.
+        plugin._bot_flags = {}
+        plugin._bot_probed_at = {}
+        plugin._bot_reply_counts = {}
+        plugin._bot_loop_lock = threading.Lock()
 
         try:
             yield plugin, mock_irc, mock_msg
@@ -1214,6 +1228,13 @@ class TestNickInMiddleOfAction:
         plugin._loom_channel_cache = None
         plugin._loom_network_cache = None
         plugin._loom_bot_nicks_cache = ()
+        # Bot-loop guard state (normally built in __init__, which these
+        # bare-instance fixtures skip). Empty flags = every speaker reads
+        # as a person, so the guard never fires in dispatch tests.
+        plugin._bot_flags = {}
+        plugin._bot_probed_at = {}
+        plugin._bot_reply_counts = {}
+        plugin._bot_loop_lock = threading.Lock()
 
         try:
             yield plugin, mock_irc, mock_msg

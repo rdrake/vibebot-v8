@@ -527,6 +527,9 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Code command
         "codeModel": TEST_MODEL,
         "codeSystemPrompt": "You write code.",
+        # Bot-to-bot loop guard
+        "botLoopReplyLimit": 3,
+        "botLoopWindow": 300,
         # Draw command
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,

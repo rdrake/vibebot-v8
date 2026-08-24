@@ -169,6 +169,11 @@ _AMBIENT_ENTRY_ROUTES = frozenset({"addressed", "invalid_command"})
 # a beat is not blocked.
 _DISPATCH_DEDUP_WINDOW = 12.0
 
+# Re-ask the network about an unflagged nick at most this often. A WHO per
+# stranger is cheap, one per stranger per hour is nothing, and the answer is
+# stable — nobody stops being a bot mid-afternoon.
+_BOT_PROBE_INTERVAL = 3600.0
+
 # Explicit image-intent cues: an ambient verse-mention asking for a single
 # PICTURE, so it draws an image instead of a story. ("illustrate" is deliberately
 # excluded here — that reads as an illustrated STORY, see _ILLUSTRATE_INTENT_RE.)
@@ -841,6 +846,17 @@ class LLM(callbacks.Plugin):
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
         self._rate_buckets_lock = threading.Lock()
+
+        # Bot-loop guard. "{network}:{nick}" -> is the nick +B, and when did we
+        # last ask. The network knows who is a robot (AfterNET advertises
+        # BOT=B) but only says so in the WHOX status field, which arrives on
+        # request — prod skips the WHO on join, so we ask about a nick the
+        # first time it talks to us. Both in-memory: a reload re-asks.
+        self._bot_flags: dict[str, bool] = {}
+        self._bot_probed_at: dict[str, float] = {}
+        # (target, bot nick) -> (consecutive replies, last reply time).
+        self._bot_reply_counts: dict[tuple[str, str], tuple[int, float]] = {}
+        self._bot_loop_lock = threading.Lock()
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
@@ -2445,6 +2461,14 @@ class LLM(callbacks.Plugin):
         if not text:
             return
 
+        # Any human line in a target frees the bots capped there. Runs before
+        # the addressed/chatter split so a person saying anything at all counts,
+        # not only a person talking to us.
+        try:
+            self._note_channel_speaker(irc, msg)
+        except Exception:
+            self.log.exception("bot loop speaker note failed nick=%s", getattr(msg, "nick", ""))
+
         # An ACTION carries its text inside a \x01ACTION … \x01 frame. Unwrap
         # it so "/me prods vibebot" is matched and stored as prose, and so a
         # leading command char inside an action stays prose too.
@@ -2509,6 +2533,113 @@ class LLM(callbacks.Plugin):
         if not irc_has_caps(irc, "account-tag", "extended-join"):
             return False
         return bool(self.registryValue("skipAutoWhoOnJoin"))
+
+    @staticmethod
+    def _bot_flag_key(irc: callbacks.Irc, nick: str) -> str:
+        """Flag-store key. Nicks are case-insensitive; two networks are not."""
+        return f"{getattr(irc, 'network', '')}:{nick.lower()}"
+
+    def do354(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """Record the +B flag out of a WHOX reply.
+
+        Limnoria asks for ``%tuhnairf,1`` and unpacks the same nine fields
+        (irclib.py:975) but keeps only the hostmask and account — the status
+        field, where the bot flag lives, is dropped on the floor. Reading it
+        here costs nothing: the reply is already arriving.
+        """
+        args = getattr(msg, "args", ())
+        if len(args) != 9 or args[1] != "1":
+            return
+        nick, status = args[5], args[6]
+        with self._bot_loop_lock:
+            self._bot_flags[self._bot_flag_key(irc, nick)] = "B" in status
+
+    def _known_bot(self, irc: callbacks.Irc, nick: str) -> bool | None:
+        """True/False once the network has told us, None until it has."""
+        with self._bot_loop_lock:
+            return self._bot_flags.get(self._bot_flag_key(irc, nick))
+
+    def _probe_bot_flag(self, irc: callbacks.Irc, nick: str) -> None:
+        """Ask the network whether ``nick`` is a bot, at most once per window.
+
+        ``skipAutoWhoOnJoin`` is on in production and the last WHO reply the
+        bot saw was six months ago, so waiting for a channel sync would mean
+        never learning anything. One WHO per stranger is cheap; the answer
+        lands before their second line in any real loop.
+        """
+        key = self._bot_flag_key(irc, nick)
+        now = time.time()
+        with self._bot_loop_lock:
+            if key in self._bot_flags:
+                return
+            if now - self._bot_probed_at.get(key, 0.0) < _BOT_PROBE_INTERVAL:
+                return
+            self._bot_probed_at[key] = now
+        irc.queueMsg(ircmsgs.who(nick, args=("%tuhnairf,1",)))
+
+    def _note_channel_speaker(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Clear a target's bot counts when a human speaks there.
+
+        The guard is aimed at two robots talking to themselves. The moment a
+        person joins in, the exchange is a conversation again and the count
+        that would have silenced the bot has no business surviving.
+        """
+        nick = getattr(msg, "nick", "")
+        target = msg.args[0] if msg.args else ""
+        if not nick or not target:
+            return
+        if self._known_bot(irc, nick):
+            return
+        with self._bot_loop_lock:
+            self._bot_reply_counts = {
+                key: value for key, value in self._bot_reply_counts.items() if key[0] != target
+            }
+
+    def _bot_loop_blocked(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
+        """True when this line is one robot talking to another, too many times.
+
+        Unknown nicks are treated as people: the flag store fails open, so the
+        worst case is the loop we already have rather than a silenced user. A
+        probe is fired on the way past so the next line is decidable.
+        """
+        nick = getattr(msg, "nick", "")
+        target = msg.args[0] if msg.args else ""
+        if not nick or not target:
+            return False
+
+        flag = self._known_bot(irc, nick)
+        if flag is None:
+            self._probe_bot_flag(irc, nick)
+            return False
+        if not flag:
+            return False
+
+        channel = msg.channel or None
+        limit = self.registryValue("botLoopReplyLimit", channel)
+        if not limit:
+            return False
+        window = self.registryValue("botLoopWindow", channel)
+
+        now = time.time()
+        key = (target, nick.lower())
+        with self._bot_loop_lock:
+            count, last = self._bot_reply_counts.get(key, (0, 0.0))
+            if now - last > window:
+                count = 0
+            if count >= limit:
+                blocked = True
+            else:
+                self._bot_reply_counts[key] = (count + 1, now)
+                blocked = False
+        if blocked:
+            self.log.info(
+                "bot_loop_capped nick=%s target=%s limit=%i window=%is",
+                nick,
+                target,
+                limit,
+                window,
+            )
+        return blocked
 
     def doTagmsg(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """Capture inbound IRCv3 emoji reactions (+draft/react) to verse lines.
@@ -3344,6 +3475,13 @@ class LLM(callbacks.Plugin):
         """Run preflight and dispatch addressed text through ``_ask_impl``."""
         if not ircdb.checkCapability(msg.prefix, "llm.ask"):
             return
+        # Bot-loop guard. Wrapped because it runs on every addressed line and
+        # a guard that can swallow a reply is worse than the loop it prevents.
+        try:
+            if self._bot_loop_blocked(irc, msg):
+                return
+        except Exception:
+            self.log.exception("bot loop guard failed nick=%s", getattr(msg, "nick", ""))
         preflight = self._run_preflight(irc, msg, text, "ask", require_account=False)
         if preflight.blocked:
             return
