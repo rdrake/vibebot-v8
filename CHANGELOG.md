@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Judge short replies for repetition too, drop the word floor (`chat`)
 - Only a human talking TO the bot resets the loop cap (`chat`)
 - Treat AfterNET bot hosts as bots, not just +B (`chat`)
 - Answer when the nick lands at the end of a line or a /me (`chat`)

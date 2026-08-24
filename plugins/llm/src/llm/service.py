@@ -1007,9 +1007,16 @@ def _strip_degraded(
 # on their normalized unique-word overlap relative to the smaller reply —
 # tolerant of the verb/ending swaps the stuck record actually shows, while a
 # merely thematic reply (sharing a couple of words) stays under the
-# threshold. Replies with fewer than ``_REPEAT_MIN_WORDS`` distinct words are
-# never judged: short functional answers ("Done.") legitimately recur.
-_REPEAT_MIN_WORDS = 5
+# threshold.
+#
+# There used to be a five-word floor here, so short functional answers
+# ("Done.") could recur unjudged. It cost more than it saved. It hid a
+# three-word image-failure report well enough that a whole separate guard had
+# to be written to catch it (see _IMAGE_FAILURE_RE), and it hid "fc42, you
+# absolute wanker." — four words — which then went out nine times in ninety
+# seconds (#afternet, 2026-08-24 21:48). What it bought was one avoided retry
+# on a repeated "Done."; what it cost was every short stuck record the bot
+# has ever had. Judge everything; a wasted re-roll is cheaper than a parrot.
 _REPEAT_OVERLAP_THRESHOLD = 0.6
 _MAX_REPEAT_RETRIES = 1
 _REPEAT_RETRY_NUDGE = (
@@ -1029,11 +1036,11 @@ def _replies_repetitive(a: str, b: str) -> bool:
     """Return True iff two replies are near-duplicates of each other.
 
     Overlap is ``|A∩B| / min(|A|,|B|)`` over normalized unique words, so a
-    shorter paraphrase of a longer reply still trips the guard. Replies
-    under the word floor are never judged.
+    shorter paraphrase of a longer reply still trips the guard. Length is not
+    a defence: a four-word insult repeats as readily as a paragraph.
     """
     words_a, words_b = _reply_word_set(a), _reply_word_set(b)
-    if len(words_a) < _REPEAT_MIN_WORDS or len(words_b) < _REPEAT_MIN_WORDS:
+    if not words_a or not words_b:
         return False
     overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
     return overlap >= _REPEAT_OVERLAP_THRESHOLD

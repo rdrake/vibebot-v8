@@ -97,13 +97,24 @@ class TestSiblingGuardsMissIt:
         """Image refusals are excluded from the safety guard on purpose."""
         assert not _is_safety_refusal(OBSERVED_FAILURE)
 
-    def test_repeat_guard_is_under_its_word_floor(self) -> None:
-        """Three distinct words sits below _REPEAT_MIN_WORDS, so it is never judged."""
-        history = [
+    def test_repeat_guard_only_sees_it_once_it_repeats(self) -> None:
+        """The repeat guard needs two copies; this one poisons from the first.
+
+        It used to miss the pair as well, because a five-word floor refused to
+        judge a three-word report — which is why this guard had to exist at
+        all. The floor is gone, so a duplicated failure is now caught twice
+        over. A single failure still is not: one occurrence is not a repeat,
+        and one occurrence is all it takes to teach the model that image
+        generation is broken.
+        """
+        pair = [
             {"role": "assistant", "content": OBSERVED_FAILURE},
             {"role": "assistant", "content": OBSERVED_FAILURE},
         ]
-        assert _strip_repeated_replies(history) == history
+        assert _strip_repeated_replies(pair) == []
+
+        lone = [{"role": "assistant", "content": OBSERVED_FAILURE}]
+        assert _strip_repeated_replies(lone) == lone
 
     def test_degraded_guard_needs_a_long_passage(self) -> None:
         """A one-line report is far under the collapse guard's word floor."""

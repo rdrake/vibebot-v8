@@ -2710,14 +2710,30 @@ class TestRepeatReplyGuard:
         [
             (COMET_B, GREETING),
             (COMET_A, FRESH),
-            # Short functional replies are never judged — too few words.
-            ("Done.", "Done."),
+            # Short but genuinely different replies stay clear of each other.
+            ("Done.", "No chance."),
             ("", COMET_A),
         ],
     )
-    def test_replies_repetitive_false_for_distinct_or_short(self, a: str, b: str) -> None:
-        """GIVEN distinct or short replies WHEN compared THEN not repetitive."""
+    def test_replies_repetitive_false_for_distinct(self, a: str, b: str) -> None:
+        """GIVEN distinct replies WHEN compared THEN not repetitive."""
         assert _replies_repetitive(a, b) is False
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            # Four words, the line that went out nine times in ninety seconds
+            # (#afternet, 2026-08-24 21:48) under the old five-word floor.
+            ("fc42, you absolute wanker.", "Fc42, you absolute wanker."),
+            # Three words, the report a whole separate guard was written to
+            # catch because this one would not look at it.
+            ("Image generation failed.", "Image generation failed."),
+            ("Done.", "Done."),
+        ],
+    )
+    def test_short_replies_are_judged_too(self, a: str, b: str) -> None:
+        """Length is not a defence — a stuck record is a stuck record."""
+        assert _replies_repetitive(a, b) is True
 
     def test_strip_repeated_replies_drops_whole_cluster(self) -> None:
         """GIVEN a thread with two near-duplicate assistant turns WHEN
