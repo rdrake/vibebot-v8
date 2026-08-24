@@ -223,8 +223,11 @@ Two bots that answer each other never get bored, so replies to another bot are c
 |---------|-------|---------|-------------|
 | `botLoopReplyLimit` | channel | `3` | Consecutive replies to one bot before the bot goes quiet. `0` disables the guard |
 | `botLoopWindow` | channel | `300` | Seconds of quiet after which that bot's count resets |
+| `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host |
 
-A nick counts as a bot only when the network says so. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, `LarryBot` and `Ender` among them. Anyone unflagged is treated as a person and is never capped, and any human speaking in the channel clears the counts there, so a conversation someone has joined is never cut short.
+A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, `LarryBot` and `Ender` among them. Anyone unflagged is treated as a person and is never capped, and any human speaking in the channel clears the counts there, so a conversation someone has joined is never cut short.
+
+The `+B` mode is opt-in, and the bot most likely to loop with yours may not set it — `grok` answers on `Hxz` from `grok.Bot.AfterNET.Org`. So the sender's host counts too: AfterNET only issues `*.Bot.AfterNET.Org` to registered bots, and across a full day of channel logs the only nicks on one were `grok`, `grook5`, and `vibebot` itself. The host is checked first because it is free and decides on the very first line, with no WHO round trip.
 
 Because `skipAutoWhoOnJoin` suppresses the WHO on join, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick and the answer is cached for an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
 

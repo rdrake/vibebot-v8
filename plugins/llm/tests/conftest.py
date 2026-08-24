@@ -530,6 +530,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Bot-to-bot loop guard
         "botLoopReplyLimit": 3,
         "botLoopWindow": 300,
+        "botLoopHostSuffixes": ["Bot.AfterNET.Org"],
         # Draw command
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,

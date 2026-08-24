@@ -1116,6 +1116,19 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "botLoopHostSuffixes",
+    registry.SpaceSeparatedListOfStrings(
+        ["Bot.AfterNET.Org"],
+        _("""Host suffixes the network reserves for registered bots. Matched
+        case-insensitively against the host part of the sender's hostmask, and
+        treated as proof the sender is a bot. This carries the guard where the
+        +B user mode cannot: grok never sets the mode but does live on
+        grok.Bot.AfterNET.Org. Empty the list to rely on +B alone."""),
+    ),
+)
+
 conf.registerChannelValue(
     LLM,
     "botLoopWindow",

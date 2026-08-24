@@ -2559,6 +2559,38 @@ class LLM(callbacks.Plugin):
         with self._bot_loop_lock:
             return self._bot_flags.get(self._bot_flag_key(irc, nick))
 
+    def _host_is_a_bot_host(self, prefix: object) -> bool:
+        """True when the sender's host is one the network reserves for bots.
+
+        The +B user mode is opt-in and the bot that actually loops with us does
+        not set it: grok answers on ``Hxz`` from ``grok.Bot.AfterNET.Org``.
+        AfterNET only hands those hosts to registered bots — a full day of
+        channel logs has grok, grook5 and vibebot on one, and no humans.
+        """
+        if not isinstance(prefix, str) or "@" not in prefix:
+            return False
+        host = prefix.rsplit("@", 1)[1].lower()
+        suffixes = self.registryValue("botLoopHostSuffixes")
+        if isinstance(suffixes, str):
+            suffixes = suffixes.split()
+        elif not isinstance(suffixes, (list, tuple, set)):
+            # A registry value of the wrong shape must not decide that every
+            # sender is a bot, nor raise on a path every addressed line takes.
+            return False
+        return any(host.endswith(str(suffix).lower()) for suffix in suffixes if suffix)
+
+    def _sender_is_bot(self, irc: callbacks.Irc, msg: IrcMsg) -> bool | None:
+        """True/False/None for "is the sender a bot", cheapest signal first.
+
+        The host is free and decides on the first line. The +B flag needs a
+        WHO, so it only answers for nicks we have already asked about — None
+        means nobody has told us yet and the caller should treat it as a
+        person.
+        """
+        if self._host_is_a_bot_host(getattr(msg, "prefix", None)):
+            return True
+        return self._known_bot(irc, getattr(msg, "nick", "") or "")
+
     def _probe_bot_flag(self, irc: callbacks.Irc, nick: str) -> None:
         """Ask the network whether ``nick`` is a bot, at most once per window.
 
@@ -2588,7 +2620,7 @@ class LLM(callbacks.Plugin):
         target = msg.args[0] if msg.args else ""
         if not nick or not target:
             return
-        if self._known_bot(irc, nick):
+        if self._sender_is_bot(irc, msg):
             return
         with self._bot_loop_lock:
             self._bot_reply_counts = {
@@ -2607,7 +2639,7 @@ class LLM(callbacks.Plugin):
         if not nick or not target:
             return False
 
-        flag = self._known_bot(irc, nick)
+        flag = self._sender_is_bot(irc, msg)
         if flag is None:
             self._probe_bot_flag(irc, nick)
             return False

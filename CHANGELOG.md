@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Treat AfterNET bot hosts as bots, not just +B (`chat`)
 - Answer when the nick lands at the end of a line or a /me (`chat`)
 - Address the clip delivery to the nick, not the account (`animate`)
 - Keep the user's names and objects in the video prompt (`animate`)

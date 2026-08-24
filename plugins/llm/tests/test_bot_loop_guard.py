@@ -75,12 +75,93 @@ class TestBotFlagFromWhox:
         assert plugin._known_bot(mock_irc, "too") is None
 
 
+class TestBotHostDetection:
+    """+B is not the only tell, and on AfterNET it is not even the common one.
+
+    #afternet, 2026-08-24 21:38, minutes after the +B cap went live: grok and
+    vibebot traded eleven lines in ninety seconds. grok's WHO status is `Hxz`
+    — it never sets the mode — but its host is `grok.Bot.AfterNET.Org`, and
+    AfterNET hands those out to registered bots. Across a full day of channel
+    logs the only nicks on a Bot host were grok, grook5, and vibebot itself.
+    """
+
+    def test_a_bot_host_is_a_bot(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN a sender on a Bot host THEN it is a bot with no WHO needed."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(nick="grok", prefix="grok!grook@grok.Bot.AfterNET.Org")
+
+        assert plugin._sender_is_bot(mock_irc, msg) is True
+
+    def test_a_users_host_is_not(self, plugin_env, mocker: MockerFixture) -> None:
+        """A person on the ordinary user host stays a person."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(nick="rdrake", prefix="rdrake!rdrake@rdrake.Users.AfterNET.Org")
+
+        assert plugin._sender_is_bot(mock_irc, msg) is not True
+
+    def test_the_host_match_is_case_insensitive(self, plugin_env, mocker: MockerFixture) -> None:
+        """Hostnames are case-insensitive and ircds are inconsistent about it."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(nick="grok", prefix="grok!grook@GROK.BOT.AFTERNET.ORG")
+
+        assert plugin._sender_is_bot(mock_irc, msg) is True
+
+    def test_the_flag_still_counts_on_a_user_host(self, plugin_env, mocker: MockerFixture) -> None:
+        """LarryBot is +B but lives on a Users host — both signals must work."""
+        plugin, mock_irc, _ = plugin_env
+        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "LarryBot", "HxzB")))
+        msg = mocker.MagicMock(
+            nick="LarryBot", prefix="LarryBot!larrybot@larrybot.Users.AfterNET.Org"
+        )
+
+        assert plugin._sender_is_bot(mock_irc, msg) is True
+
+    def test_a_junk_prefix_does_not_raise(self, plugin_env, mocker: MockerFixture) -> None:
+        """Server-originated and malformed prefixes must not break the guard."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(nick="weird", prefix="not-a-hostmask")
+
+        assert plugin._sender_is_bot(mock_irc, msg) is not True
+
+    def test_a_bot_host_sender_is_capped(self, plugin_env, mocker: MockerFixture) -> None:
+        """The whole point: grok gets three replies, then quiet."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=False))
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+        mock_msg.nick = "grok"
+        mock_msg.prefix = "grok!grook@grok.Bot.AfterNET.Org"
+        mock_msg.args = ("#afternet", "vibebot: cheers for the assist")
+        mock_msg.channel = "#afternet"
+
+        for _ in range(7):
+            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "cheers")
+
+        assert dispatch.call_count == 3
+
+    def test_a_bot_host_sender_is_not_probed(self, plugin_env, mocker: MockerFixture) -> None:
+        """The host already answered the question; no WHO needed."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        mocker.patch.object(plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=False))
+        mocker.patch.object(plugin, "_dispatch_addressed_async")
+        mock_msg.nick = "grok"
+        mock_msg.prefix = "grok!grook@grok.Bot.AfterNET.Org"
+        mock_msg.args = ("#afternet", "vibebot: hello")
+        mock_msg.channel = "#afternet"
+
+        plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
+
+        mock_irc.queueMsg.assert_not_called()
+
+
 class TestBotFlagProbe:
     """Prod skips the WHO on join, so the flag has to be asked for.
 
-    ``skipAutoWhoOnJoin`` is True in production and the last WHO reply the
-    bot saw was 2026-02-13. Waiting for a channel sync that never comes would
-    make the whole guard inert.
+    ``skipAutoWhoOnJoin`` is True in production, which suppresses the only
+    WHO Limnoria sends (irclib.py:2459, on our own JOIN). Waiting for a
+    channel sync that may never come would leave the flag half of the
+    detector permanently unanswered.
     """
 
     def test_unknown_nick_is_probed(self, plugin_env) -> None:
