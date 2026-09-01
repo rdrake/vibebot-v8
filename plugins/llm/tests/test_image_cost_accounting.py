@@ -225,20 +225,27 @@ class TestSpendIsAttributedToTheModelThatSpentIt:
         assert result.cost == pytest.approx(0.0)
 
 
-class TestLiteLLMStillCannotPriceThese:
-    """Pins why the local table exists, so nobody deletes it on a version bump."""
+class TestLiteLLMPricesTheseButTheTableStaysAuthoritative:
+    """Pins why the local table still exists after upstream gained a price.
+
+    Until 2026-09-01 LiteLLM had no entry for either model and this class
+    asserted their absence. Upstream's remote cost map (fetched at import, so
+    the pinned litellm version is irrelevant) now carries both — but at
+    $0.05/image for -pro against the $0.069 average the July 2026 invoice
+    showed and the $0.07 the table books. The table is reconciled to money
+    actually paid; the map is not. So the table stays the source of truth and
+    this test only watches for the map changing shape again: if either entry
+    disappears or stops being per-image priced, somebody should look.
+    """
 
     @pytest.mark.parametrize("model", sorted(IMAGE_COST_PER_IMAGE))
-    def test_model_is_absent_from_litellms_cost_map(self, model: str) -> None:
-        """If this ever fails, LiteLLM gained a price and the entry can go.
-
-        Checked against 1.93.0 (pinned) and 1.97.0 (latest, 2026-08-16): both
-        ship 40 xai models, none of them image or video.
-        """
+    def test_upstream_still_carries_a_per_image_price(self, model: str) -> None:
         import litellm
 
-        assert model not in litellm.model_cost
-        assert model.split("/", 1)[-1] not in litellm.model_cost
+        entry = litellm.model_cost.get(model)
+        assert entry is not None, f"{model} vanished from LiteLLM's cost map again"
+        assert entry.get("mode") == "image_generation"
+        assert float(entry.get("input_cost_per_image", 0)) > 0
 
 
 def test_service_price_lookup_is_used_for_successful_generations(

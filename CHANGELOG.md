@@ -1153,6 +1153,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- LiteLLM now prices grok-imagine; keep the local table authoritative (`cost`)
 - Cover _status_tool_payload's stale/refresh branches (`status`)
 - Pin the image key boundary and the effective-model guards (`service`)
 - Confine SecretFilter install to the test that triggers it (`logging`)
