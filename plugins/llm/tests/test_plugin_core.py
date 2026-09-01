@@ -2846,3 +2846,58 @@ class TestSafeDatabasePath:
         from llm.plugin import _safe_database_path
 
         assert _safe_database_path("../../../etc/passwd", "/data/LLM.db") == "/data/LLM.db"
+
+
+class TestUndeadPluginReaper:
+    """The autouse reaper in conftest stops threads a test forgot to stop.
+
+    ``LLM.__init__`` starts ``animate-typing-refresher``; only ``die()`` stops
+    it. Dozens of tests build a plugin directly and never die it, so the reaper
+    does it for them at teardown. Exercising the context manager inline pins
+    that behaviour to one assertion instead of leaving it to the session-scoped
+    survivor check, which cannot say *which* teardown did the work.
+    """
+
+    @staticmethod
+    def _build_abandonable_plugin(mock_irc: MagicMock, mocker: MockerFixture):
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        return LLM
+
+    def test_abandoned_plugin_is_died_at_teardown(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a plugin nobody dies WHEN the reaping block exits THEN its
+        refresher thread is stopped."""
+        from .conftest import reaping_undead_plugins
+
+        llm_class = self._build_abandonable_plugin(mock_irc, mocker)
+
+        with reaping_undead_plugins():
+            plugin = llm_class(mock_irc)
+            assert plugin._render_typing_thread.is_alive()
+
+        assert not plugin._render_typing_thread.is_alive()
+        # db.close() runs once per die(); the reaper died it exactly once.
+        plugin.db.close.assert_called_once_with()
+
+    def test_plugin_the_test_already_died_is_not_died_twice(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a plugin the test dies itself WHEN the reaping block exits
+        THEN the reaper leaves it alone."""
+        from .conftest import reaping_undead_plugins
+
+        llm_class = self._build_abandonable_plugin(mock_irc, mocker)
+
+        with reaping_undead_plugins():
+            plugin = llm_class(mock_irc)
+            plugin.die()
+            plugin.db.close.assert_called_once_with()
+
+        assert not plugin._render_typing_thread.is_alive()
+        plugin.db.close.assert_called_once_with()

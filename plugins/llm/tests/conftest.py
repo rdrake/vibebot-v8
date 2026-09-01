@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -158,9 +159,98 @@ def _run_dispatch_threads_inline(mocker: MockerFixture) -> None:
     mocker.patch("llm.plugin.world.SupyThread", _InlineThread)
 
 
+# Daemon threads that only ``LLM.die()`` stops: the animate render refresher
+# started from ``LLM.__init__`` and the shared ``TypingHolds`` keepalive that
+# ``LLMService`` starts lazily on the first hold.
+PLUGIN_LIFECYCLE_THREADS = ("animate-typing-refresher", "typing-keepalive")
+
+
+@contextlib.contextmanager
+def reaping_undead_plugins() -> Generator[None]:
+    """``die()`` every ``LLM`` built inside the block that nobody else died.
+
+    ``LLM.__init__`` starts the ``animate-typing-refresher`` daemon thread, and
+    ``LLMService`` owns a ``TypingHolds`` registry whose ``typing-keepalive``
+    thread starts on the first hold. Only ``die()`` stops either. The
+    ``plugin_env`` fixture does that in its ``finally``, but ~150 tests build a
+    plugin some other way — a bare ``LLM(mock_irc)`` in the test body, or a
+    module-local fixture — and simply drop it. Each abandoned plugin parked a
+    thread, plus the plugin object and its whole mock graph, for the rest of
+    the session: a full run used to end with 131 live refresher threads.
+    Nothing in production leaks this way (Limnoria always calls ``die()``), so
+    the fix belongs here rather than in ``plugin.py``.
+
+    Patching ``__init__`` registers each instance; patching ``die`` unregisters
+    it, so a plugin the test already died is not died a second time. ``die()``
+    is written to be idempotent and this fixture deliberately does not lean on
+    that — a regression in its idempotence should surface in the tests that
+    exercise it, not be papered over here.
+
+    Both attributes are restored before any reaping runs, so a nested block
+    (the fixture below plus a test using this helper directly) hands the
+    ``die()`` back to the enclosing block's tracker instead of re-entering
+    its own.
+    """
+    live: dict[int, LLM] = {}
+    real_init = LLM.__init__
+    real_die = LLM.die
+
+    def tracking_init(self: LLM, irc: Any) -> None:
+        real_init(self, irc)
+        live[id(self)] = self
+
+    def tracking_die(self: LLM) -> None:
+        live.pop(id(self), None)
+        real_die(self)
+
+    LLM.__init__ = tracking_init
+    LLM.die = tracking_die
+    try:
+        yield
+    finally:
+        LLM.__init__ = real_init
+        LLM.die = real_die
+        while live:
+            _, plugin = live.popitem()
+            plugin.die()
+
+
+@pytest.fixture(autouse=True)
+def _reap_undead_plugins(mocker: MockerFixture) -> Generator[None]:
+    """Apply :func:`reaping_undead_plugins` to every test in the suite.
+
+    ``mocker`` is requested purely for teardown ordering: a fixture is torn
+    down before the fixtures it depends on, so this reaps while
+    ``plugin_init_patches``'s patches are still installed and ``die()`` still
+    meets the mocked ``schedule``/``httpserver``/``LLMDatabase`` the test built
+    the plugin against. Reaping after pytest-mock's undo would send a dying
+    test plugin at the real Limnoria scheduler.
+    """
+    with reaping_undead_plugins():
+        yield
+
+
 # =============================================================================
 # Session-scoped fixtures
 # =============================================================================
+
+
+@pytest.fixture(scope="session", autouse=True)
+def assert_no_plugin_threads_survive_session() -> Generator[None]:
+    """Fail the run if a plugin lifecycle thread outlives the whole session.
+
+    The per-test reaper above is only as good as its coverage; this is the
+    assertion that says so. Function-scoped teardown has finished for every
+    test by the time a session-scoped finalizer runs, so any thread still
+    standing here belongs to a plugin nobody died — the exact leak the reaper
+    exists to close.
+    """
+    yield
+    survivors = sorted(t.name for t in threading.enumerate() if t.name in PLUGIN_LIFECYCLE_THREADS)
+    assert not survivors, (
+        f"{len(survivors)} plugin lifecycle thread(s) outlived the session: "
+        f"{survivors}. Some test built an LLM the reaper did not see."
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
