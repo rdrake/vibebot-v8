@@ -6860,6 +6860,7 @@ Examples (echo → action_prompt: ""):
         body: bytes | None = None,
         content_type: str | None = None,
         raw: bool = False,
+        timeout: float | None = None,
     ) -> tuple[int, object]:
         """One HTTP call to the video server.
 
@@ -6868,6 +6869,9 @@ Examples (echo → action_prompt: ""):
         decoded error body rather than an exception, because every caller wants
         to distinguish "job not ready" from "job is gone" from "box is down"
         and an exception flattens those together.
+
+        ``timeout`` overrides ``animateTimeout`` for callers that must not
+        block a command on a wedged box; ``None`` keeps the registry value.
         """
         import urllib.error
         import urllib.request
@@ -6888,7 +6892,8 @@ Examples (echo → action_prompt: ""):
                 return None
 
         opener = urllib.request.build_opener(_NoRedirect())
-        timeout = self.plugin.registryValue("animateTimeout")
+        if timeout is None:
+            timeout = self.plugin.registryValue("animateTimeout")
         req = urllib.request.Request(f"{base}{path}", data=body, headers=headers, method=method)
 
         try:
@@ -7140,6 +7145,10 @@ Examples (echo → action_prompt: ""):
         follows that this must not raise — the command that calls it has
         already promised the user the clip is gone.
 
+        Five seconds, not ``animateTimeout``: ``@renders clear`` cancels every
+        queued row in turn, so the registry's 60 s would let one wedged box
+        hold the command — and the user — for a minute per row.
+
         Args:
             job_id: The video job id stashed in the pending task's request data.
 
@@ -7147,7 +7156,9 @@ Examples (echo → action_prompt: ""):
             True when the box accepted the cancel.
         """
         try:
-            status, payload = self._animate_request(f"/v1/videos/{job_id}", method="DELETE")
+            status, payload = self._animate_request(
+                f"/v1/videos/{job_id}", method="DELETE", timeout=5.0
+            )
         except Exception as e:  # noqa: BLE001 — cancel must never raise into a command
             self.log.warning("video cancel failed for %s: %s", job_id, str(e)[:200])
             return False

@@ -7056,6 +7056,13 @@ class LLM(callbacks.Plugin):
         counted. Filtered in Python off ``load_pending_tasks`` rather than
         claimed: ``claim_due_pending_tasks`` leases its rows and would steal
         work from the delivery poller.
+
+        ``claimed_until`` is deliberately not filtered on. A leased row is
+        still a clip that has not arrived, so it is still worth listing and
+        still worth cancelling. The only bad interleaving is a delivery
+        landing in the same poller pass as the cancel, which is a sub-second
+        window and leaves no bad data behind — the clip posts, the row is
+        already gone, and nothing is delivered twice.
         """
         now = time.time()
         return [
@@ -7080,7 +7087,7 @@ class LLM(callbacks.Plugin):
         job_id = ""
         try:
             job_id = str(json.loads(row.request_data or "{}").get("job_id") or "")
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             self.log.warning("renders: malformed request_data on row %s", row.id)
 
         # A row with no job id has nothing to cancel on the box, so there is
@@ -7142,7 +7149,13 @@ class LLM(callbacks.Plugin):
                 # count and the last ids someone wanted to read. The first
                 # entry goes in whatever it costs -- an empty listing would
                 # be worse than a long one.
-                if parts and len(candidate.encode("utf-8")) > self._RENDERS_LINE_BUDGET:
+                #
+                # Rows left beyond this one mean a "+N more" tail is coming,
+                # so hold 12 bytes back for it -- ' | +999 more' is the worst
+                # case -- and the finished line stays inside the budget
+                # instead of overrunning it by the width of the tail.
+                budget = self._RENDERS_LINE_BUDGET - (12 if len(rows) > i else 0)
+                if parts and len(candidate.encode("utf-8")) > budget:
                     break
                 parts.append(entry)
             if len(rows) > len(parts):
@@ -7170,9 +7183,16 @@ class LLM(callbacks.Plugin):
                 irc.reply(_("No pending clip #%d.") % task_id)
                 return
             caller = self._resolve_identity(irc, msg)
-            if not is_admin and not caller.matches(
-                Identity(raw_nick=row.nick, account=row.account)
-            ):
+            # Identity.matches falls back to raw nick when either side has no
+            # account, which on its own would let a nick-squatter cancel an
+            # identified user's clip while the owner is disconnected. So: a
+            # row that carries an account may only be cancelled by a caller
+            # who is identified and matches on that account. The nick
+            # fallback stands only for rows that never had one.
+            owns = caller.matches(Identity(raw_nick=row.nick, account=row.account)) and (
+                bool(caller.account) or not row.account
+            )
+            if not is_admin and not owns:
                 irc.reply(_("#%d isn't yours.") % task_id)
                 return
             if self._cancel_animate_row(row):

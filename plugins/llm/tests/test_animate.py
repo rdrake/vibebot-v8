@@ -1780,6 +1780,28 @@ class TestAnimateAdmission:
         assert submit.call_args.args[0] == "a corgi"
         assert plugin._render_typing_wake.is_set()
 
+    def test_refusal_reaches_the_tool_as_a_failed_callback_result(self, plugin_env, mocker) -> None:
+        """GIVEN a rejected submission WHEN the tool callback runs THEN ok=False, text kept.
+
+        The refusal is the whole point of the cap, and the model has to see it
+        to phrase it. A callback that reported ok=True would have the model
+        announce a clip that was never queued.
+        """
+        plugin, irc, msg = plugin_env
+        refusal = "Not queued: you already have 2 clips rendering (limit 2)."
+        mocker.patch.object(
+            plugin,
+            "_submit_video",
+            return_value=VideoResult(content=refusal, error=refusal),
+        )
+
+        result = plugin._animate_for_assistant(
+            irc, msg, "a corgi", nick="alice", channel="#chan", account="alice"
+        )
+
+        assert result.ok is False
+        assert result.message == refusal
+
 
 class TestQueuePositionAck:
     """The ack tells you where you stand, because nobody could see the queue.

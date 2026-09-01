@@ -212,6 +212,10 @@ class TestRendersList:
         Six of those overflow 512 bytes once the PRIVMSG prefix is counted,
         and Limnoria would park the tail -- the "+N more" count and the last
         ids -- behind @more, which is the part people came for.
+
+        380 bytes, tail included: the "+N more" is appended after the loop, so
+        the budget has to be checked against the finished line, not the line
+        it was measured on.
         """
         plugin, irc, msg = renders_env
 
@@ -221,14 +225,34 @@ class TestRendersList:
         plugin.renders(irc, msg, [])
 
         line = _reply(irc)
-        assert len(line.encode()) <= 400
+        assert len(line.encode()) <= 380
         parts = line.split(" | ")
         shown = len(parts) - 1  # the last part is the "+N more" tail
         assert parts[-1] == f"+{6 - shown} more"
         assert 1 <= shown < 6, "the budget should have truncated, but shown something"
 
+    def test_the_more_tail_is_inside_the_budget_not_added_to_it(self, renders_env) -> None:
+        """GIVEN entries that just fit WHEN the tail is appended THEN still one line.
+
+        The sizes here are picked to land on the boundary: five of these
+        entries measure 377 bytes, under the 380 the loop checks, and the
+        " | +1 more" the loop then appends takes the sent line to 387. Room
+        for the tail has to be reserved while the entries are being chosen,
+        not discovered after.
+        """
+        plugin, irc, msg = renders_env
+
+        for i in range(6):
+            _seed(plugin.db, nick="n" * 15, prompt="p" * 60, age=800 - i)
+
+        plugin.renders(irc, msg, [])
+
+        line = _reply(irc)
+        assert len(line.encode()) <= 380
+        assert line.split(" | ")[-1].endswith(" more"), "the tail is what the budget must cover"
+
     def test_long_prompt_is_cut(self, renders_env) -> None:
-        """GIVEN a long prompt WHEN @renders THEN it is elided at 40 characters."""
+        """GIVEN a long prompt WHEN @renders THEN it is elided at 30 characters."""
         plugin, irc, msg = renders_env
 
         _seed(plugin.db, prompt=_PROMPT)
@@ -339,6 +363,30 @@ class TestRendersCancel:
 
         assert plugin.db.load_pending_tasks("animate") == []
         assert _reply(irc) == f"Cancelled #{task_id}."
+
+    def test_nick_squatter_cannot_cancel_an_identified_users_row(
+        self, renders_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a row with an account WHEN an unidentified same-nick caller cancels THEN refused.
+
+        ``Identity.matches`` falls back to raw nick when either side lacks an
+        account, so on its own it would hand alice's queued clip to whoever
+        grabbed the nick while she was disconnected. A row that carries an
+        account needs an identified caller who matches on it.
+        """
+        plugin, irc, msg = renders_env
+        mocker.patch.object(
+            plugin, "_resolve_identity", return_value=Identity(raw_nick="alice", account=None)
+        )
+        _admin(mocker, yes=False)
+
+        task_id = _seed(plugin.db, nick="alice", account="alice")
+
+        plugin.renders(irc, msg, ["cancel", str(task_id)])
+
+        assert len(plugin.db.load_pending_tasks("animate")) == 1
+        plugin.llm_service.cancel_video.assert_not_called()
+        assert _reply(irc) == f"#{task_id} isn't yours."
 
     def test_admin_can_cancel_anyone(self, renders_env, mocker: MockerFixture) -> None:
         """GIVEN bob's clip WHEN an admin cancels it THEN it goes."""
@@ -468,7 +516,23 @@ class TestCancelVideo:
             request = mocker.patch.object(service, "_animate_request", return_value=(code, {}))
 
             assert service.cancel_video("job-1") is True
-            request.assert_called_once_with("/v1/videos/job-1", method="DELETE")
+            request.assert_called_once_with("/v1/videos/job-1", method="DELETE", timeout=5.0)
+
+    def test_cancel_uses_a_short_timeout_not_animate_timeout(
+        self, make_service, animate_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a wedged box WHEN cancelling THEN 5s, not the 60s render timeout.
+
+        ``@renders clear`` cancels every queued row in turn, so inheriting
+        ``animateTimeout`` would hold the command for a minute per row while
+        the user watches nothing happen.
+        """
+        service, _plugin = _service(make_service, animateTimeout=60)
+        request = mocker.patch.object(service, "_animate_request", return_value=(204, {}))
+
+        service.cancel_video("job-1")
+
+        request.assert_called_once_with("/v1/videos/job-1", method="DELETE", timeout=5.0)
 
     def test_delete_failure_logs_and_returns_false(
         self, make_service, animate_env, mocker: MockerFixture

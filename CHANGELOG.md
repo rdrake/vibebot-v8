@@ -8,6 +8,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Shorten cancel timeout, tighten @renders ownership and listing budget (`animate`)
+- Fit the @renders listing in one IRC line (`animate`)
 - Judge short replies for repetition too, drop the word floor (`chat`)
 - Only a human talking TO the bot resets the loop cap (`chat`)
 - Treat AfterNET bot hosts as bots, not just +B (`chat`)
@@ -437,6 +439,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Animate queue cleanup plan (`plans`)
 - Document the render typing indicator and delivery line (`animate`)
 - Implementation plan for the animate UX work (`plans`)
 - Rework the animate UX design after codex red team (`plans`)
@@ -611,6 +614,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- @renders lists, cancels and clears the render queue (`animate`)
+- Cap the render queue and report queue position (`animate`)
 - Cap replies to bots the network flags with +B (`chat`)
 - Record the planner's script beside the user's ask (`animate`)
 - Recognise the nick mid-way through a /me (`chat`)
@@ -1036,6 +1041,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- One refcounted +typing indicator per channel (`typing`)
 - Extract _reply_mores_length, unify three drifted copies (`llm`)
 - Plan @animate through the assistant, like @draw (`animate`)
 - Key all poller state by canonical source (`status`)

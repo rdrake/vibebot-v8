@@ -132,6 +132,46 @@ class TestGroups:
         holds.set_group("render", {})
         assert rec.states("afternet", "#chan") == ["active", "done"]
 
+    def test_a_thread_that_will_not_start_does_not_strand_the_refcount(self, rec) -> None:
+        """GIVEN the keepalive thread fails to start WHEN acquiring THEN the count unwinds.
+
+        ``can't start new thread`` under load used to leave the refcount at
+        one with no thread and no group recorded, so every later pass
+        re-acquired and the last release never fired — that target then
+        swallowed every ``done`` for the life of the process.
+
+        A long interval, so the only ``active`` here is the one the acquire
+        sends: a keepalive landing mid-test would make the count meaningless.
+        """
+        h = TypingHolds(rec, logging.getLogger("test"), interval=30)
+        real_start = threading.Thread.start
+        calls = {"n": 0}
+
+        def flaky_start(self) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("can't start new thread")
+            real_start(self)
+
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(threading.Thread, "start", flaky_start)
+                with pytest.raises(RuntimeError, match="can't start new thread"):
+                    h.set_group("render", {("afternet", "#chan"): _irc()})
+
+            assert not h.holds("afternet", "#chan")
+            assert rec.states("afternet", "#chan") == []
+
+            h.set_group("render", {("afternet", "#chan"): _irc()})
+
+            assert h.holds("afternet", "#chan")
+            assert rec.states("afternet", "#chan") == ["active"]
+
+            h.set_group("render", {})
+            assert rec.states("afternet", "#chan") == ["active", "done"]
+        finally:
+            h.stop()
+
     def test_set_group_refreshes_the_irc_used_for_keepalive(self, holds, rec) -> None:
         stale = SimpleNamespace(network="afternet", tag="stale")
         fresh = SimpleNamespace(network="afternet", tag="fresh")

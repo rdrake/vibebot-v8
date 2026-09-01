@@ -98,6 +98,8 @@ class TypingHolds:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                self._log.warning("typing: keepalive thread still alive after stop()")
 
     # -- internals --------------------------------------------------------
 
@@ -106,7 +108,22 @@ class TypingHolds:
             self._ircs[key] = irc
             self._counts[key] = self._counts.get(key, 0) + 1
             first = self._counts[key] == 1
-            self._ensure_thread()
+            try:
+                self._ensure_thread()
+            except Exception:
+                # A thread that would not start (``can't start new thread``)
+                # must not leave the refcount raised. ``set_group`` never
+                # records the group when this raises, so the next pass
+                # re-acquires; a count stuck above zero would mean the last
+                # release never fires and that target swallows every ``done``
+                # from here on.
+                remaining = self._counts.get(key, 0) - 1
+                if remaining <= 0:
+                    self._counts.pop(key, None)
+                    self._ircs.pop(key, None)
+                else:
+                    self._counts[key] = remaining
+                raise
         if first:
             self._safe_send(irc, key[1], "active")
             self._wake.set()
