@@ -880,13 +880,6 @@ class LLM(callbacks.Plugin):
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
 
-        # (network, target) pairs typed on the most recent refresher pass, so
-        # the next pass can send exactly one +typing=done to whatever dropped
-        # out. Written by the refresher thread, read by _begin_typing's
-        # suppress predicate on worker threads — hence the lock, following
-        # every other mutable map in this class.
-        self._render_typing_active: set[tuple[str, str]] = set()
-        self._render_typing_lock = threading.Lock()
         # Consecutive database read failures. Touched only by the refresher
         # thread, so it rides outside the lock.
         self._render_typing_read_failures = 0
@@ -1041,6 +1034,11 @@ class LLM(callbacks.Plugin):
                     "render typing: refresher thread still alive after die(); "
                     "it will park once its database reads fail"
                 )
+
+        # Stop the shared +typing keepalive thread. Same reasoning as the
+        # refresher: no done goes out, clients expire the state.
+        if hasattr(self, "llm_service"):
+            self.llm_service.typing.stop()
 
         # Clean up expired reminders from database
         if hasattr(self, "db"):
@@ -2213,11 +2211,13 @@ class LLM(callbacks.Plugin):
     _DELIVERY_MAX_BACKOFF = 120
     _DELIVERY_MAX_ATTEMPTS = 10
 
-    # Render-typing refresher. The interval matches _begin_typing's keepalive
-    # because the constraint is the same: clients expire +typing=active after
-    # roughly six seconds. The max age is a deliberate ceiling on how long the
-    # bot will appear to type — a job can stay pending for animateExpiry
-    # (1800s), and nobody should watch that.
+    # Render-typing refresher. This paces the database passes that decide
+    # which targets the "render" hold group covers; the wire keepalive itself
+    # is TypingHolds' job. Four seconds keeps a newly submitted clip's
+    # indicator prompt without polling pending_tasks harder than that. The max
+    # age is a deliberate ceiling on how long the bot will appear to type — a
+    # job can stay pending for animateExpiry (1800s), and nobody should watch
+    # that.
     _RENDER_TYPING_INTERVAL: float = 4.0
     _RENDER_TYPING_MAX_AGE: float = 360.0
     # Consecutive pending-task read failures the refresher tolerates before it
@@ -5137,8 +5137,8 @@ class LLM(callbacks.Plugin):
         to the outer wait.
 
         The park decision comes from what the pass read out of the database,
-        never from ``_render_typing_active`` (the targets a send was
-        *attempted* for). On the auto-deploy restart path the first pass runs
+        never from the "render" group in ``llm_service.typing`` (the targets
+        that actually resolved to a connection). On the auto-deploy restart path the first pass runs
         about a second in, before the bot has joined anything, so nothing
         resolves and nothing is typed — but a clip really is rendering, and
         parking there would leave it silent for its whole two minutes. Same
@@ -5170,8 +5170,7 @@ class LLM(callbacks.Plugin):
                     # a stale set suppresses every ordinary reply's
                     # +typing=done on those targets.
                     self.log.exception("render typing: refresh pass failed")
-                    with self._render_typing_lock:
-                        self._render_typing_active = set()
+                    self.llm_service.typing.set_group("render", {})
                     still_rendering = False
                 if not still_rendering:
                     break
@@ -5179,16 +5178,6 @@ class LLM(callbacks.Plugin):
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
-
-    def _render_typing_holds(self, network: str, target: str) -> bool:
-        """True when the render refresher is typing at ``target`` right now.
-
-        Keyed by ``(network, target)`` because ``#chan`` on afternet and
-        ``#chan`` somewhere else are different rooms: a render on one must not
-        swallow a planner turn's ``+typing=done`` on the other.
-        """
-        with self._render_typing_lock:
-            return (network, target) in self._render_typing_active
 
     def _typing_refresh_pass(self) -> bool:
         """Send one round of +typing for every clip still rendering.
@@ -5223,54 +5212,29 @@ class LLM(callbacks.Plugin):
             if failures < self._RENDER_TYPING_MAX_READ_FAILURES:
                 # A blip: keep the holds and the loop, retry next tick.
                 return True
-            # Give up. The set has to go with the loop — the 360s ceiling on
-            # how long the bot may appear to type lives only in the SQL we
+            # Give up. The holds have to go with the loop — the 360s ceiling
+            # on how long the bot may appear to type lives only in the SQL we
             # can no longer run, and a stranded hold silently eats the
             # +typing=done of every ordinary reply on that target.
-            with self._render_typing_lock:
-                self._render_typing_active = set()
+            self.llm_service.typing.set_group("render", {})
             return False
         self._render_typing_read_failures = 0
 
-        active: set[tuple[str, str]] = set()
+        wanted: dict[tuple[str, str], Any] = {}
         for target in targets:
             try:
                 is_channel = ircutils.isChannel(target)
                 for irc_conn in world.ircs:
                     if is_channel and target not in irc_conn.state.channels:
                         continue
-                    try:
-                        self.llm_service.send_typing_indicator(irc_conn, target, "active")
-                    except Exception:
-                        self.log.exception("render typing: active send failed")
-                    else:
-                        # A hold means the send was attempted, not confirmed
-                        # delivered: send_typing_indicator returns None and
-                        # can no-op without raising (no message-tags cap, or
-                        # a closing executor). Harmless here — the set is
-                        # rederived every pass, and the matching done no-ops
-                        # the same way.
-                        active.add((irc_conn.network, target))
+                    wanted[(irc_conn.network, target)] = irc_conn
                     break
             except Exception:
                 self.log.exception("render typing: active resolution failed")
-
-        with self._render_typing_lock:
-            stale = self._render_typing_active - active
-            self._render_typing_active = active
-
-        for network, target in stale:
-            try:
-                for irc_conn in world.ircs:
-                    if irc_conn.network != network:
-                        continue
-                    try:
-                        self.llm_service.send_typing_indicator(irc_conn, target, "done")
-                    except Exception:
-                        self.log.exception("render typing: done send failed")
-                    break
-            except Exception:
-                self.log.exception("render typing: done resolution failed")
+        try:
+            self.llm_service.typing.set_group("render", wanted)
+        except Exception:
+            self.log.exception("render typing: reconcile failed")
 
         # What the database reported, not what resolved: a target the bot
         # cannot reach yet is still a clip that is rendering.
@@ -6271,9 +6235,7 @@ class LLM(callbacks.Plugin):
         # before any DB work (verse route lookup, history fetch, memory
         # fetch, executor permit acquisition). Otherwise the user waits
         # several seconds before "is composing" appears.
-        stop_typing = self.llm_service._begin_typing(
-            irc, msg, suppress_done_if=self._render_typing_holds
-        )
+        stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             # Slice 3: sticky @rp promotes ambient "just talk" messages to
             # roleplay turns while a session is live (explicit @ask/@rp untouched).
@@ -6890,9 +6852,7 @@ class LLM(callbacks.Plugin):
         # the submission itself no longer ends the command — the model's reply
         # does. It covers the reference fetch too, which is a network round trip
         # to somebody else's host and can take seconds on its own.
-        stop_typing = self.llm_service._begin_typing(
-            irc, msg, suppress_done_if=self._render_typing_holds
-        )
+        stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             # An image URL in the line is the clip's first frame. It does NOT
             # skip the planner: H3 renders a two-word ask badly whether or not

@@ -1080,7 +1080,7 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()
 
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "active")
-        assert plugin._render_typing_holds("afternet", "#chan")
+        assert plugin.llm_service.typing.holds("afternet", "#chan")
 
     def test_target_dropping_out_gets_one_done(self, plugin_env, mocker) -> None:
         """The clip landed: exactly one done, and not repeated next pass."""
@@ -1095,7 +1095,7 @@ class TestTypingRefreshPass:
         plugin.db.active_animate_targets.return_value = []
         plugin._typing_refresh_pass()
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "#chan", "done")
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert not plugin.llm_service.typing.holds("afternet", "#chan")
 
         plugin.llm_service.send_typing_indicator.reset_mock()
         plugin._typing_refresh_pass()
@@ -1111,7 +1111,7 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()
 
         plugin.llm_service.send_typing_indicator.assert_not_called()
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert not plugin.llm_service.typing.holds("afternet", "#chan")
 
     def test_pm_target_uses_the_first_connection(self, plugin_env, mocker) -> None:
         """A PM has no channel membership to check."""
@@ -1141,7 +1141,7 @@ class TestTypingRefreshPass:
 
         # Resolution stops at the first connection carrying the target, same
         # as the delivery path, so only one network is held.
-        assert plugin._render_typing_active == {("afternet", "#chan")}
+        assert plugin.llm_service.typing.active_targets() == {("afternet", "#chan")}
 
     def test_db_failure_does_not_raise(self, plugin_env, mocker) -> None:
         """A read failure must not kill the refresher thread."""
@@ -1167,12 +1167,18 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()
 
         plugin.llm_service.send_typing_indicator.assert_called_once_with(b, "#chan", "active")
-        assert plugin._render_typing_active == {("b", "#chan")}
+        assert plugin.llm_service.typing.active_targets() == {("b", "#chan")}
 
-    def test_active_send_failure_does_not_raise_and_leaves_target_unheld(
+    def test_active_send_failure_does_not_raise_and_keeps_the_hold(
         self, plugin_env, mocker
     ) -> None:
-        """A failed active send must not raise, and the target stays unheld."""
+        """A failed active send must not raise; the hold survives it.
+
+        The registry holds a target because a send was *attempted*, not
+        because it was confirmed delivered — send_typing_indicator no-ops
+        without raising when the server lacks message-tags. Keeping the hold
+        means the target still gets its one done when the clip lands.
+        """
         plugin, _mock_irc, _mock_msg = plugin_env
         irc = self._irc(mocker)
         mocker.patch("llm.plugin.world.ircs", [irc])
@@ -1181,7 +1187,7 @@ class TestTypingRefreshPass:
 
         plugin._typing_refresh_pass()  # must not raise
 
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert plugin.llm_service.typing.holds("afternet", "#chan")
 
     def test_one_targets_resolution_failure_does_not_abort_the_pass(
         self, plugin_env, mocker
@@ -1201,20 +1207,30 @@ class TestTypingRefreshPass:
         plugin._typing_refresh_pass()  # must not raise
 
         plugin.llm_service.send_typing_indicator.assert_called_once_with(irc, "alice", "active")
-        assert plugin._render_typing_holds("afternet", "alice")
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert plugin.llm_service.typing.holds("afternet", "alice")
+        assert not plugin.llm_service.typing.holds("afternet", "#chan")
 
-    def test_a_hold_on_another_network_does_not_suppress_done(self, plugin_env) -> None:
+    def test_a_hold_on_another_network_does_not_suppress_done(self, plugin_env, mocker) -> None:
         """#chan on afternet and #chan elsewhere are different rooms.
 
-        The set is keyed by (network, target) precisely so a render on one
+        Holds are keyed by (network, target) precisely so a render on one
         network cannot swallow a planner turn's +typing=done on another.
         """
         plugin, _mock_irc, _mock_msg = plugin_env
-        plugin._render_typing_active = {("other", "#chan")}
+        other = self._irc(mocker, network="other")
+        plugin.llm_service.typing.set_group("render", {("other", "#chan"): other})
 
-        assert plugin._render_typing_holds("other", "#chan")
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert plugin.llm_service.typing.holds("other", "#chan")
+        assert not plugin.llm_service.typing.holds("afternet", "#chan")
+
+        # A planner turn on afternet ends: its done goes out, and the render
+        # on the other network keeps typing.
+        afternet = self._irc(mocker)
+        msg = mocker.MagicMock(args=("#chan", "hi"))
+        plugin.llm_service.typing.hold(afternet, msg.args[0])()
+
+        plugin.llm_service.send_typing_indicator.assert_any_call(afternet, "#chan", "done")
+        assert plugin.llm_service.typing.holds("other", "#chan")
 
     def test_a_pass_that_found_work_reports_it(self, plugin_env, mocker) -> None:
         """The return value is the database's answer, not the send's."""
@@ -1243,8 +1259,8 @@ class TestTypingRefreshPass:
 
         A zombie refresher (die()'s join timed out, then db.close() ran) sees
         RuntimeError("LLMDatabase is closed") on every pass. Returning early
-        without recomputing left _render_typing_active populated forever,
-        which suppresses the +typing=done of every ordinary chat reply on
+        without recomputing left the "render" hold group populated forever,
+        which suppressed the +typing=done of every ordinary chat reply on
         that target.
         """
         plugin, _mock_irc, _mock_msg = plugin_env
@@ -1252,7 +1268,7 @@ class TestTypingRefreshPass:
         mocker.patch("llm.plugin.world.ircs", [irc])
         plugin.db.active_animate_targets.return_value = ["#chan"]
         plugin._typing_refresh_pass()
-        assert plugin._render_typing_holds("afternet", "#chan")
+        assert plugin.llm_service.typing.holds("afternet", "#chan")
 
         plugin.db.active_animate_targets.side_effect = RuntimeError("LLMDatabase is closed")
 
@@ -1261,7 +1277,7 @@ class TestTypingRefreshPass:
         assert plugin._typing_refresh_pass() is True
         # ...but a persistent failure gives up and lets go of the set.
         assert plugin._typing_refresh_pass() is False
-        assert not plugin._render_typing_holds("afternet", "#chan")
+        assert not plugin.llm_service.typing.holds("afternet", "#chan")
 
     def test_a_recovered_read_resets_the_failure_budget(self, plugin_env, mocker) -> None:
         """Two failures then a good read must not leave the loop one strike from parking."""
@@ -1362,7 +1378,7 @@ class TestTypingRefresherLifecycle:
 
         Simulates a worker thread writing a new pending row and calling
         _render_typing_wake.set() while the refresher's final pass (the one
-        that empties _render_typing_active) is still in flight. If the wake
+        that empties the "render" hold group) is still in flight. If the wake
         flag is cleared *after* the pass runs, that set() is stomped and the
         new clip renders with no typing indicator until an unrelated later
         submission wakes the loop.
@@ -1454,64 +1470,62 @@ class TestTypingRefresherLifecycle:
         assert not plugin._render_typing_thread.is_alive()
 
 
-class TestPlannerDoneSuppression:
-    """The planner's stopper must not cancel the render's indicator.
+class TestPlannerAndRenderShareOneIndicator:
+    """The planner's release must not cancel the render's indicator.
 
     The planner turn ends seconds after the render refresher starts on the
-    same target; without this its +typing=done shows as a visible flicker.
+    same target. Both hold the same refcounted indicator, so the done waits
+    for whichever lets go last — without that it shows as a visible flicker.
     """
 
     def _irc(self, mocker):
         irc = mocker.MagicMock()
+        irc.network = "afternet"
         irc.state.capabilities_ack = {"message-tags"}
         return irc
 
-    def test_done_is_skipped_when_the_render_holds_the_target(self, make_service, mocker) -> None:
+    def _states(self, irc) -> list[str]:
+        """The +typing states actually put on the wire for ``irc``."""
+        return [call.args[0].server_tags["+typing"] for call in irc.queueMsg.call_args_list]
+
+    def test_done_waits_until_the_render_lets_go(self, make_service, mocker) -> None:
         service, _plugin = make_service()
         irc = self._irc(mocker)
         msg = mocker.MagicMock(args=("#chan", "hi"))
-        send = mocker.patch.object(service, "send_typing_indicator")
 
-        stop = service._begin_typing(irc, msg, suppress_done_if=lambda network, target: True)
+        stop = service._begin_typing(irc, msg)
+        service.typing.set_group("render", {("afternet", "#chan"): irc})
         stop()
 
-        assert "done" not in [call.args[2] for call in send.call_args_list]
+        assert "done" not in self._states(irc), "the render still holds it"
 
-    def test_done_is_sent_when_nothing_holds_the_target(self, make_service, mocker) -> None:
+        service.typing.set_group("render", {})
+
+        assert self._states(irc) == ["active", "done"]
+
+    def test_done_is_sent_when_nothing_else_holds_the_target(self, make_service, mocker) -> None:
         service, _plugin = make_service()
         irc = self._irc(mocker)
         msg = mocker.MagicMock(args=("#chan", "hi"))
-        send = mocker.patch.object(service, "send_typing_indicator")
-
-        stop = service._begin_typing(irc, msg, suppress_done_if=lambda network, target: False)
-        stop()
-
-        assert "done" in [call.args[2] for call in send.call_args_list]
-
-    def test_default_still_sends_done(self, make_service, mocker) -> None:
-        """Every other caller passes no predicate and must be unaffected."""
-        service, _plugin = make_service()
-        irc = self._irc(mocker)
-        msg = mocker.MagicMock(args=("#chan", "hi"))
-        send = mocker.patch.object(service, "send_typing_indicator")
 
         service._begin_typing(irc, msg)()
 
-        assert "done" in [call.args[2] for call in send.call_args_list]
+        assert self._states(irc) == ["active", "done"]
 
-    def test_a_failing_predicate_does_not_swallow_done(self, make_service, mocker) -> None:
-        """If the check itself breaks, err toward stopping the indicator."""
+    def test_a_second_command_on_the_channel_does_not_restart_the_indicator(
+        self, make_service, mocker
+    ) -> None:
+        """Two planner turns on one channel: one active, one done."""
         service, _plugin = make_service()
         irc = self._irc(mocker)
         msg = mocker.MagicMock(args=("#chan", "hi"))
-        send = mocker.patch.object(service, "send_typing_indicator")
 
-        def boom(network: str, target: str) -> bool:
-            raise RuntimeError("lock is gone")
+        first = service._begin_typing(irc, msg)
+        second = service._begin_typing(irc, msg)
+        first()
+        second()
 
-        service._begin_typing(irc, msg, suppress_done_if=boom)()
-
-        assert "done" in [call.args[2] for call in send.call_args_list]
+        assert self._states(irc) == ["active", "done"]
 
 
 class TestAnimateDeliveryLine:

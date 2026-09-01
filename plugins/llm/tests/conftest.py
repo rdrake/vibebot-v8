@@ -17,6 +17,7 @@ import pytest
 from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
 from llm.service import LLMService
+from llm.typing_holds import TypingHolds
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -416,6 +417,16 @@ def plugin_env(mocker: MockerFixture):
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
+    # The typing registry is real even though the service is mocked: the
+    # render refresher's whole job is to reconcile a hold group, and a mock
+    # would assert only that a call happened. Sends still land on the mocked
+    # send_typing_indicator, so tests keep asserting on it. The long interval
+    # keeps the keepalive out of the assertions; plugin.die() stops the
+    # thread in this fixture's teardown.
+    plugin.llm_service.typing = TypingHolds(
+        plugin.llm_service.send_typing_indicator, logging.getLogger("test.typing"), interval=60.0
+    )
+
     # No scheduled tasks unless a test seeds them. @remind list/clear iterate
     # this, and the bare mock would hand them a non-iterable MagicMock.
     plugin.llm_service.list_scheduled_llm_tasks.return_value = []
@@ -658,7 +669,11 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
             service, plugin = make_service()
             # or with overrides:
             service, plugin = make_service(assistantModel="gemini/gemini-2.0-flash")
+
+    Every service built here is torn down at the end of the test so its
+    TypingHolds keepalive thread does not outlive it.
     """
+    built: list[LLMService] = []
 
     def _make(**overrides: Any) -> tuple[LLMService, Mock]:
         plugin = mocker.Mock()
@@ -714,9 +729,14 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         # tests inspecting queueMsg see an actual PRIVMSG, not a bare Mock.
         plugin._safe_privmsg.side_effect = LLM._safe_privmsg
 
-        return LLMService(plugin), plugin
+        service = LLMService(plugin)
+        built.append(service)
+        return service, plugin
 
-    return _make
+    yield _make
+
+    for service in built:
+        service.typing.stop()
 
 
 # =============================================================================

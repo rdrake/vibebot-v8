@@ -53,6 +53,7 @@ from .prompts import (
     PROMPTS,
 )
 from .tracing import TraceFilter, extract_server_headers, request_id
+from .typing_holds import TypingHolds
 
 # MUST be set before any LiteLLM calls create HTTPHandler
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
@@ -1931,6 +1932,10 @@ class LLMService:
         self.plugin = plugin_instance
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
+        # One +typing indicator per (network, target), refcounted across every
+        # holder — planner turns, chat replies, the render refresher. Its
+        # keepalive thread starts on the first hold. See typing_holds.py.
+        self.typing = TypingHolds(self.send_typing_indicator, self.log)
         self._cleanup_lock = threading.Lock()
         # Serializes check_pending_tasks so two polls can never claim the same
         # task concurrently — the claim lease alone would otherwise allow a
@@ -2494,68 +2499,24 @@ class LLMService:
             args=(target,),
             server_tags={"+typing": state},
         )
-        # Serialize on _irc_send_lock via _safe_queue: the typing keepalive
+        # Serialize on _irc_send_lock via _safe_queue: TypingHolds' keepalive
         # daemon thread sends this every ~4s, concurrent with the worker's
         # reply on the same unguarded IrcMsgQueue.
         self.plugin._safe_queue(irc, msg)
 
-    def _begin_typing(
-        self,
-        irc: Irc | None,
-        msg: IrcMsg | None,
-        *,
-        refresh: float = 4.0,
-        suppress_done_if: Callable[[str, str], bool] | None = None,
-    ) -> Callable[[], None]:
-        """Start an IRCv3 +typing=active indicator with periodic refresh.
+    def _begin_typing(self, irc: Irc | None, msg: IrcMsg | None) -> Callable[[], None]:
+        """Hold the +typing indicator on ``msg``'s target until the returned
+        callable runs. Safe without irc/msg — returns a no-op.
 
-        Clients expire +typing=active after ~6s without refresh, so a one-shot
-        active/done pair vanishes mid-call. Sends active immediately, re-emits
-        it every `refresh` seconds from a daemon thread, and returns a stop
-        callable that cancels the thread and sends +typing=done. Safe to call
-        without irc/msg — returns a no-op stopper.
-
-        ``suppress_done_if`` is called with ``(network, target)`` when the
-        stopper runs: when it returns True, the final ``+typing=done`` is
-        skipped because somebody else is still legitimately typing there. The
-        @animate paths pass it so a planner turn ending mid-render does not
-        cancel the render's own indicator. The network is part of the key
-        because ``#chan`` on two networks is two rooms.
+        Holds are refcounted per target in ``self.typing``: two commands on
+        one channel share a single indicator and a single keepalive thread,
+        and the render refresher's hold on a channel outlives a planner turn
+        that ends mid-render. See ``typing_holds.TypingHolds``.
         """
         target = msg.args[0] if (irc and msg and msg.args) else None
         if not irc or not target:
             return lambda: None
-
-        self.send_typing_indicator(irc, target, "active")
-        stop = threading.Event()
-
-        def _refresh_loop() -> None:
-            while not stop.wait(refresh):
-                try:
-                    self.send_typing_indicator(irc, target, "active")
-                except Exception:
-                    self.log.exception("typing keepalive refresh failed")
-                    return
-
-        thread = threading.Thread(target=_refresh_loop, name="typing-keepalive", daemon=True)
-        thread.start()
-
-        def stopper() -> None:
-            stop.set()
-            thread.join(timeout=1.0)
-            try:
-                if suppress_done_if is not None and suppress_done_if(irc.network, target):
-                    return
-            except Exception:
-                # A broken predicate must not strand the indicator on; fall
-                # through and send done.
-                self.log.exception("typing suppress predicate failed")
-            try:
-                self.send_typing_indicator(irc, target, "done")
-            except Exception:
-                self.log.exception("typing done send failed")
-
-        return stopper
+        return self.typing.hold(irc, target)
 
     def detect_images(self, text: str) -> list[str]:
         """Extract image URLs from text for vision support.
