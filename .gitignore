@@ -21,6 +21,7 @@ env/
 conf/
 /data/
 plugins/llm/data/
+plugins/llm/tests/data/
 logs/
 backup/
 tmp/
