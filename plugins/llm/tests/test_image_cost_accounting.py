@@ -11,7 +11,7 @@ lost before it reached the usage table:
   converted to run through assistant_request and every path to an image started
   going through that callback, until 2026-08-16, every image the bot drew was
   booked at $0.00. The prod usage table shows it plainly: draw rows carry
-  `xai/grok-imagine-image-pro` at $0.069 average through 2026-04-11, then switch
+  `xai/grok-imagine-image-pro` (since renamed -quality) at $0.069 average through 2026-04-11, then switch
   to *chat* model names at ~$0.001 — the text cost of the turn with the image
   cost missing. The fix is a second usage row written by the callback itself,
   under the image model, because a row names exactly one model and the turn
@@ -230,12 +230,13 @@ class TestLiteLLMPricesTheseButTheTableStaysAuthoritative:
 
     Until 2026-09-01 LiteLLM had no entry for either model and this class
     asserted their absence. Upstream's remote cost map (fetched at import, so
-    the pinned litellm version is irrelevant) now carries both — but at
-    $0.05/image for -pro against the $0.069 average the July 2026 invoice
-    showed and the $0.07 the table books. The table is reconciled to money
-    actually paid; the map is not. So the table stays the source of truth and
-    this test only watches for the map changing shape again: if either entry
-    disappears or stops being per-image priced, somebody should look.
+    the pinned litellm version is irrelevant) now carries both at the prices
+    the table books: $0.02 for grok-imagine-image, $0.05 for
+    grok-imagine-image-quality (xAI's rename of the retired -pro tier). The
+    table stays the source of truth because the image path never asked
+    LiteLLM for a price; this test only watches for the map changing shape
+    again — if either entry disappears or stops being per-image priced,
+    somebody should look.
     """
 
     @pytest.mark.parametrize("model", sorted(IMAGE_COST_PER_IMAGE))

@@ -70,7 +70,7 @@ litellm.request_timeout = 120  # 2 minutes
 # model does not even validate — startup logs "not in litellm's known model
 # list". Upgrading does not fix accounting here; this table is the price.
 IMAGE_COST_PER_IMAGE: dict[str, float] = {
-    "xai/grok-imagine-image-pro": 0.07,
+    "xai/grok-imagine-image-quality": 0.05,
     "xai/grok-imagine-image": 0.02,
 }
 
