@@ -120,13 +120,11 @@ Generate a short video from a text description. Also available as `@video`.
 
 `@animate` needs an authenticated account. The bot asks you to log in first if you aren't.
 
-Rendering takes a minute or two — about 135 seconds for the default seven-second clip. The bot confirms it has started, then posts the link as a reply to your original request when the clip is ready, so your client threads it back to what you asked for and there's no need to wait around. Clips have sound by default.
+Rendering takes a minute or two — about 135 seconds for the default seven-second clip — and the box renders one clip at a time, so requests queue behind each other. The bot tells you where yours sits in the line and roughly how long the wait is, then posts the link as a reply to your original request when the clip is ready, so your client threads it back to what you asked for and there's no need to wait around. The estimate assumes every clip ahead of yours takes the full render time. Clips have sound by default.
 
 While the clip renders the bot shows as typing continuously, not just for the first few seconds, so a working render still looks different from a failed one without another line appearing in the channel. Typing stops after six minutes even if the render is still going; the clip still arrives once it's ready. The delivered link also carries your nick and the prompt you gave it — `rdrake: your video is ready! "a corgi riding a unicorn" → https://…mp4` — so it's clear which request it answers even in clients that don't show reply threads.
 
-Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and requests queue behind each other. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
-
-When a clip is queued the bot tells you where it sits in the line and roughly how long the wait is; the estimate assumes each clip ahead of yours takes the full render time. Each person may have two clips waiting at once and the whole queue is capped at six, so a request past either limit is turned away rather than queued. Both limits are operator-configurable.
+Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and the queue itself is capped: each person may have two clips waiting at once and the whole queue holds six, so a request past either limit is turned away rather than queued. Both limits are operator-configurable. Use [`@renders`](#renders) to see the queue or take your clip back out of it. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
 
 `@animate` writes the video model's prompt from your request, the same way `@draw` does for pictures, and it writes a lot of it: this model follows detail, so a two-word ask renders generic while a shot description renders what you asked for. Your line becomes a paragraph covering the subject, what it does beat by beat, the camera, the setting and the light — the shot you asked for, spelled out, not a different one. The video model has never heard of your cast, so a name on its own would render as words on screen: the bot keeps the name you wrote and adds a description of what that subject looks like beside it. In a channel with the verse enabled, that description comes from canon, so naming someone from the world gets you a clip of the actual character. Everything else you named — the people, the objects, the costumes — goes through as you wrote it, and the shot you asked for, the action, the camera move and the mood, is left alone.
 
@@ -158,7 +156,9 @@ Shows the video render queue and lets you take a clip back out of it.
 @renders clear
 ```
 
-`@renders` on its own lists every clip waiting to render, oldest first, with its id, who asked for it, how long ago and its place in the line. `@renders cancel <id>` drops one of your own clips; admins can drop anyone's. `@renders clear` empties the queue and is admin-only. Cancelling asks the video server to stop the job as well; if the server declines, the clip still finishes on the box but is never posted.
+`@renders` on its own lists every clip waiting to render, oldest first, with its id, who asked for it, how long ago and its place in the line, all on one line; a queue too long for one line ends with `+N more`. When nothing is waiting it says so. `@renders cancel <id>` drops one of your own clips; admins can drop anyone's. `@renders clear` empties the queue and is admin-only. Cancelling asks the video server to stop the job as well; if the server declines, the clip still finishes on the box but is never posted.
+
+`@renders` needs the same capability as `@animate`, so anyone who can queue a clip can see the queue.
 
 ---
 

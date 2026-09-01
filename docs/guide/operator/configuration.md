@@ -310,7 +310,7 @@ When an API call times out, the bot retries in the background for a bounded wind
 
 ## Animate behaviour
 
-`@animate` renders on a self-hosted video box (see [Video generation](#video-generation) for the credential). Generation is asynchronous: the command submits a job and returns, and the pending-task poller publishes the clip when it lands, so a bot restart mid-render does not lose the video.
+`@animate` renders on a self-hosted video box (see [Video generation](#video-generation) for the credential). Generation is asynchronous: the command submits a job and returns, and the pending-task poller publishes the clip when it lands, so a bot restart mid-render does not lose the video. The box renders one clip at a time, so the queue is capped (`animateMaxPendingPerUser`, `animateMaxPending`) and `@renders` lets users and admins inspect or clear it.
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|

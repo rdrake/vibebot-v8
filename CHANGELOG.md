@@ -439,6 +439,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Fold the render queue, caps and @renders into the animate pages
 - Animate queue cleanup plan (`plans`)
 - Document the render typing indicator and delivery line (`animate`)
 - Implementation plan for the animate UX work (`plans`)
