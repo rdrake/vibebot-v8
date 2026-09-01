@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- XAI renamed grok-imagine-image-pro to -quality at $0.05 (`cost`)
 - Shorten cancel timeout, tighten @renders ownership and listing budget (`animate`)
 - Fit the @renders listing in one IRC line (`animate`)
 - Judge short replies for repetition too, drop the word floor (`chat`)
@@ -376,6 +377,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Ignore the supybot data dir tests generate
 - Assistant/config/infra polish
 - Ghost-label, dead-code, and stale-doc sweep
 - Consolidate uv lock bumps (aiohttp, litellm, hypothesis, pytest, ruff, ty) (`deps`)
@@ -439,6 +441,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Close the draw refusal follow-up with the measured numbers (`plans`)
 - Fold the render queue, caps and @renders into the animate pages
 - Animate queue cleanup plan (`plans`)
 - Document the render typing indicator and delivery line (`animate`)
@@ -1154,6 +1157,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- Import the event helper the way the rest of the suite does (`verse`)
+- Reap plugins tests build and abandon, so their threads stop
 - LiteLLM now prices grok-imagine; keep the local table authoritative (`cost`)
 - Cover _status_tool_payload's stale/refresh branches (`status`)
 - Pin the image key boundary and the effective-model guards (`service`)

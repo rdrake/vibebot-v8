@@ -1,8 +1,7 @@
 # Draw refusal rate: measure the fixes, chase the embellishment lead
 
-**Status:** Steps 1 and 2 answered early on 2026-08-19. Step 3 unblocked by the
-refused-attempt rows shipped the same day; step 4 still waiting on an invoice
-(2026-08-16)
+**Status:** Closed 2026-09-01. Steps 1-3 answered from the usage table; step 4's
+price question settled by upstream (below). Nothing left to run.
 **Author:** Richard Drake (with claude)
 **Affects:** `image_generation` / `_is_content_safety_error` / `_draw_for_assistant`
 (`9e67ba7`, `3399331`, `44e517e`, `98228d0`, all shipped 2026-08-15/16)
@@ -10,7 +9,34 @@ refused-attempt rows shipped the same day; step 4 still waiting on an invoice
 picture and got an apology, but nothing is broken — this is measurement plus one
 untested hypothesis.
 
-## Why this is waiting
+## Answered 2026-09-01
+
+`draw:image` rows from 2026-08-16 to 2026-09-01, 148 provider calls:
+
+| status | calls | spend | avg prompt chars |
+| --- | --- | --- | --- |
+| success | 124 | $2.55 | 157 |
+| content_blocked | 23 | $0.46 | 130 |
+| error | 1 | $0.02 | 186 |
+
+1. **Refusal rate: 16% of calls** (23 of 148), against the 56% baseline. One
+   user-visible failure in the window (the single `error` row); every other
+   refusal was followed by a delivered image, so the rewrite loop recovers
+   about 96% of first-call refusals at $0.02 each.
+2. **The loop fires.** Already settled 2026-08-19; the 23 `content_blocked`
+   rows at $0.02 each are the same signature at scale.
+3. **The embellishment lead is dead.** Refused prompts are *shorter* on
+   average than successful ones (130 vs 157 chars), and reading them the
+   pattern is subject matter, not lurid expansion: named trademarked
+   characters (Bibleman, three Picards, a Simpsons meme) and cartoon gore. No
+   prompt-guidance change would prevent those, so none is proposed.
+4. **Price.** LiteLLM's remote cost map gained xAI image entries on or before
+   2026-09-01: `xai/grok-imagine-image` at $0.02, matching
+   `IMAGE_COST_PER_IMAGE`. `grok-imagine-image-pro` no longer exists at xAI; it
+   is `grok-imagine-image-quality` at $0.05, and the table now says so. Total
+   spend in the window: $3.03.
+
+## Why this was waiting (historical)
 
 Three fixes shipped in two days against a measured baseline of **56% of draws
 refused** (18 calls, 10 refused, over six hours on 2026-08-15). Two of them are
