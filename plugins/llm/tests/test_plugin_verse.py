@@ -2687,7 +2687,7 @@ class TestVersecompactCommand:
 
     def test_compacts_named_channel(self, compact_env, mocker) -> None:
         """GIVEN >min_keep old events WHEN @versecompact #afnet THEN reply 'compacted'."""
-        from plugins.llm.tests.verse.conftest import insert_event_at
+        from tests.verse.conftest import insert_event_at
 
         plugin, irc, msg, store = compact_env
         self._override_registry(plugin, mocker, verse_enabled=True)
@@ -3062,7 +3062,7 @@ class TestDeloomedPluginBoot:
         """
         from llm.verse.store import VerseStore
 
-        from plugins.llm.tests.verse.conftest import insert_event_at
+        from tests.verse.conftest import insert_event_at
 
         plugin, irc, msg = plugin_env
 
