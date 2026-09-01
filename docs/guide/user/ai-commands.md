@@ -146,6 +146,22 @@ You can also just ask for a video in conversation — the bot has a tool for it 
 
 ---
 
+## `renders`
+
+Shows the video render queue and lets you take a clip back out of it.
+
+**Usage:** `@renders [cancel <id> | clear]`
+
+```
+@renders
+@renders cancel 421
+@renders clear
+```
+
+`@renders` on its own lists every clip waiting to render, oldest first, with its id, who asked for it, how long ago and its place in the line. `@renders cancel <id>` drops one of your own clips; admins can drop anyone's. `@renders clear` empties the queue and is admin-only. Cancelling asks the video server to stop the job as well; if the server declines, the clip still finishes on the box but is never posted.
+
+---
+
 ## `story`
 
 Generate an illustrated page from a short brief and post a link when it's ready. The bot picks one of two modes from your brief:

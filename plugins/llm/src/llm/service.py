@@ -7132,6 +7132,37 @@ Examples (echo → action_prompt: ""):
             content=url,
         )
 
+    def cancel_video(self, job_id: str) -> bool:
+        """Ask the box to drop a job.
+
+        Best effort: the caller deletes the delivery row either way, so a box
+        that ignores DELETE only costs GPU time, never a stray delivery. It
+        follows that this must not raise — the command that calls it has
+        already promised the user the clip is gone.
+
+        Args:
+            job_id: The video job id stashed in the pending task's request data.
+
+        Returns:
+            True when the box accepted the cancel.
+        """
+        try:
+            status, payload = self._animate_request(f"/v1/videos/{job_id}", method="DELETE")
+        except Exception as e:  # noqa: BLE001 — cancel must never raise into a command
+            self.log.warning("video cancel failed for %s: %s", job_id, str(e)[:200])
+            return False
+
+        if status in (200, 202, 204):
+            return True
+
+        self.log.warning(
+            "video cancel rejected for %s: status=%s reason=%s",
+            job_id,
+            status,
+            self._animate_error_text(payload)[:200],
+        )
+        return False
+
     def _save_video_bytes(self, video_bytes: bytes) -> str | None:
         """Publish MP4 bytes and return the public URL.
 

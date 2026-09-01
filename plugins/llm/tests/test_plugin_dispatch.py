@@ -747,6 +747,7 @@ class TestCommandRegistry:
             "code",
             "draw",
             "animate",
+            "renders",
             "story",
             "forget",
             "memories",

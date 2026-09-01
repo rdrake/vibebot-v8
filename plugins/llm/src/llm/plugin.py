@@ -36,7 +36,7 @@ from . import apikeys, limnoria_bridge, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
-from .persistence import LLMDatabase, ReminderRow, ScheduledLlmTaskRow
+from .persistence import LLMDatabase, PendingTaskRow, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
     PROFILE_ANIMATE,
     PROFILE_CHAT,
@@ -375,6 +375,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         ),
         category="generation",
         aliases=("video",),
+    ),
+    CommandInfo(
+        name="renders",
+        args="[cancel <id> | clear]",
+        description=(
+            "Show the video render queue. 'cancel <id>' drops one of your queued "
+            "clips; 'clear' empties the queue (admin only)."
+        ),
+        examples=("@renders", "@renders cancel 421", "@renders clear"),
+        category="generation",
     ),
     CommandInfo(
         name="story",
@@ -2220,6 +2230,9 @@ class LLM(callbacks.Plugin):
     # that.
     _RENDER_TYPING_INTERVAL: float = 4.0
     _RENDER_TYPING_MAX_AGE: float = 360.0
+    # Clips @renders spells out before it falls back to "+N more". The queue
+    # cap is six, so this only truncates when an operator has raised it.
+    _RENDERS_LIST_MAX: int = 6
     # Consecutive pending-task read failures the refresher tolerates before it
     # drops its holds and parks. Three ticks (~12s) rides out a transient
     # lock; a permanently closed database (a zombie refresher outliving its
@@ -7030,6 +7043,129 @@ class LLM(callbacks.Plugin):
             stop_typing()
 
     animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
+
+    def _pending_animate_rows(self) -> list[PendingTaskRow]:
+        """Clips the box still owes us, oldest first.
+
+        Same predicate as ``db.count_pending_animate`` — pending, unexpired —
+        so what @renders shows and cancels is exactly what the admission caps
+        counted. Filtered in Python off ``load_pending_tasks`` rather than
+        claimed: ``claim_due_pending_tasks`` leases its rows and would steal
+        work from the delivery poller.
+        """
+        now = time.time()
+        return [
+            r
+            for r in self.db.load_pending_tasks("animate")
+            if r.delivery_state == "pending" and r.expires_at > now
+        ]
+
+    def _cancel_animate_row(self, row: PendingTaskRow) -> bool:
+        """Drop one queued clip: tell the box, then delete the delivery row.
+
+        The row goes whether or not the box agreed. A row left behind would
+        post a clip its owner already took back, which is the failure the
+        user actually notices; a job left running only costs GPU time.
+
+        Args:
+            row: The pending animate row to drop.
+
+        Returns:
+            True when the box accepted the cancel.
+        """
+        job_id = ""
+        try:
+            job_id = str(json.loads(row.request_data or "{}").get("job_id") or "")
+        except (ValueError, AttributeError):
+            self.log.warning("renders: malformed request_data on row %s", row.id)
+
+        accepted = bool(job_id) and self.llm_service.cancel_video(job_id)
+        self.db.delete_pending_task(row.id)
+        self._render_typing_wake.set()
+        return accepted
+
+    @staticmethod
+    def _ordinal(n: int) -> str:
+        """``1`` -> ``"1st"``. Used for a clip's place in the render queue."""
+        suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix}"
+
+    def renders(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None,
+    ) -> None:
+        """[cancel <id> | clear]
+
+        Show the video render queue. 'cancel <id>' drops one of your queued
+        clips (admins can drop anyone's); 'clear' empties the queue (admin
+        only).
+
+        Examples:
+          @renders
+          @renders cancel 421
+          @renders clear
+        """
+        # Skip ZNC playback messages
+        if self._is_old_message(msg):
+            return
+
+        words = (text or "").split()
+        rows = self._pending_animate_rows()
+
+        if not words:
+            # The listing is the one reply in this feature printed verbatim
+            # rather than phrased by the model: it is a table of ids the user
+            # has to type back, and a paraphrase that renamed one would be
+            # worse than useless.
+            if not rows:
+                irc.reply(_("Nothing is rendering."))
+                return
+            now = time.time()
+            parts = []
+            for i, r in enumerate(rows[: self._RENDERS_LIST_MAX], start=1):
+                age = self.llm_service._format_duration(int(now - r.submitted_at))
+                preview = r.prompt_preview[:40] + ("…" if len(r.prompt_preview) > 40 else "")
+                parts.append(f'#{r.id} {r.nick}, {age} ago, {self._ordinal(i)}: "{preview}"')
+            if len(rows) > self._RENDERS_LIST_MAX:
+                parts.append(f"+{len(rows) - self._RENDERS_LIST_MAX} more")
+            irc.reply(" | ".join(parts))
+            return
+
+        is_admin = ircdb.checkCapability(msg.prefix, "admin")
+
+        if words[0].lower() == "clear" and len(words) == 1:
+            if not is_admin:
+                irc.reply(_("You need the 'admin' capability to clear the queue."))
+                return
+            for r in rows:
+                self._cancel_animate_row(r)
+            irc.reply(_("Cleared %d clip(s).") % len(rows))
+            return
+
+        if words[0].lower() == "cancel" and len(words) == 2 and words[1].lstrip("#").isdigit():
+            task_id = int(words[1].lstrip("#"))
+            row = next((r for r in rows if r.id == task_id), None)
+            if row is None:
+                irc.reply(_("No pending clip #%d.") % task_id)
+                return
+            caller = self._resolve_identity(irc, msg)
+            if not is_admin and not caller.matches(
+                Identity(raw_nick=row.nick, account=row.account)
+            ):
+                irc.reply(_("#%d isn't yours.") % task_id)
+                return
+            if self._cancel_animate_row(row):
+                irc.reply(_("Cancelled #%d.") % task_id)
+            else:
+                irc.reply(_("Cancelled #%d (the box kept rendering it).") % task_id)
+            return
+
+        irc.error(_("Usage: @renders [cancel <id> | clear]"))
+
+    renders = wrap(renders, [("checkCapability", "llm.animate"), optional("text")])
 
     def _animate_reference_for(
         self, irc: callbacks.Irc, text: str
