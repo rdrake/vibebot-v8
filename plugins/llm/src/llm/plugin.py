@@ -2233,6 +2233,10 @@ class LLM(callbacks.Plugin):
     # Clips @renders spells out before it falls back to "+N more". The queue
     # cap is six, so this only truncates when an operator has raised it.
     _RENDERS_LIST_MAX: int = 6
+    # Bytes of listing text before the "+N more" tail. A PRIVMSG carries a
+    # ":nick!user@host PRIVMSG #channel :" prefix and the whole line has to
+    # fit 512, so the payload gets well under that rather than being split.
+    _RENDERS_LINE_BUDGET: int = 380
     # Consecutive pending-task read failures the refresher tolerates before it
     # drops its holds and parks. Three ticks (~12s) rides out a transient
     # lock; a permanently closed database (a zombie refresher outliving its
@@ -7079,7 +7083,9 @@ class LLM(callbacks.Plugin):
         except (ValueError, AttributeError):
             self.log.warning("renders: malformed request_data on row %s", row.id)
 
-        accepted = bool(job_id) and self.llm_service.cancel_video(job_id)
+        # A row with no job id has nothing to cancel on the box, so there is
+        # no refusal to report — only a row to delete.
+        accepted = (not job_id) or self.llm_service.cancel_video(job_id)
         self.db.delete_pending_task(row.id)
         self._render_typing_wake.set()
         return accepted
@@ -7124,13 +7130,23 @@ class LLM(callbacks.Plugin):
                 irc.reply(_("Nothing is rendering."))
                 return
             now = time.time()
-            parts = []
+            parts: list[str] = []
             for i, r in enumerate(rows[: self._RENDERS_LIST_MAX], start=1):
                 age = self.llm_service._format_duration(int(now - r.submitted_at))
-                preview = r.prompt_preview[:40] + ("…" if len(r.prompt_preview) > 40 else "")
-                parts.append(f'#{r.id} {r.nick}, {age} ago, {self._ordinal(i)}: "{preview}"')
-            if len(rows) > self._RENDERS_LIST_MAX:
-                parts.append(f"+{len(rows) - self._RENDERS_LIST_MAX} more")
+                preview = r.prompt_preview[:30] + ("…" if len(r.prompt_preview) > 30 else "")
+                entry = f'#{r.id} {r.nick}, {age} ago, {self._ordinal(i)}: "{preview}"'
+                candidate = " | ".join([*parts, entry])
+                # Byte budget, not entry count: a 30-character AfterNET nick
+                # makes an entry half again as long as a short one, and the
+                # tail Limnoria parks behind @more is exactly the "+N more"
+                # count and the last ids someone wanted to read. The first
+                # entry goes in whatever it costs -- an empty listing would
+                # be worse than a long one.
+                if parts and len(candidate.encode("utf-8")) > self._RENDERS_LINE_BUDGET:
+                    break
+                parts.append(entry)
+            if len(rows) > len(parts):
+                parts.append(f"+{len(rows) - len(parts)} more")
             irc.reply(" | ".join(parts))
             return
 
@@ -7145,7 +7161,9 @@ class LLM(callbacks.Plugin):
             irc.reply(_("Cleared %d clip(s).") % len(rows))
             return
 
-        if words[0].lower() == "cancel" and len(words) == 2 and words[1].lstrip("#").isdigit():
+        # isdecimal, not isdigit: "²".isdigit() is True and int("²") raises,
+        # which would take the exception out of the command.
+        if words[0].lower() == "cancel" and len(words) == 2 and words[1].lstrip("#").isdecimal():
             task_id = int(words[1].lstrip("#"))
             row = next((r for r in rows if r.id == task_id), None)
             if row is None:

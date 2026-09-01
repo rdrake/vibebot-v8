@@ -151,9 +151,14 @@ class TestRendersList:
         irc.reply.assert_not_called()
         irc.error.assert_not_called()
 
-    def test_lists_in_submission_order_with_positions(self, renders_env) -> None:
+    def test_lists_in_submission_order_with_positions(
+        self, renders_env, mocker: MockerFixture
+    ) -> None:
         """GIVEN a mixed table WHEN @renders THEN only live animate rows, oldest first."""
         plugin, irc, msg = renders_env
+        # Frozen so the age assertion cannot drift on a slow runner. _seed
+        # reads the same patched clock, so submitted_at is exactly now - age.
+        mocker.patch("llm.plugin.time.time", return_value=time.time())
 
         first = _seed(plugin.db, nick="alice", account="alice", age=200, prompt="alice clip")
         second = _seed(plugin.db, nick="bob", account="bob", age=100, prompt="bob clip")
@@ -196,6 +201,31 @@ class TestRendersList:
         assert "clip 6" not in line
         assert "+2 more" in line
         assert line.count(" | ") == 6  # six entries, then the "+2 more" tail
+        # Short nicks and short prompts: _RENDERS_LIST_MAX is what capped
+        # this listing, not the byte budget.
+        assert len(line.encode()) <= plugin._RENDERS_LINE_BUDGET
+
+    def test_long_entries_are_cut_to_a_byte_budget(self, renders_env) -> None:
+        """GIVEN six long entries WHEN @renders THEN one IRC line, and "+N more" survives.
+
+        A 30-character nick makes an entry half again as long as a short one.
+        Six of those overflow 512 bytes once the PRIVMSG prefix is counted,
+        and Limnoria would park the tail -- the "+N more" count and the last
+        ids -- behind @more, which is the part people came for.
+        """
+        plugin, irc, msg = renders_env
+
+        for i in range(6):
+            _seed(plugin.db, nick="n" * 30, prompt="p" * 60, age=800 - i)
+
+        plugin.renders(irc, msg, [])
+
+        line = _reply(irc)
+        assert len(line.encode()) <= 400
+        parts = line.split(" | ")
+        shown = len(parts) - 1  # the last part is the "+N more" tail
+        assert parts[-1] == f"+{6 - shown} more"
+        assert 1 <= shown < 6, "the budget should have truncated, but shown something"
 
     def test_long_prompt_is_cut(self, renders_env) -> None:
         """GIVEN a long prompt WHEN @renders THEN it is elided at 40 characters."""
@@ -206,8 +236,8 @@ class TestRendersList:
         plugin.renders(irc, msg, [])
 
         line = _reply(irc)
-        assert f'"{_PROMPT[:40]}…"' in line
-        assert "moped" not in line
+        assert f'"{_PROMPT[:30]}…"' in line
+        assert "leather" not in line
 
 
 class TestRendersCancel:
@@ -259,7 +289,12 @@ class TestRendersCancel:
     def test_malformed_request_data_still_deletes_the_row(
         self, renders_env, mocker: MockerFixture
     ) -> None:
-        """GIVEN no job id on the row WHEN cancelling THEN the row still goes."""
+        """GIVEN no job id on the row WHEN cancelling THEN a plain cancel.
+
+        There is nothing to cancel on the box, so there is no refusal to
+        report — saying "the box kept rendering it" would name a call that
+        was never made.
+        """
         plugin, irc, msg = renders_env
         _alice(plugin, mocker)
 
@@ -269,7 +304,7 @@ class TestRendersCancel:
 
         plugin.llm_service.cancel_video.assert_not_called()
         assert plugin.db.load_pending_tasks("animate") == []
-        assert "kept rendering" in _reply(irc)
+        assert _reply(irc) == f"Cancelled #{task_id}."
 
     def test_other_users_row_is_refused_for_non_admin(
         self, renders_env, mocker: MockerFixture
@@ -339,6 +374,20 @@ class TestRendersCancel:
         assert len(plugin.db.load_pending_tasks("animate")) == 1
         assert _reply(irc) == f"No pending clip #{task_id}."
 
+    @pytest.mark.parametrize("bad_id", ["abc", "\u00b2", "12abc", ""])
+    def test_non_decimal_id_gets_the_usage_line(self, renders_env, bad_id: str) -> None:
+        """GIVEN a non-decimal id WHEN cancelling THEN the usage line, not a traceback.
+
+        "\u00b2".isdigit() is True and int("\u00b2") raises, so isdigit here would
+        take a ValueError out of the command.
+        """
+        plugin, irc, msg = renders_env
+
+        plugin.renders(irc, msg, ["cancel", bad_id] if bad_id else ["cancel"])
+
+        irc.reply.assert_not_called()
+        assert "Usage: @renders" in irc.error.call_args.args[0]
+
     def test_bad_usage_errors(self, renders_env) -> None:
         """GIVEN nonsense WHEN @renders THEN the usage line."""
         plugin, irc, msg = renders_env
@@ -348,6 +397,29 @@ class TestRendersCancel:
         irc.reply.assert_not_called()
         irc.error.assert_called_once()
         assert "Usage: @renders" in irc.error.call_args.args[0]
+
+
+class TestRendersCapability:
+    def test_caller_without_llm_animate_is_refused(
+        self, renders_env, mocker: MockerFixture
+    ) -> None:
+        """GIVEN no llm.animate WHEN @renders cancel THEN the wrap gate stops it.
+
+        Locks the gate in: drop the checkCapability converter and this goes
+        red, because @renders reaches persisted, account-owned rows.
+        """
+        plugin, irc, msg = renders_env
+        _alice(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
+
+        task_id = _seed(plugin.db, nick="alice", account="alice")
+
+        plugin.renders(irc, msg, ["cancel", str(task_id)])
+
+        assert len(plugin.db.load_pending_tasks("animate")) == 1
+        plugin.llm_service.cancel_video.assert_not_called()
+        irc.reply.assert_not_called()
+        irc.errorNoCapability.assert_called_once_with("llm.animate", Raise=True)
 
 
 class TestRendersClear:
