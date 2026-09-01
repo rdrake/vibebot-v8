@@ -417,6 +417,13 @@ def plugin_env(mocker: MockerFixture):
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
+    # An unconfigured mock database is an EMPTY database, not one holding a
+    # MagicMock's worth of queued clips. The animate admission caps compare
+    # these against an int, so the bare mock's auto-attribute would raise
+    # TypeError in every test that submits a clip without caring about caps.
+    plugin.db.count_pending_animate.return_value = 0
+    plugin.db.count_pending_animate_for.return_value = 0
+
     # The typing registry is real even though the service is mocked: the
     # render refresher's whole job is to reconcile a hold group, and a mock
     # would assert only that a call happened. Sends still land on the mocked
@@ -558,6 +565,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "animateFlowShift": 12,
         "animateAudioFlowShift": 3,
         "animateTimeout": 60,
+        # Admission caps and the wait estimate (mirrors config.py defaults).
+        "animateMaxPendingPerUser": 2,
+        "animateMaxPending": 6,
+        "animateRenderSeconds": 135,
         # Expiry (pending task retry)
         "askExpiry": 60,
         "codeExpiry": 60,

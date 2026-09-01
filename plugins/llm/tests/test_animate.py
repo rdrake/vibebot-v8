@@ -21,8 +21,13 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
+from llm.service import VideoResult
 
-from .conftest import make_completion_response, make_tool_call
+from .conftest import (
+    make_completion_response,
+    make_registry_side_effect,
+    make_tool_call,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,6 +50,11 @@ def animate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _service(make_service: Callable[..., tuple[LLMService, Mock]], **overrides: Any):
     overrides.setdefault("animateApiUrl", _URL)
     return make_service(**overrides)
+
+
+def _queued_result() -> VideoResult:
+    """What a successful submission looks like coming back from the service."""
+    return VideoResult(content="Queued at position 1 (0 ahead).", job_id="job-1", queued=True)
 
 
 class TestAnimateAvailability:
@@ -1644,3 +1654,207 @@ class TestAnimateDeliveryLine:
         assert pm_line == f'rdrake: your video is ready! "a corgi riding a unicorn" → {self._URL}'
         # ...while the channel path is genuinely constrained by it.
         assert chan_line == f"rdrake: your video is ready! → {self._URL}"
+
+
+class TestAnimateAdmission:
+    """Two caps, checked before anything reaches the box.
+
+    Nine clips arrived in eight minutes on 2026-08-31 and two expired
+    unrendered. The per-user cap stops one person stacking requests seconds
+    apart; the global one bounds the longest wait anyone is promised, because
+    the box renders one clip at a time.
+
+    The refusals are tool results, not replies: code states the fact, the
+    model phrases it under the channel's prompt.
+    """
+
+    def _submit(self, plugin, irc, msg, **overrides):
+        kwargs = {"nick": "alice", "channel": "#chan", "account": "alice"}
+        kwargs.update(overrides)
+        return plugin._submit_video(irc, msg, "a corgi", **kwargs)
+
+    def test_per_user_cap_refuses_third_clip(self, plugin_env, mocker) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=2)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=2)
+        submit = mocker.patch.object(plugin.llm_service, "video_generation")
+
+        result = self._submit(plugin, irc, msg)
+
+        assert result.error
+        assert "2" in result.content
+        assert "limit 2" in result.content
+        submit.assert_not_called()
+
+    def test_per_user_cap_counts_the_asker_not_the_bot(self, plugin_env, mocker) -> None:
+        """The cap is per identity: it must ask the database about this user."""
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        mine = mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=2)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
+        mocker.patch.object(plugin.llm_service, "video_generation")
+
+        self._submit(plugin, irc, msg, nick="alice", account="alice")
+
+        # display_nick comes from the message, not the account-resolved nick.
+        assert mine.call_args.kwargs == {"account": "alice", "nick": msg.nick}
+
+    def test_owner_skips_per_user_cap_but_not_global(self, plugin_env, mocker) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="owner")
+        per_user = mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=5)
+        count_all = mocker.patch.object(plugin.db, "count_pending_animate", return_value=6)
+        submit = mocker.patch.object(plugin.llm_service, "video_generation")
+
+        result = self._submit(plugin, irc, msg, nick="rdrake", account="rdrake")
+
+        assert result.error
+        assert "full" in result.content
+        submit.assert_not_called()
+        per_user.assert_not_called()
+        count_all.assert_called_once()
+
+    def test_admin_also_skips_the_per_user_cap(self, plugin_env, mocker) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="admin")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=5)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
+        submit = mocker.patch.object(
+            plugin.llm_service, "video_generation", return_value=_queued_result()
+        )
+
+        result = self._submit(plugin, irc, msg, nick="rdrake", account="rdrake")
+
+        assert not result.error
+        submit.assert_called_once()
+
+    def test_trusted_is_not_exempt_from_the_per_user_cap(self, plugin_env, mocker) -> None:
+        """Exemption stops at admin: trusted still queues behind the cap."""
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="trusted")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=2)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
+        submit = mocker.patch.object(plugin.llm_service, "video_generation")
+
+        result = self._submit(plugin, irc, msg)
+
+        assert result.error
+        submit.assert_not_called()
+
+    def test_zero_disables_a_cap(self, plugin_env, mocker) -> None:
+        """0 means off — both counts are well past the shipped defaults."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"animateMaxPendingPerUser": 0, "animateMaxPending": 0}
+        )
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        per_user = mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=99)
+        count_all = mocker.patch.object(plugin.db, "count_pending_animate", return_value=99)
+        submit = mocker.patch.object(
+            plugin.llm_service, "video_generation", return_value=_queued_result()
+        )
+
+        result = self._submit(plugin, irc, msg)
+
+        assert not result.error
+        submit.assert_called_once()
+        # Disabled means not even queried.
+        per_user.assert_not_called()
+        count_all.assert_not_called()
+
+    def test_admitted_request_reaches_video_generation(self, plugin_env, mocker) -> None:
+        """Under both caps, the request goes through untouched and typing wakes."""
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=1)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=5)
+        submit = mocker.patch.object(
+            plugin.llm_service, "video_generation", return_value=_queued_result()
+        )
+        plugin._render_typing_wake.clear()
+
+        result = self._submit(plugin, irc, msg)
+
+        assert result.queued
+        assert submit.call_args.args[0] == "a corgi"
+        assert plugin._render_typing_wake.is_set()
+
+
+class TestQueuePositionAck:
+    """The ack tells you where you stand, because nobody could see the queue.
+
+    Depth is read before the row is stashed, so a clip is never counted as
+    ahead of itself, and the estimate assumes every clip ahead takes the full
+    render time — the box serialises, so that is the honest upper bound.
+    """
+
+    def _submit(self, service, mocker, *, ahead: int):
+        mocker.patch.object(service, "_animate_request", return_value=(200, {"id": "job-1"}))
+        mocker.patch.object(service, "_stash_timeout", return_value=True)
+        service.plugin.db.count_pending_animate.return_value = ahead
+        return service.video_generation(
+            "a corgi", nick="alice", reply_target="#chan", is_channel=True
+        )
+
+    def test_ack_reports_position_ahead_and_wait(self, make_service, animate_env, mocker) -> None:
+        service, _ = _service(make_service)
+
+        result = self._submit(service, mocker, ahead=2)
+
+        assert not result.error
+        assert result.queued
+        assert "position 3" in result.content
+        assert "2 ahead" in result.content
+        assert "6m 45s" in result.content
+        assert "http" not in result.content
+
+    def test_first_in_queue_says_so(self, make_service, animate_env, mocker) -> None:
+        service, _ = _service(make_service)
+
+        result = self._submit(service, mocker, ahead=0)
+
+        assert "position 1 (0 ahead)" in result.content
+        assert "2m 15s" in result.content
+
+    def test_depth_is_read_before_the_row_is_stashed(
+        self, make_service, animate_env, mocker
+    ) -> None:
+        """Counting after the stash would make every clip one place worse."""
+        service, _ = _service(make_service)
+        calls: list[str] = []
+        mocker.patch.object(service, "_animate_request", return_value=(200, {"id": "job-1"}))
+        mocker.patch.object(
+            service, "_stash_timeout", side_effect=lambda **_kw: calls.append("stash") or True
+        )
+        service.plugin.db.count_pending_animate.side_effect = lambda _now: (
+            calls.append("count") or 1
+        )
+
+        service.video_generation("a corgi", nick="alice", reply_target="#chan", is_channel=True)
+
+        assert calls == ["count", "stash"]
+
+    def test_render_seconds_comes_from_the_registry(
+        self, make_service, animate_env, mocker
+    ) -> None:
+        service, _ = _service(make_service, animateRenderSeconds=300)
+
+        result = self._submit(service, mocker, ahead=1)
+
+        assert "10m" in result.content
+
+    def test_a_database_blip_still_queues_the_clip(self, make_service, animate_env, mocker) -> None:
+        """The count is decoration; losing it must not fail a live submission."""
+        service, _ = _service(make_service)
+        mocker.patch.object(service, "_animate_request", return_value=(200, {"id": "job-1"}))
+        mocker.patch.object(service, "_stash_timeout", return_value=True)
+        service.plugin.db.count_pending_animate.side_effect = RuntimeError("database is locked")
+
+        result = service.video_generation(
+            "a corgi", nick="alice", reply_target="#chan", is_channel=True
+        )
+
+        assert result.queued
+        assert not result.error
+        assert "position 1 (0 ahead)" in result.content

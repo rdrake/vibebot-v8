@@ -2714,3 +2714,88 @@ class TestActiveAnimateTargets:
         self._animate_row(test_db, "#chan", now, nick="alice")
         self._animate_row(test_db, "#chan", now, nick="bob")
         assert test_db.active_animate_targets(now, 360) == ["#chan"]
+
+
+class TestPendingAnimateCounts:
+    """Queue depth for the admission caps and the queue-position ack.
+
+    Same predicate as ``active_animate_targets`` minus its age window: a row
+    is ``pending`` while the box still owes us a clip, and an expired row is
+    about to be reported as expired rather than rendered.
+    """
+
+    def _save(
+        self,
+        db: LLMDatabase,
+        *,
+        nick: str,
+        account: str | None,
+        submitted_at: float,
+        expires_at: float,
+        task_type: str = "animate",
+    ) -> int:
+        return db.save_pending_task(
+            task_type=task_type,
+            nick=nick,
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="p",
+            model="m",
+            request_data="{}",
+            submitted_at=submitted_at,
+            expires_at=expires_at,
+            next_attempt_at=submitted_at,
+            account=account,
+        )
+
+    def test_counts_only_pending_unexpired_animate_rows(self, test_db: LLMDatabase) -> None:
+        now = 1000.0
+        self._save(test_db, nick="a", account="a", submitted_at=now - 10, expires_at=now + 100)
+        self._save(test_db, nick="b", account="b", submitted_at=now - 5, expires_at=now + 100)
+        self._save(test_db, nick="c", account="c", submitted_at=now - 500, expires_at=now - 1)
+        self._save(
+            test_db,
+            nick="d",
+            account="d",
+            submitted_at=now - 5,
+            expires_at=now + 100,
+            task_type="draw",
+        )
+        ready_id = self._save(
+            test_db, nick="e", account="e", submitted_at=now - 5, expires_at=now + 100
+        )
+        test_db.update_task_for_delivery(ready_id, delivery_state="ready", result_payload="{}")
+        assert test_db.count_pending_animate(now) == 2
+
+    def test_per_user_count_matches_on_account_case_insensitively(
+        self, test_db: LLMDatabase
+    ) -> None:
+        now = 1000.0
+        self._save(
+            test_db, nick="Alice", account="alice", submitted_at=now - 1, expires_at=now + 100
+        )
+        self._save(
+            test_db, nick="alice_", account="ALICE", submitted_at=now - 1, expires_at=now + 100
+        )
+        self._save(test_db, nick="bob", account="bob", submitted_at=now - 1, expires_at=now + 100)
+        assert test_db.count_pending_animate_for(now, account="Alice", nick="whatever") == 2
+
+    def test_per_user_count_falls_back_to_nick_without_account(self, test_db: LLMDatabase) -> None:
+        now = 1000.0
+        self._save(test_db, nick="Carol", account=None, submitted_at=now - 1, expires_at=now + 100)
+        self._save(test_db, nick="carol", account=None, submitted_at=now - 1, expires_at=now + 100)
+        self._save(
+            test_db, nick="carol", account="someone", submitted_at=now - 1, expires_at=now + 100
+        )
+        assert test_db.count_pending_animate_for(now, account=None, nick="CAROL") == 2
+
+    def test_per_user_count_excludes_expired_and_delivered(self, test_db: LLMDatabase) -> None:
+        """The per-user cap must free up as clips land, not just as they expire."""
+        now = 1000.0
+        self._save(test_db, nick="dave", account="dave", submitted_at=now - 1, expires_at=now + 100)
+        self._save(test_db, nick="dave", account="dave", submitted_at=now - 9, expires_at=now - 1)
+        done = self._save(
+            test_db, nick="dave", account="dave", submitted_at=now - 5, expires_at=now + 100
+        )
+        test_db.update_task_for_delivery(done, delivery_state="ready", result_payload="{}")
+        assert test_db.count_pending_animate_for(now, account="dave", nick="dave") == 1

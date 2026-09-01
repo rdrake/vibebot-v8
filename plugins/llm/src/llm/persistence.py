@@ -1407,6 +1407,67 @@ class LLMDatabase:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
+    _PENDING_ANIMATE_WHERE = (
+        "task_type = 'animate' AND delivery_state = 'pending' AND expires_at > ?"
+    )
+
+    def count_pending_animate(self, now: float) -> int:
+        """Clips submitted and not yet rendered — the box's queue depth.
+
+        Same predicate as ``active_animate_targets`` minus its age window:
+        ``pending`` means the box has not handed the clip back yet, and an
+        expired row is about to be reported as such, not rendered.
+
+        Read-only for the same reason ``active_animate_targets`` is:
+        ``claim_due_pending_tasks`` leases the rows it returns, so counting
+        with it would steal work from the pending-task poller.
+
+        Args:
+            now: Current epoch seconds; rows expiring before it don't count.
+
+        Returns:
+            Number of clips still waiting on the box.
+        """
+        conn = self._connect()
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE}",
+            (now,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def count_pending_animate_for(self, now: float, *, account: str | None, nick: str) -> int:
+        """One user's share of ``count_pending_animate``.
+
+        Identity policy matches the rest of the plugin: by account when the
+        caller has one, by nick otherwise, both case-insensitive. Rows stashed
+        under an account are deliberately invisible to a nick-only lookup —
+        someone who signs out mid-queue gets a fresh allowance rather than
+        another user's rows counted against them.
+
+        Args:
+            now: Current epoch seconds; rows expiring before it don't count.
+            account: Resolved account name, or None if unidentified.
+            nick: IRC nick, used only when there is no account.
+
+        Returns:
+            Number of that user's clips still waiting on the box.
+        """
+        conn = self._connect()
+        if account:
+            sql = (
+                f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE} "
+                "AND account IS NOT NULL AND lower(account) = lower(?)"
+            )
+            params: tuple = (now, account)
+        else:
+            sql = (
+                f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE} "
+                "AND (account IS NULL OR account = '') AND lower(nick) = lower(?)"
+            )
+            params = (now, nick)
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
     # ------------------------------------------------------------------
     # Usage migration
     # ------------------------------------------------------------------

@@ -281,9 +281,11 @@ ANIMATE_SYSTEM_PROMPT = (
     "one short line. They do not apply to the prompt you pass to "
     "generate_video: that argument is the long one, and shortening it is the "
     "one mistake that costs the most.\n"
-    "- The clip does not exist yet: the tool queues it and the finished video "
-    "is posted later. Say it is rendering in one short sentence. Never invent "
-    "a link and never claim it is ready."
+    "- The clip does not exist yet: the tool queues it and reports the queue "
+    "position and estimated wait. Pass both on in one short sentence in your "
+    "own words. If the tool refuses (queue full, too many waiting), say so and "
+    "why in one short sentence — nothing was queued. Never invent a link and "
+    "never claim it is ready."
 )
 
 # Layered into the overlay slot when @animate carries a reference image, next

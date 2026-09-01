@@ -323,6 +323,9 @@ When an API call times out, the bot retries in the background for a bounded wind
 | `animateAudioFlowShift` | global | `3` | Flow-matching shift for the audio track. Ignored when `animateAudio` is off |
 | `animateTimeout` | global | `60` | Timeout for individual HTTP calls to the video server. **Not** the generation budget — that is `animateExpiry` |
 | `animateExpiry` | global | `1800` | Seconds to keep polling a submitted job before reporting it expired. Generous on purpose: a queued job can wait a long time before it starts |
+| `animateMaxPendingPerUser` | global | `2` | How many clips one person may have waiting to render at once. A request past this is refused before anything is submitted. Owner and admin are exempt. `0` disables the per-user cap |
+| `animateMaxPending` | global | `6` | How many clips may be waiting to render across the whole bot. The box renders one at a time, so this bounds the longest wait anyone is promised. Applies to everyone. `0` disables |
+| `animateRenderSeconds` | global | `135` | Seconds one clip takes to render at the configured size, duration and steps. Only used to estimate the wait quoted when a clip is queued; measure it on the box after changing `animateDuration` or `animateSteps` |
 
 Clips are published to `imageUploadUrl` when one is configured — the reference host accepts MP4 on the same `images[]` field and files it as `vid_*.mp4` — and fall back to local storage otherwise, including when a clip exceeds the 10 MB upload ceiling.
 

@@ -434,7 +434,9 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                 "takes a minute or two, so this does NOT return a URL — it queues "
                 "the job and the finished clip is posted to the channel "
                 "automatically when it is ready. Tell the user it is being "
-                "rendered; do not claim it is ready and never invent a link to it."
+                "rendered; do not claim it is ready and never invent a link to it. "
+                "Returns the queue position and estimated wait, or a refusal when "
+                "the queue is full; relay whichever you get."
             ),
             "parameters": {
                 "type": "object",

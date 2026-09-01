@@ -2423,6 +2423,30 @@ class LLMService:
 
         return None
 
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        """Coarse human duration: ``"6m 45s"``, ``"2h 5m"``, ``"0s"``.
+
+        Shared by the uptime line and the animate wait estimate so the bot
+        says durations one way. Trailing zero units are dropped, and zero
+        itself still renders ``"0s"`` rather than an empty string.
+        """
+        days, remainder = divmod(max(0, int(seconds)), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, secs = divmod(remainder, 60)
+
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if secs or not parts:
+            parts.append(f"{secs}s")
+
+        return " ".join(parts)
+
     def _get_uptime_info(self) -> str | None:
         """Get bot uptime information.
 
@@ -2437,22 +2461,7 @@ class LLMService:
         if uptime_seconds < 0:
             return None
 
-        # Build human-readable duration
-        days, remainder = divmod(uptime_seconds, 86400)
-        hours, remainder = divmod(remainder, 3600)
-        minutes, seconds = divmod(remainder, 60)
-
-        parts = []
-        if days:
-            parts.append(f"{days}d")
-        if hours:
-            parts.append(f"{hours}h")
-        if minutes:
-            parts.append(f"{minutes}m")
-        if seconds or not parts:
-            parts.append(f"{seconds}s")
-
-        return " ".join(parts)
+        return self._format_duration(uptime_seconds)
 
     def send_reaction(self, irc: Irc, target: str, msgid: str, emoji: str) -> bool:
         """Send an IRCv3 +draft/react client tag anchored to a message.
@@ -6984,6 +6993,16 @@ Examples (echo → action_prompt: ""):
                 model=model,
             )
 
+        # Read the depth BEFORE stashing, or this clip counts itself as one of
+        # the clips ahead of it. Decoration, not a precondition: a locked
+        # database must not sink a job already running on the box, so a failure
+        # degrades to "position 1" rather than aborting the submission.
+        try:
+            ahead = max(0, int(self.plugin.db.count_pending_animate(submitted_at)))
+        except Exception as e:
+            self.log.warning("could not read animate queue depth: %s", e)
+            ahead = 0
+
         stashed = self._stash_timeout(
             task_type="animate",
             nick=nick,
@@ -7002,8 +7021,17 @@ Examples (echo → action_prompt: ""):
             msg = _("Error: video job submitted but could not be tracked for delivery.")
             return VideoResult(content=msg, job_id=job_id, error=msg)
 
+        # The box renders one clip at a time, so every clip ahead costs a full
+        # render before this one starts — the estimate is the honest ceiling.
+        per_clip = int(self.plugin.registryValue("animateRenderSeconds") or 135)
+        position = ahead + 1
+        wait = self._format_duration(position * per_clip)
         return VideoResult(
-            content=_("Rendering your video — I'll post the link here when it's ready."),
+            content=_(
+                "Queued at position %d (%d ahead), estimated wait about %s. "
+                "The finished clip will be posted here."
+            )
+            % (position, ahead, wait),
             job_id=job_id,
             queued=True,
             model=model,

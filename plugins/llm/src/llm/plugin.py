@@ -5314,6 +5314,12 @@ class LLM(callbacks.Plugin):
                 reference = self.llm_service.fetch_reference_image(url)
         if not prompt.strip():
             prompt = _ANIMATE_DEFAULT_MOTION
+        rejection = self._animate_admission(irc, msg, account=account, nick=display_nick)
+        if rejection:
+            self.log.info(
+                "animate admission refused: nick=%s reason=%s", display_nick, rejection[:80]
+            )
+            return VideoResult(content=rejection, error=rejection)
         result = self.llm_service.video_generation(
             prompt,
             nick=display_nick,
@@ -5330,6 +5336,54 @@ class LLM(callbacks.Plugin):
             # rendering and typing would be a lie.
             self._render_typing_wake.set()
         return result
+
+    def _animate_admission(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        *,
+        account: str | None,
+        nick: str,
+    ) -> str | None:
+        """Refuse a clip before it is submitted when the queue is too deep.
+
+        Returns a factual line for the model to relay, or None to admit.
+        The text is a tool result, not a reply: the model phrases it under
+        the channel's prompt and @instruct rules like every other answer.
+
+        Two caps. The per-user one stops one person stacking requests
+        seconds apart (owner and admin are exempt, like rate limits). The
+        global one bounds the longest wait anyone is promised, because the
+        box renders one clip at a time — and it applies to everyone.
+
+        Args:
+            irc: IRC connection, for the capability lookup behind the tier.
+            msg: Message being served, for the same lookup.
+            account: Resolved account name, or None if unidentified.
+            nick: IRC nick to count under and to name in the refusal.
+
+        Returns:
+            A refusal to hand back as the tool result, or None to proceed.
+        """
+        now = time.time()
+        per_user = int(self.registryValue("animateMaxPendingPerUser") or 0)
+        if per_user and self._resolve_tier(irc, msg) not in ("owner", "admin"):
+            mine = self.db.count_pending_animate_for(now, account=account, nick=nick)
+            if mine >= per_user:
+                return (
+                    f"Not queued: {nick} already has {mine} video(s) waiting to render "
+                    f"(limit {per_user} per person). Tell them to wait for one to finish "
+                    "before asking for another."
+                )
+        cap = int(self.registryValue("animateMaxPending") or 0)
+        if cap:
+            total = self.db.count_pending_animate(now)
+            if total >= cap:
+                return (
+                    f"Not queued: the render queue is full ({total} videos waiting, "
+                    f"limit {cap}). Tell them to try again in a few minutes."
+                )
+        return None
 
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.

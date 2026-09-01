@@ -473,6 +473,40 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "animateMaxPendingPerUser",
+    registry.NonNegativeInteger(
+        2,
+        _("""How many clips one person may have waiting to render at once.
+        A request past this is refused before anything is submitted. Owner
+        and admin are exempt. 0 disables the per-user cap."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateMaxPending",
+    registry.NonNegativeInteger(
+        6,
+        _("""How many clips may be waiting to render across the whole bot.
+        The video box renders one at a time, so this bounds the longest
+        wait anyone is promised. Applies to everyone. 0 disables."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "animateRenderSeconds",
+    registry.PositiveInteger(
+        135,
+        _("""Seconds one clip takes to render at the configured size, duration
+        and steps. Only used to estimate the wait quoted when a clip is
+        queued; measure it on the box after changing animateDuration or
+        animateSteps."""),
+    ),
+)
+
 # ============================================================================
 # Memory Extraction
 # ============================================================================
