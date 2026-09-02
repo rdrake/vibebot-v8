@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Deliver stashed results to the requester, not to the bot (`pm`)
 - Let the planner carry spoken words, so audio stops babbling (`animate`)
 - Let the model edit canon instead of duplicating it (`verse`)
 - XAI renamed grok-imagine-image-pro to -quality at $0.05 (`cost`)

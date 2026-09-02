@@ -1803,6 +1803,58 @@ class TestAnimateAdmission:
         assert result.message == refusal
 
 
+class TestPrivateMessageTarget:
+    """A clip asked for in PM has to come back to the person who asked.
+
+    ``msg.args[0]`` is the PRIVMSG recipient, which in a query is the BOT's own
+    nick. Stashing that sends the finished clip to the bot minutes later: the
+    job renders, @renders lists it, and the requester sees nothing at all.
+    """
+
+    def _pm(self, msg):
+        msg.args = ("testbot", "@animate a corgi")
+        msg.channel = None
+        return msg
+
+    def test_submit_stashes_the_requester_not_the_bot(self, plugin_env, mocker) -> None:
+        plugin, irc, msg = plugin_env
+        self._pm(msg)
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=0)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
+        submit = mocker.patch.object(plugin.llm_service, "video_generation")
+
+        plugin._submit_video(irc, msg, "a corgi", nick="testnick", channel="testbot", account=None)
+
+        assert submit.call_args.kwargs["reply_target"] == "testnick"
+        assert submit.call_args.kwargs["is_channel"] is False
+
+    def test_channel_target_is_untouched(self, plugin_env, mocker) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        mocker.patch.object(plugin.db, "count_pending_animate_for", return_value=0)
+        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
+        submit = mocker.patch.object(plugin.llm_service, "video_generation")
+
+        plugin._submit_video(irc, msg, "a corgi", nick="testnick", channel="#test", account=None)
+
+        assert submit.call_args.kwargs["reply_target"] == "#test"
+        assert submit.call_args.kwargs["is_channel"] is True
+
+    def test_stash_context_helper_agrees(self, mocker) -> None:
+        """Every other stashed task type (draw, code, ask) goes through here."""
+        from llm.service import _msg_stash_context
+
+        msg = mocker.MagicMock()
+        msg.nick = "testnick"
+        msg.args = ("testbot", "hello")
+        msg.server_tags = {}
+
+        nick, reply_target, is_channel, _account = _msg_stash_context(msg)
+
+        assert (nick, reply_target, is_channel) == ("testnick", "testnick", False)
+
+
 class TestQueuePositionAck:
     """The ack tells you where you stand, because nobody could see the queue.
 

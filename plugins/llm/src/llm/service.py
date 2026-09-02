@@ -1323,6 +1323,12 @@ def _msg_stash_context(msg: IrcMsg | None) -> tuple[str, str, bool, str | None]:
     nick = msg.nick or ""
     reply_target = msg.args[0] if msg.args else ""
     is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
+    if reply_target and not is_channel:
+        # In a PM, args[0] is the BOT's own nick — it is the PRIVMSG recipient,
+        # not the person who asked. Stashing that delivers the finished clip to
+        # the bot itself, which is silence from the requester's side, so the
+        # sender's nick is the only correct PM target.
+        reply_target = nick or reply_target
     return nick, reply_target, is_channel, account_from_server_tags(msg)
 
 

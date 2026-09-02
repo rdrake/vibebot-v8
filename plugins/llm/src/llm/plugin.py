@@ -5320,6 +5320,13 @@ class LLM(callbacks.Plugin):
         """
         reply_target = msg.args[0] if msg.args else ""
         display_nick = getattr(msg, "nick", "") or nick
+        if reply_target and not ircutils.isChannel(reply_target):
+            # PM: args[0] is the bot's own nick, so the clip would be delivered
+            # to the bot minutes later and the requester would see nothing at
+            # all — the job still renders and still shows in @renders, which is
+            # exactly how this looked from the outside. Same rule as
+            # ``_msg_stash_context``.
+            reply_target = display_nick or reply_target
         # Strip URLs from the prompt whether or not one becomes the reference:
         # the video model renders stray text on screen, so a URL the planner
         # copied through would end up in the picture.
@@ -8158,6 +8165,9 @@ class LLM(callbacks.Plugin):
         server_tags = getattr(msg, "server_tags", None) or {}
         msgid = server_tags.get("msgid")
         target = msg.args[0] if msg.args else ""
+        if target and not ircutils.isChannel(target):
+            # PM: react to the sender, not to the bot's own nick in args[0].
+            target = getattr(msg, "nick", "") or target
         if not msgid or not target:
             self.log.info(
                 "react_skipped emoji=%s reason=%s server_tag_keys=%s target=%r",
