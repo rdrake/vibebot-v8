@@ -3,13 +3,13 @@
 AI on IRC. Ask questions, generate code, create images, and hold conversations with large language models without leaving your IRC client.
 
 ```
-<rdrake> @ask What causes the northern lights?
+<alice> @ask What causes the northern lights?
 <VibeBot> The northern lights (aurora borealis) happen when charged particles
           from the sun collide with gases in Earth's atmosphere. The particles
           follow magnetic field lines toward the poles, exciting nitrogen and
           oxygen molecules that release photons as they return to their ground
           state. Green comes from oxygen, purple and blue from nitrogen.
-<rdrake> @ask How far south can you see them?
+<alice> @ask How far south can you see them?
 <VibeBot> During strong solar storms, auroras have been visible as far south
           as Texas and Florida (around 30°N). Typically you need to be above
           50°N for regular sightings: northern Canada, Iceland, Scandinavia,

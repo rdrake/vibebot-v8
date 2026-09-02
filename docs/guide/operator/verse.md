@@ -187,7 +187,7 @@ Editors also get canon edits in-band: when a user holding `llm.verse.edit` trigg
 
 `verseStyleExemplars` holds a short list of curated lines that show the model what good verse output looks like in this channel. The injector enforces a hard budget: at most 5 lines and 600 characters in total, with sanitisation that drops lines mimicking prompt structure. Curate 3 or 4 short lines.
 
-Populate the list offline with the taste miner, which scans channel logs for lines that fc42 re-pasted or praised. His nick is hard-coded (any nick starting with `fc42`, which covers `fc42_` and `fc42|away`) with no flag to point it elsewhere, so on a channel without him the miner returns nothing:
+Populate the list offline with the taste miner, which scans channel logs for lines that one designated taste-setter re-pasted or praised. That nick is hard-coded in `taste_mine.py` as a prefix match, so its `_away` and `|away` variants count too, and there is no flag to point it elsewhere. On a channel without that person the miner returns nothing:
 
 ```bash
 python -m llm.verse.taste_mine <logfiles...> --verse-dir data/verse --channel "#afternet" --out taste_candidates.md
@@ -200,7 +200,7 @@ Review the candidates by hand, then set the survivors as a JSON list on the chan
 Two signals tell you whether verse output lands:
 
 - **Reactions.** With `verseReactionCaptureEnabled` (default on), the bot records IRCv3 emoji reactions to its verse lines into `data/verse/reactions.jsonl`. Capture is measurement-only; the bot never replies to a reaction.
-- **Landing-rate report.** The offline `taste_report` CLI counts how often fc42 reacts to verse output, with his own message volume in the same logs as the denominator. Log filenames must carry a `YYYY-MM-DD`; the rest are skipped. Pass `--reactions` to append the explicit thumbs section:
+- **Landing-rate report.** The offline `taste_report` CLI counts how often that same taste-setter reacts to verse output, with their own message volume in the same logs as the denominator. Log filenames must carry a `YYYY-MM-DD`; the rest are skipped. Pass `--reactions` to append the explicit thumbs section:
 
 ```bash
 python -m llm.verse.taste_report <logfiles...> --verse-dir data/verse --channel "#afternet" \

@@ -225,7 +225,7 @@ Two bots that answer each other never get bored, so replies to another bot are c
 | `botLoopWindow` | channel | `300` | Seconds of quiet after which that bot's count resets |
 | `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host |
 
-A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, `LarryBot` and `Ender` among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
+A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, long-running service bots among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
 
 The `+B` mode is opt-in, and the bot most likely to loop with yours may not set it — `grok` answers on `Hxz` from `grok.Bot.AfterNET.Org`. So the sender's host counts too: AfterNET only issues `*.Bot.AfterNET.Org` to registered bots, and across a full day of channel logs the only nicks on one were `grok`, `grook5`, and `vibebot` itself. The host is checked first because it is free and decides on the very first line, with no WHO round trip.
 
@@ -255,7 +255,7 @@ Generated images then live on that host instead of under `httpRoot`, and storybo
 
 Every failure falls back to local storage: endpoint unreachable, upload rejected, image over 10 MB, or a reply naming a URL that is not an image on the configured host. An outage costs a slower draw, nothing more.
 
-[paste.boxlabs.uk/img/](https://paste.boxlabs.uk/img/) is Eck's uploader, the host this contract follows, and it needs no key. Ask the host's owner before pointing the bot at somebody else's uploader.
+[paste.boxlabs.uk/img/](https://paste.boxlabs.uk/img/) is an externally operated uploader, the host this contract follows, and it needs no key. Ask the host's owner before pointing the bot at somebody else's uploader.
 
 ## Limnoria tool bridge
 

@@ -124,3 +124,49 @@ def test_prefix_byte_identical_when_only_message_changes(store_with_avatar):
         store, avatar_id, "p", roster_max_chars=4000, message_text="yo Toby"
     )
     assert a.split(VERSE_SCENE_MARKER)[0] == b.split(VERSE_SCENE_MARKER)[0]
+
+
+def _pin(store, eid):
+    store.apply_direct(
+        op="set_pinned",
+        payload={"entity_id": eid, "pinned": True},
+        source="operator",
+        provenance="t",
+    )
+
+
+def test_roster_lines_carry_entity_ids(tmp_path):
+    """Every roster/cast line starts with '#<id>'. Without it verse_edit's
+    set_attribute/update_entity (which take a numeric entity_id, and have no
+    name lookup tool) cannot address anything that already exists — the model
+    falls back to add_entity and duplicates the roster."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    _pin(store, archie)
+
+    block = build_verse_context_block(store, "what about Assgas Archie?", avatar_id=me)
+    assert f"- #{archie} Assgas Archie: Y11 windbag" in block
+
+    prompt = build_verse_system_prompt(store, me, "persona", message_text="Assgas Archie")
+    assert f"- #{archie} Assgas Archie: Y11 windbag" in prompt
+
+
+def test_roster_line_without_summary_still_carries_id(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    bare = store.add_entity("npc", "Nameless")
+    _pin(store, bare)
+    block = build_verse_context_block(store, "tell me about Nameless", avatar_id=me)
+    assert f"- #{bare} Nameless" in block
+
+
+def test_story_world_context_has_no_ids(tmp_path):
+    """The storybook generator only needs names to stay true to canon; it never
+    edits, so ids would be prose noise."""
+    store = VerseStore(tmp_path, "#chan")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    _pin(store, archie)
+    out = build_story_world_context(store)
+    assert "- Assgas Archie: Y11 windbag" in out
+    assert f"#{archie}" not in out

@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Let the model edit canon instead of duplicating it (`verse`)
 - XAI renamed grok-imagine-image-pro to -quality at $0.05 (`cost`)
 - Shorten cancel timeout, tighten @renders ownership and listing budget (`animate`)
 - Fit the @renders listing in one IRC line (`animate`)

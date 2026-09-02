@@ -182,3 +182,63 @@ def test_handler_tolerates_malformed_args(tmp_path, mocker, bad_args):
     result = handler(bad_args)
     parsed = json.loads(result.content)
     assert parsed["status"] in {"ok", "error", "refused"}
+
+
+def test_verse_edit_add_entity_rejects_duplicate_active_name(tmp_path):
+    """add_entity on a name that already exists is refused, so an "edit" the
+    model cannot express as update_entity does not become a silent duplicate.
+    Mirrors the @versedit add command's guard."""
+    store = VerseStore(tmp_path, "#chan")
+    store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": "npc", "name": "Assgas Archie", "summary": "Y12 windbag"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "already exists" in result["detail"]
+    assert [e.name for e in store.list_entities_by_kind("npc")] == ["Assgas Archie"]
+
+
+def test_verse_edit_add_entity_duplicate_check_is_case_insensitive(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    store.add_entity("npc", "Assgas Archie")
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": "npc", "name": "assgas archie"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert len(store.list_entities_by_kind("npc")) == 1
+
+
+def test_verse_edit_add_entity_allows_reuse_of_a_retired_name(tmp_path):
+    """Only ACTIVE names collide — a retired character's name is free again."""
+    store = VerseStore(tmp_path, "#chan")
+    old = store.add_entity("npc", "Rupert")
+    store.set_status(old, "retired")
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": "npc", "name": "Rupert"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "ok"
+
+
+def test_verse_denial_message_names_both_reasons(tmp_path):
+    """The denial must not assert "you haven't opted in" — an opted-in user on
+    an ordinary chat turn hits this too, and the old text sent them to re-run
+    @verse opt-in instead of the route that works."""
+    from llm.verse.avatar import make_verse_denial_handlers, make_verse_tool_specs
+
+    handlers = make_verse_denial_handlers(make_verse_tool_specs())
+    payload = json.loads(handlers["verse_edit"]({}).content)
+    assert "@verse opt-in" in payload["error"]
+    assert "@rp" in payload["error"]
+    assert "@versedit" in payload["error"]

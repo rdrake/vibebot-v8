@@ -206,8 +206,12 @@ def make_verse_tool_specs(*, max_actors: int = 8, storybook: bool = False) -> li
                     "name, summary?; add_event: summary, entity_ids; "
                     "set_attribute: entity_id, key, value; add_relation: "
                     "from_id, to_id, kind, note?; update_entity: entity_id "
-                    "plus name and/or summary). Reuse existing entity ids from "
-                    "the roster; do not invent ids."
+                    "plus name and/or summary). Every roster and cast line "
+                    "starts with the entity's id as '#<number>' — use that "
+                    "number as entity_id/from_id/to_id to CHANGE something "
+                    "that already exists. Never invent an id, and never use "
+                    "add_entity for a name already on the roster: that "
+                    "silently duplicates the character instead of editing it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -508,6 +512,29 @@ def strip_ooc(message: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _entity_line(entity: Any) -> str:
+    """One roster/cast line: ``- #<id> <name>: <summary>``.
+
+    The leading ``#<id>`` is what makes canon EDITABLE from a verse turn.
+    verse_edit's ``set_attribute`` / ``update_entity`` take a numeric
+    ``entity_id`` and there is no name-to-id lookup tool, so without the id in
+    the prompt the model cannot address an entity that already exists. It used
+    to fall back to ``add_entity`` and silently duplicate the whole roster
+    (15 clones of one #afternet cast, 2026-09-02) or simply answer that it
+    needed to "look up the existing IDs first". The id is stable, so this stays
+    inside the cacheable prefix of ``build_verse_system_prompt``.
+
+    ``build_story_world_context`` deliberately does NOT use this: the storybook
+    generator only needs names to stay true to canon, never edits it, and ids
+    would be noise in prose.
+    """
+    return (
+        f"- #{entity.id} {entity.name}: {entity.summary}"
+        if entity.summary
+        else f"- #{entity.id} {entity.name}"
+    )
+
+
 def build_verse_system_prompt(
     store: VerseStore,
     avatar_id: int,
@@ -545,7 +572,7 @@ def build_verse_system_prompt(
     if canon:
         used = 0
         for e in canon:
-            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+            line = _entity_line(e)
             if used + len(line) + 1 > roster_max_chars:
                 roster_lines.append("- (roster truncated)")
                 break
@@ -588,17 +615,14 @@ def build_verse_system_prompt(
             if a.id != avatar_id and store.get_attribute(a.id, "location") == location:
                 others.append(a)
     parts.append("Other avatars present here:")
-    parts.extend(
-        [f"- {a.name}: {a.summary}" if a.summary else f"- {a.name}" for a in others]
-        or ["- (no other avatars present)"]
-    )
+    parts.extend([_entity_line(a) for a in others] or ["- (no other avatars present)"])
 
     roster_ids = {e.id for e in canon}
     scene = [e for e in store.match_entities_in_text(message_text) if e.id != avatar_id]
     fresh = [e for e in scene if e.id not in roster_ids]
     if fresh:
         parts.append("Characters referenced in this scene:")
-        parts.extend([f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}" for e in fresh])
+        parts.extend([_entity_line(e) for e in fresh])
 
     rel_ids = list(roster_ids | {e.id for e in scene} | {avatar_id})
     rels = store.relations_for(rel_ids)
@@ -681,7 +705,7 @@ def build_verse_context_block(
         parts.append("Established characters:")
         used = 0
         for e in canon:
-            line = f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}"
+            line = _entity_line(e)
             if used + len(line) + 1 > roster_max_chars:
                 parts.append("- (roster truncated)")
                 break
@@ -692,7 +716,7 @@ def build_verse_context_block(
     fresh = [e for e in scene if e.id not in roster_ids]
     if fresh:
         parts.append("Referenced here:")
-        parts.extend([f"- {e.name}: {e.summary}" if e.summary else f"- {e.name}" for e in fresh])
+        parts.extend([_entity_line(e) for e in fresh])
 
     rel_ids = list(roster_ids | {e.id for e in scene})
     rels = store.relations_for(rel_ids) if rel_ids else []
@@ -745,6 +769,22 @@ def dispatch_verse_edit(store, *, op, payload, authorized, account):
     reason = validate_payload(op, payload)
     if reason is not None:
         return {"status": "error", "detail": reason}
+    if op == "add_entity":
+        # Duplicate-name guard, mirroring the @versedit add command. Without it
+        # a model that cannot address an existing entity (see _entity_line)
+        # "edits" by re-adding, which spawns a case-identical twin that is
+        # unpinned — invisible to list_canon_entities, so the original keeps
+        # being recited and the edit looks silently ignored.
+        name = payload.get("name", "")
+        if store.active_name_exists(name):
+            return {
+                "status": "error",
+                "detail": (
+                    f"an active entity named {name!r} already exists — use "
+                    "update_entity/set_attribute with its '#<number>' id from "
+                    "the roster instead of adding a duplicate"
+                ),
+            }
     try:
         new_id = store.apply_direct(
             op=op, payload=payload, source="llm", provenance=f"verse_edit:{account}"
@@ -967,14 +1007,22 @@ def make_verse_denial_handlers(
     bytes don't vary with per-user opt-in state), but the caller hasn't
     actually joined the verse and any invocation must be rejected.
 
-    Each handler returns ``{"error": ...}`` with the same channel-level
-    onboarding hint so the model can self-correct and tell the user how
-    to opt in.
+    Each handler returns ``{"error": ...}`` naming BOTH reasons a verse tool
+    can be unavailable, because this call site cannot tell them apart: the
+    speaker may not have joined the verse, or they may have joined and simply
+    be on an ordinary chat turn (the live handlers are only wired on a
+    roleplay route). The message used to assert the first reason alone, which
+    sent opted-in users off to re-run @verse opt-in and never mentioned the
+    route that actually works.
     """
     message = (
-        "You haven't joined the forest-verse on this channel. Tell the "
-        "speaker to use @verse opt-in <persona> to participate before "
-        "calling this tool again."
+        "This verse tool is not available on this turn, for one of two "
+        "reasons. Either the speaker has not joined the forest-verse on this "
+        "channel (they opt in with: @verse opt-in <persona>), or they have "
+        "joined but this is an ordinary chat turn — the verse tools only run "
+        "on the roleplay route (@rp <text>), and canon edits can also be made "
+        "directly with the @versedit command. Say which applies, suggest the "
+        "matching route, and do not call this tool again this turn."
     )
     payload = json.dumps({"error": message})
 
