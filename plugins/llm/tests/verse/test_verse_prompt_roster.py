@@ -1,4 +1,5 @@
 from llm.verse.avatar import (
+    CANON_PRECEDENCE_NOTE,
     VERSE_SCENE_MARKER,
     build_story_world_context,
     build_verse_context_block,
@@ -170,3 +171,36 @@ def test_story_world_context_has_no_ids(tmp_path):
     out = build_story_world_context(store)
     assert "- Assgas Archie: Y11 windbag" in out
     assert f"#{archie}" not in out
+
+
+def test_verse_context_block_states_canon_precedence(tmp_path):
+    """The chat-path canon block says canon outranks stored memories and older
+    turns. Without it a frozen user memory ("the 15 stinky lads are: … year
+    11 …") beats the corrected roster, because it arrives later in the
+    conversation as a user-role message — prod #afternet, 2026-09-02."""
+    store = VerseStore(tmp_path, "#chan")
+    archie = store.add_entity("npc", "Assgas Archie", "Y12 windbag")
+    store.apply_direct(
+        op="set_pinned",
+        payload={"entity_id": archie, "pinned": True},
+        source="operator",
+        provenance="t",
+    )
+    block = build_verse_context_block(store, "what year is Assgas Archie in?")
+    assert CANON_PRECEDENCE_NOTE in block
+
+
+def test_verse_system_prompt_states_canon_precedence(tmp_path):
+    """Same precedence note on the roleplay path — a verse turn is handed the
+    caller's stored memories too."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Assgas Archie", "Y12 windbag")
+    store.apply_direct(
+        op="set_pinned",
+        payload={"entity_id": archie, "pinned": True},
+        source="operator",
+        provenance="t",
+    )
+    prompt = build_verse_system_prompt(store, me, "")
+    assert CANON_PRECEDENCE_NOTE in prompt

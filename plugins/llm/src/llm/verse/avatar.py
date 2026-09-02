@@ -21,6 +21,20 @@ _log = logging.getLogger(__name__)
 #: LLM prefix cache can hit it; everything after is message-/scene-derived.
 VERSE_SCENE_MARKER = "In play right now:"
 
+#: Stated wherever the canon roster is rendered. The model is also handed the
+#: caller's stored memories (a user-role ``<user_memory>`` block, injected AFTER
+#: the system prompt) and the recent channel history, and either can hold a
+#: frozen copy of canon that a later edit has made wrong. Prod #afternet,
+#: 2026-09-02: a May memory reading "The 15 stinky lads are: assgas archie year
+#: 11, …" outranked the corrected roster and the bot listed every lad a year
+#: behind. The roster is the maintained copy; say so.
+CANON_PRECEDENCE_NOTE = (
+    "This canon is the world's current state and outranks every other version "
+    "of it you are holding: where a stored user memory, an earlier message in "
+    "this conversation, or one of your own past answers disagrees with it, that "
+    "older version is stale and this one is right."
+)
+
 _MAX_EXEMPLARS = 5
 _MAX_EXEMPLAR_CHARS = 600
 _STYLE_HEADER = (
@@ -581,6 +595,7 @@ def build_verse_system_prompt(
 
     parts: list[str] = [identity_line, persona_line]
     if roster_lines:
+        parts.append(CANON_PRECEDENCE_NOTE)
         parts.append("Established characters in this world:")
         parts.extend(roster_lines)
 
@@ -699,7 +714,10 @@ def build_verse_context_block(
     if not canon and not scene:
         return ""
 
-    parts: list[str] = ["Relevant world canon (reference facts — weave in as fits, do not recite):"]
+    parts: list[str] = [
+        "Relevant world canon (reference facts — weave in as fits, do not recite):",
+        CANON_PRECEDENCE_NOTE,
+    ]
 
     if canon:
         parts.append("Established characters:")

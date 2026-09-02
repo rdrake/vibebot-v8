@@ -109,6 +109,9 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
             "name": "save_memory",
             "description": (
                 "Save a new memory (fact) about a user. "
+                "Facts about the PERSON only — not channel lore or story canon "
+                "(a roster of characters, their ages or roles), which belongs "
+                "to the world canon and goes stale as a copy here. "
                 "Omit nick to save for the caller. "
                 "Specifying another user's nick requires owner privileges."
             ),
