@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Drop a duplicate reminder at the tool, not in history (`remind`)
 - Record the suppressed reminder ack in stored context (`remind`)
 - Stop a fired reminder from setting another one (`remind`)
 - Let canon outrank a stale user memory of the same lore (`verse`)

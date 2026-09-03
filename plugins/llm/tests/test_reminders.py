@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -455,6 +456,113 @@ class TestReminderHelperMethods:
         assert result.ok is False
         assert "pending" in result.message.lower()
         plugin.db.save_reminder.assert_not_called()
+
+    def test_schedule_reminder_drops_equivalent_pending_duplicate(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an equivalent pending reminder WHEN scheduling THEN reports it instead of adding a second row."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+
+        # A follow-up message races the first turn's context write, so the
+        # model asks for the same reminder again a few seconds later.
+        plugin._reminders["llm_remind_first"] = make_reminder_row(
+            event_name="llm_remind_first",
+            nick="alice",
+            channel="#chan",
+            message="ping",
+            account="alice",
+            fire_at=time.time() + 55,
+            chain_position=1,
+        )
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "in 60s ping",
+        )
+
+        assert result.ok is True
+        assert "already scheduled" in result.message.lower()
+        plugin.db.save_reminder.assert_not_called()
+        add_event.assert_not_called()
+
+    def test_schedule_reminder_keeps_same_message_at_a_different_time(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a pending reminder with the same message but a far-off fire time WHEN scheduling THEN both stand."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+
+        plugin._reminders["llm_remind_later"] = make_reminder_row(
+            event_name="llm_remind_later",
+            nick="alice",
+            channel="#chan",
+            message="ping",
+            account="alice",
+            fire_at=time.time() + 3600,
+            chain_position=1,
+        )
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "in 60s ping",
+        )
+
+        assert result.ok is True
+        plugin.db.save_reminder.assert_called_once()
+
+    def test_schedule_reminder_chain_reschedule_is_not_deduped(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a recurring chain rescheduling itself WHEN the parent row is still pending THEN it is not treated as a duplicate."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        msg = mocker.MagicMock()
+        msg.args = ("#chan", "remind text")
+        msg.prefix = "alice!user@host"
+
+        plugin._reminders["llm_remind_parent"] = make_reminder_row(
+            event_name="llm_remind_parent",
+            nick="alice",
+            channel="#chan",
+            message="ping",
+            account="alice",
+            fire_at=time.time() + 55,
+            chain_position=1,
+        )
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg,
+            Identity(raw_nick="alice", account="alice"),
+            "in 60s ping",
+            parent_chain=1,
+        )
+
+        assert result.ok is True
+        plugin.db.save_reminder.assert_called_once()
 
     def test_schedule_reminder_fresh_chain_starts_at_position_one(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture

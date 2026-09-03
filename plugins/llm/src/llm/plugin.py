@@ -8016,6 +8016,29 @@ class LLM(callbacks.Plugin):
     _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
+    # Two reminders restate one request when they carry the same message and
+    # land this close together. Wide enough to span a request and the
+    # follow-up that re-triggered it, narrow enough that "take a break in 1h"
+    # and "take a break in 3h" both stand.
+    _REMINDER_DUPLICATE_WINDOW_SECONDS = 120
+
+    def _find_equivalent_reminder(
+        self, caller: Identity, *, message: str, fire_at: float
+    ) -> ReminderRow | None:
+        """Return a pending reminder of ``caller``'s that restates ``message``.
+
+        Only pending rows are compared. A fired reminder has already been
+        deleted, so asking for the same thing again afterwards still
+        schedules a new one.
+        """
+        wanted = message.strip().casefold()
+        for _name, row in self._get_user_reminders(caller):
+            if (
+                row.message.strip().casefold() == wanted
+                and abs(row.fire_at - fire_at) <= self._REMINDER_DUPLICATE_WINDOW_SECONDS
+            ):
+                return row
+        return None
 
     @staticmethod
     def _is_structured_recurring(
@@ -8290,6 +8313,25 @@ class LLM(callbacks.Plugin):
                 )
 
         reminder_message = result.message or text
+        # The model re-issues set_reminder for a request it already handled
+        # when its own ack has not reached stored context yet: a follow-up
+        # sent seconds later races the previous turn's write, so both turns
+        # see identical history (observed 2026-09-03 — one "in 60s" request
+        # plus a follow-up produced two rows and two fires). No history-level
+        # fix closes that window, so drop the duplicate at the tool instead.
+        if parent_chain is None:
+            existing = self._find_equivalent_reminder(
+                caller, message=reminder_message, fire_at=now + result.seconds
+            )
+            if existing is not None:
+                return ReminderScheduleResult(
+                    ok=True,
+                    message=(
+                        f"Already scheduled: {existing.message} "
+                        f"(fires in {max(0, int(existing.fire_at - now))}s)."
+                    ),
+                )
+
         action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
         recurrence_seconds = result.recurrence_seconds
