@@ -2873,17 +2873,32 @@ class LLM(callbacks.Plugin):
         target: str,
         nick: str,
         text: str,
+        *,
+        label: str = "",
+        reply_msgid: str = "",
     ) -> None:
         """Match the inner _send closure semantics for reminder output.
 
         Reminders bypass _send_long_reply, so collapse multi-line content
         here — raw \\n in a PRIVMSG body causes Excess Flood disconnects
         on AfterNET.
+
+        ``reply_msgid`` threads the fire under the message that set the
+        reminder via ``+draft/reply``, matching draw and animate delivery.
+        When that tag actually goes on the wire the ``Reminder (label):``
+        wrapper is dropped — the client already shows the request, so
+        restating it is noise. When the server never negotiated
+        ``message-tags`` the wrapper stays, because an unattached line has
+        to say what it is answering (same reasoning as the animate delivery
+        line, see docs/plans/2026-08-21-animate-ux.md).
         """
+        reply_to = reply_msgid if reply_msgid and irc_has_caps(irc, "message-tags") else None
+        if not reply_to:
+            text = f"Reminder ({label}): {text}" if label else f"Reminder: {text}"
         safe_text = self.llm_service.sanitize_output(text)
         safe_text = self._collapse_for_irc(safe_text) or safe_text
         prefixed = f"{nick}: {safe_text}" if nick else safe_text
-        self._safe_queue(irc, self._safe_privmsg(target, prefixed))
+        self._safe_queue(irc, self._safe_privmsg(target, prefixed, reply_to))
 
     def _finalize_reminder_fire(
         self,
@@ -3063,6 +3078,7 @@ class LLM(callbacks.Plugin):
         recurrence_rrule: str | None,
         watch_mode: bool,
         now: float,
+        reply_msgid: str = "",
     ) -> None:
         """Worker-thread reminder action body.
 
@@ -3085,6 +3101,7 @@ class LLM(callbacks.Plugin):
                 "recurrence_rrule": recurrence_rrule,
                 "watch_mode": watch_mode,
                 "now": now,
+                "reply_msgid": reply_msgid,
             }
             if is_structured
             else None
@@ -3122,14 +3139,18 @@ class LLM(callbacks.Plugin):
                     active_irc,
                     target,
                     nick,
-                    f"Reminder: {message} (action returned empty response)",
-                )
-            elif message:
-                self._send_reminder_text(
-                    active_irc, target, nick, f"Reminder ({message}): {response}"
+                    f"{message} (action returned empty response)",
+                    reply_msgid=reply_msgid,
                 )
             else:
-                self._send_reminder_text(active_irc, target, nick, f"Reminder: {response}")
+                self._send_reminder_text(
+                    active_irc,
+                    target,
+                    nick,
+                    response,
+                    label=message,
+                    reply_msgid=reply_msgid,
+                )
             # Attribute the action fire's LLM cost to the chain owner.
             self._log_unattended_usage(
                 nick=nick,
@@ -3153,7 +3174,8 @@ class LLM(callbacks.Plugin):
                     active_irc,
                     target,
                     nick,
-                    f"Reminder action '{message}' failed. (Set this reminder again to retry.)",
+                    f"Action '{message}' failed. (Set this reminder again to retry.)",
+                    reply_msgid=reply_msgid,
                 )
             except Exception:
                 self.log.exception(
@@ -3184,6 +3206,7 @@ class LLM(callbacks.Plugin):
         recurrence_seconds: int | None = None,
         recurrence_rrule: str | None = None,
         watch_mode: bool = False,
+        reply_msgid: str = "",
     ):
         """Create a reminder delivery closure with error handling.
 
@@ -3229,6 +3252,7 @@ class LLM(callbacks.Plugin):
                     "recurrence_rrule": recurrence_rrule,
                     "watch_mode": watch_mode,
                     "now": now_t,
+                    "reply_msgid": reply_msgid,
                 }
                 if is_structured
                 else None
@@ -3244,7 +3268,9 @@ class LLM(callbacks.Plugin):
 
                 # Legacy reminder path: plain echo delivery.
                 if not action_prompt:
-                    self._send_reminder_text(active_irc, target, nick, f"Reminder: {message}")
+                    self._send_reminder_text(
+                        active_irc, target, nick, message, reply_msgid=reply_msgid
+                    )
                     return
 
                 bot_nick = getattr(active_irc, "nick", None)
@@ -3255,7 +3281,9 @@ class LLM(callbacks.Plugin):
                         channel,
                         event_name,
                     )
-                    self._send_reminder_text(active_irc, target, nick, f"Reminder: {message}")
+                    self._send_reminder_text(
+                        active_irc, target, nick, message, reply_msgid=reply_msgid
+                    )
                     return
 
                 if self._unattended_ask_rate_limited(account=account, nick=nick, now=now):
@@ -3263,7 +3291,8 @@ class LLM(callbacks.Plugin):
                         active_irc,
                         target,
                         nick,
-                        f"Reminder: {message} (action skipped — daily ask limit reached)",
+                        f"{message} (action skipped — daily ask limit reached)",
+                        reply_msgid=reply_msgid,
                     )
                     return
 
@@ -3288,6 +3317,7 @@ class LLM(callbacks.Plugin):
                     recurrence_rrule=recurrence_rrule,
                     watch_mode=watch_mode,
                     now=now,
+                    reply_msgid=reply_msgid,
                 )
                 submitted = True
             finally:
@@ -3329,6 +3359,7 @@ class LLM(callbacks.Plugin):
                 recurrence_seconds=reminder.recurrence_seconds,
                 recurrence_rrule=reminder.recurrence_rrule,
                 watch_mode=reminder.watch_mode,
+                reply_msgid=reminder.reply_msgid,
             )
 
             if reminder.fire_at <= now:
@@ -3353,6 +3384,7 @@ class LLM(callbacks.Plugin):
                             recurrence_seconds=reminder.recurrence_seconds,
                             recurrence_rrule=reminder.recurrence_rrule,
                             watch_mode=reminder.watch_mode,
+                            reply_msgid=reminder.reply_msgid,
                         )
                 except Exception as e:
                     self.log.error("Failed to reload reminder %s: %s", event_name, e)
@@ -8081,6 +8113,7 @@ class LLM(callbacks.Plugin):
         recurrence_rrule: str | None,
         watch_mode: bool,
         now: float,
+        reply_msgid: str = "",
     ) -> None:
         """Schedule the next fire of a structured recurring reminder.
 
@@ -8143,6 +8176,7 @@ class LLM(callbacks.Plugin):
             recurrence_seconds=recurrence_seconds,
             recurrence_rrule=recurrence_rrule,
             watch_mode=watch_mode,
+            reply_msgid=reply_msgid,
         )
         try:
             schedule.addEvent(new_deliver, next_fire, name=new_event_name)
@@ -8161,6 +8195,7 @@ class LLM(callbacks.Plugin):
                     recurrence_seconds=recurrence_seconds,
                     recurrence_rrule=recurrence_rrule,
                     watch_mode=watch_mode,
+                    reply_msgid=reply_msgid,
                 )
             self.db.save_reminder(
                 new_event_name,
@@ -8174,6 +8209,7 @@ class LLM(callbacks.Plugin):
                 recurrence_seconds=recurrence_seconds,
                 recurrence_rrule=recurrence_rrule,
                 watch_mode=watch_mode,
+                reply_msgid=reply_msgid,
             )
             self.log.info(
                 "reminder_reschedule path=mechanical kind=%s event=%s "
@@ -8313,6 +8349,10 @@ class LLM(callbacks.Plugin):
                 )
 
         reminder_message = result.message or text
+        # msgid of the message that asked for the reminder, so the fire can be
+        # threaded under it. Absent on a synthetic setter (an action fire
+        # rescheduling a chain) and on servers without message-tags.
+        reply_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
         # The model re-issues set_reminder for a request it already handled
         # when its own ack has not reached stored context yet: a follow-up
         # sent seconds later races the previous turn's write, so both turns
@@ -8348,6 +8388,7 @@ class LLM(callbacks.Plugin):
             recurrence_seconds=recurrence_seconds,
             recurrence_rrule=recurrence_rrule,
             watch_mode=watch_mode,
+            reply_msgid=reply_msgid,
         )
 
         try:
@@ -8367,6 +8408,7 @@ class LLM(callbacks.Plugin):
                     recurrence_seconds=recurrence_seconds,
                     recurrence_rrule=recurrence_rrule,
                     watch_mode=watch_mode,
+                    reply_msgid=reply_msgid,
                 )
 
             self.db.save_reminder(
@@ -8381,6 +8423,7 @@ class LLM(callbacks.Plugin):
                 recurrence_seconds=recurrence_seconds,
                 recurrence_rrule=recurrence_rrule,
                 watch_mode=watch_mode,
+                reply_msgid=reply_msgid,
             )
 
             reply = self.llm_service.sanitize_output(result.confirmation)

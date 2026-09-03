@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -39,6 +39,7 @@ class ReminderRow(NamedTuple):
     recurrence_seconds: int | None
     recurrence_rrule: str | None
     watch_mode: bool
+    reply_msgid: str = ""
 
 
 class ScheduledLlmTaskRow(NamedTuple):
@@ -595,6 +596,17 @@ class LLMDatabase:
             )
             conn.commit()
 
+        if current_version < 19:
+            # msgid of the message that set the reminder, so the fire can be
+            # threaded under it with +draft/reply the way draw and animate
+            # deliveries are. Old rows get "" and fall back to the labelled
+            # "Reminder (...)" text — a fire that cannot be threaded still has
+            # to say what it is answering.
+            self._add_column_if_missing(
+                conn, "reminders", "reply_msgid", "reply_msgid TEXT NOT NULL DEFAULT ''"
+            )
+            conn.commit()
+
         # Stamp the schema version so future opens skip completed migrations.
         # PRAGMA statements cannot be part of executescript, nor can their value
         # be a bound parameter, so interpolate — but coerce to int so the value
@@ -717,6 +729,7 @@ class LLMDatabase:
         recurrence_seconds: int | None = None,
         recurrence_rrule: str | None = None,
         watch_mode: bool = False,
+        reply_msgid: str = "",
     ) -> int:
         """Save a reminder to the database.
 
@@ -735,6 +748,9 @@ class LLMDatabase:
                 or None for one-shot / numeric rows.
             watch_mode: True when the action LLM may emit ``[silent]`` to skip
                 user-visible delivery for a fire (long-running watch).
+            reply_msgid: msgid of the message that set the reminder, used to
+                thread the fire under it. Empty when the server never
+                negotiated message-tags or the setter was synthetic.
 
         Returns:
             The row ID of the inserted reminder.
@@ -752,8 +768,8 @@ class LLMDatabase:
                 "INSERT INTO reminders "
                 "(event_name, nick, channel, message, action_prompt, account, "
                 "fire_at, created_at, chain_position, "
-                "recurrence_seconds, recurrence_rrule, watch_mode) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "recurrence_seconds, recurrence_rrule, watch_mode, reply_msgid) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_name,
                     nick,
@@ -767,6 +783,7 @@ class LLMDatabase:
                     recurrence_seconds,
                     recurrence_rrule,
                     int(watch_mode),
+                    reply_msgid,
                 ),
             )
             assert cursor.lastrowid is not None, "INSERT must produce a lastrowid"
@@ -803,7 +820,7 @@ class LLMDatabase:
         rows = conn.execute(
             "SELECT id, event_name, nick, channel, message, action_prompt, account, "
             "fire_at, created_at, chain_position, "
-            "recurrence_seconds, recurrence_rrule, watch_mode "
+            "recurrence_seconds, recurrence_rrule, watch_mode, reply_msgid "
             "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
             (cutoff,),
         ).fetchall()
@@ -823,6 +840,7 @@ class LLMDatabase:
                 recurrence_seconds=row[10],
                 recurrence_rrule=row[11],
                 watch_mode=bool(row[12]),
+                reply_msgid=row[13],
             )
             for row in rows
         ]

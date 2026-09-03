@@ -1604,10 +1604,66 @@ class TestReminderActionDelivery:
         sent = active_irc.queueMsg.call_args[0][0]
         assert (
             sent.args[1]
-            == "alice: Reminder action 'check build' failed. (Set this reminder again to retry.)"
+            == "alice: Reminder: Action 'check build' failed. (Set this reminder again to retry.)"
         )
         assert "secret text" not in sent.args[1]
         plugin.log.exception.assert_called_once()
+
+    def test_action_delivery_threads_under_the_request_and_drops_the_label(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a msgid and message-tags WHEN an action reminder fires THEN it replies to the request instead of restating it."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        active_irc.state.capabilities_ack = {"message-tags"}
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="all green")
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            "llm_remind_thread_1",
+            action_prompt="check build",
+            account="acct",
+            reply_msgid="abc123",
+        )
+        deliver()
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert sent.server_tags["+draft/reply"] == "abc123"
+        # The client renders the original request, so restating it is noise.
+        assert sent.args[1] == "alice: all green"
+
+    def test_action_delivery_keeps_the_label_when_it_cannot_thread(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN no message-tags WHEN an action reminder fires THEN the labelled text is kept and no tag is sent."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        active_irc.state.capabilities_ack = set()
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="all green")
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            "llm_remind_thread_2",
+            action_prompt="check build",
+            account="acct",
+            reply_msgid="abc123",
+        )
+        deliver()
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        # An unattached line has to say what it is answering.
+        assert sent.args[1] == "alice: Reminder (check build): all green"
+        assert "+draft/reply" not in (sent.server_tags or {})
 
     def test_action_delivery_falls_back_on_pre_request_exception(
         self, plugin: MagicMock, mocker: MockerFixture
@@ -1652,7 +1708,7 @@ class TestReminderActionDelivery:
         sent = active_irc.queueMsg.call_args[0][0]
         assert (
             sent.args[1]
-            == "alice: Reminder action 'check build' failed. (Set this reminder again to retry.)"
+            == "alice: Reminder: Action 'check build' failed. (Set this reminder again to retry.)"
         )
         assert "XYZ" not in sent.args[1]
         plugin.log.exception.assert_called_once()

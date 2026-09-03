@@ -1410,13 +1410,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_18(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 18."""
+    def test_schema_version_is_19(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 19."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 18
+            assert row[0] == 19
         finally:
             conn.close()
 
@@ -1440,6 +1440,34 @@ class TestSchemaV3Migration:
         assert rows[0].recurrence_seconds == 300
         assert rows[0].recurrence_rrule is None
         assert rows[0].watch_mode is True
+
+    def test_reminder_persists_reply_msgid(self, test_db: LLMDatabase) -> None:
+        """GIVEN a save carrying the setter's msgid WHEN reloaded THEN it round-trips for +draft/reply."""
+        test_db.save_reminder(
+            event_name="evt-msgid",
+            nick="alice",
+            channel="#test",
+            message="msg",
+            fire_at=time.time() + 60,
+            action_prompt="check the build",
+            account="alice",
+            reply_msgid="abc123",
+        )
+        rows = test_db.load_pending_reminders()
+        assert len(rows) == 1
+        assert rows[0].reply_msgid == "abc123"
+
+    def test_reminder_without_msgid_round_trips_empty(self, test_db: LLMDatabase) -> None:
+        """GIVEN a save with no msgid WHEN reloaded THEN reply_msgid is empty, not None."""
+        test_db.save_reminder(
+            event_name="evt-nomsgid",
+            nick="alice",
+            channel="#test",
+            message="msg",
+            fire_at=time.time() + 60,
+        )
+        rows = test_db.load_pending_reminders()
+        assert rows[0].reply_msgid == ""
 
     def test_reminder_rejects_both_recurrence_kinds(self, test_db: LLMDatabase) -> None:
         """GIVEN both recurrence fields set WHEN saving THEN ValueError."""
