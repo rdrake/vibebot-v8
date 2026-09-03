@@ -1842,7 +1842,7 @@ class TestRoutingGateAndMechanicalReschedule:
         deliver()
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        assert kwargs["exclude_tools"] == frozenset()
+        assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
         mech_spy.assert_not_called()
         # No new persistence row.
         plugin.db.save_reminder.assert_not_called()

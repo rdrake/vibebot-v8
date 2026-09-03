@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Stop a fired reminder from setting another one (`remind`)
 - Let canon outrank a stale user memory of the same lore (`verse`)
 - Deliver stashed results to the requester, not to the bot (`pm`)
 - Let the planner carry spoken words, so audio stops babbling (`animate`)

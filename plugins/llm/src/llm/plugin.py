@@ -3103,7 +3103,7 @@ class LLM(callbacks.Plugin):
                 channel=channel,
                 bot_nick=bot_nick,
                 entry_route=PROFILE_REMIND_ACTION,
-                exclude_tools=(frozenset({"set_reminder"}) if is_structured else frozenset()),
+                exclude_tools=frozenset({"set_reminder"}),
             )
             response = result.content.strip() if result.content else ""
             is_silent = response == "[silent]"
