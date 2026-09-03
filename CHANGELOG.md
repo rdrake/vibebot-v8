@@ -625,6 +625,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Let a follow-up revise the reminder it just set (`remind`)
 - Thread a fired reminder under the message that set it (`remind`)
 - @renders lists, cancels and clears the render queue (`animate`)
 - Cap the render queue and report queue position (`animate`)
