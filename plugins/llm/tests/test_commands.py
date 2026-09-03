@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.assistant import PENDING_TASK_TOOLS
+from llm.context import Role
 from llm.persistence import UsageBreakdown, UsageSummary
 from llm.plugin import LLM
 from llm.service import AssistantResult, CompletionResult, ReminderParseResult
@@ -1282,6 +1283,30 @@ class TestDispatchAssistantReply:
         mock_irc.error.assert_not_called()
         # Usage must still be logged (suppression is not a free path).
         plugin.db.log_usage.assert_called_once()
+
+    def test_reminder_mutation_stores_context_note_not_empty_turn(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN a suppressed set_reminder ack WHEN ask called THEN the stored assistant turn is the context note, not an empty string."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
+            model="gpt-4",
+            last_successful_tool="set_reminder",
+            final_text_after_tools="",
+        )
+        add_message = mocker.spy(plugin.context, "add_message")
+
+        plugin.ask(mock_irc, mock_msg, ["remind", "me", "tomorrow"])
+
+        # An empty assistant turn reads back as an unanswered request and the
+        # model sets the same reminder again on the next message.
+        stored = [
+            call.args[3] for call in add_message.call_args_list if call.args[2] == Role.ASSISTANT
+        ]
+        assert stored == ["[reminder set]"]
 
     # ------------------------------------------------------------------
     # verse_storybook suppression — async link is the only reply

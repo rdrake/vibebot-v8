@@ -151,9 +151,17 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
 # these as the last successful tool AND no follow-up text, the chat
 # reply is suppressed to avoid a duplicate ack. See Task B5 of the
 # 2026-04-30 reminder simplification plan.
-_REMINDER_MUTATION_TOOLS = frozenset(
-    {"set_reminder", "cancel_pending_task", "cancel_all_pending_tasks"}
-)
+#
+# The suppressed turn still needs a stand-in in stored context: an empty
+# assistant turn reads back as an unanswered request, so the next turn
+# repeats the mutation. On 2026-09-03 "remind me to do the needful in 60s"
+# followed by "do so kindly" set the same reminder twice for that reason.
+_REMINDER_MUTATION_CONTEXT_NOTES = {
+    "set_reminder": "[reminder set]",
+    "cancel_pending_task": "[pending task cancelled]",
+    "cancel_all_pending_tasks": "[all pending tasks cancelled]",
+}
+_REMINDER_MUTATION_TOOLS = frozenset(_REMINDER_MUTATION_CONTEXT_NOTES)
 
 _FULL_ANSWER_LABEL = "Full answer"
 
@@ -4369,7 +4377,10 @@ class LLM(callbacks.Plugin):
                 channel,
                 nick,
             )
-            return response, True
+            # Nothing goes to IRC — the emoji reaction is the ack — but the
+            # stored turn records that the tool ran, so a follow-up message
+            # does not look like the original request went unanswered.
+            return _REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool], True
 
         # verse_storybook delivers its illustrated page link from a background
         # job, so the assistant's post-tool reply is intentionally empty (see
