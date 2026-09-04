@@ -157,9 +157,9 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
 # repeats the mutation. On 2026-09-03 "remind me to do the needful in 60s"
 # followed by "do so kindly" set the same reminder twice for that reason.
 _REMINDER_MUTATION_CONTEXT_NOTES = {
-    "set_reminder": "[reminder set]",
-    "cancel_pending_task": "[pending task cancelled]",
-    "cancel_all_pending_tasks": "[all pending tasks cancelled]",
+    "set_reminder": "reminder set",
+    "cancel_pending_task": "pending task cancelled",
+    "cancel_all_pending_tasks": "all pending tasks cancelled",
 }
 _REMINDER_MUTATION_TOOLS = frozenset(_REMINDER_MUTATION_CONTEXT_NOTES)
 
@@ -288,6 +288,10 @@ class ReminderScheduleResult(NamedTuple):
 
     ok: bool
     message: str
+    # What is now pending, in fixed wording: "<message> in <n>s". The
+    # confirmation above is model-authored and often names neither, which
+    # leaves a later "make it 30s" with no antecedent.
+    summary: str = ""
 
 
 class PreflightResult(NamedTuple):
@@ -4411,8 +4415,16 @@ class LLM(callbacks.Plugin):
             )
             # Nothing goes to IRC — the emoji reaction is the ack — but the
             # stored turn records that the tool ran, so a follow-up message
-            # does not look like the original request went unanswered.
-            return _REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool], True
+            # does not look like the original request went unanswered. Carry
+            # the tool's own words too: a bare "[reminder set]" says nothing
+            # about what was set or when, and a follow-up that revises the
+            # time ("wait no make it 30s") then has nothing in this user's
+            # history to attach to and binds to whatever else in the channel
+            # mentioned a duration (observed 2026-09-03: it answered about a
+            # video render).
+            label = _REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool]
+            detail = result.last_tool_message.strip()
+            return (f"[{label}: {detail}]" if detail else f"[{label}]"), True
 
         # verse_storybook delivers its illustrated page link from a background
         # job, so the assistant's post-tool reply is intentionally empty (see
@@ -8437,7 +8449,11 @@ class LLM(callbacks.Plugin):
                 reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
             if chain_position > 1:
                 reply = f"{reply} ({chain_position}/{self._REMINDER_MAX_CHAIN_POSITION})"
-            return ReminderScheduleResult(ok=True, message=reply)
+            return ReminderScheduleResult(
+                ok=True,
+                message=reply,
+                summary=f"{reminder_message} in {int(result.seconds)}s",
+            )
         except Exception as e:
             self.log.error("Failed to schedule reminder: %s", e)
             return ReminderScheduleResult(ok=False, message="Failed to set reminder.")
@@ -8480,7 +8496,10 @@ class LLM(callbacks.Plugin):
 
         result = self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain)
         self._react(irc, msg, "⏰" if result.ok else "❌")
-        return _ToolCallbackResult(result.ok, result.message)
+        message = result.message
+        if result.ok and result.summary:
+            message = f"{message} (now pending: {result.summary})"
+        return _ToolCallbackResult(result.ok, message)
 
     def _remind_delete_for_assistant(
         self,

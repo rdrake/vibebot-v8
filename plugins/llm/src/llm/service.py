@@ -1670,6 +1670,11 @@ class AssistantResult(NamedTuple):
     image_reworded: bool = False
     error: str | None = None
     last_successful_tool: str | None = None
+    # Human-readable result text of ``last_successful_tool``, as the tool
+    # reported it. Lets the reply path record WHAT a silent tool mutation did,
+    # not just that one happened — an "[reminder set]" with no subject and no
+    # delay gives a follow-up ("make it 30s") nothing to attach to.
+    last_tool_message: str = ""
     # Internal signal only (plugin checks its emptiness to decide whether a
     # tool-mutation turn needs a spoken reply) — deliberately UNsanitized;
     # never send it to IRC. User-facing text rides in ``content``.
@@ -5812,6 +5817,7 @@ Examples (echo → action_prompt: ""):
             # encode errors as JSON {"error": ...}; success uses
             # {"status": "ok", ...}.
             last_successful_tool: str | None = None
+            last_tool_message = ""
             # Retries spent per reply guard this invocation, keyed by
             # _ReplyGuard.key. One ledger rather than six counters, so a new
             # guard needs no new local.
@@ -6073,6 +6079,7 @@ Examples (echo → action_prompt: ""):
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
                         last_successful_tool=last_successful_tool,
+                        last_tool_message=last_tool_message,
                         final_text_after_tools=content,
                         was_verse=was_verse,
                     )
@@ -6193,6 +6200,7 @@ Examples (echo → action_prompt: ""):
                         parsed = None
                     if isinstance(parsed, dict) and "error" not in parsed:
                         last_successful_tool = tc.function.name
+                        last_tool_message = str(parsed.get("message", "")).strip()
                         if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
                         if tc.function.name == "generate_video":
@@ -6316,6 +6324,7 @@ Examples (echo → action_prompt: ""):
                 image_reworded=executor.image_reworded,
                 error="Assistant exceeded maximum tool-call steps.",
                 last_successful_tool=last_successful_tool,
+                last_tool_message=last_tool_message,
                 final_text_after_tools=last_assistant_text,
                 was_verse=was_verse,
             )

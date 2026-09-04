@@ -465,6 +465,47 @@ class TestReminderHelperMethods:
         assert "pending" in result.message.lower()
         plugin.db.save_reminder.assert_not_called()
 
+    def test_schedule_reminder_reports_what_is_now_pending(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a scheduled reminder WHEN the tool returns THEN the summary names the subject and the delay in fixed wording."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)  # message "ping", 60 seconds
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        result = plugin._schedule_reminder(
+            mock_irc,
+            msg=self._amend_msg(mocker),
+            caller=Identity(raw_nick="alice", account="alice"),
+            text="in 60s ping",
+        )
+
+        # The model-authored confirmation names neither reliably; this does.
+        assert result.summary == "ping in 60s"
+
+    def test_set_reminder_tool_hands_the_summary_to_the_model(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a scheduled reminder WHEN set_reminder returns THEN its message carries what is pending, so the stored note does too."""
+        from llm.plugin import Identity
+
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        mocker.patch.object(plugin, "_react")
+
+        out = plugin._remind_set_for_assistant(
+            mock_irc,
+            self._amend_msg(mocker),
+            Identity(raw_nick="alice", account="alice"),
+            "in 60s ping",
+        )
+
+        assert out.ok is True
+        assert "now pending: ping in 60s" in out.message
+
     def test_schedule_reminder_amends_a_recent_equivalent_reminder(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:

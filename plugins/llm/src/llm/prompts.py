@@ -281,6 +281,10 @@ ANIMATE_SYSTEM_PROMPT = (
     'the old man shouts, "get off my lawn!". Verbatim, never paraphrased. '
     "Keep spoken lines to about a dozen words — anything longer runs past the "
     "end of the clip and is cut off mid-word.\n"
+    "- Name the language of the speech, every time there is speech: write "
+    '"speaking in English" (or whichever language the user asked for) beside '
+    "the speaker. Left unsaid, the model picks a language of its own and the "
+    "clip comes back in one nobody asked for.\n"
     "- Never invent dialogue the user did not ask for. Unwritten speech comes "
     "out as babble, so a character who was not given words is better shown "
     "silent — describe the face and the breath instead of a mouth moving. A "

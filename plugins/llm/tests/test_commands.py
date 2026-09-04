@@ -1308,6 +1308,29 @@ class TestDispatchAssistantReply:
         ]
         assert stored == ["[reminder set]"]
 
+    def test_reminder_mutation_note_carries_what_the_tool_reported(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """GIVEN the set_reminder tool reported what is pending WHEN ask called THEN the stored note repeats it, so a later revision has an antecedent."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="",
+            model="gpt-4",
+            last_successful_tool="set_reminder",
+            last_tool_message="Righto. (now pending: smell cheese in 60s)",
+            final_text_after_tools="",
+        )
+        add_message = mocker.spy(plugin.context, "add_message")
+
+        plugin.ask(mock_irc, mock_msg, ["remind", "me", "to", "smell", "cheese", "in", "60s"])
+
+        stored = [
+            call.args[3] for call in add_message.call_args_list if call.args[2] == Role.ASSISTANT
+        ]
+        assert stored == ["[reminder set: Righto. (now pending: smell cheese in 60s)]"]
+
     # ------------------------------------------------------------------
     # verse_storybook suppression — async link is the only reply
     # ------------------------------------------------------------------
