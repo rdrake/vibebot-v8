@@ -6924,21 +6924,33 @@ class LLM(callbacks.Plugin):
             return
         nick, channel = pf.nick, pf.channel
 
-        # Verse grounding: if the prompt references canon, layer the facts-only
-        # lore block onto the draw overlay (personality-overlay slot; the draw
-        # framework/tools are still added downstream by assistant_completion) so
-        # "@draw the stinky lads" depicts the canon cast, not literal words. None
-        # when nothing is referenced → the default draw prompt, unchanged.
-        draw_system_prompt: str | None = None
-        verse_ctx = self._verse_context_for(pf, text)
-        if verse_ctx:
-            draw_system_prompt = self._verse_grounded_overlay(PROFILE_DRAW, channel, verse_ctx)
-
-        # Typing fires immediately after preflight so users see "is
-        # composing" before history fetch / executor permit / image
-        # generation latency stack up.
+        # Typing fires immediately after preflight so users see "is composing"
+        # before the subject-research call / history fetch / executor permit /
+        # image generation latency stack up. The overlay assembly sits inside
+        # the try for that reason: unlike @animate, @draw has no render to hide
+        # a research round trip behind, so the indicator goes up first.
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
+            # Verse grounding: if the prompt references canon, layer the
+            # facts-only lore block onto the draw overlay (personality-overlay
+            # slot; the draw framework/tools are still added downstream by
+            # assistant_completion) so "@draw the stinky lads" depicts the
+            # canon cast, not literal words.
+            overlay_parts: list[str] = []
+            verse_ctx = self._verse_context_for(pf, text)
+            if verse_ctx:
+                overlay_parts.append(self._verse_grounded_overlay(PROFILE_DRAW, channel, verse_ctx))
+            # Subject research: canon covers what the channel invented, this
+            # covers what the world already contains. Second, so canon is
+            # stated first — the block itself says canon wins on overlap.
+            with self._allow_concurrent(), self._llm_executor.permit():
+                dossier_block = self._subject_dossier_for(nick, channel, text)
+            if dossier_block:
+                overlay_parts.append(dossier_block)
+            # None when nothing is referenced and nobody real is named → the
+            # default draw prompt, unchanged.
+            draw_system_prompt = "\n\n".join(overlay_parts) or None
+
             request_context = self._build_request_context(
                 irc,
                 msg,

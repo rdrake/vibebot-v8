@@ -173,3 +173,62 @@ class TestAnimateResearch:
         plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
         assert [c for c in plugin.db.log_usage.call_args_list if c.args[2] == "dossier"] == []
+
+
+class TestDrawResearch:
+    """@draw pays the research in wall clock the user is watching."""
+
+    def test_facts_reach_the_planner(self, researching_plugin) -> None:
+        """GIVEN a real subject WHEN @draw runs THEN the facts are in the prompt."""
+        plugin, mock_irc, mock_msg = researching_plugin
+
+        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        assert prompt is not None
+        assert _FACTS in prompt
+
+    def test_typing_starts_before_the_research(self, researching_plugin, mocker) -> None:
+        """GIVEN research runs WHEN @draw starts THEN typing is already showing.
+
+        The research is seconds the user spends staring at nothing otherwise.
+        Unlike @animate there is no render to hide it behind, so the indicator
+        has to be up before the call, which means the overlay assembly happens
+        inside the try block rather than above it.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+        order: list[str] = []
+        plugin.llm_service._begin_typing.side_effect = lambda irc, msg: (
+            order.append("typing"),
+            lambda: None,
+        )[1]
+        plugin.llm_service.subject_dossier.side_effect = lambda *a, **k: (
+            order.append("research"),
+            _dossier(_FACTS),
+        )[1]
+
+        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        assert order == ["typing", "research"]
+
+    def test_disabled_means_no_call(self, researching_plugin) -> None:
+        """GIVEN the kill switch off WHEN @draw runs THEN no research happens."""
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"subjectResearchEnabled": False}
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        plugin.llm_service.subject_dossier.assert_not_called()
+        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+
+    def test_research_failure_still_draws(self, researching_plugin) -> None:
+        """GIVEN the research raises WHEN @draw runs THEN the image is still planned."""
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.llm_service.subject_dossier.side_effect = RuntimeError("provider down")
+
+        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None

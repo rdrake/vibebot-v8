@@ -138,6 +138,40 @@ Channel overrides let different channels run different models:
 @config channel #casual plugins.LLM.assistantModel gemini/gemini-flash-latest
 ```
 
+### Subject research
+
+Image and video generators know nothing by name. `@animate` renders a bare
+"Churchill" as nothing at all, or as the word printed across the frame, and
+`@draw` is little better — which is why both commands run a planner turn that
+rewrites the request before the generator ever sees it. The planner is told to
+keep the name the user typed and put a description of the subject beside it,
+but for a real person or a real event it has nothing to build that description
+from: the verse canon block covers characters the channel invented, not people
+the world already contains.
+
+`subjectResearchEnabled` (on by default) closes that gap with one grounded
+completion in front of the planner. It identifies the real subjects the request
+names, looks up how each actually looks, and layers the answer onto the
+planner's prompt. A request that names nobody real — "a slow aerial shot over a
+pine forest" — comes back with nothing and adds nothing to the prompt.
+
+The cost is one extra call and a few seconds. `@animate` hides that behind a
+render measured at 135 seconds; `@draw` does not, so `@draw` gets visibly
+slower with this on. The typing indicator covers the wait. The usage table
+records research costs under the command name `dossier`, separately from the
+planner's own row, because the two run on different models.
+
+Only the dash-prefixed fact lines the research prompt asks for are kept. A
+model that declines the question, or wraps its answer in commentary,
+contributes nothing rather than contributing its refusal to the next model's
+prompt.
+
+`subjectResearchModel` picks the model. Left empty it falls back to
+`searchModel` and then `assistantModel`, which in most deployments means the
+researcher is a different provider from the planner. Set it when the search
+model is more reticent about describing real people than the generator
+downstream is.
+
 ## System prompts
 
 System prompts define the bot's personality and constraints. Both are channel-overridable.
