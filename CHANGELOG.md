@@ -449,6 +449,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Describe subject research where users and operators will look for it
+- Plan the subject-research pre-stage for @draw and @animate (`plans`)
 - Close the draw refusal follow-up with the measured numbers (`plans`)
 - Fold the render queue, caps and @renders into the animate pages
 - Animate queue cleanup plan (`plans`)
@@ -626,6 +628,9 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Ground the planner in who the named subjects actually are (`draw`)
+- Ground the planner in who the named subjects actually are (`animate`)
+- Research the real subjects a request names (`draw,animate`)
 - Let a follow-up revise the reminder it just set (`remind`)
 - Thread a fired reminder under the message that set it (`remind`)
 - @renders lists, cancels and clears the render queue (`animate`)
