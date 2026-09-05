@@ -10,6 +10,7 @@ The model surface splits by workload so cost and quality can differ per task. Ev
 | `codeModel` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop that calls it runs on `assistantModel` |
 | `imageModel` | Image generation |
 | `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty |
+| `subjectResearchModel` | The subject-research pre-stage in front of the `@draw` and `@animate` planners. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | Verse-mode narration. Falls back to `assistantModel` when empty |
 | `verseCompactionModel` | The daily verse compaction digest |
 
@@ -18,6 +19,7 @@ Guidance from operating this surface:
 - `assistantModel` needs vision support if users paste image URLs into chat.
 - Reasoning models make terse, flat narrators. If the assistant model is a reasoning model, point `verseModel` at a non-reasoning model for verse prose.
 - Compaction is a cheap summarization job; leave `verseCompactionModel` on a flash-lite class model.
+- Subject research is a lookup, not a writing job, so a flash-class model is enough. What matters is whether it will describe real people at all: a model that declines contributes nothing and the picture loses its likeness. If dossiers come back empty on obvious subjects, point `subjectResearchModel` at a more permissive model than `searchModel`.
 
 Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.
 
@@ -218,6 +220,8 @@ On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` 
 ### Usage statistics
 
 `@usage` shows API usage for yourself and the channel; the global overview by PM is admin-only. One caveat: verse turns are recorded under the `ask` label, so verse traffic is displayed as `ask` rows in the report.
+
+A `@draw` or `@animate` request with subject research enabled writes a `dossier` row alongside the command's own row. That is the research call in front of the planner, and it is booked separately because it usually runs on a different model — see [Subject research](configuration.md#subject-research). A request that named nobody real still writes the row: asking and being told there is nothing to look up costs the same tokens as asking and getting an answer.
 
 One draw can write more than one `draw:image` row. Each row is one call to the image provider, so a prompt the filter refused and a rewording of it that succeeded are two rows: the refusal carries `status='content_blocked'` and the exact prompt the filter rejected, the delivered image carries `status='success'`. Counting rows therefore counts calls, not pictures. The bill is split rather than duplicated, so `SUM(cost)` is still the true total.
 
