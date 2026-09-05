@@ -385,6 +385,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the subject-research pre-stage (`changelog`)
 - Ignore the supybot data dir tests generate
 - Assistant/config/infra polish
 - Ghost-label, dead-code, and stale-doc sweep
@@ -628,6 +629,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Make English the default language for clip dialogue (`animate`)
 - Ground the planner in who the named subjects actually are (`draw`)
 - Ground the planner in who the named subjects actually are (`animate`)
 - Research the real subjects a request names (`draw,animate`)

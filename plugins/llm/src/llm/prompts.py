@@ -282,8 +282,11 @@ ANIMATE_SYSTEM_PROMPT = (
     "Keep spoken lines to about a dozen words — anything longer runs past the "
     "end of the clip and is cut off mid-word.\n"
     "- Name the language of the speech, every time there is speech: write "
-    '"speaking in English" (or whichever language the user asked for) beside '
-    "the speaker. Left unsaid, the model picks a language of its own and the "
+    '"speaking in English" beside the speaker. English is the default. Use '
+    "whichever language the user asked for instead, and only when they asked "
+    "for it — a subject's nationality, accent or setting is not a request, so "
+    "a French chef in Paris still speaks English unless the user said "
+    "otherwise. Left unsaid, the model picks a language of its own and the "
     "clip comes back in one nobody asked for.\n"
     "- Never invent dialogue the user did not ask for. Unwritten speech comes "
     "out as babble, so a character who was not given words is better shown "

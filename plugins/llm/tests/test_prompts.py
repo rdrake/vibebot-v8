@@ -159,9 +159,11 @@ class TestProfileSpecificContent:
 
     def test_animate_prompt_names_the_speech_language(self):
         """Left unnamed, the video model picks its own language for the audio,
-        so the planner is told to state it beside the speaker."""
+        so the planner is told to state it beside the speaker — English unless
+        the user asked for another one."""
         animate = prompts.PROMPTS["animate"]
         assert "speaking in English" in animate
+        assert "English is the default" in animate
         assert "whichever language the user asked for" in animate
 
     def test_remind_action_does_not_mention_set_reminder(self):
