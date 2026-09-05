@@ -126,6 +126,8 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `imageFallbackSteps` | channel | `0` | Denoising steps for the fallback endpoint |
 | `imageFallbackSize` | channel | empty | Output geometry as `WxH` for the fallback endpoint |
 | `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel` |
+| `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` or `@animate` request names before the planner writes the prompt — see [Subject research](#subject-research) |
+| `subjectResearchModel` | channel | empty | Model for the subject-research pre-stage. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 | `verseCompactionModel` | global | `gemini/gemini-flash-lite-latest` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
 

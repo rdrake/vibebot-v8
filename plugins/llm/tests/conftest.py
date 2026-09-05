@@ -719,6 +719,13 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "storyUnregRateLimitWindow": 60,
         # Search/fetch tools
         "searchModel": "",
+        # Subject research (the @draw / @animate dossier pre-stage). OFF here,
+        # unlike config.py's default of True: it puts a second LLM call in
+        # front of both planners, and every existing draw and animate test
+        # asserts on the one call the command used to make. Tests that want it
+        # opt in with make_registry_side_effect({"subjectResearchEnabled": True}).
+        "subjectResearchEnabled": False,
+        "subjectResearchModel": "",
         # Assistant tool-calling backend
         "metaMaxSteps": 7,
         # IRCv3 join optimization

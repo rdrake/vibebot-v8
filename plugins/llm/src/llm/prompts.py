@@ -324,6 +324,59 @@ ANIMATE_REFERENCE_OVERLAY = (
 )
 
 
+# --- Subject research: the pre-stage in front of the media planners --------
+#
+# Image and video generators know nothing by name. Both planners are already
+# told to keep the user's word AND put a description beside it, but the next
+# rule tells them to take that description from the facts they were given —
+# and for Churchill or the Hindenburg, nothing gives them. The verse canon
+# block covers what the channel invented; this covers what the world already
+# contains.
+#
+# Concatenated with the request, never formatted into it: an IRC user can type
+# a brace and str.format raises on one. Hence the trailing newline and the
+# absence of any {placeholder} below.
+SUBJECT_DOSSIER_PROMPT = (
+    "Below is a request someone made of an image or video generator. Identify "
+    "every REAL subject it names — a living or historical person, a named "
+    "character, a specific place, a specific event — and describe how each one "
+    "actually looks, or looked at the time.\n\n"
+    "Answer as a bare list, one line per subject, each line starting with "
+    '"- ", in this shape:\n'
+    "- <the name exactly as the request wrote it> — <appearance>\n\n"
+    "For a person: approximate age, build, hair, face, and the clothing they "
+    "are known for. For a place or an event: where it is, the period, the "
+    "weather and the light, and what is physically happening in frame. About "
+    "twenty-five words each, concrete and visual — what a camera would catch, "
+    "not what the subject is famous for. Search when the subject is recent or "
+    "you are unsure.\n\n"
+    "Describe only what the request actually names. Invented characters, "
+    "generic nouns ('a cat', 'a forest') and pure fiction get no line. Write "
+    "nothing but the list: no preamble, no commentary, no caveats. If the "
+    "request names no real subject at all, reply with the single word NONE.\n\n"
+    "Request:\n"
+)
+
+# The wrapper the parsed dossier is injected into, layered onto the planner's
+# overlay slot beside any canon block. It carries its own usage instructions so
+# that neither DRAW_SYSTEM_PROMPT nor ANIMATE_SYSTEM_PROMPT needs a rule about
+# a block that is absent from most requests — and so both planners read the
+# same words about it.
+SUBJECT_DOSSIER_BLOCK_HEADER = (
+    "Established facts about the real subjects named in this request. The "
+    "generator has never seen these people, places or events, and renders a "
+    "bare name as nothing or as text on screen — so keep the name the user "
+    "wrote and put the description beside it. Never swap the name out for the "
+    "description."
+)
+
+SUBJECT_DOSSIER_BLOCK_FOOTER = (
+    "These facts fill in what the user left out. They never override what the "
+    "user asked for, and where a canon block above also describes a subject, "
+    "canon wins."
+)
+
+
 REMIND_ACTION_SYSTEM_PROMPT = (
     "You are {bot_nick}, completing a fired reminder action. "
     "Do the task in the user prompt and answer concisely.\n\n"

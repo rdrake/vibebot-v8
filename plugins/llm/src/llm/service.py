@@ -1612,6 +1612,41 @@ class VideoResult(NamedTuple):
     cost: float = 0.0
 
 
+# The dossier is filtered by SHAPE, not by vocabulary: only the lines the
+# research prompt asked for survive. A refusal ("I can't describe real
+# individuals"), a "here's what I found" preamble, or a trailing caveat about
+# source accuracy has no leading dash and is dropped — so a researcher that
+# says no injects nothing into the planner's prompt rather than injecting its
+# own refusal, which is the failure test_image_failure_guard.py guards one
+# stage later. Keying on prose markers instead would lose to the first
+# paraphrase; the shape does not paraphrase.
+_DOSSIER_LINE_RE = re.compile(r"^\s*[-*•]\s+(\S.*)$")
+# The block rides in the planner's system prompt on every request that has one.
+_DOSSIER_MAX_LINES = 8
+_DOSSIER_MAX_CHARS = 1500
+
+
+class SubjectDossier(NamedTuple):
+    """Appearance facts for the real subjects a media request names.
+
+    ``text`` is the parsed, shape-filtered list ready to inject, or ``""`` when
+    the request named nobody real, the researcher refused, or the call failed —
+    three different things that are one outcome to the caller: no block, same
+    prompt as before.
+
+    The usage fields ride back because this is a second completion on a
+    different model from the planner it feeds. Folding its spend into the
+    planner's row would file one provider's tokens under another's name, so the
+    caller books a row of its own.
+    """
+
+    text: str
+    model: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+
+
 class StorybookResult(NamedTuple):
     """Result of an illustrated storybook generation.
 
@@ -3986,6 +4021,7 @@ class LLMService:
         channel: str,
         log_label: str,
         error_message: str,
+        model: str | None = None,
     ) -> ToolResult:
         """Shared implementation for search_completion and url_completion.
 
@@ -4006,13 +4042,20 @@ class LLMService:
                 or ``"url_completion"``).
             error_message: Human-readable error string placed in the returned
                 ``ToolResult`` when an exception is caught.
+            model: Model to call. ``None`` (the default, and what
+                search_completion and url_completion pass) resolves
+                ``searchModel`` then ``assistantModel``. The subject-research
+                pre-stage resolves its own key first and passes the result,
+                so the chain lives in one place per caller rather than being
+                re-derived here.
         """
         from .assistant import ToolResult
 
         try:
             target = self._channel_target(channel)
-            model = self.plugin.registryValue("searchModel", target) or self.plugin.registryValue(
-                "assistantModel", target
+            model = model or (
+                self.plugin.registryValue("searchModel", target)
+                or self.plugin.registryValue("assistantModel", target)
             )
             timeout = self.plugin.registryValue("timeout")
 
@@ -4107,6 +4150,68 @@ class LLMService:
             log_label="url_completion",
             error_message="URL fetch failed.",
         )
+
+    def subject_dossier(self, request_text: str, *, channel: str) -> SubjectDossier:
+        """Research the real subjects a @draw or @animate request names.
+
+        One grounded completion in front of the planner, on the same path
+        ``search_web`` runs on. Returns a fact list the planner can paste
+        beside the names the user wrote, or an empty ``text`` when there was
+        nothing to research, the researcher refused, or the call failed. All
+        three are normal; none of them is worth telling the channel about.
+
+        Args:
+            request_text: The user's words, verbatim. Concatenated onto the
+                research prompt, never formatted into it — a brace in an IRC
+                message would take str.format down with it.
+            channel: IRC channel, for per-channel registry scope.
+        """
+        from .prompts import SUBJECT_DOSSIER_PROMPT
+
+        target = self._channel_target(channel)
+        model = (
+            self.plugin.registryValue("subjectResearchModel", target)
+            or self.plugin.registryValue("searchModel", target)
+            or self.plugin.registryValue("assistantModel", target)
+        )
+        result = self._grounded_completion(
+            SUBJECT_DOSSIER_PROMPT + request_text,
+            kind="search",
+            channel=channel,
+            log_label="subject_dossier",
+            error_message="Subject research failed.",
+            model=model,
+        )
+        return SubjectDossier(
+            text=self._parse_dossier(result.content),
+            model=model,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cost=result.cost,
+        )
+
+    @staticmethod
+    def _parse_dossier(content: str) -> str:
+        """Keep only the dash-prefixed lines, normalised and capped.
+
+        See ``_DOSSIER_LINE_RE`` for why the filter is on shape. The JSON error
+        string ``_grounded_completion`` returns on failure has no such line, so
+        a failed call parses to ``""`` without needing its own branch.
+        """
+        lines: list[str] = []
+        used = 0
+        for raw in (content or "").splitlines():
+            match = _DOSSIER_LINE_RE.match(raw)
+            if not match:
+                continue
+            line = f"- {match.group(1).strip()}"
+            if used + len(line) + 1 > _DOSSIER_MAX_CHARS:
+                break
+            lines.append(line)
+            used += len(line) + 1
+            if len(lines) >= _DOSSIER_MAX_LINES:
+                break
+        return "\n".join(lines)
 
     def _xai_responses_call(
         self,

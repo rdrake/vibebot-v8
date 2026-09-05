@@ -282,6 +282,32 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "subjectResearchEnabled",
+    registry.Boolean(
+        True,
+        _("""Research the real subjects a @draw or @animate request names
+        before the planner writes the prompt. One grounded completion looks up
+        how the named people, places and events actually look and the facts are
+        layered onto the planner's prompt, because the generators know nothing
+        by name. Costs one extra call and a few seconds per request: @animate
+        hides that behind the render, @draw does not."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "subjectResearchModel",
+    ValidatedModelName(
+        "",
+        _("""Model for the subject-research pre-stage. Falls back to
+        searchModel, then assistantModel. Worth setting when the search model
+        is more reticent about describing real people than the generator
+        downstream is."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "verseModel",
     ValidatedModelName(
         "",
