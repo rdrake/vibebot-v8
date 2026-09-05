@@ -1,0 +1,175 @@
+"""The subject dossier reaching the planners that need it.
+
+The parse is tested in test_subject_dossier.py. What is tested here is the
+seam: that the block lands in the planner's system prompt, that the kill switch
+kills it, that a research failure costs the request its detail and not its
+render, and that a call which happened is booked. The last one is not
+paranoia — draw spend read $0.00 for four months behind a missing row.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from .conftest import make_registry_side_effect
+
+
+def _assistant_result(content: str = "Queued that up, it is rendering now."):
+    from llm.service import AssistantResult
+
+    return AssistantResult(
+        content=content,
+        grounding_used=False,
+        prompt_tokens=120,
+        completion_tokens=40,
+        cost=0.0012,
+        model="xai/grok-4-1-fast-non-reasoning",
+    )
+
+
+def _dossier(text: str, **usage):
+    from llm.service import SubjectDossier
+
+    return SubjectDossier(
+        text=text,
+        model=usage.get("model", "gemini/gemini-3-flash-preview"),
+        prompt_tokens=usage.get("prompt_tokens", 90),
+        completion_tokens=usage.get("completion_tokens", 60),
+        cost=usage.get("cost", 0.0004),
+    )
+
+
+_FACTS = "- Winston Churchill — heavyset man in his late sixties, cigar, pinstripe suit"
+
+
+@pytest.fixture
+def researching_plugin(plugin_env, mocker):
+    """A plugin with research enabled and both generation paths stubbed."""
+    plugin, mock_irc, mock_msg = plugin_env
+    mock_irc.state.nickToAccount.return_value = "test_account"
+    plugin.registryValue.side_effect = make_registry_side_effect(
+        {"subjectResearchEnabled": True, "animateApiUrl": "http://video.example.com:14205"}
+    )
+    plugin.llm_service.assistant_request.side_effect = None
+    plugin.llm_service.assistant_request.return_value = _assistant_result()
+    plugin.llm_service.subject_dossier.return_value = _dossier(_FACTS)
+    mocker.patch.object(plugin, "_verse_context_for", return_value=None)
+    mocker.patch.object(
+        plugin, "_animate_reference_for", side_effect=lambda irc, text: (text, None)
+    )
+    return plugin, mock_irc, mock_msg
+
+
+def _system_prompt(plugin) -> str | None:
+    return plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+
+
+class TestAnimateResearch:
+    """@animate is the cheap case: the extra seconds vanish behind a 135s render."""
+
+    def test_facts_reach_the_planner(self, researching_plugin) -> None:
+        """GIVEN a real subject WHEN @animate runs THEN the facts are in the prompt."""
+        plugin, mock_irc, mock_msg = researching_plugin
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        prompt = _system_prompt(plugin)
+        assert prompt is not None
+        assert _FACTS in prompt
+        assert "keep the name the user wrote" in prompt
+
+    def test_the_request_is_what_gets_researched(self, researching_plugin) -> None:
+        """GIVEN a request WHEN researched THEN the user's own words are the query."""
+        plugin, mock_irc, mock_msg = researching_plugin
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        plugin.llm_service.subject_dossier.assert_called_once()
+        assert plugin.llm_service.subject_dossier.call_args.args[0] == "churchill on a balcony"
+
+    def test_disabled_means_no_call(self, researching_plugin) -> None:
+        """GIVEN the kill switch off WHEN @animate runs THEN no research happens."""
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"subjectResearchEnabled": False, "animateApiUrl": "http://video.example.com:14205"}
+        )
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        plugin.llm_service.subject_dossier.assert_not_called()
+        assert _system_prompt(plugin) is None
+
+    def test_nothing_to_research_leaves_the_prompt_alone(self, researching_plugin) -> None:
+        """GIVEN a pure-fiction request WHEN researched THEN no block is added.
+
+        "A slow aerial shot over a pine forest" names nobody, and paying a
+        block's worth of prompt to say so would be worse than not asking.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.llm_service.subject_dossier.return_value = _dossier("")
+
+        plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest", "at", "sunrise"])
+
+        assert _system_prompt(plugin) is None
+
+    def test_research_failure_still_renders(self, researching_plugin) -> None:
+        """GIVEN the research raises WHEN @animate runs THEN the clip is still planned.
+
+        A pre-stage that can take the command down with it is worse than no
+        pre-stage. The request loses its detail, not its render.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.llm_service.subject_dossier.side_effect = RuntimeError("provider down")
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        plugin.llm_service.assistant_request.assert_called_once()
+        assert _system_prompt(plugin) is None
+
+    def test_canon_and_dossier_coexist(self, researching_plugin, mocker) -> None:
+        """GIVEN both canon and real subjects WHEN @animate runs THEN both are present.
+
+        "@animate the stinky lads meet churchill" needs the channel's invented
+        cast AND the real man. The block says canon wins where they overlap;
+        that is a claim for the model to act on, so all this asserts is that
+        both bodies of fact arrive and canon is stated first.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+        mocker.patch.object(plugin, "_verse_context_for", return_value="CANON: the stinky lads")
+
+        plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads", "meet", "churchill"])
+
+        prompt = _system_prompt(plugin)
+        assert prompt is not None
+        assert prompt.index("CANON: the stinky lads") < prompt.index(_FACTS)
+
+    def test_spend_is_booked_under_its_own_model(self, researching_plugin) -> None:
+        """GIVEN a research call WHEN it completes THEN a dossier usage row is written.
+
+        Its own row, not the planner's: the researcher is gemini and the
+        planner is grok in production, and one row cannot hold two models.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        rows = [c for c in plugin.db.log_usage.call_args_list if c.args[2] == "dossier"]
+        assert len(rows) == 1
+        assert rows[0].args[3] == "gemini/gemini-3-flash-preview"
+        assert rows[0].args[4] == 90
+        assert rows[0].args[5] == 60
+
+    def test_a_failed_call_books_nothing(self, researching_plugin) -> None:
+        """GIVEN research that cost nothing WHEN it returns THEN no row is written.
+
+        A zero-token row records that an exception happened, which the
+        exception log already records, and pollutes the spend table doing it.
+        """
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.llm_service.subject_dossier.return_value = _dossier(
+            "", prompt_tokens=0, completion_tokens=0, cost=0.0
+        )
+
+        plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        assert [c for c in plugin.db.log_usage.call_args_list if c.args[2] == "dossier"] == []

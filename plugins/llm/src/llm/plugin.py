@@ -4668,6 +4668,50 @@ class LLM(callbacks.Plugin):
         overlay = self.registryValue(overlay_key, channel) if overlay_key else ""
         return "\n\n".join(p for p in [overlay, verse_context] if p)
 
+    def _subject_dossier_for(self, nick: str, channel: str, text: str) -> str | None:
+        """Appearance facts for the real subjects ``text`` names, or None.
+
+        The research half of the media planners' grounding, and the sibling of
+        ``_verse_context_for``: canon covers what the channel invented, this
+        covers what the world already contains. Best-effort in the same way — a
+        failure here costs the request its detail, never its render, so every
+        exit that is not "facts to inject" returns None and says nothing to the
+        channel.
+
+        Books its own usage row. The pre-stage runs on a different model from
+        the planner it feeds (gemini and grok respectively, in this
+        deployment), so folding its spend into the planner's row would file one
+        provider's tokens under the other's name. A call that cost nothing gets
+        no row: an exception is already in the log and a zero row only
+        pollutes the spend table.
+
+        Caller's contract: this makes a blocking LLM call, so wrap it in
+        ``with self._allow_concurrent(), self._llm_executor.permit():``.
+        """
+        from .prompts import SUBJECT_DOSSIER_BLOCK_FOOTER, SUBJECT_DOSSIER_BLOCK_HEADER
+
+        if not self.registryValue("subjectResearchEnabled", channel):
+            return None
+        try:
+            dossier = self.llm_service.subject_dossier(text, channel=channel)
+        except Exception:
+            self.log.exception("subject research failed (non-fatal) channel=%s", channel)
+            return None
+        if dossier.prompt_tokens or dossier.completion_tokens or dossier.cost:
+            self.db.log_usage(
+                nick,
+                channel,
+                "dossier",
+                dossier.model,
+                dossier.prompt_tokens,
+                dossier.completion_tokens,
+                dossier.cost,
+                prompt=text,
+            )
+        if not dossier.text:
+            return None
+        return "\n".join([SUBJECT_DOSSIER_BLOCK_HEADER, dossier.text, SUBJECT_DOSSIER_BLOCK_FOOTER])
+
     @staticmethod
     def _ambient_verse_intent(text: str) -> str:
         """Classify an ambient verse-mention by requested OUTPUT.
@@ -7016,6 +7060,15 @@ class LLM(callbacks.Plugin):
                 overlay_parts.append(
                     self._verse_grounded_overlay(PROFILE_ANIMATE, channel, verse_ctx)
                 )
+            # Subject research: canon above covers what the channel invented,
+            # this covers what the world already contains. It goes second so
+            # canon is stated first, matching the block's own claim that canon
+            # wins where the two describe the same subject. The extra call
+            # costs a few seconds, which is nothing against a 135s render.
+            with self._allow_concurrent(), self._llm_executor.permit():
+                dossier_block = self._subject_dossier_for(nick, channel, text)
+            if dossier_block:
+                overlay_parts.append(dossier_block)
             animate_system_prompt = "\n\n".join(overlay_parts) or None
             reference_images = (
                 [url]
