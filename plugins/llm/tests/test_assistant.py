@@ -1422,6 +1422,37 @@ class TestMetaCompletion:
             CHAT_SYSTEM_PROMPT.format(bot_nick="VibeBot") + "\n" + PENDING_TASKS_GUIDANCE
         )
 
+    def test_irc_lookup_guidance_rides_only_with_the_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """The whois HARD RULE is in the system prompt iff irc_lookup is injected."""
+        from llm.prompts import IRC_LOOKUP_GUIDANCE
+
+        mock_response = make_completion_response("Done.")
+        captured: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
+            return mock_response
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        lookup = {"type": "function", "function": {"name": "irc_lookup", "parameters": {}}}
+        common = {
+            "prompt": "whois eck",
+            "nick": "testuser",
+            "channel": "#test",
+            "db": mocker.MagicMock(),
+            "context": mocker.MagicMock(),
+            "bot_nick": "VibeBot",
+        }
+
+        service.assistant_completion(**common, extra_tools=[lookup], extra_handlers={})
+        service.assistant_completion(**common)
+
+        assert IRC_LOOKUP_GUIDANCE in captured[0]
+        assert IRC_LOOKUP_GUIDANCE not in captured[1]
+
     def test_assistant_completion_excluding_pending_tools_drops_guidance(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:

@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Give irc_lookup a HARD RULE so 'whois X' is looked up, not riffed (`irc`)
 - Never report a channel the bot shares with the target to a non-member (`irc`)
 - Give a revision an antecedent; name the audio language (`remind,animate`)
 - Drop a duplicate reminder at the tool, not in history (`remind`)

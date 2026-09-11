@@ -47,6 +47,7 @@ from .profile import (
 )
 from .prompts import (
     BRIDGE_TOOLS_GUIDANCE,
+    IRC_LOOKUP_GUIDANCE,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     PENDING_TASKS_GUIDANCE,
@@ -5655,6 +5656,13 @@ Examples (echo → action_prompt: ""):
                 for t in (extra_tools or [])
             ):
                 framework += "\n" + BRIDGE_TOOLS_GUIDANCE
+            # Same rule for irc_lookup: its HARD RULE rides only when the
+            # tool is in the request. Stable per channel (ircLookupEnabled).
+            if any(
+                (t.get("function", t) or {}).get("name") == "irc_lookup"
+                for t in (extra_tools or [])
+            ):
+                framework += "\n" + IRC_LOOKUP_GUIDANCE
             # Pending-task operating rules ride only when the reminder/
             # scheduled-task tools are in the request (chat profile with
             # pendingTasksEnabled on for the channel — the plugin passes

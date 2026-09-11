@@ -129,6 +129,25 @@ BRIDGE_TOOLS_GUIDANCE = (
 )
 
 
+# Appended to the chat framework ONLY when the irc_lookup tool is injected
+# (ircLookupEnabled channels). The framework's "answer directly when you
+# can" is exactly wrong for these questions: asked "whois Eck", a
+# non-reasoning model answered "Eck's a phantom in the logs" from its own
+# earlier riff, tool_calls=0, twice in a row. The tool is worthless if it
+# is never picked, so it gets the same HARD RULE shape that made
+# search_web reliable.
+IRC_LOOKUP_GUIDANCE = (
+    "- irc_lookup reads the LIVE IRC network. HARD RULE: when the user asks "
+    "'whois X', 'who is X', whether X is online or idle, what channels X is "
+    "in, whether a channel exists or is active, how many people are in a "
+    "channel, or who is in a channel, you MUST call irc_lookup (kind=whois "
+    "for a nick, names or channels for a channel) before answering — never "
+    "answer from conversation history, memories, or a guess, and never say "
+    "you have no record of someone without calling it first. A nick you "
+    "have never seen is exactly the case it is for."
+)
+
+
 # Verse mode is interactive in-world roleplay, not Q&A. It needs a different
 # output discipline (long-form scenes, not 3-line replies) and a different
 # tool stance (verse_record is mandatory canon-logging, not optional). A

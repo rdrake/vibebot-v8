@@ -184,6 +184,24 @@ class TestBridgeGuidanceSplit:
         assert "run_limnoria_command" in prompts.BRIDGE_TOOLS_GUIDANCE
 
 
+class TestIrcLookupGuidanceSplit:
+    """The whois/channels HARD RULE rides only when irc_lookup is injected."""
+
+    def test_chat_prompt_does_not_mention_irc_lookup(self):
+        assert "irc_lookup" not in prompts.CHAT_SYSTEM_PROMPT
+        assert "irc_lookup" in prompts.IRC_LOOKUP_GUIDANCE
+
+    def test_guidance_names_the_question_shapes_and_forbids_guessing(self):
+        """'Vibebot whois Eck' got 'Eck's a phantom in the logs' with tool_calls=0
+        — twice — because the framework says answer directly when you can."""
+        g = prompts.IRC_LOOKUP_GUIDANCE
+        assert "HARD RULE" in g
+        for shape in ("whois", "who is", "online", "channels", "who is in"):
+            assert shape in g, shape
+        assert "MUST call irc_lookup" in g
+        assert "conversation history" in g
+
+
 class TestPendingTasksGuidanceSplit:
     """Reminder/scheduling rules ride only with the pending-task tools."""
 
