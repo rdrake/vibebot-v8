@@ -765,6 +765,8 @@ class TestCommandRegistry:
             "versepurge",
             "versecompact",
             "versedit",
+            "channels",
+            "names",
         }
         assert names == expected
 

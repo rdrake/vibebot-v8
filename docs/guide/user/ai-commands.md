@@ -219,6 +219,37 @@ The bot carries no usage tool and no usage figures in its prompt, so asking in c
 
 ---
 
+## `channels`
+
+List the busiest public channels on the network, with user counts and topics.
+
+**Usage:** `@channels [--min <n>] [<channel> | <glob>]`
+
+```
+@channels                  → the ten busiest channels
+@channels #linux           → that channel's count and topic
+@channels --min 5 #linux*  → matching channels with at least 5 users
+```
+
+You can also just ask: "vibebot, is `#help` active?" The bot looks it up rather than guessing.
+
+---
+
+## `names`
+
+List who is in a channel at this moment — including channels the bot is not in.
+
+**Usage:** `@names [<channel>]`
+
+```
+@names          → the current channel
+@names #linux   → another channel
+```
+
+Secret and private channels come back empty, exactly as they would for `/names`.
+
+---
+
 ## Rate limits
 
 Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images, and `@animate` tighter still, since a clip holds the video hardware for over a minute. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.

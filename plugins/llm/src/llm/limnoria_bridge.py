@@ -63,6 +63,10 @@ DEFAULT_ALLOWED_PLUGINS: frozenset[str] = frozenset(
         "QuoteGrabs",
         "RSS",
         "DDG",
+        # whois/whowas/latency/uptime — the "who is X / is the bot lagging"
+        # questions users and IRCops ask in chat. Connection management and
+        # the re-dispatch leaves are in DENY_COMMANDS.
+        "Network",
     }
 )
 
@@ -101,6 +105,17 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
         # bypassing every DENY_PLUGINS / DENY_COMMANDS / MUTATING_COMMANDS
         # filter the bridge applies to first-level dispatch.
         ("utilities", "let"),
+        # Network — connection management is owner-gated already, but the
+        # LLM must never see it as an option; ``command``/``cmdall`` are the
+        # same arbitrary-redispatch shape as ``apply``/``let`` (they run
+        # ``self.Proxy(otherIrc, msg, commandAndArgs)``); ``authenticate``
+        # re-runs SASL on a live connection.
+        ("network", "connect"),
+        ("network", "disconnect"),
+        ("network", "reconnect"),
+        ("network", "command"),
+        ("network", "cmdall"),
+        ("network", "authenticate"),
     }
 )
 

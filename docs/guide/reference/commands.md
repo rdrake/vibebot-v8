@@ -142,6 +142,25 @@ capabilities at fire time, and recurring chains cap at 50 fires.
 @usage #channel
 ```
 
+## IRC lookups
+
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `@channels` | `[--min <n>] [<channel> \| <glob>]` | The busiest public channels on the network with user counts and topics. A channel name shows that one; `#linux*` filters; `--min` hides small channels. |
+| `@names` | `[<channel>]` | Who is in a channel at this moment, joined or not. Defaults to the current channel. |
+
+```
+@channels
+@channels #linux
+@channels --min 5 #linux*
+@names #linux
+```
+
+Both answer from a live `LIST` / `NAMES` round trip; `LIST` results are
+cached for 60 seconds. Secret and private channels are hidden by the
+server, the same as for anyone typing `/list`. For a single user, the
+stock `Network` plugin's `@whois <nick>` does the job once it is loaded.
+
 ## Verse commands (user)
 
 `@verseopt`, `@verse`, `@look` and `@who` must be typed in a

@@ -65,7 +65,7 @@ Names must match Limnoria's exact form (`Misc`, `Time`, `Math`); mismatched name
 
 With `bridgeAllowedPlugins` empty, the bridge exposes:
 
-`Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG`
+`Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network`
 
 Each is pure-read or has its write commands gated by `bridgeAllowMutating`. The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
 

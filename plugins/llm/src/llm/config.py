@@ -1213,6 +1213,22 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
+# Live IRC lookups (@channels / @names / irc_lookup tool)
+# ============================================================================
+
+conf.registerChannelValue(
+    LLM,
+    "ircLookupEnabled",
+    registry.Boolean(
+        True,
+        _("""When True, chat advertises the irc_lookup tool so the model can
+        answer questions about channels (LIST) and who is in one (NAMES) on
+        the live network. The @channels and @names commands work regardless.
+        LIST results are cached for 60 seconds per network."""),
+    ),
+)
+
+# ============================================================================
 # Limnoria tool bridge (Phase 1)
 # ============================================================================
 

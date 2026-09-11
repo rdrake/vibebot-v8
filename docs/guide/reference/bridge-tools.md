@@ -51,7 +51,13 @@ plugin in the set is either read-only by nature or has its writes gated
 behind `bridgeAllowMutating`.
 
 `Misc`, `Time`, `Math`, `Utilities`, `Seen`, `Web`, `Later`, `Note`,
-`Karma`, `QuoteGrabs`, `RSS`, `DDG`
+`Karma`, `QuoteGrabs`, `RSS`, `DDG`, `Network`
+
+`Network` is in the set for `whois`, `whowas`, `latency` and `uptime` —
+the "who is alice?" and "are you lagging?" questions. Its connection
+management (`connect`, `disconnect`, `reconnect`, `authenticate`) and
+its re-dispatch commands (`command`, `cmdall`) are in `DENY_COMMANDS`,
+so the model never sees them whatever the caller's capabilities.
 
 For the canonical, current list see `DEFAULT_ALLOWED_PLUGINS` in
 `plugins/llm/src/llm/limnoria_bridge.py`.
@@ -76,6 +82,7 @@ included, needs an explicit load as bot owner:
 @load QuoteGrabs
 @load RSS
 @load DDG
+@load Network
 ```
 
 Limnoria persists each `load` to `bot.conf` automatically. The bridge
@@ -137,6 +144,29 @@ can correct itself or tell the user why. A call that runs returns
 - `{"error": "<tokeniser message>"}` — the argument string failed
   Limnoria's tokeniser: an unbalanced quote, bracket, or pipe. The
   message passes through verbatim so the model can correct its own call.
+
+## Live IRC lookups
+
+`irc_lookup` is a third per-request tool that rides with the bridge
+pair whenever `ircLookupEnabled` is on for the channel (the default),
+bridge or no bridge. It exists because nothing stock answers these two
+questions: Limnoria has no `LIST` command at all, and `Channel.nicks`
+only reads channels the bot has joined.
+
+| `kind` | What it sends | What comes back |
+|--------|---------------|-----------------|
+| `channels` | `LIST` | Up to 25 public channels sorted by user count, each with `name`, `users` and a cleaned `topic`, plus `total`. `target` filters by exact name or glob (`#linux*`). |
+| `names` | `NAMES <target>` | `count` and up to 100 nicks with their `@`/`+` prefixes, for any channel the server will show — joined or not. |
+
+The server enforces its own visibility rules: a `+s` channel is absent
+from `LIST` and answers `NAMES` with nothing, exactly as it would for a
+user typing `/list` or `/names`. The bot adds no privilege.
+
+`LIST` is the one expensive request here, so the reply is cached for
+60 seconds per network and concurrent askers share one in-flight
+request. A server that never closes the reply (or answers `RPL_TRYAGAIN`)
+surfaces as an error to the model after 15 seconds rather than a hung
+turn. The same code backs the `@channels` and `@names` commands.
 
 ## Native tools
 

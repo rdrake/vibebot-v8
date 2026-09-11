@@ -24,5 +24,6 @@ the model alone.
 
 The bridge stays off until an operator sets `bridgeEnabled` for the
 channel. Once on, it exposes a curated read-safe set — Misc, Time,
-Math, Utilities, Seen, Web, Later, Note, Karma, QuoteGrabs, RSS, DDG —
+Math, Utilities, Seen, Web, Later, Note, Karma, QuoteGrabs, RSS, DDG,
+Network —
 unless `bridgeAllowedPlugins` names a different selection.

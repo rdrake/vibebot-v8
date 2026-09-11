@@ -29,10 +29,10 @@ import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.schedule as schedule
 from supybot import world
-from supybot.commands import optional, wrap
+from supybot.commands import getopts, optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import apikeys, limnoria_bridge, statuspage
+from . import apikeys, ircquery, limnoria_bridge, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -596,6 +596,27 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=("@canon lock Harry", "@canon unlock Harry", "@canon forget Harry"),
         category="utility",
     ),
+    CommandInfo(
+        name="channels",
+        args="[--min <n>] [<channel or glob>]",
+        description=(
+            "List the busiest public channels on this network with user counts "
+            "and topics. A channel name shows that channel; a glob like #linux* "
+            "filters; --min hides channels below n users."
+        ),
+        examples=("@channels", "@channels #linux", "@channels --min 5 #linux*"),
+        category="utility",
+    ),
+    CommandInfo(
+        name="names",
+        args="[<channel>]",
+        description=(
+            "List who is in a channel at this moment, including channels the bot has "
+            "not joined. Defaults to the current channel."
+        ),
+        examples=("@names", "@names #linux"),
+        category="utility",
+    ),
 )
 
 
@@ -879,6 +900,9 @@ class LLM(callbacks.Plugin):
         # (target, bot nick) -> (consecutive replies, last reply time).
         self._bot_reply_counts: dict[tuple[str, str], tuple[int, float]] = {}
         self._bot_loop_lock = threading.Lock()
+        # Pending LIST / NAMES queries: fed by do322/do353 et al. on the
+        # driver thread, awaited by @channels/@names and the irc_lookup tool.
+        self._irc_queries = ircquery.IrcQueryRegistry()
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
@@ -2575,6 +2599,82 @@ class LLM(callbacks.Plugin):
         with self._bot_loop_lock:
             self._bot_flags[self._bot_flag_key(irc, nick)] = "B" in status
 
+    # ------------------------------------------------------------------
+    # LIST / NAMES numerics → ircquery.IrcQueryRegistry
+    # ------------------------------------------------------------------
+    # How long @channels / @names / irc_lookup wait for the closing numeric.
+    # A LIST on a mid-sized network completes in well under a second; the
+    # margin covers a server that is throttling us.
+    _IRC_QUERY_TIMEOUT = 15.0
+
+    @staticmethod
+    def _network_of(irc: callbacks.Irc) -> str:
+        return str(getattr(irc, "network", "") or "")
+
+    def do322(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_LIST: ``<me> <channel> <count> :<topic>``."""
+        args = msg.args
+        if len(args) < 3:
+            return
+        try:
+            users = int(args[2])
+        except ValueError:
+            users = 0
+        topic = args[3] if len(args) > 3 else ""
+        self._irc_queries.on_list_row(self._network_of(irc), args[1], users, topic)
+
+    def do323(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_LISTEND."""
+        self._irc_queries.on_list_end(self._network_of(irc))
+
+    def do353(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_NAMREPLY: ``<me> <symbol> <channel> :<nicks>``."""
+        args = msg.args
+        if len(args) < 4:
+            return
+        self._irc_queries.on_names_row(self._network_of(irc), args[2], args[3].split())
+
+    def do366(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_ENDOFNAMES: ``<me> <channel> :End of /NAMES list``."""
+        if len(msg.args) >= 2:
+            self._irc_queries.on_names_end(self._network_of(irc), msg.args[1])
+
+    def do403(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """ERR_NOSUCHCHANNEL / ERR_NOSUCHNICK / RPL_TRYAGAIN: ``<me> <target> :<text>``.
+
+        Only a query already waiting on ``<target>`` is affected; a stray
+        error for something nobody asked about is dropped by the registry.
+        """
+        if len(msg.args) >= 3:
+            self._irc_queries.on_error(self._network_of(irc), msg.args[1], msg.args[2])
+
+    do401 = do403
+    do263 = do403
+
+    def _query_channels(self, irc: callbacks.Irc) -> list[ircquery.ChannelRow] | None:
+        """Fetch (or reuse the cached) LIST for this network; None on silence."""
+
+        def send() -> None:
+            with self._irc_send_lock:
+                irc.queueMsg(ircmsgs.IrcMsg(command="LIST"))
+
+        return self._irc_queries.list_channels(
+            self._network_of(irc), send, timeout=self._IRC_QUERY_TIMEOUT
+        )
+
+    def _query_names(self, irc: callbacks.Irc, channel: str) -> ircquery.NamesResult | None:
+        """Ask the server who is visible in ``channel``; None on silence."""
+
+        def send() -> None:
+            with self._irc_send_lock:
+                irc.queueMsg(ircmsgs.names(channel))
+
+        return self._irc_queries.names(
+            self._network_of(irc), channel, send, timeout=self._IRC_QUERY_TIMEOUT
+        )
+
+    _IRC_QUERY_SILENT = "The server did not answer in time."
+
     def _known_bot(self, irc: callbacks.Irc, nick: str) -> bool | None:
         """True/False once the network has told us, None until it has."""
         with self._bot_loop_lock:
@@ -3922,6 +4022,88 @@ class LLM(callbacks.Plugin):
         if not clipped:
             return bare
         return f'{head} "{clipped}"{tail}'
+
+    def _build_irc_lookup_tool(self, irc: callbacks.Irc):
+        """Build the per-request ``irc_lookup`` tool schema + handler.
+
+        Same shape as :meth:`_build_bridge_tool` and injected the same way:
+        the handler closes over the live ``irc`` so it can send LIST / NAMES
+        and wait on the numerics. Returns ``([schema], {"irc_lookup": fn})``.
+        """
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "irc_lookup",
+                "description": (
+                    "Look up live IRC network state. kind='channels' lists "
+                    "public channels with user counts and topics (target is an "
+                    "optional channel name or glob like '#linux*'; omit it to "
+                    "see the busiest channels). kind='names' lists who is "
+                    "currently in one channel (target required, must start "
+                    "with #), including channels the bot has not joined. For a "
+                    "single user's details use run_limnoria_command with "
+                    "Network.whois instead."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["channels", "names"]},
+                        "target": {
+                            "type": "string",
+                            "description": "Channel name or glob (channels), or channel (names).",
+                        },
+                    },
+                    "required": ["kind"],
+                },
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            kind = str(arguments.get("kind", "")).strip().lower()
+            target = str(arguments.get("target", "") or "").strip()
+            if kind == "channels":
+                rows = self._query_channels(irc)
+                if rows is None:
+                    err = self._irc_queries.last_error(self._network_of(irc), "LIST")
+                    return ToolResult(content=json.dumps({"error": err or self._IRC_QUERY_SILENT}))
+                if target:
+                    rows = [r for r in rows if ircquery.match_channel(r.name, target)]
+                rows.sort(key=lambda r: (-r.users, r.name.lower()))
+                envelope = {
+                    "status": "ok",
+                    "total": len(rows),
+                    "channels": [
+                        {
+                            "name": r.name,
+                            "users": r.users,
+                            "topic": ircquery.clean_text(r.topic, 120),
+                        }
+                        for r in rows[:25]
+                    ],
+                }
+                return ToolResult(content=json.dumps(envelope))
+            if kind == "names":
+                if not ircutils.isChannel(target):
+                    return ToolResult(
+                        content=json.dumps({"error": "target must be a channel name like #chan"})
+                    )
+                result = self._query_names(irc, target)
+                if result is None:
+                    return ToolResult(content=json.dumps({"error": self._IRC_QUERY_SILENT}))
+                if result.error is not None:
+                    return ToolResult(content=json.dumps({"error": result.error}))
+                envelope = {
+                    "status": "ok",
+                    "channel": target,
+                    "count": len(result.nicks),
+                    "nicks": result.nicks[:100],
+                }
+                return ToolResult(content=json.dumps(envelope))
+            return ToolResult(content=json.dumps({"error": "kind must be 'channels' or 'names'"}))
+
+        return [schema], {"irc_lookup": handler}
 
     def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
         """Build the per-request Limnoria bridge tool schemas + handlers.
@@ -6664,13 +6846,21 @@ class LLM(callbacks.Plugin):
                 bridge_schemas, bridge_handlers = self._build_bridge_tool(
                     irc, msg, channel, trace=bridge_trace
                 )
+                bridge_debug = bool(
+                    bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
+                )
+                # irc_lookup rides with the bridge extras: it needs the live
+                # ``irc`` the same way run_limnoria_command does, and like
+                # them it is advertised to every speaker so the channel's
+                # cacheable prompt prefix stays byte-stable.
+                if self.registryValue("ircLookupEnabled", channel):
+                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc)
+                    bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 # Combine bridge tools with any verse tools from the route.
                 bridge_list = list(bridge_schemas) if bridge_schemas else []
                 verse_list = list(extra_tools_override) if extra_tools_override else []
                 extra_tools = (bridge_list + verse_list) or None
-                bridge_debug = bool(
-                    bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
-                )
 
                 # C7d: merge verse handlers into extra_handlers so the
                 # assistant_request loop can dispatch verse tool calls
@@ -7331,6 +7521,69 @@ class LLM(callbacks.Plugin):
         irc.error(_("Usage: @renders [cancel <id> | clear]"))
 
     renders = wrap(renders, [("checkCapability", "llm.animate"), optional("text")])
+
+    # ------------------------------------------------------------------
+    # @channels / @names — live LIST / NAMES lookups
+    # ------------------------------------------------------------------
+
+    def channels(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        optlist: list,
+        pattern: str | None,
+    ) -> None:
+        """[--min <n>] [<channel or glob>]
+
+        Lists the busiest public channels on this network with user counts
+        and topics. Give a channel name for that channel alone, or a glob
+        like #linux* to filter. --min hides channels with fewer users.
+        """
+        if self._is_old_message(msg):
+            return
+        min_users = 0
+        for opt, value in optlist:
+            if opt == "min":
+                min_users = int(value)
+        rows = self._query_channels(irc)
+        if rows is None:
+            err = self._irc_queries.last_error(self._network_of(irc), "LIST")
+            self._safe_error(irc, err or self._IRC_QUERY_SILENT)
+            return
+        self._safe_reply(irc, ircquery.format_channels(rows, pattern=pattern, min_users=min_users))
+
+    channels = wrap(channels, [getopts({"min": "positiveInt"}), optional("something")])
+
+    def names(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        channel: str | None,
+    ) -> None:
+        """[<channel>]
+
+        Lists who is in <channel> at this moment, including channels the bot has
+        not joined (the server hides secret and private channels itself).
+        <channel> defaults to the current channel.
+        """
+        if self._is_old_message(msg):
+            return
+        target = channel or msg.channel
+        if not target or not ircutils.isChannel(target):
+            self._safe_error(irc, _("Give a channel name, like #chan."))
+            return
+        result = self._query_names(irc, target)
+        if result is None:
+            self._safe_error(irc, self._IRC_QUERY_SILENT)
+            return
+        if result.error is not None:
+            self._safe_error(irc, f"{target}: {result.error}")
+            return
+        self._safe_reply(irc, ircquery.format_names(target, result.nicks))
+
+    names = wrap(names, [optional("something")])
 
     def _animate_reference_for(
         self, irc: callbacks.Irc, text: str

@@ -159,10 +159,25 @@ def test_default_allowed_plugins_is_curated_set():
                 "QuoteGrabs",
                 "RSS",
                 "DDG",
+                "Network",
             }
         )
         == lb.DEFAULT_ALLOWED_PLUGINS
     )
+
+
+def test_network_connection_management_is_denied():
+    """Network is allowlisted for whois/whowas/latency/uptime; the leaves
+    that change the bot's connections or re-dispatch arbitrary commands
+    (``command``/``cmdall`` are the same shape as Utilities.apply) are
+    denied at the bridge layer regardless of the caller's capabilities."""
+    from llm import limnoria_bridge as lb
+
+    for leaf in ("connect", "disconnect", "reconnect", "command", "cmdall", "authenticate"):
+        assert ("network", leaf) in lb.DENY_COMMANDS, leaf
+    for leaf in ("whois", "whowas", "latency", "uptime", "networks", "driver", "capabilities"):
+        assert ("network", leaf) not in lb.DENY_COMMANDS, leaf
+        assert ("network", leaf) not in lb.MUTATING_COMMANDS, leaf
 
 
 def test_default_allowed_plugins_camelcase_invariant():

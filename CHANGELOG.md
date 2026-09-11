@@ -629,6 +629,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Answer channel and membership questions from a live LIST/NAMES (`irc`)
 - Make English the default language for clip dialogue (`animate`)
 - Ground the planner in who the named subjects actually are (`draw`)
 - Ground the planner in who the named subjects actually are (`animate`)
