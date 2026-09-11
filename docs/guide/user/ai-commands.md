@@ -246,7 +246,7 @@ List who is in a channel at this moment — including channels the bot is not in
 @names #linux   → another channel
 ```
 
-Secret and private channels come back empty, exactly as they would for `/names`.
+Secret and private channels come back empty, exactly as they would for `/names` — including ones the bot is in, unless you are in them too and ask from inside.
 
 ---
 

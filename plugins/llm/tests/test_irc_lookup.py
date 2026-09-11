@@ -12,7 +12,7 @@ import json
 
 import pytest
 from llm.plugin import AssistantResult
-from supybot import ircmsgs
+from supybot import ircmsgs, ircutils
 
 from .conftest import make_registry_side_effect
 
@@ -50,10 +50,26 @@ def serve_names(plugin, irc, channel: str, lines: list[str], *, error: str | Non
     irc.queueMsg.side_effect = on_send
 
 
+class ChanState:
+    """The two attributes of irclib.ChannelState the visibility rule reads."""
+
+    def __init__(self, users: set[str], modes: dict | None = None) -> None:
+        self.users = users
+        self.modes = modes or {}
+
+
 @pytest.fixture
 def lookup_env(plugin_env):
     plugin, irc, msg = plugin_env
     irc.network = "afternet"
+    # The bot is in #test (with the caller) and alone in secret #hexdroid.
+    # IrcDict as in irclib: channel-name lookups are case-insensitive.
+    irc.state.channels = ircutils.IrcDict(
+        {
+            "#test": ChanState({"testnick", "testbot"}),
+            "#hexdroid": ChanState({"testbot", "eck"}, {"s": None}),
+        }
+    )
     plugin.registryValue.side_effect = make_registry_side_effect({"ircLookupEnabled": True})
     return plugin, irc, msg
 
@@ -165,9 +181,9 @@ class TestNamesCommand:
 
 class TestIrcLookupTool:
     def test_schema_offers_channels_and_names(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
 
-        schemas, handlers = plugin._build_irc_lookup_tool(irc)
+        schemas, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         assert [s["function"]["name"] for s in schemas] == ["irc_lookup"]
         params = schemas[0]["function"]["parameters"]
@@ -175,9 +191,9 @@ class TestIrcLookupTool:
         assert set(handlers) == {"irc_lookup"}
 
     def test_channels_returns_structured_rows(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_list(plugin, irc, [("#a", 3, "\x02Alpha\x02"), ("#b", 12, "")])
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         result = handlers["irc_lookup"]({"kind": "channels"})
 
@@ -190,9 +206,9 @@ class TestIrcLookupTool:
         ]
 
     def test_channels_filters_by_target_glob(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_list(plugin, irc, [("#linux", 3, ""), ("#bsd", 12, "")])
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(
             handlers["irc_lookup"]({"kind": "channels", "target": "#lin*"}).content
@@ -201,9 +217,9 @@ class TestIrcLookupTool:
         assert [c["name"] for c in payload["channels"]] == ["#linux"]
 
     def test_channels_caps_rows_but_reports_total(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_list(plugin, irc, [(f"#c{i}", i, "") for i in range(60)])
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "channels"}).content)
 
@@ -212,9 +228,9 @@ class TestIrcLookupTool:
         assert payload["channels"][0]["name"] == "#c59"
 
     def test_names_returns_nicks(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_names(plugin, irc, "#chan", ["@alice +bob", "carol"])
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "names", "target": "#chan"}).content)
 
@@ -226,8 +242,8 @@ class TestIrcLookupTool:
         }
 
     def test_names_requires_a_channel_target(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        plugin, irc, msg = lookup_env
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "names", "target": "alice"}).content)
 
@@ -235,26 +251,26 @@ class TestIrcLookupTool:
         irc.queueMsg.assert_not_called()
 
     def test_names_server_error_is_passed_through(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_names(plugin, irc, "#nope", [], error="No such channel")
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "names", "target": "#nope"}).content)
 
         assert payload["error"] == "No such channel"
 
     def test_timeout_is_an_error_payload(self, lookup_env, mocker) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         mocker.patch.object(plugin, "_IRC_QUERY_TIMEOUT", 0.01)
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "channels"}).content)
 
         assert "did not answer" in payload["error"]
 
     def test_unknown_kind_is_an_error(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        plugin, irc, msg = lookup_env
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "whois"}).content)
 
@@ -319,8 +335,8 @@ def serve_whois(plugin, irc, nick: str, *, error: str | None = None) -> None:
 
 class TestIrcLookupWhois:
     def test_schema_offers_whois(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        schemas, _ = plugin._build_irc_lookup_tool(irc)
+        plugin, irc, msg = lookup_env
+        schemas, _ = plugin._build_irc_lookup_tool(irc, msg)
         assert schemas[0]["function"]["parameters"]["properties"]["kind"]["enum"] == [
             "channels",
             "names",
@@ -328,9 +344,9 @@ class TestIrcLookupWhois:
         ]
 
     def test_whois_sends_remote_whois_and_returns_fields(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_whois(plugin, irc, "eck")
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "eck"}).content)
 
@@ -353,17 +369,17 @@ class TestIrcLookupWhois:
         }
 
     def test_whois_no_such_nick(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_whois(plugin, irc, "nobody", error="No such nick/channel")
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "nobody"}).content)
 
         assert payload["error"] == "No such nick/channel"
 
     def test_whois_rejects_a_non_nick_target_without_sending(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        plugin, irc, msg = lookup_env
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         for bad in ("", "#chan", "two words", "a" * 80):
             payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": bad}).content)
@@ -372,10 +388,10 @@ class TestIrcLookupWhois:
 
     def test_every_dispatch_is_logged(self, lookup_env, mocker) -> None:
         """One grep answers 'did the model call the tool?' next time."""
-        plugin, irc, _msg = lookup_env
+        plugin, irc, msg = lookup_env
         serve_whois(plugin, irc, "eck")
         log = mocker.patch.object(plugin, "log")
-        _, handlers = plugin._build_irc_lookup_tool(irc)
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
 
         handlers["irc_lookup"]({"kind": "whois", "target": "eck"})
 
@@ -383,3 +399,101 @@ class TestIrcLookupWhois:
             "irc_lookup" in str(c.args[0]) and "whois" in str(c.args)
             for c in log.info.call_args_list
         )
+
+
+class TestVisibilityMirrorsLimnoria:
+    """The bot sees secret channels it sits in; askers who aren't members must not.
+
+    Same rule as ``ircutils.formatWhois``: a channel the bot is in is shown
+    only if the caller is in it too, and a +s/+p one only when the answer
+    goes to that very channel. Channels the bot is NOT in pass through —
+    the server already applied ordinary-user rules to those.
+    """
+
+    def test_whois_hides_a_shared_secret_channel_from_a_non_member(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        serve_whois(plugin, irc, "eck")  # 319 carries @#afternet #linux; add #hexdroid
+        base = irc.queueMsg.side_effect
+
+        def on_send(m) -> None:
+            if m.command == "WHOIS":
+                plugin.do319(irc, numeric("319", "eck", "#hexdroid"))
+            base(m)
+
+        irc.queueMsg.side_effect = on_send
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "eck"}).content)
+
+        assert "#hexdroid" not in payload["channels"]
+        assert "#linux" in payload["channels"]  # bot not in it: server's call
+
+    def test_whois_shows_the_secret_channel_when_asked_from_inside_it(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        irc.state.channels["#hexdroid"].users.add("testnick")
+        msg.channel = "#hexdroid"
+        msg.args = ("#hexdroid", "whois eck")
+
+        def on_send(m) -> None:
+            if m.command == "WHOIS":
+                plugin.do319(irc, numeric("319", "eck", "#hexdroid"))
+                plugin.do318(irc, numeric("318", "eck", "End"))
+
+        irc.queueMsg.side_effect = on_send
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "eck"}).content)
+
+        assert payload["channels"] == ["#hexdroid"]
+
+    def test_whois_hides_a_shared_public_channel_the_caller_is_not_in(self, lookup_env) -> None:
+        """Not just +s: the target may be +i, so 'bot shares it, caller doesn't' hides."""
+        plugin, irc, msg = lookup_env
+        irc.state.channels["#linux"] = ChanState({"testbot", "eck"})
+        serve_whois(plugin, irc, "eck")
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "eck"}).content)
+
+        assert "#linux" not in payload["channels"]
+
+    def test_names_on_a_shared_secret_channel_is_not_visible_to_a_non_member(
+        self, lookup_env
+    ) -> None:
+        plugin, irc, msg = lookup_env
+        serve_names(plugin, irc, "#hexdroid", ["@eck testbot"])
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
+
+        payload = json.loads(
+            handlers["irc_lookup"]({"kind": "names", "target": "#hexdroid"}).content
+        )
+
+        assert payload["nicks"] == []
+        irc.queueMsg.assert_not_called()
+
+    def test_names_command_refuses_the_same_way(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        serve_names(plugin, irc, "#hexdroid", ["@eck testbot"])
+
+        plugin.names(irc, msg, ["#hexdroid"])
+
+        assert "no visible members" in irc.reply.call_args.args[0]
+        irc.queueMsg.assert_not_called()
+
+    def test_channels_drops_shared_secret_rows(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        serve_list(plugin, irc, [("#HexDroid", 2, "sekrit"), ("#linux", 9, "")])
+        _, handlers = plugin._build_irc_lookup_tool(irc, msg)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "channels"}).content)
+
+        assert [c["name"] for c in payload["channels"]] == ["#linux"]
+        assert payload["total"] == 1
+
+    def test_channels_command_drops_shared_secret_rows(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        serve_list(plugin, irc, [("#HexDroid", 2, "sekrit"), ("#linux", 9, "")])
+
+        plugin.channels(irc, msg, [])
+
+        assert irc.reply.call_args.args[0] == "1 channel: #linux (9)"

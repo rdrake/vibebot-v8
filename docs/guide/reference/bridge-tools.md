@@ -161,9 +161,16 @@ skip; as a named kind on a three-way tool it gets picked.
 | `names` | `NAMES <target>` | `count` and up to 100 nicks with their `@`/`+` prefixes, for any channel the server will show — joined or not. |
 | `whois` | `WHOIS <target> <target>` | `user`, `host`, `realname`, `server`, `channels` (with prefixes), `account`, `oper`, `away`, `idle_seconds`, `signon`. The doubled nick asks the user's own server, so idle time comes back. |
 
-The server enforces its own visibility rules: a `+s` channel is absent
-from `LIST` and answers `NAMES` with nothing, exactly as it would for a
-user typing `/list` or `/names`. The bot adds no privilege.
+The server enforces its own visibility rules for channels the bot is
+not in: a `+s` channel is absent from `LIST` and answers `NAMES` with
+nothing, exactly as it would for a user typing `/list` or `/names`. For
+channels the bot *is* in, the server tells the bot more than it would
+tell a stranger, so the tool applies the same rule as Limnoria's own
+`@whois` (`ircutils.formatWhois`): a channel the bot shares is reported
+only if the asker is in it too, and a `+s`/`+p` one only when the answer
+is going to that very channel. That is why asking about someone from
+`#afternet` will not mention a secret channel you both sit in with the
+bot — ask from inside that channel instead.
 
 `LIST` is the one expensive request here, so the reply is cached for
 60 seconds per network and concurrent askers share one in-flight

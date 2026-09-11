@@ -2703,6 +2703,37 @@ class LLM(callbacks.Plugin):
 
     _IRC_QUERY_SILENT = "The server did not answer in time."
 
+    @staticmethod
+    def _irc_channel_visible(
+        irc: callbacks.Irc, chan: str, *, caller: str, reply_channel: str | None
+    ) -> bool:
+        """May ``caller`` be told about ``chan`` in an answer going to ``reply_channel``?
+
+        The bot's own LIST / NAMES / WHOIS see every channel the bot sits in,
+        secret ones included — more than an ordinary user's would. This is
+        ``ircutils.formatWhois``'s rule applied to all three: a channel the
+        bot shares is shown only if the caller is in it too, and a +s/+p one
+        only when the answer lands in that very channel. Channels the bot is
+        NOT in pass through, because the server already applied ordinary-
+        user rules to those.
+        """
+        state = irc.state.channels.get(chan)
+        if state is None:
+            return True
+        if caller not in state.users:
+            return False
+        hidden = bool({"s", "p"} & set(state.modes))
+        return not hidden or ircutils.strEqual(reply_channel or "", chan)
+
+    def _visible_channel_rows(
+        self, irc: callbacks.Irc, rows: list[ircquery.ChannelRow], msg: IrcMsg
+    ) -> list[ircquery.ChannelRow]:
+        return [
+            r
+            for r in rows
+            if self._irc_channel_visible(irc, r.name, caller=msg.nick, reply_channel=msg.channel)
+        ]
+
     def _known_bot(self, irc: callbacks.Irc, nick: str) -> bool | None:
         """True/False once the network has told us, None until it has."""
         with self._bot_loop_lock:
@@ -4051,12 +4082,14 @@ class LLM(callbacks.Plugin):
             return bare
         return f'{head} "{clipped}"{tail}'
 
-    def _build_irc_lookup_tool(self, irc: callbacks.Irc):
+    def _build_irc_lookup_tool(self, irc: callbacks.Irc, msg: IrcMsg):
         """Build the per-request ``irc_lookup`` tool schema + handler.
 
         Same shape as :meth:`_build_bridge_tool` and injected the same way:
         the handler closes over the live ``irc`` so it can send LIST / NAMES
-        and wait on the numerics. Returns ``([schema], {"irc_lookup": fn})``.
+        / WHOIS and wait on the numerics, and over ``msg`` so every answer is
+        filtered for what THIS caller may see (:meth:`_irc_channel_visible`).
+        Returns ``([schema], {"irc_lookup": fn})``.
         """
         from .assistant import ToolResult
 
@@ -4117,7 +4150,13 @@ class LLM(callbacks.Plugin):
                     "realname": ircquery.clean_text(who.realname, 120),
                     "server": who.server,
                     "server_info": ircquery.clean_text(who.server_info, 120),
-                    "channels": who.channels[:50],
+                    "channels": [
+                        c
+                        for c in who.channels
+                        if self._irc_channel_visible(
+                            irc, c.lstrip("@%+~!&"), caller=msg.nick, reply_channel=msg.channel
+                        )
+                    ][:50],
                     "account": who.account,
                     "oper": who.oper,
                     "away": ircquery.clean_text(who.away, 120) if who.away else None,
@@ -4130,6 +4169,7 @@ class LLM(callbacks.Plugin):
                 if rows is None:
                     err = self._irc_queries.last_error(self._network_of(irc), "LIST")
                     return ToolResult(content=json.dumps({"error": err or self._IRC_QUERY_SILENT}))
+                rows = self._visible_channel_rows(irc, rows, msg)
                 if target:
                     rows = [r for r in rows if ircquery.match_channel(r.name, target)]
                 rows.sort(key=lambda r: (-r.users, r.name.lower()))
@@ -4151,7 +4191,13 @@ class LLM(callbacks.Plugin):
                     return ToolResult(
                         content=json.dumps({"error": "target must be a channel name like #chan"})
                     )
-                result = self._query_names(irc, target)
+                if not self._irc_channel_visible(
+                    irc, target, caller=msg.nick, reply_channel=msg.channel
+                ):
+                    # Answer exactly as the server would answer a non-member.
+                    result = ircquery.NamesResult(channel=target, nicks=[])
+                else:
+                    result = self._query_names(irc, target)
                 if result is None:
                     return ToolResult(content=json.dumps({"error": self._IRC_QUERY_SILENT}))
                 if result.error is not None:
@@ -6918,7 +6964,7 @@ class LLM(callbacks.Plugin):
                 # them it is advertised to every speaker so the channel's
                 # cacheable prompt prefix stays byte-stable.
                 if self.registryValue("ircLookupEnabled", channel):
-                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc)
+                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc, msg)
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 # Combine bridge tools with any verse tools from the route.
@@ -7615,6 +7661,7 @@ class LLM(callbacks.Plugin):
             err = self._irc_queries.last_error(self._network_of(irc), "LIST")
             self._safe_error(irc, err or self._IRC_QUERY_SILENT)
             return
+        rows = self._visible_channel_rows(irc, rows, msg)
         self._safe_reply(irc, ircquery.format_channels(rows, pattern=pattern, min_users=min_users))
 
     channels = wrap(channels, [getopts({"min": "positiveInt"}), optional("something")])
@@ -7637,6 +7684,9 @@ class LLM(callbacks.Plugin):
         target = channel or msg.channel
         if not target or not ircutils.isChannel(target):
             self._safe_error(irc, _("Give a channel name, like #chan."))
+            return
+        if not self._irc_channel_visible(irc, target, caller=msg.nick, reply_channel=msg.channel):
+            self._safe_reply(irc, ircquery.format_names(target, []))
             return
         result = self._query_names(irc, target)
         if result is None:
