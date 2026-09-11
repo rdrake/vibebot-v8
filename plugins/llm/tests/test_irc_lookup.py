@@ -171,7 +171,7 @@ class TestIrcLookupTool:
 
         assert [s["function"]["name"] for s in schemas] == ["irc_lookup"]
         params = schemas[0]["function"]["parameters"]
-        assert params["properties"]["kind"]["enum"] == ["channels", "names"]
+        assert params["properties"]["kind"]["enum"] == ["channels", "names", "whois"]
         assert set(handlers) == {"irc_lookup"}
 
     def test_channels_returns_structured_rows(self, lookup_env) -> None:
@@ -296,3 +296,90 @@ class TestChatWiring:
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs["extra_tools"] is None
+
+
+def serve_whois(plugin, irc, nick: str, *, error: str | None = None) -> None:
+    """Answer the next WHOIS for ``nick`` with a small standard reply."""
+
+    def on_send(m) -> None:
+        if m.command != "WHOIS":
+            return
+        if error is not None:
+            plugin.do401(irc, numeric("401", nick, error))
+            return
+        plugin.do311(irc, numeric("311", nick, "~eck", "host.example", "*", "Eck R."))
+        plugin.do319(irc, numeric("319", nick, "@#afternet #linux"))
+        plugin.do312(irc, numeric("312", nick, "irc.afternet.org", "AfterNET"))
+        plugin.do330(irc, numeric("330", nick, "eckacct", "is logged in as"))
+        plugin.do317(irc, numeric("317", nick, "42", "1700000000", "seconds idle"))
+        plugin.do318(irc, numeric("318", nick, "End of WHOIS"))
+
+    irc.queueMsg.side_effect = on_send
+
+
+class TestIrcLookupWhois:
+    def test_schema_offers_whois(self, lookup_env) -> None:
+        plugin, irc, _msg = lookup_env
+        schemas, _ = plugin._build_irc_lookup_tool(irc)
+        assert schemas[0]["function"]["parameters"]["properties"]["kind"]["enum"] == [
+            "channels",
+            "names",
+            "whois",
+        ]
+
+    def test_whois_sends_remote_whois_and_returns_fields(self, lookup_env) -> None:
+        plugin, irc, _msg = lookup_env
+        serve_whois(plugin, irc, "eck")
+        _, handlers = plugin._build_irc_lookup_tool(irc)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "eck"}).content)
+
+        sent = irc.queueMsg.call_args_list[0].args[0]
+        assert sent.command == "WHOIS" and sent.args == ("eck", "eck")
+        assert payload == {
+            "status": "ok",
+            "nick": "eck",
+            "user": "~eck",
+            "host": "host.example",
+            "realname": "Eck R.",
+            "server": "irc.afternet.org",
+            "server_info": "AfterNET",
+            "channels": ["@#afternet", "#linux"],
+            "account": "eckacct",
+            "oper": False,
+            "away": None,
+            "idle_seconds": 42,
+            "signon": 1700000000,
+        }
+
+    def test_whois_no_such_nick(self, lookup_env) -> None:
+        plugin, irc, _msg = lookup_env
+        serve_whois(plugin, irc, "nobody", error="No such nick/channel")
+        _, handlers = plugin._build_irc_lookup_tool(irc)
+
+        payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": "nobody"}).content)
+
+        assert payload["error"] == "No such nick/channel"
+
+    def test_whois_rejects_a_non_nick_target_without_sending(self, lookup_env) -> None:
+        plugin, irc, _msg = lookup_env
+        _, handlers = plugin._build_irc_lookup_tool(irc)
+
+        for bad in ("", "#chan", "two words", "a" * 80):
+            payload = json.loads(handlers["irc_lookup"]({"kind": "whois", "target": bad}).content)
+            assert "error" in payload, bad
+        irc.queueMsg.assert_not_called()
+
+    def test_every_dispatch_is_logged(self, lookup_env, mocker) -> None:
+        """One grep answers 'did the model call the tool?' next time."""
+        plugin, irc, _msg = lookup_env
+        serve_whois(plugin, irc, "eck")
+        log = mocker.patch.object(plugin, "log")
+        _, handlers = plugin._build_irc_lookup_tool(irc)
+
+        handlers["irc_lookup"]({"kind": "whois", "target": "eck"})
+
+        assert any(
+            "irc_lookup" in str(c.args[0]) and "whois" in str(c.args)
+            for c in log.info.call_args_list
+        )

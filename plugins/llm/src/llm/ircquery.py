@@ -1,7 +1,8 @@
-"""Correlate asynchronous LIST / NAMES replies with the caller that asked.
+"""Correlate asynchronous LIST / NAMES / WHOIS replies with the caller that asked.
 
-IRC answers ``LIST`` with a stream of 322 rows closed by 323, and ``NAMES``
-with 353 rows closed by 366 — none of which carry a request id. Nothing in
+IRC answers ``LIST`` with a stream of 322 rows closed by 323, ``NAMES``
+with 353 rows closed by 366, and ``WHOIS`` with 311/312/317/319/… closed
+by 318 — none of which carry a request id. Nothing in
 stock Limnoria collects either (``Channel.nicks`` only reads the state of
 channels the bot has joined), so this module owns the pending-query table:
 the plugin's ``doNNN`` handlers feed rows in, and a blocked caller (a
@@ -28,6 +29,7 @@ __all__ = [
     "ChannelRow",
     "IrcQueryRegistry",
     "NamesResult",
+    "WhoisResult",
     "clean_text",
     "format_channels",
     "format_names",
@@ -50,6 +52,25 @@ class NamesResult:
 
     channel: str
     nicks: list[str]
+    error: str | None = None
+
+
+@dataclass
+class WhoisResult:
+    """A closed WHOIS. Fields the server did not send stay at their defaults."""
+
+    nick: str
+    user: str = ""
+    host: str = ""
+    realname: str = ""
+    server: str = ""
+    server_info: str = ""
+    channels: list[str] = field(default_factory=list)
+    account: str | None = None
+    oper: bool = False
+    away: str | None = None
+    idle_seconds: int | None = None
+    signon: int | None = None
     error: str | None = None
 
 
@@ -85,6 +106,7 @@ class IrcQueryRegistry:
         self._lists: dict[str, _Pending] = {}
         self._list_cache: dict[str, tuple[float, list[ChannelRow]]] = {}
         self._names: dict[tuple[str, str], _Pending] = {}
+        self._whois: dict[tuple[str, str], _Pending] = {}
         self._errors: dict[tuple[str, str], str] = {}
 
     # ---------------------------------------------------------------- LIST
@@ -133,23 +155,37 @@ class IrcQueryRegistry:
 
     # --------------------------------------------------------------- NAMES
 
-    def names(
-        self, network: str, channel: str, send: Callable[[], None], *, timeout: float
-    ) -> NamesResult | None:
-        """Return the visible members of ``channel``, or None on timeout."""
-        key = (network, _lower(channel))
+    def _await(
+        self,
+        table: dict[tuple[str, str], _Pending],
+        key: tuple[str, str],
+        send: Callable[[], None],
+        timeout: float,
+        make_pending: Callable[[], _Pending],
+    ) -> _Pending | None:
+        """Attach to (or open) the pending entry under ``key`` and wait on it."""
         with self._lock:
-            pending = self._names.get(key)
+            pending = table.get(key)
             owner = pending is None
             if owner:
-                pending = self._names[key] = _Pending()
+                pending = table[key] = make_pending()
         assert pending is not None
         if owner:
             send()
         if not pending.done.wait(timeout):
             with self._lock:
-                if self._names.get(key) is pending:
-                    del self._names[key]
+                if table.get(key) is pending:
+                    del table[key]
+            return None
+        return pending
+
+    def names(
+        self, network: str, channel: str, send: Callable[[], None], *, timeout: float
+    ) -> NamesResult | None:
+        """Return the visible members of ``channel``, or None on timeout."""
+        key = (network, _lower(channel))
+        pending = self._await(self._names, key, send, timeout, _Pending)
+        if pending is None:
             return None
         return NamesResult(channel=channel, nicks=list(pending.rows), error=pending.error)
 
@@ -165,13 +201,71 @@ class IrcQueryRegistry:
         if pending is not None:
             pending.done.set()
 
+    # --------------------------------------------------------------- WHOIS
+
+    def whois(
+        self, network: str, nick: str, send: Callable[[], None], *, timeout: float
+    ) -> WhoisResult | None:
+        """Return the WHOIS fields for ``nick``, or None on timeout."""
+        key = (network, _lower(nick))
+        pending = self._await(
+            self._whois, key, send, timeout, lambda: _Pending(rows=[WhoisResult(nick=nick)])
+        )
+        if pending is None:
+            return None
+        result: WhoisResult = pending.rows[0]
+        result.error = pending.error
+        return result
+
+    def on_whois_numeric(self, network: str, numeric: str, args: tuple[str, ...]) -> None:
+        """Feed one WHOIS reply line; ``args`` excludes the leading ``<me>``.
+
+        Handles 311 user, 312 server, 313 oper, 317 idle, 319 channels,
+        330 account and 301 away. Anything else, or a line for a nick nobody
+        asked about, is dropped.
+        """
+        if not args:
+            return
+        with self._lock:
+            pending = self._whois.get((network, _lower(args[0])))
+            if pending is None:
+                return
+            r: WhoisResult = pending.rows[0]
+            if numeric == "311" and len(args) >= 5:
+                # The server's own casing of the nick, not the caller's.
+                r.nick = args[0]
+                r.user, r.host, r.realname = args[1], args[2], args[4]
+            elif numeric == "312" and len(args) >= 3:
+                r.server, r.server_info = args[1], args[2]
+            elif numeric == "313":
+                r.oper = True
+            elif numeric == "317" and len(args) >= 2:
+                try:
+                    r.idle_seconds = int(args[1])
+                    if len(args) >= 4:
+                        r.signon = int(args[2])
+                except ValueError:
+                    pass
+            elif numeric == "319" and len(args) >= 2:
+                r.channels.extend(args[1].split())
+            elif numeric == "330" and len(args) >= 2:
+                r.account = args[1]
+            elif numeric == "301" and len(args) >= 2:
+                r.away = args[1]
+
+    def on_whois_end(self, network: str, nick: str) -> None:
+        with self._lock:
+            pending = self._whois.pop((network, _lower(nick)), None)
+        if pending is not None:
+            pending.done.set()
+
     # -------------------------------------------------------------- errors
 
     def on_error(self, network: str, target: str, text: str) -> None:
-        """Close whichever pending query ``target`` names (a channel or LIST)."""
+        """Close whichever pending query ``target`` names (channel, nick, or LIST)."""
         key = (network, _lower(target))
         with self._lock:
-            pending = self._names.pop(key, None)
+            pending = self._names.pop(key, None) or self._whois.pop(key, None)
             if pending is None and target.upper() == "LIST":
                 pending = self._lists.pop(network, None)
             if pending is None:

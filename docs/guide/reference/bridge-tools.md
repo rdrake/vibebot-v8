@@ -149,14 +149,17 @@ can correct itself or tell the user why. A call that runs returns
 
 `irc_lookup` is a third per-request tool that rides with the bridge
 pair whenever `ircLookupEnabled` is on for the channel (the default),
-bridge or no bridge. It exists because nothing stock answers these two
-questions: Limnoria has no `LIST` command at all, and `Channel.nicks`
-only reads channels the bot has joined.
+bridge or no bridge. It exists because nothing stock answers the first
+two questions — Limnoria has no `LIST` command at all, and
+`Channel.nicks` only reads channels the bot has joined — and because a
+`whois` buried in the bridge's command table is one the model tends to
+skip; as a named kind on a three-way tool it gets picked.
 
 | `kind` | What it sends | What comes back |
 |--------|---------------|-----------------|
 | `channels` | `LIST` | Up to 25 public channels sorted by user count, each with `name`, `users` and a cleaned `topic`, plus `total`. `target` filters by exact name or glob (`#linux*`). |
 | `names` | `NAMES <target>` | `count` and up to 100 nicks with their `@`/`+` prefixes, for any channel the server will show — joined or not. |
+| `whois` | `WHOIS <target> <target>` | `user`, `host`, `realname`, `server`, `channels` (with prefixes), `account`, `oper`, `away`, `idle_seconds`, `signon`. The doubled nick asks the user's own server, so idle time comes back. |
 
 The server enforces its own visibility rules: a `+s` channel is absent
 from `LIST` and answers `NAMES` with nothing, exactly as it would for a
@@ -166,7 +169,9 @@ user typing `/list` or `/names`. The bot adds no privilege.
 60 seconds per network and concurrent askers share one in-flight
 request. A server that never closes the reply (or answers `RPL_TRYAGAIN`)
 surfaces as an error to the model after 15 seconds rather than a hung
-turn. The same code backs the `@channels` and `@names` commands.
+turn. The same code backs the `@channels` and `@names` commands. Every
+dispatch logs one `irc_lookup: kind=… target=…` line, so "did the model
+call it?" is a grep.
 
 ## Native tools
 

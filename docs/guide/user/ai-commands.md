@@ -231,7 +231,7 @@ List the busiest public channels on the network, with user counts and topics.
 @channels --min 5 #linux*  → matching channels with at least 5 users
 ```
 
-You can also just ask: "vibebot, is `#help` active?" The bot looks it up rather than guessing.
+You can also just ask: "vibebot, is `#help` active?" or "vibebot, who is eck?" The bot looks it up (`LIST`, `NAMES`, or `WHOIS`) rather than guessing.
 
 ---
 

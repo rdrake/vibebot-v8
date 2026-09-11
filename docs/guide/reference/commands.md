@@ -159,7 +159,9 @@ capabilities at fire time, and recurring chains cap at 50 fires.
 Both answer from a live `LIST` / `NAMES` round trip; `LIST` results are
 cached for 60 seconds. Secret and private channels are hidden by the
 server, the same as for anyone typing `/list`. For a single user, the
-stock `Network` plugin's `@whois <nick>` does the job once it is loaded.
+stock `Network` plugin's `@whois <nick>` does the job once it is loaded;
+in conversation, "who is eck?" reaches the same `WHOIS` through the
+`irc_lookup` tool.
 
 ## Verse commands (user)
 

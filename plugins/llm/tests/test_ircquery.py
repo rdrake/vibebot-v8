@@ -250,3 +250,72 @@ class TestFormatNames:
         assert ircquery.format_names("#chan", []) == (
             "#chan: no visible members (empty, secret, or private)."
         )
+
+
+class TestWhois:
+    def test_collects_the_standard_whois_numerics(self):
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.on_whois_numeric("afternet", "311", ("Eck", "~eck", "host.example", "*", "Eck R."))
+            reg.on_whois_numeric("afternet", "319", ("eck", "@#afternet +#help #linux"))
+            reg.on_whois_numeric("afternet", "312", ("eck", "irc.afternet.org", "AfterNET"))
+            reg.on_whois_numeric("afternet", "330", ("eck", "eckacct", "is logged in as"))
+            reg.on_whois_numeric("afternet", "313", ("eck", "is an IRC operator"))
+            reg.on_whois_numeric("afternet", "301", ("eck", "gone fishing"))
+            reg.on_whois_numeric("afternet", "317", ("eck", "42", "1700000000", "seconds idle"))
+            reg.on_whois_end("afternet", "ECK")
+
+        result = reg.whois("afternet", "eck", send, timeout=1.0)
+
+        assert result is not None
+        assert result.error is None
+        assert result.nick == "Eck"
+        assert (result.user, result.host, result.realname) == ("~eck", "host.example", "Eck R.")
+        assert result.channels == ["@#afternet", "+#help", "#linux"]
+        assert (result.server, result.server_info) == ("irc.afternet.org", "AfterNET")
+        assert result.account == "eckacct"
+        assert result.oper is True
+        assert result.away == "gone fishing"
+        assert (result.idle_seconds, result.signon) == (42, 1700000000)
+
+    def test_no_such_nick_is_an_error(self):
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.on_error("afternet", "nobody", "No such nick/channel")
+
+        result = reg.whois("afternet", "nobody", send, timeout=1.0)
+
+        assert result is not None
+        assert result.error == "No such nick/channel"
+
+    def test_numerics_for_another_nick_do_not_leak_in(self):
+        """The Network plugin's own @whois shares the wire; keep keys per nick."""
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.on_whois_numeric("afternet", "311", ("other", "~o", "h", "*", "Other"))
+            reg.on_whois_numeric("afternet", "311", ("eck", "~eck", "h", "*", "Eck"))
+            reg.on_whois_end("afternet", "eck")
+
+        result = reg.whois("afternet", "eck", send, timeout=1.0)
+
+        assert result is not None
+        assert result.realname == "Eck"
+
+    def test_timeout_returns_none(self):
+        reg = IrcQueryRegistry()
+        assert reg.whois("afternet", "eck", lambda: None, timeout=0.01) is None
+
+    def test_malformed_idle_is_ignored_not_fatal(self):
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.on_whois_numeric("afternet", "317", ("eck", "soon", "seconds idle"))
+            reg.on_whois_end("afternet", "eck")
+
+        result = reg.whois("afternet", "eck", send, timeout=1.0)
+
+        assert result is not None
+        assert result.idle_seconds is None

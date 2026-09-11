@@ -2651,6 +2651,23 @@ class LLM(callbacks.Plugin):
     do401 = do403
     do263 = do403
 
+    def do311(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """WHOIS body lines: ``<me> <nick> ...`` — parsed in ircquery."""
+        if len(msg.args) >= 2:
+            self._irc_queries.on_whois_numeric(self._network_of(irc), msg.command, msg.args[1:])
+
+    do301 = do311
+    do312 = do311
+    do313 = do311
+    do317 = do311
+    do319 = do311
+    do330 = do311
+
+    def do318(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_ENDOFWHOIS."""
+        if len(msg.args) >= 2:
+            self._irc_queries.on_whois_end(self._network_of(irc), msg.args[1])
+
     def _query_channels(self, irc: callbacks.Irc) -> list[ircquery.ChannelRow] | None:
         """Fetch (or reuse the cached) LIST for this network; None on silence."""
 
@@ -2671,6 +2688,17 @@ class LLM(callbacks.Plugin):
 
         return self._irc_queries.names(
             self._network_of(irc), channel, send, timeout=self._IRC_QUERY_TIMEOUT
+        )
+
+    def _query_whois(self, irc: callbacks.Irc, nick: str) -> ircquery.WhoisResult | None:
+        """Remote WHOIS (``WHOIS nick nick``) so idle/signon come back; None on silence."""
+
+        def send() -> None:
+            with self._irc_send_lock:
+                irc.queueMsg(ircmsgs.whois(nick, nick))
+
+        return self._irc_queries.whois(
+            self._network_of(irc), nick, send, timeout=self._IRC_QUERY_TIMEOUT
         )
 
     _IRC_QUERY_SILENT = "The server did not answer in time."
@@ -4042,17 +4070,22 @@ class LLM(callbacks.Plugin):
                     "optional channel name or glob like '#linux*'; omit it to "
                     "see the busiest channels). kind='names' lists who is "
                     "currently in one channel (target required, must start "
-                    "with #), including channels the bot has not joined. For a "
-                    "single user's details use run_limnoria_command with "
-                    "Network.whois instead."
+                    "with #), including channels the bot has not joined. "
+                    "kind='whois' looks up one user by nick (target required): "
+                    "their host, real name, server, channels, account, idle "
+                    "time and whether they are an IRC operator. Use it whenever "
+                    "someone asks who a nick is, whether they are online, or "
+                    "what channels they are in."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "kind": {"type": "string", "enum": ["channels", "names"]},
+                        "kind": {"type": "string", "enum": ["channels", "names", "whois"]},
                         "target": {
                             "type": "string",
-                            "description": "Channel name or glob (channels), or channel (names).",
+                            "description": (
+                                "Channel name or glob (channels), channel (names), or nick (whois)."
+                            ),
                         },
                     },
                     "required": ["kind"],
@@ -4063,6 +4096,35 @@ class LLM(callbacks.Plugin):
         def handler(arguments: dict[str, Any]) -> ToolResult:
             kind = str(arguments.get("kind", "")).strip().lower()
             target = str(arguments.get("target", "") or "").strip()
+            # One grep answers "did the model call the tool?" — the timing
+            # line only says tool_calls=N, not which.
+            self.log.info(
+                "irc_lookup: kind=%s target=%r network=%s", kind, target, self._network_of(irc)
+            )
+            if kind == "whois":
+                if not target or len(target) > 64 or not ircutils.isNick(target, strictRfc=False):
+                    return ToolResult(content=json.dumps({"error": "target must be a nick"}))
+                who = self._query_whois(irc, target)
+                if who is None:
+                    return ToolResult(content=json.dumps({"error": self._IRC_QUERY_SILENT}))
+                if who.error is not None:
+                    return ToolResult(content=json.dumps({"error": who.error}))
+                envelope = {
+                    "status": "ok",
+                    "nick": who.nick,
+                    "user": who.user,
+                    "host": who.host,
+                    "realname": ircquery.clean_text(who.realname, 120),
+                    "server": who.server,
+                    "server_info": ircquery.clean_text(who.server_info, 120),
+                    "channels": who.channels[:50],
+                    "account": who.account,
+                    "oper": who.oper,
+                    "away": ircquery.clean_text(who.away, 120) if who.away else None,
+                    "idle_seconds": who.idle_seconds,
+                    "signon": who.signon,
+                }
+                return ToolResult(content=json.dumps(envelope))
             if kind == "channels":
                 rows = self._query_channels(irc)
                 if rows is None:
@@ -4101,7 +4163,9 @@ class LLM(callbacks.Plugin):
                     "nicks": result.nicks[:100],
                 }
                 return ToolResult(content=json.dumps(envelope))
-            return ToolResult(content=json.dumps({"error": "kind must be 'channels' or 'names'"}))
+            return ToolResult(
+                content=json.dumps({"error": "kind must be 'channels', 'names' or 'whois'"})
+            )
 
         return [schema], {"irc_lookup": handler}
 

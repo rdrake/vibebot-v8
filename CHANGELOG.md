@@ -629,6 +629,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Add whois to irc_lookup so chat answers 'who is X' from a real WHOIS (`irc`)
 - Answer channel and membership questions from a live LIST/NAMES (`irc`)
 - Make English the default language for clip dialogue (`animate`)
 - Ground the planner in who the named subjects actually are (`draw`)
