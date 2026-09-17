@@ -452,6 +452,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Note that plugin INFO log lines never reach docker logs on prod (`plans`)
 - Describe subject research where users and operators will look for it
 - Plan the subject-research pre-stage for @draw and @animate (`plans`)
 - Close the draw refusal follow-up with the measured numbers (`plans`)
@@ -631,6 +632,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Add @meme and the make_meme chat tool, rendered by memegen.link (`meme`)
 - Add whois to irc_lookup so chat answers 'who is X' from a real WHOIS (`irc`)
 - Answer channel and membership questions from a live LIST/NAMES (`irc`)
 - Make English the default language for clip dialogue (`animate`)

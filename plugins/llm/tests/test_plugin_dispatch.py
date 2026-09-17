@@ -746,6 +746,7 @@ class TestCommandRegistry:
             "ask",
             "code",
             "draw",
+            "meme",
             "animate",
             "renders",
             "story",

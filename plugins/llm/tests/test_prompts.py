@@ -222,3 +222,17 @@ class TestPendingTasksGuidanceSplit:
         assert "both pending future work" in prompts.PENDING_TASKS_GUIDANCE
         assert "ONCE — do not list and then cancel" in prompts.PENDING_TASKS_GUIDANCE
         assert "emoji reaction" in prompts.PENDING_TASKS_GUIDANCE
+
+
+class TestMemeGuidanceSplit:
+    """The make_meme HARD RULE rides only when the tool is injected."""
+
+    def test_chat_prompt_does_not_mention_make_meme(self):
+        assert "make_meme" not in prompts.CHAT_SYSTEM_PROMPT
+        assert "make_meme" in prompts.MEME_GUIDANCE
+
+    def test_guidance_forbids_choosing_a_template(self):
+        g = prompts.MEME_GUIDANCE
+        assert "HARD RULE" in g
+        assert "MUST call make_meme" in g
+        assert "never" in g and "generate_image" in g

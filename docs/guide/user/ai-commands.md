@@ -109,6 +109,27 @@ Image generation applies content safety filters. If a filter blocks your prompt,
 
 ---
 
+## `meme`
+
+Caption a meme template. You name the template and write the captions; the bot never picks one for you.
+
+**Usage:** `@meme <template> | <caption> [| <caption> ...]`
+
+```
+@meme drake | left on unread | left on read
+@meme distracted boyfriend | me | a new side project | my actual job
+@meme this is fine | | when the build is green on the third retry
+@meme list cat
+```
+
+Separate the captions with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes. `@meme <template>` alone shows the template's caption count and an example, and `@meme list <word>` finds templates by name or keyword — there are about 200, rendered by [memegen.link](https://memegen.link), with names like `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, and `fine`.
+
+`@meme` needs an authenticated account. Memes cost nothing to make, so the rate limit is looser than `@draw`'s.
+
+The same thing works in conversation: "vibebot make a drake meme: left on unread / left on read" calls the `make_meme` tool with the name and captions you gave. If the name matches nothing, the bot lists the closest templates and asks which one you meant.
+
+---
+
 ## `animate`
 
 Generate a short video from a text description. Also available as `@video`.

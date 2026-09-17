@@ -1115,6 +1115,14 @@ _register_rate_limit_block(
     windows=(300, 60, 3600),
 )
 
+# --- meme (free: memegen renders, the bot only rehosts) ---
+# The ceiling is politeness to a third-party host and the channel, not spend.
+_register_rate_limit_block(
+    "meme",
+    counts=(6, 12, 2),
+    windows=(60, 60, 600),
+)
+
 # --- story (expensive, illustrated storybook) ---
 _register_rate_limit_block(
     "story",
@@ -1209,6 +1217,32 @@ conf.registerGlobalValue(
         command path and background work — memory extraction, watch-mode
         reminders, scheduled tasks). Lower this on small hosts or when the
         provider rate-limits aggressively."""),
+    ),
+)
+
+# ============================================================================
+# Memes (@meme / make_meme tool)
+# ============================================================================
+
+conf.registerGlobalValue(
+    LLM,
+    "memeApiBase",
+    registry.String(
+        "https://api.memegen.link",
+        _("""Base URL of a memegen-compatible API (https://memegen.link). The
+        bot reads /templates/ from it once a day and fetches /images/<id>/...png
+        for each meme, then rehosts the PNG like a generated image."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "memeEnabled",
+    registry.Boolean(
+        True,
+        _("""When True, chat advertises the make_meme tool so 'vibebot make a
+        drake meme: X / Y' works in conversation. The @meme command works
+        regardless."""),
     ),
 )
 

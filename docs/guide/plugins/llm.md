@@ -11,7 +11,7 @@ tools.
 
 | Family | Commands | Notes |
 |--------|----------|-------|
-| Core AI | `@ask`, `@code`, `@draw`, `@story` | Chat with vision, code with HTTP links, images, illustrated pages. |
+| Core AI | `@ask`, `@code`, `@draw`, `@meme`, `@story` | Chat with vision, code with HTTP links, images, captioned memes, illustrated pages. |
 | Memory | `@forget`, `@memories`, `@instruct` | Volatile context, durable facts, persistent instructions. |
 | Reminders | `@remind` | Natural-language reminders with recurring support. |
 | Accounting | `@usage` | Per-account and per-channel API usage. |

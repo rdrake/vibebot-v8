@@ -148,6 +148,23 @@ IRC_LOOKUP_GUIDANCE = (
 )
 
 
+# Appended to the chat framework ONLY when the make_meme tool is injected
+# (memeEnabled channels). The model's job here is transcription, not taste:
+# the user names the template and the captions, the tool resolves the name
+# against memegen's list and reports a miss with suggestions. Left to its own
+# judgement grok picks the wrong template or draws a "meme" with
+# generate_image, which misspells the captions and refuses the characters.
+MEME_GUIDANCE = (
+    "- make_meme captions a named meme template (memegen.link). HARD RULE: "
+    "when the user names a meme ('drake meme', 'distracted boyfriend', "
+    "'this is fine') and gives caption text, you MUST call make_meme with "
+    "template set to the name exactly as the user said it and lines set to "
+    "their captions in order — never pick a template they did not name, "
+    "never rewrite their captions, and never use generate_image for a meme. "
+    "If the tool reports no such template, relay its suggestions and ask "
+    "which one; do not guess."
+)
+
 # Verse mode is interactive in-world roleplay, not Q&A. It needs a different
 # output discipline (long-form scenes, not 3-line replies) and a different
 # tool stance (verse_record is mandatory canon-logging, not optional). A

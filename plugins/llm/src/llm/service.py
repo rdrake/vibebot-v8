@@ -48,6 +48,7 @@ from .profile import (
 from .prompts import (
     BRIDGE_TOOLS_GUIDANCE,
     IRC_LOOKUP_GUIDANCE,
+    MEME_GUIDANCE,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     PENDING_TASKS_GUIDANCE,
@@ -558,6 +559,12 @@ def _image_url_host(url: str) -> str:
         return (urlparse(url).hostname or "").lower()
     except ValueError:
         return ""
+
+
+# Tools whose success message is an image URL on our own host. Both mint for
+# the fabrication guard and both short-circuit the turn: the URL is the
+# deliverable, and a step_2 sentence about it is latency the user pays for.
+_IMAGE_MINTING_TOOLS = frozenset({"generate_image", "make_meme"})
 
 
 def _unminted_image_urls(content: str, minted: set[str], hosts: frozenset[str]) -> list[str]:
@@ -5663,6 +5670,11 @@ Examples (echo → action_prompt: ""):
                 for t in (extra_tools or [])
             ):
                 framework += "\n" + IRC_LOOKUP_GUIDANCE
+            # And make_meme (memeEnabled): transcription rule, same gating.
+            if any(
+                (t.get("function", t) or {}).get("name") == "make_meme" for t in (extra_tools or [])
+            ):
+                framework += "\n" + MEME_GUIDANCE
             # Pending-task operating rules ride only when the reminder/
             # scheduled-task tools are in the request (chat profile with
             # pendingTasksEnabled on for the channel — the plugin passes
@@ -6318,7 +6330,7 @@ Examples (echo → action_prompt: ""):
                             storybook_ok = True
                         if tc.function.name == "generate_video":
                             video_tool_called = True
-                        if tc.function.name == "generate_image":
+                        if tc.function.name in _IMAGE_MINTING_TOOLS:
                             # Record what this turn actually minted, so the
                             # stale-image guard below can tell a fresh image
                             # from one lifted out of history.
@@ -6327,7 +6339,7 @@ Examples (echo → action_prompt: ""):
                             minted_image_urls.update(_IMAGE_URL_RE.findall(image_url))
                             if image_url:
                                 step_image_urls.append(image_url)
-                    elif isinstance(parsed, dict) and tc.function.name == "generate_image":
+                    elif isinstance(parsed, dict) and tc.function.name in _IMAGE_MINTING_TOOLS:
                         image_tool_called = True
                         image_tool_error = str(parsed.get("error") or "").strip() or None
 
@@ -6392,7 +6404,7 @@ Examples (echo → action_prompt: ""):
                 # nothing to short-circuit on, so the turn continues and the
                 # model reports the failure honestly, as before.
                 if step_image_urls and all(
-                    tc.function.name == "generate_image" for tc in message.tool_calls
+                    tc.function.name in _IMAGE_MINTING_TOOLS for tc in message.tool_calls
                 ):
                     url = " ".join(step_image_urls)
                     total_prompt_tokens += executor.accumulated_prompt_tokens
@@ -6413,7 +6425,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
-                        last_successful_tool="generate_image",
+                        last_successful_tool=message.tool_calls[-1].function.name,
                         final_text_after_tools=url,
                         was_verse=was_verse,
                     )

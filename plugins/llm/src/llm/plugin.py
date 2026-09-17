@@ -32,7 +32,7 @@ from supybot import world
 from supybot.commands import getopts, optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import apikeys, ircquery, limnoria_bridge, statuspage
+from . import apikeys, ircquery, limnoria_bridge, meme, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -370,6 +370,20 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         examples=(
             "@draw A sunset over mountains in watercolor style",
             "@draw A cyberpunk cityscape at night",
+        ),
+        category="generation",
+    ),
+    CommandInfo(
+        name="meme",
+        args="<template> | <caption> [| <caption> ...]",
+        description=(
+            "Caption a meme template from memegen.link. Name the template, then "
+            "the captions, separated by |. 'list <word>' finds templates."
+        ),
+        examples=(
+            "@meme drake | left on unread | left on read",
+            "@meme distracted boyfriend | me | a new side project | my actual job",
+            "@meme list cat",
         ),
         category="generation",
     ),
@@ -903,6 +917,8 @@ class LLM(callbacks.Plugin):
         # Pending LIST / NAMES queries: fed by do322/do353 et al. on the
         # driver thread, awaited by @channels/@names and the irc_lookup tool.
         self._irc_queries = ircquery.IrcQueryRegistry()
+        # Built on first use from memeApiBase; see _meme_catalog.
+        self._meme_templates: meme.CachedCatalog | None = None
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
@@ -6921,6 +6937,10 @@ class LLM(callbacks.Plugin):
                     lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc)
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
+                if self.registryValue("memeEnabled", channel):
+                    meme_schemas, meme_handlers = self._build_meme_tool()
+                    bridge_schemas = [*(bridge_schemas or []), *meme_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **meme_handlers}
                 # Combine bridge tools with any verse tools from the route.
                 bridge_list = list(bridge_schemas) if bridge_schemas else []
                 verse_list = list(extra_tools_override) if extra_tools_override else []
@@ -7257,6 +7277,151 @@ class LLM(callbacks.Plugin):
             stop_typing()
 
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
+
+    def _meme_catalog(self) -> meme.MemeCatalog | None:
+        """The memegen template list, fetched at most daily. None when it
+        has never loaded (memegen unreachable since startup)."""
+        base = (self.registryValue("memeApiBase") or "").strip()
+        if self._meme_templates is None or self._meme_templates.base != base:
+            timeout = self.registryValue("drawTimeout") or self.registryValue("timeout")
+            self._meme_templates = meme.CachedCatalog(base, timeout=timeout)
+        catalog = self._meme_templates.get()
+        if catalog is None:
+            self.log.warning("meme: templates unavailable: %s", self._meme_templates.last_error)
+        return catalog
+
+    def _make_meme(self, template_query: str, lines: list[str]) -> tuple[str | None, str]:
+        """Resolve, fetch from memegen, rehost. ``(url, error)``; one is set.
+
+        Shared by @meme and the make_meme tool so an unknown name or a wrong
+        caption count reads the same in both places.
+        """
+        catalog = self._meme_catalog()
+        if catalog is None:
+            return None, _("Meme templates are unavailable right now.")
+        base = (self.registryValue("memeApiBase") or "").strip()
+        plan = meme.plan_meme(catalog, base, template_query, lines)
+        if plan.error or plan.url is None:
+            return None, plan.error or _("Could not build that meme.")
+        # One grep answers "did memegen get asked?" — the fetch helper logs
+        # only failures.
+        self.log.info("meme: template=%s lines=%s url=%s", plan.template.id, len(lines), plan.url)
+        hosted = self.llm_service._download_and_save_image(plan.url)
+        if not hosted:
+            return None, _("Could not fetch that meme from memegen.")
+        return hosted, ""
+
+    def _build_meme_tool(self):
+        """Build the ``make_meme`` tool schema + handler.
+
+        Same shape as :meth:`_build_irc_lookup_tool`. The model transcribes
+        the template name the user said; resolution is :mod:`meme`'s job, and
+        a miss comes back as an error with suggestions for the model to relay.
+        """
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "make_meme",
+                "description": (
+                    "Caption a named meme template (memegen.link) and return the "
+                    "image URL. Use it when the user names a meme and gives caption "
+                    "text. Returns an error listing similar template names when the "
+                    "name is unknown."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "template": {
+                            "type": "string",
+                            "description": (
+                                "The meme's name exactly as the user wrote it, e.g. "
+                                "'drake', 'distracted boyfriend', 'this is fine'. Do "
+                                "not choose one yourself."
+                            ),
+                        },
+                        "lines": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "The captions in order, top to bottom / left to "
+                                "right, verbatim from the user."
+                            ),
+                        },
+                    },
+                    "required": ["template", "lines"],
+                },
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            template = arguments.get("template")
+            lines = arguments.get("lines")
+            if not isinstance(template, str) or not isinstance(lines, list):
+                return ToolResult(
+                    content=json.dumps({"error": "template must be a string and lines a list"})
+                )
+            lines = [str(line) for line in lines][: meme.MAX_LINES]
+            self.log.info("make_meme: template=%r lines=%s", template, len(lines))
+            hosted, error = self._make_meme(template, lines)
+            if hosted is None:
+                return ToolResult(content=json.dumps({"error": error}))
+            return ToolResult(content=json.dumps({"status": "ok", "message": hosted}))
+
+        return [schema], {"make_meme": handler}
+
+    def meme(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str,
+    ) -> None:
+        """<template> | <caption> [| <caption> ...]  or  list [<word>]
+
+        Captions a meme template from memegen.link. Name the template, then
+        the captions, separated by |. A blank caption leaves that box empty.
+
+        Examples:
+          @meme drake | left on unread | left on read
+          @meme distracted boyfriend | me | a new side project | my actual job
+          @meme list cat
+        """
+        if self._is_old_message(msg):
+            return
+
+        parsed = meme.parse_meme_request(text)
+        if parsed is None:
+            self._safe_error(irc, _("Usage: @meme <template> | <caption> | <caption>"))
+            return
+        template_query, lines = parsed
+
+        head, _sep, word = template_query.partition(" ")
+        if head.lower() == "list" and not lines:
+            catalog = self._meme_catalog()
+            if catalog is None:
+                self._safe_error(irc, _("Meme templates are unavailable right now."))
+                return
+            picks = catalog.suggest(word, limit=10) if word.strip() else catalog.templates[:10]
+            if word.strip():
+                picks = [t for t in picks if meme.matches(t, word)] or picks
+            listing = "; ".join(f"{t.id} ({t.name}, {t.lines})" for t in picks)
+            self._safe_reply(irc, _("Templates: %s — %d in all.") % (listing, len(catalog)))
+            return
+
+        pf = self._run_preflight(irc, msg, text, "meme", require_account=True)
+        if pf.blocked:
+            return
+
+        with self._allow_concurrent():
+            hosted, error = self._make_meme(template_query, lines)
+        if hosted is None:
+            self._safe_error(irc, error)
+            return
+        self._safe_reply(irc, hosted)
+
+    meme = wrap(meme, [("checkCapability", "llm.draw"), "text"])
 
     def animate(
         self,
