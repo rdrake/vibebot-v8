@@ -119,9 +119,12 @@ class MemeOptions:
     style: str | None = None
     font: str | None = None
     layout_top: bool = False
-    # A picture to put into the captioned meme, by an image-edit model —
-    # what goes in the Spirit Halloween costume's blank photo, say.
+    # An instruction for the image-edit model, applied to the captioned
+    # meme — what goes in the Spirit Halloween costume's blank photo, say.
+    # ``draw`` is the user's own words (--edit); ``picture`` asks the picker
+    # to write one from the request (--draw).
     draw: str | None = None
+    picture: bool = False
 
 
 def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
