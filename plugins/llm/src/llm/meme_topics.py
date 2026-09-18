@@ -15,11 +15,10 @@ id memegen no longer serves is ignored; a new template it adds simply
 has no tags until someone writes them. Keep tags lowercase; the resolver
 normalises them anyway.
 
-A possible next step, not built: when the resolver misses, let a model
-pick from the catalog (names + examples) and validate the answer against
-it before use. That would cost a call per miss and reopen the failure the
-make_meme HARD RULE closed (grok inventing template names), so it waits
-until this table proves insufficient.
+These tags also feed the picker (``prompts.MEME_PICK_PROMPT``): when a
+request names no template, a model reads this table beside the names and
+example captions and chooses one, and :func:`meme.parse_pick` checks the
+answer against the catalog before memegen sees it.
 """
 
 from __future__ import annotations

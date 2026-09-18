@@ -49,6 +49,7 @@ from .prompts import (
     BRIDGE_TOOLS_GUIDANCE,
     IRC_LOOKUP_GUIDANCE,
     MEME_GUIDANCE,
+    MEME_PICK_PROMPT,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     PENDING_TASKS_GUIDANCE,
@@ -1632,6 +1633,23 @@ _DOSSIER_LINE_RE = re.compile(r"^\s*[-*•]\s+(\S.*)$")
 # The block rides in the planner's system prompt on every request that has one.
 _DOSSIER_MAX_LINES = 8
 _DOSSIER_MAX_CHARS = 1500
+
+
+class MemePick(NamedTuple):
+    """The picker's raw answer plus what it cost.
+
+    ``content`` is the model's text for :func:`meme.parse_pick` to validate;
+    ``error`` is set instead when the call itself failed. Usage rides back
+    for the same reason as :class:`SubjectDossier`: it is a second
+    completion the caller books under the user's @meme.
+    """
+
+    content: str | None
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    error: str | None = None
 
 
 class SubjectDossier(NamedTuple):
@@ -4220,6 +4238,40 @@ class LLMService:
             if len(lines) >= _DOSSIER_MAX_LINES:
                 break
         return "\n".join(lines)
+
+    def meme_pick(self, request_text: str, *, catalog_brief: str, channel: str) -> MemePick:
+        """Ask the meme model which template fits ``request_text`` and what it says.
+
+        One JSON completion, catalog in the system prompt, request as the
+        user turn — concatenated, never formatted in. The answer is not
+        trusted here; :func:`meme.parse_pick` checks it against the catalog.
+        """
+        target = self._channel_target(channel)
+        model = self.plugin.registryValue("memeModel", target) or self.plugin.registryValue(
+            "assistantModel", target
+        )
+        if self._missing_key_error(model):
+            return MemePick(None, model, error="The meme model has no API key.")
+        messages = [
+            {"role": Role.SYSTEM, "content": MEME_PICK_PROMPT + catalog_brief},
+            {"role": Role.USER, "content": request_text},
+        ]
+        try:
+            response = self._timed_completion(
+                "meme_pick",
+                model=model,
+                messages=messages,
+                channel=channel,
+                timeout=self.plugin.registryValue("timeout"),
+                response_format={"type": "json_object"},
+                **self._get_provider_kwargs(model, include_tools=False),
+            )
+        except Exception as exc:
+            self.log.warning("meme_pick failed: %s", self._sanitize(str(exc)))
+            return MemePick(None, model, error="The meme picker is not answering.")
+        prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+        content = response.choices[0].message.content if response.choices else None
+        return MemePick(content, model, prompt_tokens, completion_tokens, cost)
 
     def _xai_responses_call(
         self,

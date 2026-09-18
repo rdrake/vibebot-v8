@@ -566,3 +566,42 @@ class TestTopics:
         )
         assert cat.suggest("push-up") == []
         assert [t.id for t in cat.suggest("y u no")] == ["yuno"]
+
+
+class TestPicker:
+    """The model's answer is a proposal; the catalog decides whether it stands."""
+
+    def test_catalog_brief_is_one_line_per_template(self, catalog):
+        brief = meme.catalog_brief(catalog.with_keywords({"fine": ("coping",)}))
+        rows = brief.splitlines()
+        assert len(rows) == len(catalog)
+        assert "fine | This is Fine | 2 | _ / this is fine | dog, fire, coping" in rows
+        assert rows[0].startswith("drake | Drakeposting | 2 | left on unread / left on read")
+
+    def test_valid_pick_resolves_and_keeps_lines(self, catalog):
+        choice = meme.parse_pick('{"template": "drake", "lines": ["a", "b"]}', catalog)
+        assert choice.template.id == "drake" and choice.lines == ["a", "b"]
+
+    def test_pick_tolerates_fences_and_names(self, catalog):
+        text = '```json\n{"template": "Distracted Boyfriend", "lines": ["me", "x", "y"]}\n```'
+        assert meme.parse_pick(text, catalog).template.id == "db"
+
+    def test_extra_lines_are_cut_not_refused(self, catalog):
+        choice = meme.parse_pick('{"template": "drake", "lines": ["a", "b", "c"]}', catalog)
+        assert choice.lines == ["a", "b"]
+
+    def test_null_template_returns_the_reason(self, catalog):
+        assert meme.parse_pick('{"template": null, "reason": "No gym meme."}', catalog) == (
+            "No gym meme."
+        )
+
+    def test_invented_id_is_a_miss(self, catalog):
+        result = meme.parse_pick('{"template": "gigachad", "lines": ["a"]}', catalog)
+        assert isinstance(result, str) and "gigachad" in result
+
+    @pytest.mark.parametrize(
+        "content",
+        [None, "", "sure!", '{"template": "drake"}', '{"template": "drake", "lines": []}'],
+    )
+    def test_unusable_answers_are_misses(self, catalog, content):
+        assert isinstance(meme.parse_pick(content, catalog), str)

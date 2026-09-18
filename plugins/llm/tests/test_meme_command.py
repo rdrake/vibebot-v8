@@ -11,6 +11,7 @@ import json
 
 import pytest
 from llm import meme
+from llm.service import MemePick
 
 from .conftest import make_registry_side_effect
 
@@ -44,6 +45,11 @@ def meme_plugin(plugin_env, mocker):
         meme.CachedCatalog, "get", return_value=meme.MemeCatalog(_TEMPLATES), autospec=True
     )
     plugin.llm_service._download_and_save_image.return_value = _HOSTED
+    # The picker declines unless a test says otherwise, so a resolver miss
+    # still reads as the did-you-mean list.
+    plugin.llm_service.meme_pick.return_value = MemePick(
+        '{"template": null, "reason": "Nothing fits."}', "test-model"
+    )
     # No network in tests: memegen's canonical spelling is the one we built.
     mocker.patch.object(meme, "canonical_url", side_effect=lambda url, **_kw: url)
     return plugin, mock_irc, mock_msg
@@ -119,6 +125,79 @@ class TestMemeCommand:
         plugin.llm_service._download_and_save_image.assert_not_called()
 
 
+class TestPickerInCommand:
+    """No template named → the picker chooses, the reply shows the choice."""
+
+    def test_unnamed_request_is_picked_and_rendered(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "drake", "lines": ["waiting for ci", "pushing anyway"]}',
+            "test-model",
+            prompt_tokens=5000,
+            completion_tokens=20,
+            cost=0.001,
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["waiting for CI"])
+
+        request = plugin.llm_service.meme_pick.call_args.args[0]
+        assert request == "waiting for CI"
+        assert (
+            "drake | Drakeposting | 2"
+            in plugin.llm_service.meme_pick.call_args.kwargs["catalog_brief"]
+        )
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched == "https://api.memegen.link/images/drake/waiting_for_ci/pushing_anyway.png"
+        assert (
+            mock_irc.reply.call_args.args[0]
+            == f"{_HOSTED} — drake | waiting for ci | pushing anyway"
+        )
+        models = [c.args[3] for c in plugin.db.log_usage.call_args_list]
+        assert models == ["test-model", "memegen"]
+        assert plugin.db.log_usage.call_args_list[0].args[6] == 0.001
+
+    def test_miss_with_captions_hands_them_to_the_picker(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["how did you get so strong | i do one push-up"])
+
+        assert plugin.llm_service.meme_pick.call_args.args[0] == (
+            "how did you get so strong | i do one push-up"
+        )
+        error = mock_irc.error.call_args.args[0]
+        assert error.startswith("Nothing fits. No meme template called 'how did you get so strong'")
+
+    def test_named_template_never_asks_the_picker(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+        plugin.meme(mock_irc, mock_msg, ["drake"])
+
+        plugin.llm_service.meme_pick.assert_not_called()
+
+    def test_invented_id_never_reaches_memegen(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "gigachad", "lines": ["a", "b"]}', "test-model"
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["gym"])
+
+        plugin.llm_service._download_and_save_image.assert_not_called()
+        assert "gigachad" in mock_irc.error.call_args.args[0]
+
+    def test_picker_failure_is_reported_and_booked(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            None, "test-model", error="The meme picker is not answering."
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["gym"])
+
+        assert "not answering" in mock_irc.error.call_args.args[0]
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
+
+
 class TestMakeMemeTool:
     """The chat tool: grok transcribes the name the user said, code resolves it."""
 
@@ -143,6 +222,35 @@ class TestMakeMemeTool:
 
         assert "drake" in payload["error"] and "db" in payload["error"]
         plugin.llm_service._download_and_save_image.assert_not_called()
+
+    def test_brief_goes_to_the_picker(self, meme_plugin) -> None:
+        plugin, _, _ = meme_plugin
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "drake", "lines": ["a", "b"]}', "test-model"
+        )
+
+        payload = json.loads(handlers["make_meme"]({"brief": "a meme about ci"}).content)
+
+        assert plugin.llm_service.meme_pick.call_args.args[0] == "a meme about ci"
+        assert payload == {"status": "ok", "message": f"{_HOSTED} — drake | a | b"}
+
+    def test_brief_miss_has_no_did_you_mean(self, meme_plugin) -> None:
+        plugin, _, _ = meme_plugin
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
+
+        payload = json.loads(handlers["make_meme"]({"brief": "a meme about ci"}).content)
+
+        assert payload == {"error": "Nothing fits."}
+
+    def test_nothing_at_all_is_an_error(self, meme_plugin) -> None:
+        plugin, _, _ = meme_plugin
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
+
+        payload = json.loads(handlers["make_meme"]({}).content)
+
+        assert "error" in payload
+        plugin.llm_service.meme_pick.assert_not_called()
 
     def test_handler_tolerates_junk_arguments(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
@@ -259,13 +367,15 @@ class TestMemeUsageRow:
 
         assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
 
-    def test_resolver_miss_writes_nothing(self, meme_plugin) -> None:
-        """Nothing reached memegen, so a row would only dilute the averages."""
+    def test_resolver_miss_books_the_picker_but_not_memegen(self, meme_plugin) -> None:
+        """The picker ran and cost tokens; memegen was never asked."""
         plugin, mock_irc, mock_msg = meme_plugin
 
         plugin.meme(mock_irc, mock_msg, ["drake boyfriend | a | b"])
 
-        plugin.db.log_usage.assert_not_called()
+        assert plugin.db.log_usage.call_count == 1
+        assert plugin.db.log_usage.call_args.args[3] == "test-model"
+        plugin.llm_service._download_and_save_image.assert_not_called()
 
     def test_tool_path_writes_the_same_row(self, meme_plugin) -> None:
         plugin, _, mock_msg = meme_plugin

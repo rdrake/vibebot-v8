@@ -1250,6 +1250,18 @@ conf.registerGlobalValue(
 
 conf.registerChannelValue(
     LLM,
+    "memeModel",
+    ValidatedModelName(
+        "",
+        _("""Model that picks a template and writes captions when @meme (or
+        make_meme's brief) does not name a template the catalog knows. One
+        JSON completion over the ~20 KB catalog per pick. Falls back to
+        assistantModel."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "memeEnabled",
     registry.Boolean(
         True,

@@ -15,9 +15,6 @@ Active:
 - [Status-announce restart gap](2026-08-14-status-announce-restart-gap.md) —
   `_status_state` is memory-only, so an incident opening during a restart is
   seeded as already-announced and never fires. Noted, not started.
-- [Meme template inference](2026-09-18-meme-template-inference.md) — let a
-  model pick a template when the name resolver misses. Not started; the
-  checked-in topic tags (`meme_topics.py`) shipped 2026-09-18 first.
 - [Plugin INFO log lines missing](2026-09-11-plugin-info-logs-missing.md) —
   `LLM.log.info` and `LLM.bridge` INFO lines never reach `docker logs` on
   prod while WARNING lines from the same code do; the `irc_lookup:` dispatch

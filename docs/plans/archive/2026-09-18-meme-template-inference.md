@@ -1,6 +1,6 @@
 # Meme template inference on a resolver miss
 
-**Status:** Noted, not started (2026-09-18)
+**Status:** Shipped 2026-09-18, same day, after the topic tags alone failed the first live request
 **Author:** Richard Drake (with claude)
 **Affects:** `plugins/llm/src/llm/meme.py` (`MemeCatalog.resolve`),
 `plugin.py` `_build_meme_tool` / `_make_meme`, `prompts.py` `MEME_GUIDANCE`.
@@ -24,7 +24,25 @@ step is inference: when `resolve` returns nothing, hand a model the
 catalog (id, name, example captions, tags) and the query, ask for one id
 or "none", and validate the answer against the catalog before using it.
 
-## Design constraints
+## What shipped
+
+`@meme <anything the catalog does not resolve>` and `make_meme(brief=...)`
+run one JSON completion (`LLMService.meme_pick`, model `memeModel` →
+`assistantModel`) over the catalog brief — id, name, line count, example
+captions, up to six tags per template, ~29 KB — and `meme.parse_pick`
+validates the answer: the id must resolve, extra lines are cut, an
+invented id or a null answer is a miss. Captions the user gave after `|`
+go to the picker verbatim. The reply carries `url — id | line | line`.
+The picker never runs for a name the resolver knows; that path is
+unchanged. Cost measured in prod: 8.5K prompt tokens, about $0.01 per
+pick on gemini-flash or grok-4-1-fast; 1 s on grok, 4–14 s on gemini.
+
+Not done from the list below: an explicit `@meme find` (the reply line
+makes a wrong pick visible and redoable, which was the point) and the
+month of measurement (the first live request already showed the tags were
+not enough).
+
+## Design constraints (as written before building)
 
 - Deterministic validation stays. The model's answer is only ever an id
   already in the catalog; anything else is a miss with suggestions, the

@@ -7295,6 +7295,14 @@ class LLM(callbacks.Plugin):
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
+    def _meme_names(self, query: str) -> bool:
+        """True when ``query`` is a template the catalog resolves or an image
+        URL — the cases where the user chose and the picker must stay out."""
+        if meme.is_http_url(query.strip()):
+            return True
+        catalog = self._meme_catalog()
+        return catalog is not None and catalog.resolve(query) is not None
+
     def _make_meme(
         self,
         msg: IrcMsg,
@@ -7345,6 +7353,80 @@ class LLM(callbacks.Plugin):
             return None, error
         return hosted, ""
 
+    def _meme_or_infer(
+        self,
+        msg: IrcMsg,
+        template_query: str,
+        lines: list[str],
+        options: meme.MemeOptions | None = None,
+        *,
+        named: bool = True,
+    ) -> tuple[str | None, str]:
+        """Render a named template, or let the picker choose one.
+
+        The picker runs only when ``template_query`` names nothing the
+        catalog knows — '@meme waiting for CI', or a miss with captions
+        ('@meme how did you get so strong | ...'). When the picker declines
+        and the user had ``named`` a template, the resolver's did-you-mean
+        list follows its reason; a brief gets the reason alone.
+        """
+        if self._meme_names(template_query):
+            return self._make_meme(msg, template_query, lines, options)
+        request = " | ".join(x for x in [template_query, *lines] if x)
+        hosted, error = self._infer_meme(msg, request, options)
+        if hosted is None and named:
+            _hosted, resolver_error = self._make_meme(msg, template_query, lines, options)
+            error = f"{error} {resolver_error}"
+        return hosted, error
+
+    def _infer_meme(
+        self,
+        msg: IrcMsg,
+        request: str,
+        options: meme.MemeOptions | None = None,
+    ) -> tuple[str | None, str]:
+        """Let the meme model pick the template and captions, then render.
+
+        Runs only when the user named no template the catalog knows. The
+        pick is validated by :func:`meme.parse_pick` before memegen sees it;
+        the picker's own completion is booked as a ``meme`` usage row under
+        its model, beside the $0 memegen row the render writes. Success is
+        ``url — id | line | line`` so the channel sees what was chosen and
+        can redo it by hand.
+        """
+        catalog = self._meme_catalog()
+        if catalog is None:
+            return None, _("Meme templates are unavailable right now.")
+        channel = self._get_channel(msg)
+        pick = self.llm_service.meme_pick(
+            request, catalog_brief=meme.catalog_brief(catalog), channel=channel
+        )
+        try:
+            self.db.log_usage(
+                ircutils.nickFromHostmask(msg.prefix),
+                channel,
+                "meme",
+                pick.model,
+                pick.prompt_tokens,
+                pick.completion_tokens,
+                pick.cost,
+                prompt=request[:200],
+                status="error" if pick.error else "success",
+                error_detail=(pick.error or "")[:200],
+            )
+        except Exception:
+            self.log.exception("meme usage logging failed")
+        if pick.error:
+            return None, pick.error
+        choice = meme.parse_pick(pick.content, catalog)
+        self.log.info("meme_pick: request=%r -> %s", request[:120], choice)
+        if isinstance(choice, str):
+            return None, choice
+        hosted, error = self._make_meme(msg, choice.template.id, choice.lines, options)
+        if hosted is None:
+            return None, error
+        return f"{hosted} — {' | '.join([choice.template.id, *choice.lines])}", ""
+
     def _build_meme_tool(self, msg: IrcMsg):
         """Build the ``make_meme`` tool schema + handler.
 
@@ -7359,10 +7441,12 @@ class LLM(callbacks.Plugin):
             "function": {
                 "name": "make_meme",
                 "description": (
-                    "Caption a named meme template (memegen.link) and return the "
-                    "image URL. Use it when the user names a meme and gives caption "
-                    "text. Returns an error listing similar template names when the "
-                    "name is unknown."
+                    "Make a meme (memegen.link) and return the image URL. Two "
+                    "modes: the user names a template and gives captions "
+                    "(template + lines), or the user asks for a meme about "
+                    "something (brief) and the tool picks the template and "
+                    "writes the captions. Returns an error listing similar "
+                    "template names when a named template is unknown."
                 ),
                 "parameters": {
                     "type": "object",
@@ -7381,7 +7465,16 @@ class LLM(callbacks.Plugin):
                             "items": {"type": "string"},
                             "description": (
                                 "The captions in order, top to bottom / left to "
-                                "right, verbatim from the user."
+                                "right, verbatim from the user. Empty when the user "
+                                "gave none."
+                            ),
+                        },
+                        "brief": {
+                            "type": "string",
+                            "description": (
+                                "What the meme should be about, in the user's words, "
+                                "when they did not name a template. Leave template "
+                                "empty in that case."
                             ),
                         },
                         "animated": {
@@ -7400,17 +7493,22 @@ class LLM(callbacks.Plugin):
                             ),
                         },
                     },
-                    "required": ["template", "lines"],
+                    "required": [],
                 },
             },
         }
 
         def handler(arguments: dict[str, Any]) -> ToolResult:
-            template = arguments.get("template")
-            lines = arguments.get("lines")
-            if not isinstance(template, str) or not isinstance(lines, list):
+            template = arguments.get("template") or ""
+            lines = arguments.get("lines") or []
+            brief = arguments.get("brief") or ""
+            if not (
+                isinstance(template, str) and isinstance(lines, list) and isinstance(brief, str)
+            ):
                 return ToolResult(
-                    content=json.dumps({"error": "template must be a string and lines a list"})
+                    content=json.dumps(
+                        {"error": "template and brief must be strings and lines a list"}
+                    )
                 )
             lines = [str(line) for line in lines][: meme.MAX_LINES]
             style = arguments.get("style")
@@ -7418,8 +7516,14 @@ class LLM(callbacks.Plugin):
                 animated=bool(arguments.get("animated")),
                 style=style.strip() if isinstance(style, str) and style.strip() else None,
             )
-            self.log.info("make_meme: template=%r lines=%s", template, len(lines))
-            hosted, error = self._make_meme(msg, template, lines, options)
+            self.log.info(
+                "make_meme: template=%r brief=%r lines=%s", template, brief[:80], len(lines)
+            )
+            if not (template.strip() or brief.strip()):
+                return ToolResult(content=json.dumps({"error": "Give a template or a brief."}))
+            hosted, error = self._meme_or_infer(
+                msg, template.strip() or brief.strip(), lines, options, named=bool(template.strip())
+            )
             if hosted is None:
                 return ToolResult(content=json.dumps({"error": error}))
             return ToolResult(content=json.dumps({"status": "ok", "message": hosted}))
@@ -7492,7 +7596,7 @@ class LLM(callbacks.Plugin):
             return
 
         with self._allow_concurrent():
-            hosted, error = self._make_meme(msg, template_query, lines, options)
+            hosted, error = self._meme_or_infer(msg, template_query, lines, options)
         if hosted is None:
             self._safe_error(irc, error)
             return

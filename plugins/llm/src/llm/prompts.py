@@ -155,16 +155,48 @@ IRC_LOOKUP_GUIDANCE = (
 # judgement grok picks the wrong template or draws a "meme" with
 # generate_image, which misspells the captions and refuses the characters.
 MEME_GUIDANCE = (
-    "- make_meme captions a named meme template (memegen.link). HARD RULE: "
+    "- make_meme captions a meme template (memegen.link). HARD RULE: "
     "when the user names a meme ('drake meme', 'distracted boyfriend', "
     "'this is fine') or pastes an image URL to caption, and gives caption "
     "text, you MUST call make_meme with template set to the name (or URL) "
     "exactly as the user said it and lines set to "
     "their captions in order — never pick a template they did not name, "
     "never rewrite their captions, and never use generate_image for a meme. "
+    "When the user asks for a meme ABOUT something without naming a "
+    "template ('make a meme about waiting for CI'), call make_meme with "
+    "brief set to their words and template empty; the tool picks the "
+    "template and writes the captions, you do not. "
     "If the tool reports no such template, relay its suggestions and ask "
     "which one; do not guess."
 )
+
+# The picker: one JSON completion inside the make_meme tool and the @meme
+# command, run only when the user did not name a template the catalog
+# knows. It sees the catalog and the request, nothing else — no channel
+# history, no persona — so the same request gives the same meme in any
+# channel. The catalog is appended after this text.
+MEME_PICK_PROMPT = """\
+You choose a meme template for a request and write its captions.
+
+Answer with one JSON object and nothing else:
+  {"template": "<id from the catalog>", "lines": ["<caption>", ...]}
+or, when no template in the catalog fits:
+  {"template": null, "reason": "<one short sentence>"}
+
+Rules:
+- "template" is an id from the first column of the catalog, exactly.
+- "lines" has as many entries as the template's line count (third column),
+  in the template's reading order; "" leaves a box blank. The example (fourth
+  column) shows what each box is for — keep that structure.
+- If the request already contains caption text (often separated by |), use
+  it verbatim, in order; only write captions the user did not supply.
+- Captions are short (under 60 characters), lowercase unless a name, in the
+  register of the meme. No hashtags, no emoji, no explanation.
+- Prefer a template whose joke matches the request over one whose subject
+  merely matches a word in it.
+
+Catalog (id | name | lines | example | tags):
+"""
 
 # Verse mode is interactive in-world roleplay, not Q&A. It needs a different
 # output discipline (long-form scenes, not 3-line replies) and a different

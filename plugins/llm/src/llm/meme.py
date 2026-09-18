@@ -125,14 +125,14 @@ def custom_template(background: str, name: str = "custom image") -> MemeTemplate
     return MemeTemplate(CUSTOM_TEMPLATE_ID, name, CUSTOM_LINES, background=background)
 
 
-def _is_http_url(text: str) -> bool:
+def is_http_url(text: str) -> bool:
     return text.lower().startswith(("http://", "https://")) and " " not in text
 
 
 def _safe_background(url: str) -> bool:
     from .service import validate_external_url
 
-    return _is_http_url(url) and validate_external_url(url)
+    return is_http_url(url) and validate_external_url(url)
 
 
 @dataclass(frozen=True)
@@ -290,7 +290,7 @@ class MemeCatalog:
         extra_keywords: dict[str, list[str]] = {}
         customs: list[MemeTemplate] = []
         for name, target in aliases.items():
-            if _is_http_url(target):
+            if is_http_url(target):
                 if _safe_background(target):
                     customs.append(
                         MemeTemplate(
@@ -370,6 +370,64 @@ class MemeCatalog:
         return [s[4] for s in scored[:limit]]
 
 
+# One catalog line per template for the picker prompt. Six tags is enough
+# to say what a template is for; the whole brief stays near 20 KB.
+_BRIEF_TAGS = 6
+
+
+def catalog_brief(catalog: MemeCatalog) -> str:
+    """The catalog as the picker sees it: ``id | name | N | example | tags``.
+
+    memegen's keywords and the topic tags are one column here; the picker
+    does not care which is which. Custom (URL-alias) templates are listed
+    too — an operator added them because people ask for them.
+    """
+    rows: list[str] = []
+    for t in catalog.templates:
+        example = " / ".join(x or "_" for x in t.example) if t.example else ""
+        tags = ", ".join(t.keywords[:_BRIEF_TAGS])
+        rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
+    return "\n".join(rows)
+
+
+@dataclass(frozen=True)
+class MemeChoice:
+    template: MemeTemplate
+    lines: list[str]
+
+
+def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
+    """Validate the picker's answer against the catalog; a string is why not.
+
+    The model's JSON is ``{"template": id, "lines": [...]}`` or
+    ``{"template": null, "reason": ...}``. Anything but an id from the
+    catalog is a miss — the whole point of the picker running inside the
+    tool is that an invented name never reaches memegen. Too many lines are
+    cut, not refused: the model miscounting boxes is not the user's problem.
+    """
+    from .service import _extract_json_object
+
+    parsed = _extract_json_object(content)
+    if not isinstance(parsed, dict):
+        return "The picker did not answer."
+    template_id = parsed.get("template")
+    if not isinstance(template_id, str) or not template_id.strip():
+        reason = parsed.get("reason")
+        return (
+            str(reason).strip() if isinstance(reason, str) and reason.strip() else "Nothing fits."
+        )
+    template = catalog.resolve(template_id)
+    if template is None:
+        return f"The picker chose '{template_id}', which is not a template."
+    raw_lines = parsed.get("lines")
+    if not isinstance(raw_lines, list):
+        return "The picker gave no captions."
+    lines = [str(x).strip()[:MAX_CAPTION_CHARS] for x in raw_lines][: template.lines]
+    if not any(lines):
+        return "The picker gave no captions."
+    return MemeChoice(template, lines)
+
+
 def parse_aliases(entries: list[str]) -> dict[str, str]:
     """``name=id`` or ``name=https://image`` pairs from memeAliases."""
     aliases: dict[str, str] = {}
@@ -413,7 +471,7 @@ def plan_meme(
     offers so the answer is a list of choices, not a memegen error page.
     """
     options = options or MemeOptions()
-    if _is_http_url(template_query.strip()):
+    if is_http_url(template_query.strip()):
         background = template_query.strip()
         if not _safe_background(background):
             return MemePlan(
