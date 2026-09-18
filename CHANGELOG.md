@@ -636,6 +636,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- --draw sends the captioned meme through xAI image edit (`meme`)
 - Pick the template and write the captions when none is named (`meme`)
 - Tag every memegen template with topics so @meme list gym finds one (`meme`)
 - Expose memegen's gif, style, font and layout options (`meme`)

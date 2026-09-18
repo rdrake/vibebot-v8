@@ -42,6 +42,18 @@ makes a wrong pick visible and redoable, which was the point) and the
 month of measurement (the first live request already showed the tags were
 not enough).
 
+## Also shipped the same day: `--draw`
+
+The "blank canvas" idea (Spirit Halloween costume photo) turned out not to
+need coordinates or Pillow: caption with memegen first, then send the
+captioned PNG to xAI's `/v1/images/edits` (`LLMService.image_edit`,
+`memeEditModel`) with the instruction wrapped in a keep-every-letter frame.
+Both grok-imagine-image ($0.022, 9 s) and gemini-2.5-flash-image (≈$0.04,
+7 s) preserved the text on spirit; grok also did Distracted Boyfriend with
+all three subjects swapped and Pam's two pictures. memegen's `?background=`
+is ignored on non-custom templates, so editing before captioning was never
+an option. Gemini is not wired: the service only speaks xAI's edit endpoint.
+
 ## Design constraints (as written before building)
 
 - Deterministic validation stays. The model's answer is only ever an id

@@ -119,6 +119,9 @@ class MemeOptions:
     style: str | None = None
     font: str | None = None
     layout_top: bool = False
+    # A picture to put into the captioned meme, by an image-edit model —
+    # what goes in the Spirit Halloween costume's blank photo, say.
+    draw: str | None = None
 
 
 def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
@@ -387,9 +390,11 @@ class MemeCatalog:
         return [s[4] for s in scored[:limit]]
 
 
-# One catalog line per template for the picker prompt. Six tags is enough
-# to say what a template is for; the whole brief stays near 20 KB.
-_BRIEF_TAGS = 6
+# One catalog line per template for the picker prompt. Eight tags is enough
+# to say what a template is for (memegen's own keywords come first, then the
+# topic tags, so the "blank picture area" tag survives the cut); the whole
+# brief stays near 30 KB.
+_BRIEF_TAGS = 8
 
 
 def catalog_brief(catalog: MemeCatalog) -> str:
@@ -411,6 +416,7 @@ def catalog_brief(catalog: MemeCatalog) -> str:
 class MemeChoice:
     template: MemeTemplate
     lines: list[str]
+    draw: str | None = None
 
 
 def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
@@ -442,7 +448,9 @@ def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
     lines = [str(x).strip()[:MAX_CAPTION_CHARS] for x in raw_lines][: template.lines]
     if not any(lines):
         return f"The picker chose {template.id} but wrote no captions."
-    return MemeChoice(template, lines)
+    draw = parsed.get("draw")
+    draw = draw.strip()[:MAX_CAPTION_CHARS] if isinstance(draw, str) and draw.strip() else None
+    return MemeChoice(template, lines, draw)
 
 
 def parse_aliases(entries: list[str]) -> dict[str, str]:

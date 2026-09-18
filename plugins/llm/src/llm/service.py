@@ -4273,6 +4273,114 @@ class LLMService:
         content = response.choices[0].message.content if response.choices else None
         return MemePick(content, model, prompt_tokens, completion_tokens, cost)
 
+    # Wrapped around the user's picture instruction for a meme edit. The
+    # captioned PNG is the input, so the text is pixels the model must leave
+    # alone; both prod edit models kept every letter under this wording
+    # (spirit template, 2026-09-18).
+    _MEME_EDIT_FRAME = (
+        "This image is a meme template with its caption text already rendered. "
+        "Edit it as follows: {draw}. If the template has a blank or empty picture "
+        "area, put the requested picture there and nowhere else, as if it were the "
+        "template's own photo. Keep every letter of the existing text, the logo, "
+        "the layout, the colours and everything else exactly as they are."
+    )
+
+    def image_edit(self, image_url: str, draw: str, *, channel: str | None = None) -> ImageResult:
+        """Edit a hosted image with the meme edit model; the URL of the result.
+
+        xAI's ``/v1/images/edits`` only — the one image provider with a key
+        in place, and the one whose refusal billing is understood. A refusal
+        or any failure comes back as ``error`` with the captioned meme still
+        in the caller's hands: the picture is an extra, not the meme.
+        """
+        import base64
+        import urllib.error
+        import urllib.request
+
+        model = (self.plugin.registryValue("memeEditModel") or "").strip()
+        if not model.startswith("xai/"):
+            return ImageResult(
+                content="", model=model, error="memeEditModel must be an xai/ model."
+            )
+        api_key = apikeys.api_key_for(model)
+        if not api_key:
+            return ImageResult(
+                content="", model=model, error="The image edit model has no API key."
+            )
+        prompt = self._MEME_EDIT_FRAME.format(draw=draw.strip())
+        body = json.dumps(
+            {
+                "model": model.removeprefix("xai/"),
+                "prompt": prompt,
+                "image": {"url": image_url},
+                "response_format": "b64_json",
+            }
+        ).encode()
+        request = urllib.request.Request(
+            "https://api.x.ai/v1/images/edits",
+            data=body,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        t0 = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:400].decode("utf-8", "replace")
+            self.log.warning(
+                "completion_timing op=image_edit model=%s elapsed_ms=%.0f result=error http=%s",
+                model,
+                (time.monotonic() - t0) * 1000.0,
+                exc.code,
+            )
+            cost = self._billed_failure_cost(Exception(detail), model)
+            refused = exc.code in (400, 403, 422)
+            return ImageResult(
+                content="",
+                cost=cost,
+                model=model,
+                error="The image model refused that edit." if refused else "Image edit failed.",
+            )
+        except Exception as exc:  # noqa: BLE001 — the meme is already made
+            self.log.warning("image_edit failed: %s", self._sanitize(str(exc))[:200])
+            return ImageResult(content="", model=model, error="Image edit failed.")
+        self.log.warning(
+            "completion_timing op=image_edit model=%s elapsed_ms=%.0f",
+            model,
+            (time.monotonic() - t0) * 1000.0,
+        )
+        ticks = (
+            (payload.get("usage") or {}).get("cost_in_usd_ticks")
+            if isinstance(payload, dict)
+            else None
+        )
+        cost = (
+            ticks * 1e-10
+            if isinstance(ticks, (int, float)) and ticks > 0
+            else self._image_price(model)
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        b64 = (
+            data[0].get("b64_json")
+            if isinstance(data, list) and data and isinstance(data[0], dict)
+            else None
+        )
+        if not isinstance(b64, str) or not b64:
+            return ImageResult(
+                content="", cost=cost, model=model, error="The image model returned no picture."
+            )
+        try:
+            hosted = self._save_image_bytes(base64.b64decode(b64), "png")
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("image_edit save failed: %s", str(exc)[:200])
+            hosted = None
+        if not hosted:
+            return ImageResult(
+                content="", cost=cost, model=model, error="Could not host the edited image."
+            )
+        return ImageResult(content=hosted, cost=cost, model=model, url=hosted)
+
     def _xai_responses_call(
         self,
         input_text: str,

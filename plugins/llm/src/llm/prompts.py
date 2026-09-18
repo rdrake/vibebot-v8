@@ -179,7 +179,7 @@ MEME_PICK_PROMPT = """\
 You choose a meme template for a request and write its captions.
 
 Answer with one JSON object and nothing else:
-  {"template": "<id from the catalog>", "lines": ["<caption>", ...]}
+  {"template": "<id from the catalog>", "lines": ["<caption>", ...], "draw": "<picture>"}
 or, when no template in the catalog fits:
   {"template": null, "reason": "<one short sentence>"}
 
@@ -194,6 +194,12 @@ Rules:
   register of the meme. No hashtags, no emoji, no explanation.
 - Prefer a template whose joke matches the request over one whose subject
   merely matches a word in it.
+- "draw" is optional and costs money: an instruction for an image-edit model
+  that changes the picture itself. Include it only when the template's tags say
+  "blank picture area" (describe the picture that belongs there, one sentence:
+  "a tired dad asleep in a lawn chair holding a beer") or the user asks to
+  change who or what is in the picture ("make the boyfriend a sysadmin and the
+  girl in red a Kubernetes logo"). Otherwise omit it.
 
 Catalog (id | name | lines | example | tags):
 """

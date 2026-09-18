@@ -139,6 +139,14 @@ Flags go before the template. `--gif` renders the animated version (17 templates
 @meme --font impact --top rollsafe | can't fail tests if you don't run them
 ```
 
+`--draw "..."` sends the finished meme through an image-edit model with that instruction, after the captions are on it, so the text always survives. Fill a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or change who is in the picture on any template. About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. The picker adds a `--draw` of its own when a template has a blank picture area or you asked to change the picture.
+
+```
+@meme --draw "a tired dad asleep in a lawn chair holding a beer" spirit | My Dad | Includes: | - Nothing | - Nothing
+@meme --draw "the boyfriend is a sysadmin, the woman in red is a glowing Kubernetes logo, the girlfriend is a dusty Perl server" db | a shiny new cluster | me | the perl monolith
+@meme spirit halloween costume of my dad
+```
+
 ```
 @meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
 ```

@@ -7329,6 +7329,7 @@ class LLM(callbacks.Plugin):
         meme the way it counts a draw. A resolver miss never reaches memegen
         and gets no row, same as a draw prompt that fails validation.
         """
+        options = options or meme.MemeOptions()
         catalog = self._meme_catalog()
         if catalog is None:
             return None, _("Meme templates are unavailable right now.")
@@ -7360,7 +7361,39 @@ class LLM(callbacks.Plugin):
             self.log.exception("meme usage logging failed")
         if not hosted:
             return None, error
+        if options.draw:
+            return self._edit_meme(msg, hosted, options.draw), ""
         return hosted, ""
+
+    def _edit_meme(self, msg: IrcMsg, hosted: str, draw: str) -> str:
+        """Send the captioned meme through the edit model; the line to post.
+
+        The captions are already pixels, so a refusal costs the picture and
+        not the meme: the reply is the captioned URL with a note. The edit's
+        own row goes into the usage table under the edit model, beside the
+        $0 memegen row, at what xAI reported (or the list price).
+        """
+        channel = self._get_channel(msg)
+        result = self.llm_service.image_edit(hosted, draw, channel=channel)
+        try:
+            self.db.log_usage(
+                ircutils.nickFromHostmask(msg.prefix),
+                channel,
+                "meme",
+                result.model,
+                0,
+                0,
+                result.cost,
+                prompt=draw[:200],
+                status="error" if result.error else "success",
+                error_detail=(result.error or "")[:200],
+            )
+        except Exception:
+            self.log.exception("meme usage logging failed")
+        self.log.info("meme_edit: draw=%r -> %s", draw[:120], result.error or result.url)
+        if result.error or not result.url:
+            return f"{hosted} — picture not added: {result.error or 'no image'}"
+        return result.url
 
     def _meme_or_infer(
         self,
@@ -7431,6 +7464,9 @@ class LLM(callbacks.Plugin):
         self.log.info("meme_pick: request=%r -> %s", request[:120], choice)
         if isinstance(choice, str):
             return None, choice
+        options = options or meme.MemeOptions()
+        if choice.draw and not options.draw:
+            options = replace(options, draw=choice.draw)
         hosted, error = self._make_meme(msg, choice.template.id, choice.lines, options)
         if hosted is None:
             return None, error
@@ -7486,6 +7522,15 @@ class LLM(callbacks.Plugin):
                                 "empty in that case."
                             ),
                         },
+                        "draw": {
+                            "type": "string",
+                            "description": (
+                                "Only if the user asked to change the picture itself: "
+                                "what to put in a blank photo area, or who/what to "
+                                "swap in ('make the boyfriend a sysadmin'). Costs a "
+                                "draw; omit otherwise."
+                            ),
+                        },
                         "animated": {
                             "type": "boolean",
                             "description": (
@@ -7521,9 +7566,11 @@ class LLM(callbacks.Plugin):
                 )
             lines = [str(line) for line in lines][: meme.MAX_LINES]
             style = arguments.get("style")
+            draw = arguments.get("draw")
             options = meme.MemeOptions(
                 animated=bool(arguments.get("animated")),
                 style=style.strip() if isinstance(style, str) and style.strip() else None,
+                draw=draw.strip() if isinstance(draw, str) and draw.strip() else None,
             )
             self.log.info(
                 "make_meme: template=%r brief=%r lines=%s", template, brief[:80], len(lines)
@@ -7554,22 +7601,29 @@ class LLM(callbacks.Plugin):
         caption leaves that box empty. --gif renders the animated version
         where one exists, --style picks an alternate image (@meme list shows
         them), --font changes the typeface, --top puts the text at the top.
+        --draw "..." sends the finished meme through an image-edit model with
+        that instruction: fill a blank photo area, or change who is in the
+        picture. Name no template and the bot picks one for what you said.
 
         Examples:
           @meme drake | left on unread | left on read
           @meme distracted boyfriend | me | a new side project | my actual job
           @meme --gif fine | | this is fine
           @meme --style bark doge | such caption | very wow
+          @meme --draw "a tired dad asleep in a lawn chair" spirit | My Dad | Includes: | - Nothing
+          @meme waiting for claude to finish
           @meme list cat
         """
         if self._is_old_message(msg):
             return
 
+        draw = next((v for opt, v in optlist if opt == "draw"), None)
         options = meme.MemeOptions(
             animated=any(opt == "gif" for opt, _v in optlist),
             style=next((v for opt, v in optlist if opt == "style"), None),
             font=next((v for opt, v in optlist if opt == "font"), None),
             layout_top=any(opt == "top" for opt, _v in optlist),
+            draw=draw.strip() if isinstance(draw, str) and draw.strip() else None,
         )
         parsed = meme.parse_meme_request(text)
         if parsed is None:
@@ -7615,7 +7669,15 @@ class LLM(callbacks.Plugin):
         meme,
         [
             ("checkCapability", "llm.draw"),
-            getopts({"gif": "", "style": "something", "font": "something", "top": ""}),
+            getopts(
+                {
+                    "gif": "",
+                    "style": "something",
+                    "font": "something",
+                    "top": "",
+                    "draw": "something",
+                }
+            ),
             "text",
         ],
     )

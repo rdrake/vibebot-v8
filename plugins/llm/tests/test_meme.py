@@ -605,3 +605,8 @@ class TestPicker:
     )
     def test_unusable_answers_are_misses(self, catalog, content):
         assert isinstance(meme.parse_pick(content, catalog), str)
+
+    def test_pick_carries_an_optional_draw(self, catalog):
+        text = '{"template": "drake", "lines": ["a", "b"], "draw": "a tired dad"}'
+        assert meme.parse_pick(text, catalog).draw == "a tired dad"
+        assert meme.parse_pick('{"template": "drake", "lines": ["a", "b"]}', catalog).draw is None
