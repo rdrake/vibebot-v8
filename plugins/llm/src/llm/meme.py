@@ -451,7 +451,10 @@ def plan_meme(
     if option_error:
         return MemePlan(None, template, option_error)
     padded = lines + [""] * (template.lines - len(lines))
-    url = build_meme_url(base, template.id, padded, background=template.background, options=options)
+    # A URL alias keeps its own id so it resolves by name, but memegen only
+    # draws on a background under /images/custom/.
+    template_id = CUSTOM_TEMPLATE_ID if template.background else template.id
+    url = build_meme_url(base, template_id, padded, background=template.background, options=options)
     return MemePlan(url, template, None)
 
 

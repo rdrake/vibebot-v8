@@ -324,6 +324,11 @@ class TestAliases:
         t = cat.resolve("wojak")
         assert t.lines == 2 and t.background == "https://i.example.com/wojak.png"
         assert len(cat) == len(wonka) + 1
+        plan = meme.plan_meme(cat, "https://api.memegen.link", "wojak", ["a", "b"])
+        assert plan.url == (
+            "https://api.memegen.link/images/custom/a/b.png"
+            "?background=https%3A%2F%2Fi.example.com%2Fwojak.png"
+        )
 
     def test_alias_to_unknown_id_or_unsafe_url_is_dropped(self, wonka):
         cat = wonka.with_aliases({"a": "nosuch", "b": "http://127.0.0.1/x.png"})
