@@ -1252,11 +1252,13 @@ conf.registerChannelValue(
     LLM,
     "memeModel",
     ValidatedModelName(
-        "",
+        "gemini/gemini-flash-latest",
         _("""Model that picks a template and writes captions when @meme (or
         make_meme's brief) does not name a template the catalog knows. One
-        JSON completion over the ~20 KB catalog per pick. Falls back to
-        assistantModel."""),
+        JSON completion over the ~30 KB catalog per pick (about $0.01, 3 s).
+        Empty falls back to assistantModel — but grok-4-1-fast copies the
+        template's example captions instead of writing its own (measured
+        2026-09-18: non-reasoning 4/4, reasoning 2/4; gemini-flash 0/4)."""),
     ),
 )
 

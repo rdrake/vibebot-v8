@@ -187,11 +187,15 @@ Rules:
 - "template" is an id from the first column of the catalog, exactly.
 - "lines" has as many entries as the template's line count (third column),
   in the template's reading order; "" leaves a box blank. The example (fourth
-  column) shows what each box is for — keep that structure.
+  column) shows what each box is for — keep that structure, but write new
+  words for this request. Repeating the example's words is a failure.
 - If the request already contains caption text (often separated by |), use
   it verbatim, in order; only write captions the user did not supply.
 - Captions are short (under 60 characters), lowercase unless a name, in the
   register of the meme. No hashtags, no emoji, no explanation.
+- The tags column describes the template for you; never copy a tag into a
+  caption. Captions are about the request — when the request names a
+  subject or a "Picture (--draw)", the captions are about that subject.
 - Prefer a template whose joke matches the request over one whose subject
   merely matches a word in it.
 - "draw" is optional and costs money: an instruction for an image-edit model

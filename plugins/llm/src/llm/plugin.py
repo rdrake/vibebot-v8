@@ -7415,6 +7415,10 @@ class LLM(callbacks.Plugin):
         if self._meme_names(template_query, has_lines=any(x.strip() for x in lines)):
             return self._make_meme(msg, template_query, lines, options)
         request = " | ".join(x for x in [template_query, *lines] if x)
+        if options and options.draw:
+            # The picture instruction is the subject of the meme; without it
+            # the picker captioned a spirit costume "My Meme".
+            request = f"{request}\nPicture (--draw): {options.draw}"
         hosted, error = self._infer_meme(msg, request, options)
         if hosted is None and named:
             _hosted, resolver_error = self._make_meme(msg, template_query, lines, options)

@@ -187,6 +187,17 @@ class TestDrawFlag:
         )
         assert mock_irc.reply.call_args.args[0].startswith(EDITED)
 
+    def test_draw_text_reaches_the_picker(self, meme_plugin) -> None:
+        """Without it the picker captioned a spirit costume 'My Meme'."""
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(
+            mock_irc, mock_msg, ["--draw", "an Irish republican", "spirit halloween costume"]
+        )
+
+        request = plugin.llm_service.meme_pick.call_args.args[0]
+        assert request == "spirit halloween costume\nPicture (--draw): an Irish republican"
+
     def test_tool_draw_parameter(self, meme_plugin) -> None:
         plugin, _, mock_msg = meme_plugin
         _, handlers = plugin._build_meme_tool(mock_msg)

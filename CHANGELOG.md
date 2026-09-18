@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- The picker sees the --draw subject and stops copying tags and examples (`meme`)
 - A sentence that fuzzy-matches a template name is a request (`meme`)
 - Render URL aliases through /images/custom, not /images/<alias> (`meme`)
 - Honest tags for bd, no-match reply for list, short words don't pad suggestions (`meme`)
