@@ -124,6 +124,14 @@ Caption a meme template. You name the template and write the captions; the bot n
 
 Separate the captions with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes. `@meme <template>` alone shows the template's caption count and an example, and `@meme list <word>` finds templates by name or keyword — there are about 200, rendered by [memegen.link](https://memegen.link), with names like `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, and `fine`.
 
+memegen names most templates by the quote, so the bot also matches on the words you share with a name: `willy wonka` finds Condescending Wonka, `elmo fire` finds Elmo. When two templates tie (`expanding brain` is Galaxy Brain or Scumbag Brain) it lists both rather than guessing. Your operator can add names memegen lacks — Tyrone Biggums is filed under the quote, `yallgot`, and `tyrone` is aliased to it out of the box.
+
+Any image works as a template: paste its URL in place of the name and give a top and a bottom caption.
+
+```
+@meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
+```
+
 `@meme` needs an authenticated account. Memes cost nothing to make, so the rate limit is looser than `@draw`'s.
 
 The same thing works in conversation: "vibebot make a drake meme: left on unread / left on read" calls the `make_meme` tool with the name and captions you gave. If the name matches nothing, the bot lists the closest templates and asks which one you meant.

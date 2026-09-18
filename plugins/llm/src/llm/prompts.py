@@ -157,8 +157,9 @@ IRC_LOOKUP_GUIDANCE = (
 MEME_GUIDANCE = (
     "- make_meme captions a named meme template (memegen.link). HARD RULE: "
     "when the user names a meme ('drake meme', 'distracted boyfriend', "
-    "'this is fine') and gives caption text, you MUST call make_meme with "
-    "template set to the name exactly as the user said it and lines set to "
+    "'this is fine') or pastes an image URL to caption, and gives caption "
+    "text, you MUST call make_meme with template set to the name (or URL) "
+    "exactly as the user said it and lines set to "
     "their captions in order — never pick a template they did not name, "
     "never rewrite their captions, and never use generate_image for a meme. "
     "If the tool reports no such template, relay its suggestions and ask "

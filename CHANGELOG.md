@@ -632,6 +632,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Aliases, word-overlap matching, and bring-your-own-image templates (`meme`)
 - Add @meme and the make_meme chat tool, rendered by memegen.link (`meme`)
 - Add whois to irc_lookup so chat answers 'who is X' from a real WHOIS (`irc`)
 - Answer channel and membership questions from a live LIST/NAMES (`irc`)

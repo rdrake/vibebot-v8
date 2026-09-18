@@ -1235,6 +1235,19 @@ conf.registerGlobalValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "memeAliases",
+    registry.SpaceSeparatedListOfStrings(
+        ["tyrone=yallgot", "biggums=yallgot", "chappelle=yallgot"],
+        _("""Extra names for meme templates, as name=target pairs. A target
+        that is a memegen template id makes the name a keyword on it
+        (memegen files Tyrone Biggums under the quote, yallgot). A target
+        that is an image URL adds a two-caption template drawn on that image.
+        Use hyphens for spaces in the name."""),
+    ),
+)
+
 conf.registerChannelValue(
     LLM,
     "memeEnabled",

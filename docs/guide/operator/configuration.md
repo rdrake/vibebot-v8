@@ -304,6 +304,7 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
 | `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST` / `NAMES`) to chat. `@channels` and `@names` work regardless |
 | `memeEnabled` | channel | `True` | Advertise the `make_meme` tool to chat. `@meme` works regardless |
+| `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |
 | `memeApiBase` | global | `https://api.memegen.link` | memegen-compatible API. The bot reads `/templates/` once a day and fetches each meme's PNG from `/images/`, then rehosts it like a generated image |
 
 See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.

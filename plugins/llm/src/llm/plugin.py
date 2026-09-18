@@ -7288,7 +7288,9 @@ class LLM(callbacks.Plugin):
         catalog = self._meme_templates.get()
         if catalog is None:
             self.log.warning("meme: templates unavailable: %s", self._meme_templates.last_error)
-        return catalog
+            return None
+        aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
+        return catalog.with_aliases(aliases) if aliases else catalog
 
     def _make_meme(self, template_query: str, lines: list[str]) -> tuple[str | None, str]:
         """Resolve, fetch from memegen, rehost. ``(url, error)``; one is set.
@@ -7337,8 +7339,9 @@ class LLM(callbacks.Plugin):
                             "type": "string",
                             "description": (
                                 "The meme's name exactly as the user wrote it, e.g. "
-                                "'drake', 'distracted boyfriend', 'this is fine'. Do "
-                                "not choose one yourself."
+                                "'drake', 'distracted boyfriend', 'this is fine' — or "
+                                "an image URL the user pasted, to caption that image. "
+                                "Do not choose one yourself."
                             ),
                         },
                         "lines": {

@@ -718,6 +718,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "memeUnregRateLimitCount": 2,
         "memeUnregRateLimitWindow": 600,
         "memeApiBase": "https://api.memegen.link",
+        "memeAliases": [],
         # Opt-in per test: True here would add make_meme to every extra_tools
         # assertion in the irc_lookup wiring tests.
         "memeEnabled": False,

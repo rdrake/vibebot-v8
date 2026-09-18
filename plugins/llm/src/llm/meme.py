@@ -18,7 +18,7 @@ import json
 import re
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -46,8 +46,15 @@ _ESCAPES: tuple[tuple[str, str], ...] = (
     (" ", "_"),
 )
 
-_NOISE_WORDS = frozenset({"the", "a", "an", "meme"})
+_NOISE_WORDS = frozenset({"the", "a", "an", "meme", "template", "of", "and"})
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+# memegen's bring-your-own-image template: two boxes, top and bottom, drawn
+# over whatever ``?background=`` points at. Used for pasted image URLs and
+# for URL-valued aliases.
+CUSTOM_TEMPLATE_ID = "custom"
+CUSTOM_LINES = 2
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,22 @@ class MemeTemplate:
     lines: int
     keywords: tuple[str, ...] = ()
     example: tuple[str, ...] = ()
+    # Set only on custom templates: the image memegen draws the captions on.
+    background: str | None = None
+
+
+def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
+    return MemeTemplate(CUSTOM_TEMPLATE_ID, name, CUSTOM_LINES, background=background)
+
+
+def _is_http_url(text: str) -> bool:
+    return text.lower().startswith(("http://", "https://")) and " " not in text
+
+
+def _safe_background(url: str) -> bool:
+    from .service import validate_external_url
+
+    return _is_http_url(url) and validate_external_url(url)
 
 
 @dataclass(frozen=True)
@@ -91,9 +114,14 @@ def encode_caption(text: str) -> str:
     return quote(text, safe="~'")
 
 
-def build_meme_url(base: str, template_id: str, lines: list[str]) -> str:
+def build_meme_url(
+    base: str, template_id: str, lines: list[str], *, background: str | None = None
+) -> str:
     segments = "/".join(encode_caption(line) for line in lines)
-    return f"{base.rstrip('/')}/images/{template_id}/{segments}.png"
+    url = f"{base.rstrip('/')}/images/{template_id}/{segments}.png"
+    if background:
+        url += "?background=" + quote(background, safe="")
+    return url
 
 
 def parse_templates(entries: Any) -> list[MemeTemplate]:
@@ -122,6 +150,15 @@ def _normalise(text: str) -> str:
     return " ".join(tokens)
 
 
+def _haystack(template: MemeTemplate) -> str:
+    return _normalise(f"{template.id} {template.name} {' '.join(template.keywords)}")
+
+
+def _overlap(query_tokens: list[str], template: MemeTemplate) -> int:
+    words = set(_haystack(template).split())
+    return sum(1 for tok in query_tokens if tok in words)
+
+
 class MemeCatalog:
     """The template list plus deterministic name resolution."""
 
@@ -132,11 +169,45 @@ class MemeCatalog:
     def __len__(self) -> int:
         return len(self.templates)
 
-    def resolve(self, query: str) -> MemeTemplate | None:
-        """Exact id, then exact name, then a UNIQUE name substring, then keyword.
+    def with_aliases(self, aliases: dict[str, str]) -> MemeCatalog:
+        """A copy with operator aliases folded in.
 
-        Ambiguity is a miss on purpose: "cat" matching Grumpy Cat and
-        Business Cat must not silently pick one. The caller lists both.
+        ``name=id`` makes ``name`` a keyword on that template, so both
+        resolve and ``@meme list`` see it. ``name=https://...`` adds a two-box
+        custom template drawn on that image. Aliases pointing at an unknown
+        id or an unsafe URL are dropped, not raised: a typo in bot.conf must
+        not take every meme down with it.
+        """
+        extra_keywords: dict[str, list[str]] = {}
+        customs: list[MemeTemplate] = []
+        for name, target in aliases.items():
+            if _is_http_url(target):
+                if _safe_background(target):
+                    customs.append(
+                        MemeTemplate(
+                            _normalise(name).replace(" ", "-") or name,
+                            name,
+                            CUSTOM_LINES,
+                            background=target,
+                        )
+                    )
+            elif target.lower() in self._by_id:
+                extra_keywords.setdefault(target.lower(), []).append(name)
+        merged = [
+            replace(t, keywords=(*t.keywords, *extra_keywords[t.id.lower()]))
+            if t.id.lower() in extra_keywords
+            else t
+            for t in self.templates
+        ]
+        return MemeCatalog(merged + customs)
+
+    def resolve(self, query: str) -> MemeTemplate | None:
+        """Exact id, exact name, UNIQUE name substring, keyword, then word overlap.
+
+        Ambiguity is a miss on purpose at every tier: "cat" matching Grumpy
+        Cat and Business Cat must not silently pick one, and "expanding
+        brain" tying Galaxy Brain with Scumbag Brain must not either. The
+        caller lists the candidates instead.
         """
         q = query.strip().lower()
         if not q:
@@ -159,25 +230,48 @@ class MemeCatalog:
         by_keyword = [t for t in self.templates if any(nq == _normalise(k) for k in t.keywords)]
         if len(by_keyword) == 1:
             return by_keyword[0]
-        return None
+        if by_keyword:
+            return None
+        # memegen names templates by the quote; people name them by the
+        # character. "willy wonka" has to reach Condescending Wonka on the
+        # one word they share, but one word of five is a coincidence.
+        tokens = nq.split()
+        scored = sorted(((_overlap(tokens, t), t) for t in self.templates), key=lambda s: -s[0])
+        best, winner = scored[0]
+        if best == 0 or best * 2 < len(tokens):
+            return None
+        if len(scored) > 1 and scored[1][0] == best:
+            return None
+        return winner
 
     def suggest(self, query: str, limit: int = 5) -> list[MemeTemplate]:
-        """Closest names first; the head of the list when nothing is close."""
+        """Closest names first. Empty when nothing shares a word with the
+        query — an alphabetical head would only look like advice."""
         nq = _normalise(query)
-        scored: list[tuple[int, int, str, MemeTemplate]] = []
+        if not nq:
+            return self.templates[:limit]
+        tokens = nq.split()
+        scored: list[tuple[int, int, int, str, MemeTemplate]] = []
         for t in self.templates:
-            haystack = _normalise(f"{t.id} {t.name} {' '.join(t.keywords)}")
-            pos = haystack.find(nq) if nq else -1
-            if pos < 0 and nq and any(tok in haystack for tok in nq.split()):
-                pos = 1000
-            if pos >= 0:
-                scored.append((pos, len(t.name), t.id, t))
+            haystack = _haystack(t)
+            pos = haystack.find(nq)
+            overlap = _overlap(tokens, t)
+            if pos < 0 and overlap == 0:
+                continue
+            scored.append((0 if pos >= 0 else 1, -overlap, len(t.name), t.id, t))
         scored.sort()
-        picks = [s[3] for s in scored[:limit]]
-        if len(picks) < limit:
-            seen = {t.id for t in picks}
-            picks.extend(t for t in self.templates if t.id not in seen)
-        return picks[:limit]
+        return [s[4] for s in scored[:limit]]
+
+
+def parse_aliases(entries: list[str]) -> dict[str, str]:
+    """``name=id`` or ``name=https://image`` pairs from memeAliases."""
+    aliases: dict[str, str] = {}
+    for entry in entries or []:
+        name, sep, target = str(entry).partition("=")
+        name, target = name.strip(), target.strip()
+        if sep and name and target:
+            aliases[name] = target
+    return aliases
 
 
 def _describe(template: MemeTemplate) -> str:
@@ -194,10 +288,23 @@ def plan_meme(catalog: MemeCatalog, base: str, template_query: str, lines: list[
     only want two on a three-box template); more is not, since memegen would
     drop them silently.
     """
-    template = catalog.resolve(template_query)
+    if _is_http_url(template_query.strip()):
+        background = template_query.strip()
+        if not _safe_background(background):
+            return MemePlan(
+                None, None, "That image URL is not one I can use (http(s), public host)."
+            )
+        template = custom_template(background)
+    else:
+        template = catalog.resolve(template_query)
     if template is None:
         names = ", ".join(f"{t.id} ({t.name})" for t in catalog.suggest(template_query))
-        return MemePlan(None, None, f"No meme template called '{template_query}'. Try: {names}")
+        hint = (
+            f"Did you mean: {names}?"
+            if names
+            else "Try @meme list <word>, or paste an image URL as the template."
+        )
+        return MemePlan(None, None, f"No meme template called '{template_query}'. {hint}")
     lines = [line.strip() for line in lines]
     if not any(lines):
         return MemePlan(None, template, f"Give the captions: {_describe(template)}")
@@ -216,7 +323,8 @@ def plan_meme(catalog: MemeCatalog, base: str, template_query: str, lines: list[
                 f"That caption is too long ({len(line)} chars; max {MAX_CAPTION_CHARS}).",
             )
     padded = lines + [""] * (template.lines - len(lines))
-    return MemePlan(build_meme_url(base, template.id, padded), template, None)
+    url = build_meme_url(base, template.id, padded, background=template.background)
+    return MemePlan(url, template, None)
 
 
 def fetch_templates(

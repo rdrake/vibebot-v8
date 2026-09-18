@@ -60,11 +60,11 @@ class TestMemeCommand:
     def test_unknown_template_suggests_and_fetches_nothing(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
 
-        plugin.meme(mock_irc, mock_msg, ["loss | a | b"])
+        plugin.meme(mock_irc, mock_msg, ["drake boyfriend | a | b"])
 
         plugin.llm_service._download_and_save_image.assert_not_called()
         err = mock_irc.error.call_args.args[0]
-        assert "loss" in err and "drake" in err
+        assert "drake boyfriend" in err and "db" in err
 
     def test_missing_captions_show_the_example(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
@@ -127,9 +127,11 @@ class TestMakeMemeTool:
         plugin, _, _ = meme_plugin
         _, handlers = plugin._build_meme_tool()
 
-        payload = json.loads(handlers["make_meme"]({"template": "loss", "lines": ["a"]}).content)
+        payload = json.loads(
+            handlers["make_meme"]({"template": "drake boyfriend", "lines": ["a"]}).content
+        )
 
-        assert "drake" in payload["error"]
+        assert "drake" in payload["error"] and "db" in payload["error"]
         plugin.llm_service._download_and_save_image.assert_not_called()
 
     def test_handler_tolerates_junk_arguments(self, meme_plugin) -> None:
@@ -188,3 +190,39 @@ class TestChatWiring:
         plugin.ask(irc, msg, ["hello"])
 
         assert plugin.llm_service.assistant_request.call_args.kwargs["extra_tools"] is None
+
+
+class TestCustomAndAliases:
+    def test_image_url_template_fetches_the_custom_render(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["https://i.imgflip.com/1c1uej.jpg | top | bottom"])
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched.startswith(
+            "https://api.memegen.link/images/custom/top/bottom.png?background="
+        )
+        assert mock_irc.reply.call_args.args[0] == _HOSTED
+
+    def test_registry_aliases_reach_the_resolver(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"memeAliases": ["hotline=drake"]}
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["hotline bling | a | b"])
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched == "https://api.memegen.link/images/drake/a/b.png"
+
+    def test_tool_accepts_an_image_url_as_template(self, meme_plugin) -> None:
+        plugin, _, _ = meme_plugin
+        _, handlers = plugin._build_meme_tool()
+
+        payload = json.loads(
+            handlers["make_meme"](
+                {"template": "https://i.imgflip.com/1c1uej.jpg", "lines": ["a", "b"]}
+            ).content
+        )
+
+        assert payload["status"] == "ok"

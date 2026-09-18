@@ -153,9 +153,6 @@ class TestResolve:
         ids = [t.id for t in catalog.suggest("fin", limit=5)]
         assert ids[0] == "fine"
 
-    def test_suggest_falls_back_to_popular_when_nothing_matches(self, catalog):
-        assert len(catalog.suggest("zzzz", limit=3)) == 3
-
 
 class TestPlanMeme:
     """One entry point for both @meme and the chat tool."""
@@ -182,11 +179,11 @@ class TestPlanMeme:
         assert "takes 2 captions" in plan.error
         assert "you gave 3" in plan.error
 
-    def test_unknown_template_suggests(self, catalog):
-        plan = meme.plan_meme(catalog, "https://api.memegen.link", "loss", ["a"])
+    def test_tied_template_suggests_the_candidates(self, catalog):
+        plan = meme.plan_meme(catalog, "https://api.memegen.link", "this fry", ["a"])
         assert plan.url is None
-        assert "loss" in plan.error
-        assert "drake" in plan.error
+        assert "this fry" in plan.error
+        assert "fine" in plan.error and "fry" in plan.error
 
     def test_caption_too_long_is_an_error(self, catalog):
         plan = meme.plan_meme(catalog, "https://api.memegen.link", "drake", ["x" * 300, "b"])
@@ -245,3 +242,98 @@ class TestCachedCatalog:
         cached.get(now=1000.0)
         cached.get(now=1001.0)
         assert fetch.call_count == 1
+
+
+_WONKA_JSON = [
+    {"id": "wonka", "name": "Condescending Wonka", "lines": 2, "keywords": []},
+    {"id": "gb", "name": "Galaxy Brain", "lines": 4, "keywords": []},
+    {"id": "sb", "name": "Scumbag Brain", "lines": 2, "keywords": []},
+    {"id": "elmo", "name": "Elmo Choosing Cocaine", "lines": 5, "keywords": []},
+    {"id": "yallgot", "name": "Y'all Got Any More of Them", "lines": 2, "keywords": []},
+    {"id": "pigeon", "name": "Is This a Pigeon?", "lines": 3, "keywords": []},
+    {"id": "fine", "name": "This is Fine", "lines": 2, "keywords": []},
+]
+
+
+@pytest.fixture
+def wonka() -> meme.MemeCatalog:
+    return meme.MemeCatalog(meme.parse_templates(_WONKA_JSON))
+
+
+class TestResolveByTokenOverlap:
+    """memegen names templates by quote, users name them by character."""
+
+    def test_half_the_words_hitting_one_template_is_enough(self, wonka):
+        assert wonka.resolve("willy wonka").id == "wonka"
+        assert wonka.resolve("elmo fire").id == "elmo"
+
+    def test_a_tie_is_still_a_miss(self, wonka):
+        assert wonka.resolve("expanding brain") is None
+
+    def test_one_word_of_five_is_not_enough(self, wonka):
+        assert wonka.resolve("what if i told you them") is None
+
+    def test_more_words_in_common_wins(self, wonka):
+        assert wonka.resolve("is this a pigeon").id == "pigeon"
+        assert wonka.resolve("this is fine").id == "fine"
+
+
+class TestSuggestHonesty:
+    def test_nothing_in_common_suggests_nothing(self, wonka):
+        assert wonka.suggest("tyrone biggums") == []
+
+    def test_partial_overlap_still_suggests(self, wonka):
+        assert [t.id for t in wonka.suggest("brain")] == ["gb", "sb"]
+
+    def test_unknown_with_no_suggestions_points_at_list_and_urls(self, wonka):
+        plan = meme.plan_meme(wonka, "https://api.memegen.link", "tyrone", ["a", "b"])
+        assert plan.url is None
+        assert "@meme list" in plan.error and "image URL" in plan.error
+
+
+class TestAliases:
+    def test_parse_aliases_reads_name_equals_target(self):
+        parsed = meme.parse_aliases(
+            ["tyrone=yallgot", "junk", "=x", "y=", "wojak=https://i.example.com/w.png"]
+        )
+        assert parsed == {"tyrone": "yallgot", "wojak": "https://i.example.com/w.png"}
+
+    def test_id_alias_becomes_a_keyword_on_the_target(self, wonka):
+        cat = wonka.with_aliases({"tyrone": "yallgot", "biggums": "yallgot"})
+        assert cat.resolve("tyrone").id == "yallgot"
+        assert cat.resolve("tyrone biggums").id == "yallgot"
+        assert "tyrone" in cat.resolve("yallgot").keywords
+
+    def test_url_alias_becomes_a_two_box_custom_template(self, wonka):
+        cat = wonka.with_aliases({"wojak": "https://i.example.com/wojak.png"})
+        t = cat.resolve("wojak")
+        assert t.lines == 2 and t.background == "https://i.example.com/wojak.png"
+        assert len(cat) == len(wonka) + 1
+
+    def test_alias_to_unknown_id_or_unsafe_url_is_dropped(self, wonka):
+        cat = wonka.with_aliases({"a": "nosuch", "b": "http://127.0.0.1/x.png"})
+        assert cat.resolve("a") is None and cat.resolve("b") is None
+        assert len(cat) == len(wonka)
+
+
+class TestCustomBackground:
+    _BG = "https://i.imgflip.com/1c1uej.jpg"
+
+    def test_url_template_renders_through_custom(self, wonka):
+        plan = meme.plan_meme(wonka, "https://api.memegen.link", self._BG, ["y'all got", "more?"])
+        assert plan.url == (
+            "https://api.memegen.link/images/custom/y'all_got/more~q.png"
+            "?background=https%3A%2F%2Fi.imgflip.com%2F1c1uej.jpg"
+        )
+        assert plan.template.id == "custom"
+
+    def test_custom_takes_two_captions(self, wonka):
+        plan = meme.plan_meme(wonka, "https://api.memegen.link", self._BG, ["a", "b", "c"])
+        assert plan.url is None and "takes 2 captions" in plan.error
+
+    def test_private_background_is_refused(self, wonka):
+        plan = meme.plan_meme(wonka, "https://api.memegen.link", "http://10.0.0.1/x.png", ["a"])
+        assert plan.url is None and "URL" in plan.error
+
+    def test_parse_request_keeps_the_url_intact(self):
+        assert meme.parse_meme_request(f"{self._BG} | a | b") == (self._BG, ["a", "b"])
