@@ -7403,6 +7403,7 @@ class LLM(callbacks.Plugin):
         options: meme.MemeOptions | None = None,
         *,
         named: bool = True,
+        context: str | None = None,
     ) -> tuple[str | None, str]:
         """Render a named template, or let the picker choose one.
 
@@ -7419,7 +7420,7 @@ class LLM(callbacks.Plugin):
             # The chat model's picture instruction is the subject of the
             # meme; without it the picker captioned a costume "My Meme".
             request = f"{request}\nPicture: {options.draw}"
-        hosted, error = self._infer_meme(msg, request, options)
+        hosted, error = self._infer_meme(msg, request, options, context=context)
         if hosted is None and named:
             _hosted, resolver_error = self._make_meme(msg, template_query, lines, options)
             error = f"{error} {resolver_error}"
@@ -7430,6 +7431,8 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         request: str,
         options: meme.MemeOptions | None = None,
+        *,
+        context: str | None = None,
     ) -> tuple[str | None, str]:
         """Let the meme model pick the template and captions, then render.
 
@@ -7445,7 +7448,7 @@ class LLM(callbacks.Plugin):
             return None, _("Meme templates are unavailable right now.")
         channel = self._get_channel(msg)
         pick = self.llm_service.meme_pick(
-            request, catalog_brief=meme.catalog_brief(catalog), channel=channel
+            request, catalog_brief=meme.catalog_brief(catalog), channel=channel, context=context
         )
         try:
             self.db.log_usage(
@@ -7664,12 +7667,43 @@ class LLM(callbacks.Plugin):
         if pf.blocked:
             return
 
-        with self._allow_concurrent():
-            hosted, error = self._meme_or_infer(msg, template_query, lines, options)
+        # Typing goes up only for the picker path: a named template with
+        # captions is a memegen fetch and nothing else. The grounding runs
+        # there too — the same canon block and subject dossier @draw and
+        # @animate feed their planners, so "@meme spirit costume of <real
+        # person>" carries what they look like into the edit.
+        picks = not self._meme_names(template_query, has_lines=any(x.strip() for x in lines))
+        stop_typing = self.llm_service._begin_typing(irc, msg) if picks else None
+        try:
+            with self._allow_concurrent():
+                context = self._meme_grounding(pf, text) if picks else None
+                hosted, error = self._meme_or_infer(
+                    msg, template_query, lines, options, context=context
+                )
+        finally:
+            if stop_typing:
+                stop_typing()
         if hosted is None:
             self._safe_error(irc, error)
             return
         self._safe_reply(irc, hosted)
+
+    def _meme_grounding(self, pf: PreflightResult, text: str) -> str | None:
+        """Canon block + subject dossier for the picker, or None.
+
+        The same two pre-stages @draw runs, in the same order (canon first;
+        the dossier block says canon wins on overlap), minus the planner
+        overlay wrapping: the picker takes the blocks as they are.
+        """
+        parts: list[str] = []
+        verse_ctx = self._verse_context_for(pf, text)
+        if verse_ctx:
+            parts.append(verse_ctx)
+        with self._llm_executor.permit():
+            dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
+        if dossier_block:
+            parts.append(dossier_block)
+        return "\n\n".join(parts) or None
 
     meme = wrap(
         meme,

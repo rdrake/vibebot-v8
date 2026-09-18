@@ -4239,13 +4239,19 @@ class LLMService:
                 break
         return "\n".join(lines)
 
-    def meme_pick(self, request_text: str, *, catalog_brief: str, channel: str) -> MemePick:
+    def meme_pick(
+        self, request_text: str, *, catalog_brief: str, channel: str, context: str | None = None
+    ) -> MemePick:
         """Ask the meme model which template fits ``request_text`` and what it says.
 
         One JSON completion, catalog in the system prompt, request as the
-        user turn — concatenated, never formatted in. The answer is not
-        trusted here; :func:`meme.parse_pick` checks it against the catalog.
+        user turn — concatenated, never formatted in. ``context`` is the
+        grounding the media commands share (canon block, subject dossier),
+        appended under the request. The answer is not trusted here;
+        :func:`meme.parse_pick` checks it against the catalog.
         """
+        if context:
+            request_text = f"{request_text}\n\n{context}"
         target = self._channel_target(channel)
         model = self.plugin.registryValue("memeModel", target) or self.plugin.registryValue(
             "assistantModel", target

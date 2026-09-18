@@ -207,6 +207,10 @@ Rules:
   only supplies captions gets no draw.
 - "animated": true only when the user asks for a gif or animated version and
   the template's tags include "gif".
+- Blocks under the request ("Established facts about the real subjects...",
+  canon) are facts about who and what it names. Use them for the captions,
+  and copy the appearance facts into "draw" beside the name — the image
+  model has never seen these people and renders a bare name as nothing.
 
 Catalog (id | name | lines | example | tags):
 """

@@ -230,3 +230,37 @@ class TestPictureFromThePicker:
 
         request = plugin.llm_service.meme_pick.call_args.args[0]
         assert request == "spirit costume\nPicture: an Irish republican"
+
+
+class TestSharedGrounding:
+    """The picker gets the canon block and subject dossier @draw's planner gets."""
+
+    def test_picker_request_carries_the_dossier(self, meme_plugin, mocker) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        mocker.patch.object(plugin, "_subject_dossier_for", return_value="- Poilievre — glasses")
+        mocker.patch.object(plugin, "_verse_context_for", return_value="CANON: the stinky lads")
+
+        plugin.meme(mock_irc, mock_msg, ["spirit costume of Poilievre"])
+
+        kwargs = plugin.llm_service.meme_pick.call_args.kwargs
+        assert kwargs["context"] == "CANON: the stinky lads\n\n- Poilievre — glasses"
+        plugin._subject_dossier_for.assert_called_once()
+        assert plugin._subject_dossier_for.call_args.args[2] == "spirit costume of Poilievre"
+
+    def test_named_template_with_captions_researches_nothing(self, meme_plugin, mocker) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        dossier = mocker.patch.object(plugin, "_subject_dossier_for", return_value="- x — y")
+        typing = plugin.llm_service._begin_typing
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        dossier.assert_not_called()
+        typing.assert_not_called()
+
+    def test_typing_is_held_while_the_picker_runs(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["waiting for ci"])
+
+        plugin.llm_service._begin_typing.assert_called_once_with(mock_irc, mock_msg)
+        plugin.llm_service._begin_typing.return_value.assert_called_once()

@@ -638,6 +638,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- The picker gets @draw's grounding and a typing indicator (`meme`)
 - No flags for pictures — the picker decides draw and animated (`meme`)
 - --draw sends the captioned meme through xAI image edit (`meme`)
 - Pick the template and write the captions when none is named (`meme`)
