@@ -7412,20 +7412,13 @@ class LLM(callbacks.Plugin):
         and the user had ``named`` a template, the resolver's did-you-mean
         list follows its reason; a brief gets the reason alone.
         """
+        if self._meme_names(template_query, has_lines=any(x.strip() for x in lines)):
+            return self._make_meme(msg, template_query, lines, options)
         request = " | ".join(x for x in [template_query, *lines] if x)
         if options and options.draw:
-            # The picture instruction is the subject of the meme; without it
-            # the picker captioned a spirit costume "My Meme".
-            request = f"{request}\nPicture (--edit): {options.draw}"
-        elif options and options.picture:
-            request = f"{request}\nThe user asked for the picture to be edited: include draw."
-        if self._meme_names(template_query, has_lines=any(x.strip() for x in lines)):
-            if options and options.picture and not options.draw:
-                # A named template with --draw: the picker only writes the
-                # picture instruction; the template and captions are the
-                # user's.
-                return self._infer_meme(msg, request, options, keep=(template_query, lines))
-            return self._make_meme(msg, template_query, lines, options)
+            # The chat model's picture instruction is the subject of the
+            # meme; without it the picker captioned a costume "My Meme".
+            request = f"{request}\nPicture: {options.draw}"
         hosted, error = self._infer_meme(msg, request, options)
         if hosted is None and named:
             _hosted, resolver_error = self._make_meme(msg, template_query, lines, options)
@@ -7437,8 +7430,6 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         request: str,
         options: meme.MemeOptions | None = None,
-        *,
-        keep: tuple[str, list[str]] | None = None,
     ) -> tuple[str | None, str]:
         """Let the meme model pick the template and captions, then render.
 
@@ -7475,18 +7466,13 @@ class LLM(callbacks.Plugin):
             return None, pick.error
         choice = meme.parse_pick(pick.content, catalog)
         self.log.info("meme_pick: request=%r -> %s", request[:120], choice)
-        options = options or meme.MemeOptions()
-        if keep is not None:
-            # --draw on a named template: only the picture instruction was
-            # the picker's to write; a miss of any kind is "no instruction".
-            draw = choice.draw if isinstance(choice, meme.MemeChoice) else None
-            if not draw:
-                return None, _('The picker wrote no picture instruction; use --edit "...".')
-            return self._make_meme(msg, keep[0], keep[1], replace(options, draw=draw))
         if isinstance(choice, str):
             return None, choice
+        options = options or meme.MemeOptions()
         if choice.draw and not options.draw:
             options = replace(options, draw=choice.draw)
+        if choice.animated and not options.animated:
+            options = replace(options, animated=True)
         hosted, error = self._make_meme(msg, choice.template.id, choice.lines, options)
         if hosted is None:
             return None, error
@@ -7621,32 +7607,29 @@ class LLM(callbacks.Plugin):
         caption leaves that box empty. --gif renders the animated version
         where one exists, --style picks an alternate image (@meme list shows
         them), --font changes the typeface, --top puts the text at the top.
-        --draw also edits the picture (fill a blank photo area, or change who
-        is in it) with an instruction written from your request; --edit "..."
-        gives that instruction yourself. Name no template and the bot picks
-        one for what you said.
+        Or just say what you want: name no template (or no captions) and
+        the bot picks one, writes the captions, and — when you describe who
+        or what should be in the picture, or the template has a blank photo
+        — edits the picture too.
 
         Examples:
           @meme drake | left on unread | left on read
           @meme distracted boyfriend | me | a new side project | my actual job
           @meme --gif fine | | this is fine
           @meme --style bark doge | such caption | very wow
-          @meme --draw spirit halloween costume of my dad
-          @meme --edit "the boyfriend is a sysadmin" db | kubernetes | me | perl
           @meme waiting for claude to finish
+          @meme spirit halloween costume of my dad
+          @meme distracted boyfriend where the boyfriend is a sysadmin and the girl in red is kubernetes
           @meme list cat
         """
         if self._is_old_message(msg):
             return
 
-        edit = next((v for opt, v in optlist if opt == "edit"), None)
         options = meme.MemeOptions(
             animated=any(opt == "gif" for opt, _v in optlist),
             style=next((v for opt, v in optlist if opt == "style"), None),
             font=next((v for opt, v in optlist if opt == "font"), None),
             layout_top=any(opt == "top" for opt, _v in optlist),
-            draw=edit.strip() if isinstance(edit, str) and edit.strip() else None,
-            picture=any(opt == "draw" for opt, _v in optlist),
         )
         parsed = meme.parse_meme_request(text)
         if parsed is None:
@@ -7698,8 +7681,6 @@ class LLM(callbacks.Plugin):
                     "style": "something",
                     "font": "something",
                     "top": "",
-                    "draw": "",
-                    "edit": "something",
                 }
             ),
             "text",

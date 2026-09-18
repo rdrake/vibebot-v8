@@ -1267,7 +1267,7 @@ conf.registerGlobalValue(
     "memeEditModel",
     ValidatedModelName(
         "xai/grok-imagine-image",
-        _("""Image-edit model for @meme --draw and the picker's draw field: the
+        _("""Image-edit model for the picker's draw field (and make_meme's): the
         captioned meme is sent to xAI's /v1/images/edits with the picture
         instruction and the result replaces it. xai/ models only. About
         $0.02 per edit; a refusal is billed too."""),

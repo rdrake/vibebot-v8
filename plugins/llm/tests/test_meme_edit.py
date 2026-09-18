@@ -127,49 +127,12 @@ def meme_plugin(plugin_env, mocker):
     return plugin, mock_irc, mock_msg
 
 
-class TestDrawFlag:
-    def test_draw_edits_the_captioned_meme(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
+class TestPictureFromThePicker:
+    """No flag: the picker writes the edit instruction when the request
+    describes the picture, and the meme goes through the editor after the
+    captions are on it."""
 
-        plugin.meme(
-            mock_irc,
-            mock_msg,
-            [
-                "--edit",
-                "a tired dad asleep in a lawn chair",
-                "spirit | My Dad | Includes: | - Nothing",
-            ],
-        )
-
-        args, kwargs = plugin.llm_service.image_edit.call_args
-        assert args == (CAPTIONED, "a tired dad asleep in a lawn chair")
-        assert mock_irc.reply.call_args.args[0] == EDITED
-        rows = [(c.args[3], c.args[6]) for c in plugin.db.log_usage.call_args_list]
-        assert rows == [("memegen", 0.0), ("xai/grok-imagine-image", 0.022)]
-
-    def test_refused_edit_keeps_the_captioned_meme(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
-        plugin.llm_service.image_edit.return_value = ImageResult(
-            content="",
-            cost=0.02,
-            model="xai/grok-imagine-image",
-            error="The image model refused that edit.",
-        )
-
-        plugin.meme(mock_irc, mock_msg, ["--edit", "x", "drake | a | b"])
-
-        reply = mock_irc.reply.call_args.args[0]
-        assert reply.startswith(CAPTIONED) and "picture not added" in reply and "refused" in reply
-        assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
-
-    def test_no_draw_means_no_edit(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
-
-        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
-
-        plugin.llm_service.image_edit.assert_not_called()
-
-    def test_picker_draw_reaches_the_editor(self, meme_plugin) -> None:
+    def test_picker_draw_edits_the_captioned_meme(self, meme_plugin) -> None:
         from llm.service import MemePick
 
         plugin, mock_irc, mock_msg = meme_plugin
@@ -186,64 +149,65 @@ class TestDrawFlag:
             "a tired dad asleep in a lawn chair",
         )
         assert mock_irc.reply.call_args.args[0].startswith(EDITED)
+        rows = [(c.args[3], c.args[6]) for c in plugin.db.log_usage.call_args_list]
+        assert rows == [("test-model", 0.0), ("memegen", 0.0), ("xai/grok-imagine-image", 0.022)]
 
-    def test_edit_text_reaches_the_picker(self, meme_plugin) -> None:
-        """Without it the picker captioned a spirit costume 'My Meme'."""
-        plugin, mock_irc, mock_msg = meme_plugin
-
-        plugin.meme(
-            mock_irc, mock_msg, ["--edit", "an Irish republican", "spirit halloween costume"]
-        )
-
-        request = plugin.llm_service.meme_pick.call_args.args[0]
-        assert request == "spirit halloween costume\nPicture (--edit): an Irish republican"
-
-    def test_bare_draw_asks_the_picker_for_the_instruction(self, meme_plugin) -> None:
-        """'--draw Tinky winky spirit ...' once edited with just 'Tinky'."""
+    def test_refused_edit_keeps_the_captioned_meme(self, meme_plugin) -> None:
         from llm.service import MemePick
 
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.llm_service.meme_pick.return_value = MemePick(
-            '{"template": "spirit", "lines": ["Tinky Winky", "Includes:", "- purple"], '
-            '"draw": "Tinky Winky in the costume photo"}',
-            "test-model",
+            '{"template": "drake", "lines": ["a", "b"], "draw": "x"}', "test-model"
+        )
+        plugin.llm_service.image_edit.return_value = ImageResult(
+            content="",
+            cost=0.02,
+            model="xai/grok-imagine-image",
+            error="The image model refused that edit.",
         )
 
-        plugin.meme(mock_irc, mock_msg, ["--draw", "Tinky winky spirit halloween costume"])
+        plugin.meme(mock_irc, mock_msg, ["drake but x"])
 
-        request = plugin.llm_service.meme_pick.call_args.args[0]
-        assert request.startswith("Tinky winky spirit halloween costume\n")
-        assert "picture to be edited" in request
-        assert plugin.llm_service.image_edit.call_args.args == (
-            CAPTIONED,
-            "Tinky Winky in the costume photo",
-        )
+        reply = mock_irc.reply.call_args.args[0]
+        assert reply.startswith(CAPTIONED) and "picture not added" in reply and "refused" in reply
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
 
-    def test_bare_draw_on_a_named_template_keeps_the_captions(self, meme_plugin) -> None:
+    def test_no_draw_from_the_picker_means_no_edit(self, meme_plugin) -> None:
         from llm.service import MemePick
 
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.llm_service.meme_pick.return_value = MemePick(
-            '{"template": "drake", "lines": ["ignored", "ignored"], '
-            '"draw": "make drake a sysadmin"}',
-            "test-model",
+            '{"template": "drake", "lines": ["a", "b"]}', "test-model"
         )
 
-        plugin.meme(mock_irc, mock_msg, ["--draw", "drake | kubernetes | perl"])
-
-        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
-        assert fetched == "https://api.memegen.link/images/drake/kubernetes/perl.png"
-        assert plugin.llm_service.image_edit.call_args.args == (CAPTIONED, "make drake a sysadmin")
-        assert mock_irc.reply.call_args.args[0] == EDITED
-
-    def test_bare_draw_named_template_without_an_instruction_is_an_error(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
-
-        plugin.meme(mock_irc, mock_msg, ["--draw", "drake | a | b"])
+        plugin.meme(mock_irc, mock_msg, ["waiting for ci"])
 
         plugin.llm_service.image_edit.assert_not_called()
-        plugin.llm_service._download_and_save_image.assert_not_called()
-        assert "--edit" in mock_irc.error.call_args.args[0]
+
+    def test_named_template_with_captions_never_edits(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        plugin.llm_service.meme_pick.assert_not_called()
+        plugin.llm_service.image_edit.assert_not_called()
+
+    def test_picker_animated_renders_the_gif(self, meme_plugin) -> None:
+        from llm.service import MemePick
+
+        plugin, mock_irc, mock_msg = meme_plugin
+        animated = meme.parse_templates(
+            [{"id": "fine", "name": "This is Fine", "lines": 2, "styles": ["animated"]}]
+        )
+        meme.CachedCatalog.get.return_value = meme.MemeCatalog(animated)
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "fine", "lines": ["", "this is fine"], "animated": true}', "test-model"
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["animated this is fine but about ci"])
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched == "https://api.memegen.link/images/fine/_/this_is_fine.gif?style=animated"
 
     def test_tool_draw_parameter(self, meme_plugin) -> None:
         plugin, _, mock_msg = meme_plugin
@@ -257,3 +221,12 @@ class TestDrawFlag:
 
         assert plugin.llm_service.image_edit.call_args.args == (CAPTIONED, "make drake a sysadmin")
         assert payload == {"status": "ok", "message": EDITED}
+
+    def test_tool_draw_with_a_brief_reaches_the_picker(self, meme_plugin) -> None:
+        plugin, _, mock_msg = meme_plugin
+        _, handlers = plugin._build_meme_tool(mock_msg)
+
+        handlers["make_meme"]({"brief": "spirit costume", "draw": "an Irish republican"})
+
+        request = plugin.llm_service.meme_pick.call_args.args[0]
+        assert request == "spirit costume\nPicture: an Irish republican"

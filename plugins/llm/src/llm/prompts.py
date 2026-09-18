@@ -179,8 +179,8 @@ MEME_PICK_PROMPT = """\
 You choose a meme template for a request and write its captions.
 
 Answer with one JSON object and nothing else:
-  {"template": "<id from the catalog>", "lines": ["<caption>", ...], "draw": "<picture>"}
-or, when no template in the catalog fits:
+  {"template": "<id>", "lines": ["<caption>", ...], "draw": "<picture>", "animated": true}
+("draw" and "animated" are optional) or, when no template in the catalog fits:
   {"template": null, "reason": "<one short sentence>"}
 
 Rules:
@@ -195,15 +195,18 @@ Rules:
   register of the meme. No hashtags, no emoji, no explanation.
 - The tags column describes the template for you; never copy a tag into a
   caption. Captions are about the request — when the request names a
-  subject or a "Picture (--draw)", the captions are about that subject.
+  subject or a "Picture:" line, the captions are about that subject.
 - Prefer a template whose joke matches the request over one whose subject
   merely matches a word in it.
-- "draw" is optional and costs money: an instruction for an image-edit model
-  that changes the picture itself. Include it only when the template's tags say
-  "blank picture area" (describe the picture that belongs there, one sentence:
-  "a tired dad asleep in a lawn chair holding a beer") or the user asks to
-  change who or what is in the picture ("make the boyfriend a sysadmin and the
-  girl in red a Kubernetes logo"). Otherwise omit it.
+- "draw" is an instruction for an image-edit model that changes the picture
+  itself; it costs money. Include it when the template's tags say "blank
+  picture area" (describe the picture that belongs there, one sentence: "a
+  tired dad asleep in a lawn chair holding a beer") or when the request says
+  who or what should be in the picture ("the boyfriend is a sysadmin and the
+  girl in red is a Kubernetes logo", "with a photo of ..."). A request that
+  only supplies captions gets no draw.
+- "animated": true only when the user asks for a gif or animated version and
+  the template's tags include "gif".
 
 Catalog (id | name | lines | example | tags):
 """

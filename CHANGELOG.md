@@ -638,6 +638,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- No flags for pictures — the picker decides draw and animated (`meme`)
 - --draw sends the captioned meme through xAI image edit (`meme`)
 - Pick the template and write the captions when none is named (`meme`)
 - Tag every memegen template with topics so @meme list gym finds one (`meme`)

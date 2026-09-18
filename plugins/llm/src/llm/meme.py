@@ -121,10 +121,8 @@ class MemeOptions:
     layout_top: bool = False
     # An instruction for the image-edit model, applied to the captioned
     # meme — what goes in the Spirit Halloween costume's blank photo, say.
-    # ``draw`` is the user's own words (--edit); ``picture`` asks the picker
-    # to write one from the request (--draw).
+    # Written by the picker from the request, or by the chat model.
     draw: str | None = None
-    picture: bool = False
 
 
 def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
@@ -410,7 +408,7 @@ def catalog_brief(catalog: MemeCatalog) -> str:
     rows: list[str] = []
     for t in catalog.templates:
         example = " / ".join(x or "_" for x in t.example) if t.example else ""
-        tags = ", ".join(t.keywords[:_BRIEF_TAGS])
+        tags = ", ".join([*t.keywords[:_BRIEF_TAGS], *(["gif"] if t.animated else [])])
         rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
     return "\n".join(rows)
 
@@ -420,6 +418,7 @@ class MemeChoice:
     template: MemeTemplate
     lines: list[str]
     draw: str | None = None
+    animated: bool = False
 
 
 def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
@@ -453,7 +452,8 @@ def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
         return f"The picker chose {template.id} but wrote no captions."
     draw = parsed.get("draw")
     draw = draw.strip()[:MAX_CAPTION_CHARS] if isinstance(draw, str) and draw.strip() else None
-    return MemeChoice(template, lines, draw)
+    animated = parsed.get("animated") is True and template.animated
+    return MemeChoice(template, lines, draw, animated)
 
 
 def parse_aliases(entries: list[str]) -> dict[str, str]:

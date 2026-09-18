@@ -610,3 +610,20 @@ class TestPicker:
         text = '{"template": "drake", "lines": ["a", "b"], "draw": "a tired dad"}'
         assert meme.parse_pick(text, catalog).draw == "a tired dad"
         assert meme.parse_pick('{"template": "drake", "lines": ["a", "b"]}', catalog).draw is None
+
+    def test_pick_animated_only_when_the_template_has_a_gif(self):
+        cat = meme.MemeCatalog(
+            meme.parse_templates(
+                [
+                    {"id": "fine", "name": "This is Fine", "lines": 2, "styles": ["animated"]},
+                    {"id": "drake", "name": "Drakeposting", "lines": 2},
+                ]
+            )
+        )
+        assert meme.parse_pick(
+            '{"template": "fine", "lines": ["a"], "animated": true}', cat
+        ).animated
+        assert not meme.parse_pick(
+            '{"template": "drake", "lines": ["a"], "animated": true}', cat
+        ).animated
+        assert "fine | This is Fine | 2 |  | gif" in meme.catalog_brief(cat)

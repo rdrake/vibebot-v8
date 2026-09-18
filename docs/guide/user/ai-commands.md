@@ -139,13 +139,12 @@ Flags go before the template. `--gif` renders the animated version (17 templates
 @meme --font impact --top rollsafe | can't fail tests if you don't run them
 ```
 
-`--draw` also edits the picture: after the captions are on it (so the text always survives), the meme goes through an image-edit model with an instruction the picker writes from your request — fill a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or change who is in the picture on any template. `--edit "..."` gives that instruction yourself (quote it; it is one argument). About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. Without either flag the picker still adds a picture on its own when the template has a blank photo area or you asked to change the picture.
+Say who or what should be in the picture and the picker edits the picture too: after the captions are on it (so the text always survives), the meme goes through an image-edit model — filling a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or changing who is in the picture on any template. Asking for a gif in words works the same way for templates that have one. About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. No flags to type: the `|` form with a template you name is the only path that never calls a model.
 
 ```
-@meme --draw spirit halloween costume of my dad
-@meme --draw db | a shiny new cluster | me | the perl monolith
-@meme --edit "the boyfriend is a sysadmin, the woman in red is a glowing Kubernetes logo" db | a shiny new cluster | me | the perl monolith
 @meme spirit halloween costume of my dad
+@meme distracted boyfriend where the boyfriend is a sysadmin and the girl in red is a glowing kubernetes logo
+@meme animated this is fine but about the build
 ```
 
 ```
