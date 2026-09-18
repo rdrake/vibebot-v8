@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- A sentence that fuzzy-matches a template name is a request (`meme`)
 - Render URL aliases through /images/custom, not /images/<alias> (`meme`)
 - Honest tags for bd, no-match reply for list, short words don't pad suggestions (`meme`)
 - Ask memegen for its canonical URL before the no-redirect fetch (`meme`)

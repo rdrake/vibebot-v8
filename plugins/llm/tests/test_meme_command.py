@@ -167,6 +167,28 @@ class TestPickerInCommand:
         error = mock_irc.error.call_args.args[0]
         assert error.startswith("Nothing fits. No meme template called 'how did you get so strong'")
 
+    def test_sentence_that_fuzzy_matches_a_name_is_a_request(self, meme_plugin) -> None:
+        """Six of seven words overlap Drakeposting's keywords; still a request."""
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "drake", "lines": ["left on unread", "flamethrowers"]}', "test-model"
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["left on unread or left on read flamethrowers"])
+
+        assert plugin.llm_service.meme_pick.call_args.args[0] == (
+            "left on unread or left on read flamethrowers"
+        )
+        assert mock_irc.reply.call_args.args[0].endswith("drake | left on unread | flamethrowers")
+
+    def test_fuzzy_name_with_captions_skips_the_picker(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["distracted | me | new | old"])
+
+        plugin.llm_service.meme_pick.assert_not_called()
+        assert mock_irc.reply.call_args.args[0] == _HOSTED
+
     def test_named_template_never_asks_the_picker(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
 

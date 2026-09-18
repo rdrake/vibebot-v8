@@ -304,6 +304,23 @@ class MemeCatalog:
                 extra_keywords.setdefault(target.lower(), []).append(name)
         return MemeCatalog(self.with_keywords(extra_keywords).templates + customs)
 
+    def exact(self, query: str) -> MemeTemplate | None:
+        """The template whose id or name IS ``query`` — no fuzzy tiers.
+
+        The command uses this to tell "@meme drake" (teach the format) from
+        "@meme y'all got any more of them flamethrowers", which the overlap
+        tier would also resolve to a template and which is a request, not a
+        name.
+        """
+        q = query.strip().lower()
+        if q in self._by_id:
+            return self._by_id[q]
+        nq = _normalise(q)
+        if nq in self._by_id:
+            return self._by_id[nq]
+        by_name = [t for t in self.templates if _normalise(t.name) == nq]
+        return by_name[0] if len(by_name) == 1 else None
+
     def resolve(self, query: str) -> MemeTemplate | None:
         """Exact id, exact name, UNIQUE name substring, keyword, then word overlap.
 
@@ -424,7 +441,7 @@ def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
         return "The picker gave no captions."
     lines = [str(x).strip()[:MAX_CAPTION_CHARS] for x in raw_lines][: template.lines]
     if not any(lines):
-        return "The picker gave no captions."
+        return f"The picker chose {template.id} but wrote no captions."
     return MemeChoice(template, lines)
 
 

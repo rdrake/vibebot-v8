@@ -7295,13 +7295,22 @@ class LLM(callbacks.Plugin):
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
-    def _meme_names(self, query: str) -> bool:
-        """True when ``query`` is a template the catalog resolves or an image
-        URL — the cases where the user chose and the picker must stay out."""
+    def _meme_names(self, query: str, *, has_lines: bool) -> bool:
+        """True when the user chose the template, so the picker stays out.
+
+        An image URL or an exact id/name always counts. A fuzzy match
+        ("willy wonka" → Condescending Wonka) counts only when captions came
+        with it: "@meme y'all got any more of them flamethrowers" also
+        fuzzy-matches yallgot, and it is a request, not a name.
+        """
         if meme.is_http_url(query.strip()):
             return True
         catalog = self._meme_catalog()
-        return catalog is not None and catalog.resolve(query) is not None
+        if catalog is None:
+            return False
+        if catalog.exact(query) is not None:
+            return True
+        return has_lines and catalog.resolve(query) is not None
 
     def _make_meme(
         self,
@@ -7370,7 +7379,7 @@ class LLM(callbacks.Plugin):
         and the user had ``named`` a template, the resolver's did-you-mean
         list follows its reason; a brief gets the reason alone.
         """
-        if self._meme_names(template_query):
+        if self._meme_names(template_query, has_lines=any(x.strip() for x in lines)):
             return self._make_meme(msg, template_query, lines, options)
         request = " | ".join(x for x in [template_query, *lines] if x)
         hosted, error = self._infer_meme(msg, request, options)
