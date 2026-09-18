@@ -6938,7 +6938,7 @@ class LLM(callbacks.Plugin):
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 if self.registryValue("memeEnabled", channel):
-                    meme_schemas, meme_handlers = self._build_meme_tool()
+                    meme_schemas, meme_handlers = self._build_meme_tool(msg)
                     bridge_schemas = [*(bridge_schemas or []), *meme_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **meme_handlers}
                 # Combine bridge tools with any verse tools from the route.
@@ -7292,11 +7292,18 @@ class LLM(callbacks.Plugin):
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
-    def _make_meme(self, template_query: str, lines: list[str]) -> tuple[str | None, str]:
+    def _make_meme(
+        self, msg: IrcMsg, template_query: str, lines: list[str]
+    ) -> tuple[str | None, str]:
         """Resolve, fetch from memegen, rehost. ``(url, error)``; one is set.
 
         Shared by @meme and the make_meme tool so an unknown name or a wrong
         caption count reads the same in both places.
+
+        Writes one $0 usage row per memegen fetch, under model ``memegen``:
+        free, but media generation is attributable, and @usage should count a
+        meme the way it counts a draw. A resolver miss never reaches memegen
+        and gets no row, same as a draw prompt that fails validation.
         """
         catalog = self._meme_catalog()
         if catalog is None:
@@ -7309,11 +7316,27 @@ class LLM(callbacks.Plugin):
         # only failures.
         self.log.info("meme: template=%s lines=%s url=%s", plan.template.id, len(lines), plan.url)
         hosted = self.llm_service._download_and_save_image(plan.url)
+        error = "" if hosted else _("Could not fetch that meme from memegen.")
+        try:
+            self.db.log_usage(
+                ircutils.nickFromHostmask(msg.prefix),
+                self._get_channel(msg),
+                "meme",
+                "memegen",
+                0,
+                0,
+                0.0,
+                prompt=" | ".join([plan.template.id, *lines])[:200],
+                status="success" if hosted else "error",
+                error_detail=error[:200],
+            )
+        except Exception:
+            self.log.exception("meme usage logging failed")
         if not hosted:
-            return None, _("Could not fetch that meme from memegen.")
+            return None, error
         return hosted, ""
 
-    def _build_meme_tool(self):
+    def _build_meme_tool(self, msg: IrcMsg):
         """Build the ``make_meme`` tool schema + handler.
 
         Same shape as :meth:`_build_irc_lookup_tool`. The model transcribes
@@ -7367,7 +7390,7 @@ class LLM(callbacks.Plugin):
                 )
             lines = [str(line) for line in lines][: meme.MAX_LINES]
             self.log.info("make_meme: template=%r lines=%s", template, len(lines))
-            hosted, error = self._make_meme(template, lines)
+            hosted, error = self._make_meme(msg, template, lines)
             if hosted is None:
                 return ToolResult(content=json.dumps({"error": error}))
             return ToolResult(content=json.dumps({"status": "ok", "message": hosted}))
@@ -7418,7 +7441,7 @@ class LLM(callbacks.Plugin):
             return
 
         with self._allow_concurrent():
-            hosted, error = self._make_meme(template_query, lines)
+            hosted, error = self._make_meme(msg, template_query, lines)
         if hosted is None:
             self._safe_error(irc, error)
             return

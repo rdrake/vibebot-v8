@@ -132,7 +132,7 @@ Any image works as a template: paste its URL in place of the name and give a top
 @meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
 ```
 
-`@meme` needs an authenticated account. Memes cost nothing to make, so the rate limit is looser than `@draw`'s.
+`@meme` needs an authenticated account. Memes cost nothing to make, so the rate limit is looser than `@draw`'s; each one still shows in `@usage` as a $0 `meme` row.
 
 The same thing works in conversation: "vibebot make a drake meme: left on unread / left on read" calls the `make_meme` tool with the name and captions you gave. If the name matches nothing, the bot lists the closest templates and asks which one you meant.
 

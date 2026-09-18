@@ -114,7 +114,7 @@ class TestMakeMemeTool:
 
     def test_handler_returns_the_hosted_url_as_message(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
-        schemas, handlers = plugin._build_meme_tool()
+        schemas, handlers = plugin._build_meme_tool(meme_plugin[2])
 
         payload = json.loads(
             handlers["make_meme"]({"template": "drake", "lines": ["a", "b"]}).content
@@ -125,7 +125,7 @@ class TestMakeMemeTool:
 
     def test_handler_error_carries_the_suggestions(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
-        _, handlers = plugin._build_meme_tool()
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
 
         payload = json.loads(
             handlers["make_meme"]({"template": "drake boyfriend", "lines": ["a"]}).content
@@ -136,7 +136,7 @@ class TestMakeMemeTool:
 
     def test_handler_tolerates_junk_arguments(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
-        _, handlers = plugin._build_meme_tool()
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
 
         payload = json.loads(handlers["make_meme"]({"template": 7, "lines": "a|b"}).content)
 
@@ -144,7 +144,7 @@ class TestMakeMemeTool:
 
     def test_schema_tells_the_model_not_to_choose(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
-        schemas, _ = plugin._build_meme_tool()
+        schemas, _ = plugin._build_meme_tool(meme_plugin[2])
         desc = schemas[0]["function"]["parameters"]["properties"]["template"]["description"]
         assert "as the user" in desc
 
@@ -217,7 +217,7 @@ class TestCustomAndAliases:
 
     def test_tool_accepts_an_image_url_as_template(self, meme_plugin) -> None:
         plugin, _, _ = meme_plugin
-        _, handlers = plugin._build_meme_tool()
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
 
         payload = json.loads(
             handlers["make_meme"](
@@ -226,3 +226,42 @@ class TestCustomAndAliases:
         )
 
         assert payload["status"] == "ok"
+
+
+class TestMemeUsageRow:
+    """Free, but attributable: one $0 row per memegen fetch, like draw's per image."""
+
+    def test_success_writes_a_zero_cost_row_under_memegen(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        args, kwargs = plugin.db.log_usage.call_args
+        assert args == ("testnick", "#test", "meme", "memegen", 0, 0, 0.0)
+        assert kwargs["prompt"] == "drake | a | b"
+        assert kwargs["status"] == "success"
+
+    def test_fetch_failure_is_an_error_row(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service._download_and_save_image.return_value = None
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
+
+    def test_resolver_miss_writes_nothing(self, meme_plugin) -> None:
+        """Nothing reached memegen, so a row would only dilute the averages."""
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["drake boyfriend | a | b"])
+
+        plugin.db.log_usage.assert_not_called()
+
+    def test_tool_path_writes_the_same_row(self, meme_plugin) -> None:
+        plugin, _, mock_msg = meme_plugin
+        _, handlers = plugin._build_meme_tool(mock_msg)
+
+        handlers["make_meme"]({"template": "drake", "lines": ["a", "b"]})
+
+        args, _ = plugin.db.log_usage.call_args
+        assert args[2:4] == ("meme", "memegen")

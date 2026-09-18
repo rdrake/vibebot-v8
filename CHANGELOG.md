@@ -632,6 +632,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Book a $0 usage row per memegen fetch (`meme`)
 - Aliases, word-overlap matching, and bring-your-own-image templates (`meme`)
 - Add @meme and the make_meme chat tool, rendered by memegen.link (`meme`)
 - Add whois to irc_lookup so chat answers 'who is X' from a real WHOIS (`irc`)
