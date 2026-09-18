@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from typing import Any
@@ -44,6 +45,20 @@ _ESCAPES: tuple[tuple[str, str], ...] = (
     (">", "~g"),
     ('"', "''"),
     (" ", "_"),
+)
+
+# memegen normalises these to ASCII and answers with a 301 to the normalised
+# URL — which the downloader refuses on purpose (a redirect could point at a
+# private host). Phone keyboards produce all of them. Applied before the
+# escape table so the ASCII forms get memegen's own escapes.
+_PUNCTUATION_NORMALISE = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+    }
 )
 
 _NOISE_WORDS = frozenset({"the", "a", "an", "meme", "template", "of", "and"})
@@ -143,7 +158,7 @@ def parse_meme_request(text: str) -> tuple[str, list[str]] | None:
 
 def encode_caption(text: str) -> str:
     """Turn one caption into a memegen path segment. Blank is ``_``."""
-    text = text.strip()
+    text = text.strip().translate(_PUNCTUATION_NORMALISE)
     if not text:
         return "_"
     for char, escape in _ESCAPES:
@@ -447,6 +462,60 @@ def fetch_templates(
     with opener.open(request, timeout=timeout) as response:
         body = response.read()
     return parse_templates(json.loads(body))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+
+_MAX_CANONICAL_HOPS = 3
+
+
+def canonical_url(
+    url: str,
+    *,
+    timeout: float,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> str:
+    """Ask memegen for its canonical spelling of ``url``.
+
+    memegen answers a caption it would spell differently (a curly quote, a
+    lone dash, "y\u2019all" from a phone keyboard) with a 301 to the canonical
+    URL — and the downloader refuses every redirect, since a Location can
+    point anywhere. So probe with HEAD first, redirects off, and follow only
+    a hop that stays on the same origin under /images/. Anything else —
+    no redirect, a redirect elsewhere, a HEAD the server rejects (422 on
+    gifs), a network error — leaves the URL as built.
+    """
+    from urllib.parse import urljoin, urlparse
+
+    opener = opener or urllib.request.build_opener(_NoRedirect())
+    origin = urlparse(url)
+    current = url
+    for _ in range(_MAX_CANONICAL_HOPS):
+        request = urllib.request.Request(
+            current, method="HEAD", headers={"User-Agent": "vibebot-meme/1.0"}
+        )
+        try:
+            with opener.open(request, timeout=timeout):
+                return current
+        except urllib.error.HTTPError as err:
+            if err.code not in (301, 302, 307, 308):
+                return current
+            location = err.headers.get("Location") if err.headers else None
+        except Exception:  # noqa: BLE001 — a probe must not sink the meme
+            return current
+        if not location:
+            return current
+        target = urlparse(urljoin(current, location))
+        if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
+            return current
+        if not target.path.startswith("/images/"):
+            return current
+        # memegen drops the query on its redirect; the options were ours.
+        current = target._replace(query=origin.query).geturl()
+    return current
 
 
 class CachedCatalog:

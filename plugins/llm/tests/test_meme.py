@@ -93,6 +93,21 @@ class TestEncodeCaption:
     def test_non_ascii_is_percent_encoded(self):
         assert meme.encode_caption("café") == "caf%C3%A9"
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("y’all", "y'all"),
+            ("‘quoted’", "'quoted'"),
+            ("“hi”", "''hi''"),
+            ("a–b", "a--b"),
+        ],
+    )
+    def test_phone_punctuation_is_normalised_first(self, text: str, expected: str):
+        """memegen answers a curly quote or an en dash with a 301 to the ASCII
+        form, and the downloader refuses redirects — prod 2026-09-18 00:04Z,
+        'y’all got any more of them tokens' from an iPhone keyboard."""
+        assert meme.encode_caption(text) == expected
+
 
 class TestBuildMemeUrl:
     def test_lines_become_path_segments(self):
@@ -418,3 +433,79 @@ class TestOptions:
         assert meme.describe_short(styled.resolve("fine")) == "fine (This is Fine, 2, gif)"
         assert meme.describe_short(styled.resolve("doge")) == "doge (Doge, 2, styles: bark/bite)"
         assert meme.describe_short(styled.resolve("drake")) == "drake (Drakeposting, 2)"
+
+
+class TestCanonicalUrl:
+    """memegen 301s to its canonical spelling; the downloader refuses redirects.
+
+    So ask memegen first (HEAD, no render) and take its answer only when it
+    stays on memegen under /images/ — anywhere else is somebody's redirect.
+    """
+
+    B = "https://api.memegen.link"
+
+    def _opener(self, mocker, responses):
+        """responses: list of (status, location) per call; status None = 200."""
+        import urllib.error
+
+        opener = mocker.MagicMock()
+        calls: list[str] = []
+
+        def open_(req, timeout=None):
+            calls.append(req.full_url)
+            status, location = responses[min(len(calls) - 1, len(responses) - 1)]
+            if status is None:
+                resp = mocker.MagicMock()
+                resp.__enter__.return_value = resp
+                resp.status = 200
+                return resp
+            headers = {"Location": location} if location else {}
+            raise urllib.error.HTTPError(req.full_url, status, "x", headers, None)
+
+        opener.open.side_effect = open_
+        return opener, calls
+
+    def test_no_redirect_keeps_the_url(self, mocker):
+        opener, calls = self._opener(mocker, [(None, None)])
+        url = f"{self.B}/images/drake/a/b.png"
+        assert meme.canonical_url(url, timeout=5, opener=opener) == url
+        assert calls == [url]
+
+    def test_same_origin_images_redirect_is_followed(self, mocker):
+        opener, _ = self._opener(mocker, [(301, "/images/drake/a----b/c.png"), (None, None)])
+        got = meme.canonical_url(f"{self.B}/images/drake/a_--_b/c.png", timeout=5, opener=opener)
+        assert got == f"{self.B}/images/drake/a----b/c.png"
+
+    def test_query_string_survives_the_hop(self, mocker):
+        opener, _ = self._opener(mocker, [(301, "/images/doge/a_b/c.png"), (None, None)])
+        got = meme.canonical_url(
+            f"{self.B}/images/doge/a-b/c.png?style=bark", timeout=5, opener=opener
+        )
+        assert got == f"{self.B}/images/doge/a_b/c.png?style=bark"
+
+    def test_other_host_redirect_is_ignored(self, mocker):
+        opener, _ = self._opener(mocker, [(301, "https://evil.example/x.png")])
+        url = f"{self.B}/images/drake/a/b.png"
+        assert meme.canonical_url(url, timeout=5, opener=opener) == url
+
+    def test_redirect_outside_images_is_ignored(self, mocker):
+        opener, _ = self._opener(mocker, [(301, "/templates/drake")])
+        url = f"{self.B}/images/drake/a/b.png"
+        assert meme.canonical_url(url, timeout=5, opener=opener) == url
+
+    def test_head_error_keeps_the_url(self, mocker):
+        """HEAD on a gif answers 422; that is not a redirect."""
+        opener, _ = self._opener(mocker, [(422, None)])
+        url = f"{self.B}/images/fine/_/ok.gif?style=animated"
+        assert meme.canonical_url(url, timeout=5, opener=opener) == url
+
+    def test_network_failure_keeps_the_url(self, mocker):
+        opener = mocker.MagicMock()
+        opener.open.side_effect = OSError("down")
+        url = f"{self.B}/images/drake/a/b.png"
+        assert meme.canonical_url(url, timeout=5, opener=opener) == url
+
+    def test_hops_are_capped(self, mocker):
+        opener, calls = self._opener(mocker, [(301, "/images/drake/loop/x.png")])
+        meme.canonical_url(f"{self.B}/images/drake/a/b.png", timeout=5, opener=opener)
+        assert len(calls) <= 4

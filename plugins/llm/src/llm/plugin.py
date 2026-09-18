@@ -7321,7 +7321,9 @@ class LLM(callbacks.Plugin):
         # One grep answers "did memegen get asked?" — the fetch helper logs
         # only failures.
         self.log.info("meme: template=%s lines=%s url=%s", plan.template.id, len(lines), plan.url)
-        hosted = self.llm_service._download_and_save_image(plan.url)
+        timeout = self.registryValue("drawTimeout") or self.registryValue("timeout")
+        url = meme.canonical_url(plan.url, timeout=timeout)
+        hosted = self.llm_service._download_and_save_image(url)
         error = "" if hosted else _("Could not fetch that meme from memegen.")
         try:
             self.db.log_usage(

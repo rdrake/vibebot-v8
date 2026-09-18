@@ -44,6 +44,8 @@ def meme_plugin(plugin_env, mocker):
         meme.CachedCatalog, "get", return_value=meme.MemeCatalog(_TEMPLATES), autospec=True
     )
     plugin.llm_service._download_and_save_image.return_value = _HOSTED
+    # No network in tests: memegen's canonical spelling is the one we built.
+    mocker.patch.object(meme, "canonical_url", side_effect=lambda url, **_kw: url)
     return plugin, mock_irc, mock_msg
 
 
@@ -346,3 +348,14 @@ class TestMemeOptions:
         assert fetched.endswith(".gif?style=animated")
         props = schemas[0]["function"]["parameters"]["properties"]
         assert "animated" in props and "style" in props
+
+
+class TestCanonicalRedirectInCommand:
+    def test_fetch_uses_memegen_canonical_spelling(self, meme_plugin, mocker) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        canon = "https://api.memegen.link/images/drake/a----b/c.png"
+        mocker.patch.object(meme, "canonical_url", return_value=canon)
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a - b | c"])
+
+        assert plugin.llm_service._download_and_save_image.call_args.args[0] == canon

@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Ask memegen for its canonical URL before the no-redirect fetch (`meme`)
 - Give irc_lookup a HARD RULE so 'whois X' is looked up, not riffed (`irc`)
 - Never report a channel the bot shares with the target to a non-member (`irc`)
 - Give a revision an antecedent; name the audio language (`remind,animate`)
