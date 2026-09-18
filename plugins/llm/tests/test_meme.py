@@ -549,3 +549,15 @@ class TestTopics:
             {"fine": ("fire", "burning"), "elmo": ("sesame street",)}
         )
         assert cat.resolve("elmo fire").id == "elmo"
+
+    def test_suggest_ignores_two_letter_words_in_a_longer_query(self):
+        cat = meme.MemeCatalog(
+            meme.parse_templates(
+                [
+                    {"id": "money", "name": "Shut Up and Take My Money!", "lines": 2},
+                    {"id": "yuno", "name": "Y U NO Guy", "lines": 2},
+                ]
+            )
+        )
+        assert cat.suggest("push-up") == []
+        assert [t.id for t in cat.suggest("y u no")] == ["yuno"]

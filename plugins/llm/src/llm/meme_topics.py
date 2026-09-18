@@ -44,7 +44,7 @@ TOPICS: dict[str, tuple[str, ...]] = {
     "bad": ("zoidberg", "futurama", "feel bad", "shame", "criticism"),
     "badchoice": ("ron burgundy", "anchorman", "will ferrell", "regret", "mistake"),
     "balloon": ("held back", "missed opportunity", "shyness", "anxiety"),
-    "bd": ("gym", "workout", "buff", "fitness", "lazy", "excuse", "basement", "neckbeard"),
+    "bd": ("lazy", "excuse", "basement", "neckbeard", "can't workout", "fat", "smug"),
     "because": ("will smith", "mib", "racism", "just because"),
     "bender": ("futurama", "blackjack and hookers", "my own", "fork", "start over"),
     "bihw": ("honest work", "farmer", "modest", "humble", "job"),

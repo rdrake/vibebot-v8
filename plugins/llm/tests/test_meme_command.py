@@ -94,6 +94,14 @@ class TestMemeCommand:
         assert "db" in reply and "Distracted Boyfriend" in reply and "3" in reply
         assert "drake" not in reply
 
+    def test_list_with_no_match_says_so(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["list exercise"])
+
+        reply = mock_irc.reply.call_args.args[0]
+        assert "No template matches 'exercise'" in reply and "image URL" in reply
+
     def test_catalog_unavailable_is_an_error(self, meme_plugin, mocker) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         meme.CachedCatalog.get.return_value = None

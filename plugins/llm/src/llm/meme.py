@@ -354,7 +354,9 @@ class MemeCatalog:
         nq = _normalise(query)
         if not nq:
             return self.templates[:limit]
-        tokens = nq.split()
+        # "push-up" must not list every "shut up" and "wake up": a word this
+        # short only counts when it is the whole query.
+        tokens = [tok for tok in nq.split() if len(tok) >= 3] or nq.split()
         scored: list[tuple[int, int, int, str, MemeTemplate]] = []
         for t in self.templates:
             haystack = _search_text(t)

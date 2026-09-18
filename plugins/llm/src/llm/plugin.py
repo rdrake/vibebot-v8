@@ -7473,6 +7473,16 @@ class LLM(callbacks.Plugin):
             picks = catalog.suggest(word, limit=10) if word.strip() else catalog.templates[:10]
             if word.strip():
                 picks = [t for t in picks if meme.matches(t, word)] or picks
+            if not picks:
+                self._safe_reply(
+                    irc,
+                    _(
+                        "No template matches '%s' (%d in all). Paste an image URL as the "
+                        "template, or ask an operator for a memeAliases entry."
+                    )
+                    % (word.strip(), len(catalog)),
+                )
+                return
             listing = "; ".join(meme.describe_short(t) for t in picks)
             self._safe_reply(irc, _("Templates: %s — %d in all.") % (listing, len(catalog)))
             return

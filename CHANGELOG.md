@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Honest tags for bd, no-match reply for list, short words don't pad suggestions (`meme`)
 - Ask memegen for its canonical URL before the no-redirect fetch (`meme`)
 - Give irc_lookup a HARD RULE so 'whois X' is looked up, not riffed (`irc`)
 - Never report a channel the bot shares with the target to a non-member (`irc`)
