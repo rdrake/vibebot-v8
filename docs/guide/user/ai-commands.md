@@ -128,6 +128,14 @@ memegen names most templates by the quote, so the bot also matches on the words 
 
 Any image works as a template: paste its URL in place of the name and give a top and a bottom caption.
 
+Flags go before the template. `--gif` renders the animated version (17 templates have one — `fine`, `fry`, `money`, `rollsafe`, `bongo`, `both`, `buzz`, `patrick` among them; `@meme list` marks them `gif`). `--style <name>` picks an alternate image where the template has them (`doge` has `bark`, `bite`, `growl`, `pet`; `drake` has `yes`, `no`, `beat`; the list shows `styles:`). `--font <name>` changes the typeface (`impact` is the classic; the error lists the eight). `--top` puts a single caption at the top instead of the bottom.
+
+```
+@meme --gif fine | | this is fine
+@meme --style bark doge | such deploy | very friday
+@meme --font impact --top rollsafe | can't fail tests if you don't run them
+```
+
 ```
 @meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
 ```

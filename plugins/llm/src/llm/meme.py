@@ -66,6 +66,43 @@ class MemeTemplate:
     example: tuple[str, ...] = ()
     # Set only on custom templates: the image memegen draws the captions on.
     background: str | None = None
+    # memegen's alternate images for this template ("bark", "yes", ...).
+    # "animated" is the GIF variant and is exposed as ``animated`` instead.
+    styles: tuple[str, ...] = ()
+
+    # Stored apart from ``styles`` so that tuple lists only the choices a
+    # user would pass to --style; the GIF variant has its own flag, --gif.
+    _animated: bool = False
+
+    @property
+    def animated(self) -> bool:
+        return self._animated
+
+
+ANIMATED_STYLE = "animated"
+
+# memegen's /fonts/ list. Validated here so a typo is a one-line answer
+# instead of a memegen error page fetched and rejected as a non-image.
+FONTS = (
+    "titilliumweb",
+    "titilliumweb-thin",
+    "impact",
+    "notosans",
+    "notosanshebrew",
+    "kalam",
+    "segoe",
+    "hgminchob",
+)
+
+
+@dataclass(frozen=True)
+class MemeOptions:
+    """The rest of memegen's query string, as the user asked for it."""
+
+    animated: bool = False
+    style: str | None = None
+    font: str | None = None
+    layout_top: bool = False
 
 
 def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
@@ -115,13 +152,29 @@ def encode_caption(text: str) -> str:
 
 
 def build_meme_url(
-    base: str, template_id: str, lines: list[str], *, background: str | None = None
+    base: str,
+    template_id: str,
+    lines: list[str],
+    *,
+    background: str | None = None,
+    options: MemeOptions | None = None,
 ) -> str:
+    options = options or MemeOptions()
     segments = "/".join(encode_caption(line) for line in lines)
-    url = f"{base.rstrip('/')}/images/{template_id}/{segments}.png"
+    extension = "gif" if options.animated else "png"
+    url = f"{base.rstrip('/')}/images/{template_id}/{segments}.{extension}"
+    params: list[str] = []
+    if options.animated:
+        params.append(f"style={ANIMATED_STYLE}")
+    elif options.style:
+        params.append("style=" + quote(options.style, safe=""))
+    if options.font:
+        params.append("font=" + quote(options.font, safe=""))
+    if options.layout_top:
+        params.append("layout=top")
     if background:
-        url += "?background=" + quote(background, safe="")
-    return url
+        params.append("background=" + quote(background, safe=""))
+    return url + ("?" + "&".join(params) if params else "")
 
 
 def parse_templates(entries: Any) -> list[MemeTemplate]:
@@ -141,7 +194,19 @@ def parse_templates(entries: Any) -> list[MemeTemplate]:
         example_obj = entry.get("example") or {}
         example_text = example_obj.get("text") if isinstance(example_obj, dict) else None
         example = tuple(t for t in example_text or [] if isinstance(t, str))
-        templates.append(MemeTemplate(template_id, name, lines, keywords, example))
+        raw_styles = [st for st in entry.get("styles") or [] if isinstance(st, str)]
+        styles = tuple(st for st in raw_styles if st not in ("default", ANIMATED_STYLE))
+        templates.append(
+            MemeTemplate(
+                template_id,
+                name,
+                lines,
+                keywords,
+                example,
+                styles=styles,
+                _animated=ANIMATED_STYLE in raw_styles,
+            )
+        )
     return templates
 
 
@@ -274,6 +339,16 @@ def parse_aliases(entries: list[str]) -> dict[str, str]:
     return aliases
 
 
+def describe_short(template: MemeTemplate) -> str:
+    """``id (Name, lines[, gif][, styles: a/b])`` — the @meme list line."""
+    bits = [template.name, str(template.lines)]
+    if template.animated:
+        bits.append("gif")
+    if template.styles:
+        bits.append("styles: " + "/".join(template.styles))
+    return f"{template.id} ({', '.join(bits)})"
+
+
 def _describe(template: MemeTemplate) -> str:
     example = " | ".join(template.example) if template.example else ""
     tail = f" — e.g. {template.id} | {example}" if example else ""
@@ -281,13 +356,21 @@ def _describe(template: MemeTemplate) -> str:
     return f"{template.id} ({template.name}) takes {template.lines} {plural}{tail}"
 
 
-def plan_meme(catalog: MemeCatalog, base: str, template_query: str, lines: list[str]) -> MemePlan:
-    """Resolve the name, check the captions, build the URL.
+def plan_meme(
+    catalog: MemeCatalog,
+    base: str,
+    template_query: str,
+    lines: list[str],
+    options: MemeOptions | None = None,
+) -> MemePlan:
+    """Resolve the name, check the captions and options, build the URL.
 
     Fewer captions than boxes is fine (the rest render blank — most people
     only want two on a three-box template); more is not, since memegen would
-    drop them silently.
+    drop them silently. Every option is checked against what the template
+    offers so the answer is a list of choices, not a memegen error page.
     """
+    options = options or MemeOptions()
     if _is_http_url(template_query.strip()):
         background = template_query.strip()
         if not _safe_background(background):
@@ -322,9 +405,27 @@ def plan_meme(catalog: MemeCatalog, base: str, template_query: str, lines: list[
                 template,
                 f"That caption is too long ({len(line)} chars; max {MAX_CAPTION_CHARS}).",
             )
+    option_error = _check_options(catalog, template, options)
+    if option_error:
+        return MemePlan(None, template, option_error)
     padded = lines + [""] * (template.lines - len(lines))
-    url = build_meme_url(base, template.id, padded, background=template.background)
+    url = build_meme_url(base, template.id, padded, background=template.background, options=options)
     return MemePlan(url, template, None)
+
+
+def _check_options(
+    catalog: MemeCatalog, template: MemeTemplate, options: MemeOptions
+) -> str | None:
+    if options.animated and not template.animated:
+        animated = ", ".join(t.id for t in catalog.templates if t.animated) or "none"
+        return f"{template.id} has no animated version. Animated templates: {animated}."
+    if options.style and options.style not in template.styles:
+        if not template.styles:
+            return f"{template.id} has no styles."
+        return f"{template.id} styles: {'/'.join(template.styles)}."
+    if options.font and options.font not in FONTS:
+        return f"Fonts: {', '.join(FONTS)}."
+    return None
 
 
 def fetch_templates(

@@ -632,6 +632,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Expose memegen's gif, style, font and layout options (`meme`)
 - Book a $0 usage row per memegen fetch (`meme`)
 - Aliases, word-overlap matching, and bring-your-own-image templates (`meme`)
 - Add @meme and the make_meme chat tool, rendered by memegen.link (`meme`)

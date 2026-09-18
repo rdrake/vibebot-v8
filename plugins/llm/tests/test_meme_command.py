@@ -265,3 +265,84 @@ class TestMemeUsageRow:
 
         args, _ = plugin.db.log_usage.call_args
         assert args[2:4] == ("meme", "memegen")
+
+
+class TestMemeOptions:
+    def test_gif_flag_fetches_the_animated_gif(self, meme_plugin, mocker) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        animated = meme.parse_templates(
+            [
+                {
+                    "id": "fine",
+                    "name": "This is Fine",
+                    "lines": 2,
+                    "keywords": [],
+                    "styles": ["animated"],
+                }
+            ]
+        )
+        meme.CachedCatalog.get.return_value = meme.MemeCatalog(animated)
+
+        plugin.meme(mock_irc, mock_msg, ["--gif", "fine | | this is fine"])
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched == "https://api.memegen.link/images/fine/_/this_is_fine.gif?style=animated"
+
+    def test_style_font_top_flags(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        styled = meme.parse_templates(
+            [{"id": "doge", "name": "Doge", "lines": 2, "keywords": [], "styles": ["bark"]}]
+        )
+        meme.CachedCatalog.get.return_value = meme.MemeCatalog(styled)
+
+        plugin.meme(
+            mock_irc, mock_msg, ["--style", "bark", "--font", "impact", "--top", "doge | a | b"]
+        )
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert (
+            fetched
+            == "https://api.memegen.link/images/doge/a/b.png?style=bark&font=impact&layout=top"
+        )
+
+    def test_list_shows_gif_and_styles(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        styled = meme.parse_templates(
+            [
+                {
+                    "id": "doge",
+                    "name": "Doge",
+                    "lines": 2,
+                    "keywords": [],
+                    "styles": ["bark", "animated"],
+                }
+            ]
+        )
+        meme.CachedCatalog.get.return_value = meme.MemeCatalog(styled)
+
+        plugin.meme(mock_irc, mock_msg, ["list doge"])
+
+        assert "doge (Doge, 2, gif, styles: bark)" in mock_irc.reply.call_args.args[0]
+
+    def test_tool_takes_animated_and_style(self, meme_plugin) -> None:
+        plugin, _, mock_msg = meme_plugin
+        styled = meme.parse_templates(
+            [
+                {
+                    "id": "fine",
+                    "name": "This is Fine",
+                    "lines": 2,
+                    "keywords": [],
+                    "styles": ["animated"],
+                }
+            ]
+        )
+        meme.CachedCatalog.get.return_value = meme.MemeCatalog(styled)
+        schemas, handlers = plugin._build_meme_tool(mock_msg)
+
+        handlers["make_meme"]({"template": "fine", "lines": ["", "ok"], "animated": True})
+
+        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
+        assert fetched.endswith(".gif?style=animated")
+        props = schemas[0]["function"]["parameters"]["properties"]
+        assert "animated" in props and "style" in props

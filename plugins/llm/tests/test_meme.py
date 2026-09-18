@@ -337,3 +337,84 @@ class TestCustomBackground:
 
     def test_parse_request_keeps_the_url_intact(self):
         assert meme.parse_meme_request(f"{self._BG} | a | b") == (self._BG, ["a", "b"])
+
+
+_STYLED_JSON = [
+    {
+        "id": "fine",
+        "name": "This is Fine",
+        "lines": 2,
+        "keywords": [],
+        "styles": ["animated", "default"],
+    },
+    {
+        "id": "doge",
+        "name": "Doge",
+        "lines": 2,
+        "keywords": [],
+        "styles": ["bark", "bite", "default"],
+    },
+    {"id": "drake", "name": "Drakeposting", "lines": 2, "keywords": [], "styles": []},
+]
+
+
+@pytest.fixture
+def styled() -> meme.MemeCatalog:
+    return meme.MemeCatalog(meme.parse_templates(_STYLED_JSON))
+
+
+class TestOptions:
+    """The rest of memegen's query string: gif, style, font, layout."""
+
+    B = "https://api.memegen.link"
+
+    def test_parse_templates_reads_styles(self, styled):
+        assert styled.resolve("doge").styles == ("bark", "bite")
+        assert styled.resolve("fine").animated is True
+        assert styled.resolve("drake").animated is False
+
+    def test_animated_renders_a_gif(self, styled):
+        plan = meme.plan_meme(styled, self.B, "fine", ["", "ok"], meme.MemeOptions(animated=True))
+        assert plan.url == f"{self.B}/images/fine/_/ok.gif?style=animated"
+
+    def test_animated_on_a_still_template_lists_the_animated_ones(self, styled):
+        plan = meme.plan_meme(styled, self.B, "drake", ["a", "b"], meme.MemeOptions(animated=True))
+        assert plan.url is None
+        assert "drake" in plan.error and "fine" in plan.error
+
+    def test_style_rides_as_a_query(self, styled):
+        plan = meme.plan_meme(styled, self.B, "doge", ["a", "b"], meme.MemeOptions(style="bark"))
+        assert plan.url == f"{self.B}/images/doge/a/b.png?style=bark"
+
+    def test_unknown_style_lists_the_template_styles(self, styled):
+        plan = meme.plan_meme(styled, self.B, "doge", ["a", "b"], meme.MemeOptions(style="meow"))
+        assert plan.url is None
+        assert "bark" in plan.error and "bite" in plan.error
+
+    def test_style_on_a_template_without_any(self, styled):
+        plan = meme.plan_meme(styled, self.B, "drake", ["a", "b"], meme.MemeOptions(style="yes"))
+        assert plan.url is None and "no styles" in plan.error
+
+    def test_font_and_top_layout(self, styled):
+        opts = meme.MemeOptions(font="impact", layout_top=True)
+        plan = meme.plan_meme(styled, self.B, "drake", ["a", "b"], opts)
+        assert plan.url == f"{self.B}/images/drake/a/b.png?font=impact&layout=top"
+
+    def test_unknown_font_lists_the_fonts(self, styled):
+        plan = meme.plan_meme(styled, self.B, "drake", ["a", "b"], meme.MemeOptions(font="comic"))
+        assert plan.url is None and "impact" in plan.error
+
+    def test_custom_background_keeps_its_query_alongside(self, styled):
+        opts = meme.MemeOptions(font="impact")
+        plan = meme.plan_meme(styled, self.B, "https://i.example.com/x.png", ["a", "b"], opts)
+        assert plan.url.endswith(".png?font=impact&background=https%3A%2F%2Fi.example.com%2Fx.png")
+
+    def test_custom_cannot_animate(self, styled):
+        opts = meme.MemeOptions(animated=True)
+        plan = meme.plan_meme(styled, self.B, "https://i.example.com/x.png", ["a"], opts)
+        assert plan.url is None and "animated" in plan.error
+
+    def test_describe_mentions_gif_and_styles(self, styled):
+        assert meme.describe_short(styled.resolve("fine")) == "fine (This is Fine, 2, gif)"
+        assert meme.describe_short(styled.resolve("doge")) == "doge (Doge, 2, styles: bark/bite)"
+        assert meme.describe_short(styled.resolve("drake")) == "drake (Drakeposting, 2)"

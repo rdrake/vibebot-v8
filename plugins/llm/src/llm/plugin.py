@@ -375,14 +375,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
     ),
     CommandInfo(
         name="meme",
-        args="<template> | <caption> [| <caption> ...]",
+        args="[--gif] [--style <name>] [--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]",
         description=(
-            "Caption a meme template from memegen.link. Name the template, then "
-            "the captions, separated by |. 'list <word>' finds templates."
+            "Caption a meme template from memegen.link, or any image by URL. Name "
+            "the template, then the captions, separated by |. --gif renders the "
+            "animated version where one exists. 'list <word>' finds templates."
         ),
         examples=(
             "@meme drake | left on unread | left on read",
             "@meme distracted boyfriend | me | a new side project | my actual job",
+            "@meme --gif fine | | this is fine",
             "@meme list cat",
         ),
         category="generation",
@@ -7293,7 +7295,11 @@ class LLM(callbacks.Plugin):
         return catalog.with_aliases(aliases) if aliases else catalog
 
     def _make_meme(
-        self, msg: IrcMsg, template_query: str, lines: list[str]
+        self,
+        msg: IrcMsg,
+        template_query: str,
+        lines: list[str],
+        options: meme.MemeOptions | None = None,
     ) -> tuple[str | None, str]:
         """Resolve, fetch from memegen, rehost. ``(url, error)``; one is set.
 
@@ -7309,7 +7315,7 @@ class LLM(callbacks.Plugin):
         if catalog is None:
             return None, _("Meme templates are unavailable right now.")
         base = (self.registryValue("memeApiBase") or "").strip()
-        plan = meme.plan_meme(catalog, base, template_query, lines)
+        plan = meme.plan_meme(catalog, base, template_query, lines, options)
         if plan.error or plan.url is None:
             return None, plan.error or _("Could not build that meme.")
         # One grep answers "did memegen get asked?" — the fetch helper logs
@@ -7375,6 +7381,21 @@ class LLM(callbacks.Plugin):
                                 "right, verbatim from the user."
                             ),
                         },
+                        "animated": {
+                            "type": "boolean",
+                            "description": (
+                                "True only if the user asked for a gif or animated "
+                                "version. Some templates have one; the error says "
+                                "which if not."
+                            ),
+                        },
+                        "style": {
+                            "type": "string",
+                            "description": (
+                                "An alternate image of the template, only if the "
+                                "user named one (e.g. doge 'bark', drake 'yes')."
+                            ),
+                        },
                     },
                     "required": ["template", "lines"],
                 },
@@ -7389,8 +7410,13 @@ class LLM(callbacks.Plugin):
                     content=json.dumps({"error": "template must be a string and lines a list"})
                 )
             lines = [str(line) for line in lines][: meme.MAX_LINES]
+            style = arguments.get("style")
+            options = meme.MemeOptions(
+                animated=bool(arguments.get("animated")),
+                style=style.strip() if isinstance(style, str) and style.strip() else None,
+            )
             self.log.info("make_meme: template=%r lines=%s", template, len(lines))
-            hosted, error = self._make_meme(msg, template, lines)
+            hosted, error = self._make_meme(msg, template, lines, options)
             if hosted is None:
                 return ToolResult(content=json.dumps({"error": error}))
             return ToolResult(content=json.dumps({"status": "ok", "message": hosted}))
@@ -7402,21 +7428,33 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         args: list,
+        optlist: list,
         text: str,
     ) -> None:
-        """<template> | <caption> [| <caption> ...]  or  list [<word>]
+        """[--gif] [--style <name>] [--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]  or  list [<word>]
 
-        Captions a meme template from memegen.link. Name the template, then
-        the captions, separated by |. A blank caption leaves that box empty.
+        Captions a meme template from memegen.link. Name the template (or
+        paste an image URL), then the captions, separated by |. A blank
+        caption leaves that box empty. --gif renders the animated version
+        where one exists, --style picks an alternate image (@meme list shows
+        them), --font changes the typeface, --top puts the text at the top.
 
         Examples:
           @meme drake | left on unread | left on read
           @meme distracted boyfriend | me | a new side project | my actual job
+          @meme --gif fine | | this is fine
+          @meme --style bark doge | such caption | very wow
           @meme list cat
         """
         if self._is_old_message(msg):
             return
 
+        options = meme.MemeOptions(
+            animated=any(opt == "gif" for opt, _v in optlist),
+            style=next((v for opt, v in optlist if opt == "style"), None),
+            font=next((v for opt, v in optlist if opt == "font"), None),
+            layout_top=any(opt == "top" for opt, _v in optlist),
+        )
         parsed = meme.parse_meme_request(text)
         if parsed is None:
             self._safe_error(irc, _("Usage: @meme <template> | <caption> | <caption>"))
@@ -7432,7 +7470,7 @@ class LLM(callbacks.Plugin):
             picks = catalog.suggest(word, limit=10) if word.strip() else catalog.templates[:10]
             if word.strip():
                 picks = [t for t in picks if meme.matches(t, word)] or picks
-            listing = "; ".join(f"{t.id} ({t.name}, {t.lines})" for t in picks)
+            listing = "; ".join(meme.describe_short(t) for t in picks)
             self._safe_reply(irc, _("Templates: %s — %d in all.") % (listing, len(catalog)))
             return
 
@@ -7441,13 +7479,20 @@ class LLM(callbacks.Plugin):
             return
 
         with self._allow_concurrent():
-            hosted, error = self._make_meme(msg, template_query, lines)
+            hosted, error = self._make_meme(msg, template_query, lines, options)
         if hosted is None:
             self._safe_error(irc, error)
             return
         self._safe_reply(irc, hosted)
 
-    meme = wrap(meme, [("checkCapability", "llm.draw"), "text"])
+    meme = wrap(
+        meme,
+        [
+            ("checkCapability", "llm.draw"),
+            getopts({"gif": "", "style": "something", "font": "something", "top": ""}),
+            "text",
+        ],
+    )
 
     def animate(
         self,
