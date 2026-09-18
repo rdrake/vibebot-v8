@@ -19,6 +19,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
@@ -234,9 +235,25 @@ def _haystack(template: MemeTemplate) -> str:
     return _normalise(f"{template.id} {template.name} {' '.join(template.keywords)}")
 
 
-def _overlap(query_tokens: list[str], template: MemeTemplate) -> int:
+def _search_text(template: MemeTemplate) -> str:
+    """The haystack plus the example captions — what ``list`` and the
+    suggestions search. Kept out of :meth:`MemeCatalog.resolve`: "workout"
+    should find Butthurt Dweller in a listing, not caption it unasked."""
+    return _normalise(f"{_haystack(template)} {' '.join(template.example)}")
+
+
+def _overlap(query_tokens: list[str], template: MemeTemplate) -> tuple[int, int]:
+    """``(words shared with the id or name, words shared with anything)``.
+
+    The name counts first so the topic tags cannot outvote it: "elmo fire"
+    must still reach Elmo when three other templates are tagged "fire".
+    """
+    named = set(_normalise(f"{template.id} {template.name}").split())
     words = set(_haystack(template).split())
-    return sum(1 for tok in query_tokens if tok in words)
+    return (
+        sum(1 for tok in query_tokens if tok in named),
+        sum(1 for tok in query_tokens if tok in words),
+    )
 
 
 class MemeCatalog:
@@ -248,6 +265,18 @@ class MemeCatalog:
 
     def __len__(self) -> int:
         return len(self.templates)
+
+    def with_keywords(self, extra: Mapping[str, Iterable[str]]) -> MemeCatalog:
+        """A copy with more keywords on the named templates.
+
+        Ids the catalog does not have are ignored: the topic table in
+        :mod:`meme_topics` outlives any one memegen template list.
+        """
+        merged = [
+            replace(t, keywords=(*t.keywords, *extra[t.id.lower()])) if t.id.lower() in extra else t
+            for t in self.templates
+        ]
+        return MemeCatalog(merged)
 
     def with_aliases(self, aliases: dict[str, str]) -> MemeCatalog:
         """A copy with operator aliases folded in.
@@ -273,13 +302,7 @@ class MemeCatalog:
                     )
             elif target.lower() in self._by_id:
                 extra_keywords.setdefault(target.lower(), []).append(name)
-        merged = [
-            replace(t, keywords=(*t.keywords, *extra_keywords[t.id.lower()]))
-            if t.id.lower() in extra_keywords
-            else t
-            for t in self.templates
-        ]
-        return MemeCatalog(merged + customs)
+        return MemeCatalog(self.with_keywords(extra_keywords).templates + customs)
 
     def resolve(self, query: str) -> MemeTemplate | None:
         """Exact id, exact name, UNIQUE name substring, keyword, then word overlap.
@@ -316,9 +339,10 @@ class MemeCatalog:
         # character. "willy wonka" has to reach Condescending Wonka on the
         # one word they share, but one word of five is a coincidence.
         tokens = nq.split()
-        scored = sorted(((_overlap(tokens, t), t) for t in self.templates), key=lambda s: -s[0])
+        scored = sorted(((_overlap(tokens, t), t) for t in self.templates), key=lambda s: s[0])
+        scored.reverse()
         best, winner = scored[0]
-        if best == 0 or best * 2 < len(tokens):
+        if best[1] == 0 or best[1] * 2 < len(tokens):
             return None
         if len(scored) > 1 and scored[1][0] == best:
             return None
@@ -333,9 +357,10 @@ class MemeCatalog:
         tokens = nq.split()
         scored: list[tuple[int, int, int, str, MemeTemplate]] = []
         for t in self.templates:
-            haystack = _haystack(t)
+            haystack = _search_text(t)
+            words = set(haystack.split())
             pos = haystack.find(nq)
-            overlap = _overlap(tokens, t)
+            overlap = sum(1 for tok in tokens if tok in words)
             if pos < 0 and overlap == 0:
                 continue
             scored.append((0 if pos >= 0 else 1, -overlap, len(t.name), t.id, t))
@@ -556,9 +581,8 @@ class CachedCatalog:
 
 
 def matches(template: MemeTemplate, word: str) -> bool:
-    """Does ``word`` appear in the template's id, name, or keywords?"""
+    """Does ``word`` appear in the template's id, name, keywords, or example?"""
     nw = _normalise(word)
     if not nw:
         return True
-    haystack = _normalise(f"{template.id} {template.name} {' '.join(template.keywords)}")
-    return nw in haystack
+    return nw in _search_text(template)

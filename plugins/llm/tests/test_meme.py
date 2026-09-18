@@ -509,3 +509,43 @@ class TestCanonicalUrl:
         opener, calls = self._opener(mocker, [(301, "/images/drake/loop/x.png")])
         meme.canonical_url(f"{self.B}/images/drake/a/b.png", timeout=5, opener=opener)
         assert len(calls) <= 4
+
+
+class TestTopics:
+    """The checked-in keyword column: memegen's own keywords cover a quarter
+    of the templates, so "gym" found nothing until meme_topics tagged bd."""
+
+    def test_with_keywords_adds_tags_and_ignores_unknown_ids(self, catalog):
+        cat = catalog.with_keywords({"fine": ("burning", "coping"), "nosuch": ("x",)})
+        assert cat.resolve("burning").id == "fine"
+        assert cat.resolve("coping meme").id == "fine"
+        assert cat.resolve("fine").keywords == ("dog", "fire", "burning", "coping")
+        assert len(cat) == len(catalog)
+
+    def test_shared_tag_is_ambiguous_not_a_guess(self, catalog):
+        cat = catalog.with_keywords({"fine": ("sad",), "fry": ("sad",)})
+        assert cat.resolve("sad") is None
+        assert {t.id for t in cat.suggest("sad")} == {"fine", "fry"}
+
+    def test_every_topic_id_and_tag_is_well_formed(self):
+        from llm import meme_topics
+
+        for template_id, tags in meme_topics.TOPICS.items():
+            assert template_id == template_id.lower().strip(), template_id
+            assert tags, template_id
+            for tag in tags:
+                assert meme._normalise(tag), (template_id, tag)
+
+    def test_list_and_suggest_search_the_example_captions(self, catalog):
+        assert meme.matches(catalog.resolve("fry"), "trolling")
+        assert [t.id for t in catalog.suggest("trolling")] == ["fry"]
+
+    def test_resolve_does_not_read_the_example_captions(self, catalog):
+        assert catalog.resolve("trolling") is None
+
+    def test_a_name_word_outranks_topic_tags(self, catalog):
+        elmo = meme.MemeTemplate("elmo", "Elmo Choosing Cocaine", 2)
+        cat = meme.MemeCatalog([*catalog.templates, elmo]).with_keywords(
+            {"fine": ("fire", "burning"), "elmo": ("sesame street",)}
+        )
+        assert cat.resolve("elmo fire").id == "elmo"

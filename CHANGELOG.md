@@ -633,6 +633,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Tag every memegen template with topics so @meme list gym finds one (`meme`)
 - Expose memegen's gif, style, font and layout options (`meme`)
 - Book a $0 usage row per memegen fetch (`meme`)
 - Aliases, word-overlap matching, and bring-your-own-image templates (`meme`)

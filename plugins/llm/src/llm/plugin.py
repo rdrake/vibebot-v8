@@ -32,7 +32,7 @@ from supybot import world
 from supybot.commands import getopts, optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import apikeys, ircquery, limnoria_bridge, meme, statuspage
+from . import apikeys, ircquery, limnoria_bridge, meme, meme_topics, statuspage
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -7291,6 +7291,7 @@ class LLM(callbacks.Plugin):
         if catalog is None:
             self.log.warning("meme: templates unavailable: %s", self._meme_templates.last_error)
             return None
+        catalog = catalog.with_keywords(meme_topics.TOPICS)
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
