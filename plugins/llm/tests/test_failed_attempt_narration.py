@@ -140,7 +140,7 @@ class TestParallelDrawShortCircuit:
 
         pending = list(draw_results)
 
-        def draw_fn(_prompt: str) -> ToolCallbackResult:
+        def draw_fn(_prompt: str, **_kw: object) -> ToolCallbackResult:
             return pending.pop(0)
 
         result = service.assistant_completion(
@@ -283,7 +283,7 @@ class TestParallelDrawShortCircuit:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: pending.pop(0),
+            draw_fn=lambda _p, **_kw: pending.pop(0),
             search_fn=lambda _q: ToolResult(content='{"results": "a party"}'),
         )
 

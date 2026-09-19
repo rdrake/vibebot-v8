@@ -131,7 +131,7 @@ class TestFabricationForcesTheTool:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="ibutsu",
-            draw_fn=lambda _p: ToolCallbackResult(True, REAL_MINTED),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, REAL_MINTED),
         )
 
         assert FABRICATED not in (result.content or "")
@@ -197,7 +197,7 @@ class TestFabricationForcesTheTool:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(True, REAL_MINTED),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, REAL_MINTED),
         )
 
         assert REAL_MINTED in (result.content or "")

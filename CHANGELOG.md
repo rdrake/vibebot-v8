@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- The dossier must cite a source, and the planner picks the shape (`draw`)
 - Let xAI pick the aspect ratio instead of pinning 9:16 (`draw`)
 - --draw is a bare flag, --edit "..." is the explicit instruction (`meme`)
 - The picker sees the --draw subject and stops copying tags and examples (`meme`)

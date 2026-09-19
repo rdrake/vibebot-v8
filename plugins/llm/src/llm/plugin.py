@@ -3164,7 +3164,9 @@ class LLM(callbacks.Plugin):
             search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
             fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
             code_fn=lambda p: self._code_for_assistant(p, channel),
-            draw_fn=lambda p, _irc=irc, _msg=msg: self._draw_for_assistant(_irc, _msg, p),
+            draw_fn=lambda p, _irc=irc, _msg=msg, **kw: self._draw_for_assistant(
+                _irc, _msg, p, **kw
+            ),
             cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
             exclude_tools=exclude_tools,
             **self._pending_task_fns(
@@ -5475,7 +5477,7 @@ class LLM(callbacks.Plugin):
         return _call
 
     def _draw_for_assistant(
-        self, irc: callbacks.Irc, msg: IrcMsg, prompt: str
+        self, irc: callbacks.Irc, msg: IrcMsg, prompt: str, *, aspect: str | None = None
     ) -> ToolCallbackResult:
         """Generate an image for the generate_image tool.
 
@@ -5499,7 +5501,7 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
-        result = self.llm_service.image_generation(prompt, irc=irc, msg=msg)
+        result = self.llm_service.image_generation(prompt, irc=irc, msg=msg, aspect=aspect)
         self._log_image_usage(msg, prompt, result)
         return _ToolCallbackResult(
             not bool(result.error),
@@ -7031,7 +7033,7 @@ class LLM(callbacks.Plugin):
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
-                    draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                    draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                     animate_fn=lambda p: self._animate_for_assistant(
                         irc, msg, p, nick=nick, channel=channel, account=pf.account
                     ),
@@ -7146,7 +7148,7 @@ class LLM(callbacks.Plugin):
                         search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                         fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                         code_fn=lambda p: self._code_for_assistant(p, channel),
-                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                        draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                         cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                         manage_typing=False,
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
@@ -7257,7 +7259,7 @@ class LLM(callbacks.Plugin):
                         msg=msg,
                         memories=[],
                         system_prompt=draw_system_prompt,
-                        draw_fn=lambda p: self._draw_for_assistant(irc, msg, p),
+                        draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                         manage_typing=False,
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
                     )

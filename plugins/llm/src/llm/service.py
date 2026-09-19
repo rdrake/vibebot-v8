@@ -567,6 +567,10 @@ def _image_url_host(url: str) -> str:
 # deliverable, and a step_2 sentence about it is latency the user pays for.
 _IMAGE_MINTING_TOOLS = frozenset({"generate_image", "make_meme"})
 
+# The planner's shape words → xAI ``aspect_ratio``. 2:3 / 3:2 rather than the
+# phone-shaped 9:16 / 16:9: a poster or a landscape, not a wallpaper.
+_XAI_ASPECT_RATIOS: dict[str, str] = {"portrait": "2:3", "landscape": "3:2", "square": "1:1"}
+
 
 def _unminted_image_urls(content: str, minted: set[str], hosts: frozenset[str]) -> list[str]:
     """Image URLs this turn did not mint but presented as its own.
@@ -1629,7 +1633,13 @@ class VideoResult(NamedTuple):
 # own refusal, which is the failure test_image_failure_guard.py guards one
 # stage later. Keying on prose markers instead would lose to the first
 # paraphrase; the shape does not paraphrase.
-_DOSSIER_LINE_RE = re.compile(r"^\s*[-*•]\s+(\S.*)$")
+# Shape, twice over: a list marker at the front and a source tag at the end.
+# The tag is the second rule. A grounded researcher asked about a name that
+# does not exist does not answer NONE — it guesses from the words ("Stinky
+# Lads" became three tanned Australians, 2026-09-19) — and a guess has nowhere
+# to cite. The tag is captured only to be dropped: the planner needs the
+# appearance, not the footnote.
+_DOSSIER_LINE_RE = re.compile(r"^\s*[-*•]\s+(\S.*?)\s*\(source:\s*[^)]+\)\s*$", re.IGNORECASE)
 # The block rides in the planner's system prompt on every request that has one.
 _DOSSIER_MAX_LINES = 8
 _DOSSIER_MAX_CHARS = 1500
@@ -3606,7 +3616,14 @@ class LLMService:
             )
 
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
-        result = self._attempt_image_generation(prompt, task.model, timeout, retry_channel)
+        aspect = request_data.get("aspect")
+        result = self._attempt_image_generation(
+            prompt,
+            task.model,
+            timeout,
+            retry_channel,
+            aspect=aspect if isinstance(aspect, str) else None,
+        )
         if result is None:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -4218,7 +4235,7 @@ class LLMService:
 
     @staticmethod
     def _parse_dossier(content: str) -> str:
-        """Keep only the dash-prefixed lines, normalised and capped.
+        """Keep only the dash-prefixed, source-tagged lines, normalised and capped.
 
         See ``_DOSSIER_LINE_RE`` for why the filter is on shape. The JSON error
         string ``_grounded_completion`` returns on failure has no such line, so
@@ -5518,6 +5535,7 @@ Examples (echo → action_prompt: ""):
         channel: str | None = None,
         *,
         fallback: bool = False,
+        aspect: str | None = None,
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -5530,6 +5548,9 @@ Examples (echo → action_prompt: ""):
                 primary ones. One lookup path, one flag choosing the key set —
                 a second endpoint resolver would be two ways to say the same
                 thing, and they drift.
+            aspect: The planner's shape for the image (``IMAGE_ASPECTS``), or
+                None to let the provider choose. xAI only; the box takes a
+                pixel size from config instead.
 
         Returns:
             ImageResult on success, None if data is empty (content blocked).
@@ -5560,8 +5581,12 @@ Examples (echo → action_prompt: ""):
         else:
             api_key = apikeys.api_key_for(model)
             if model.startswith("xai/"):
-                # No aspect_ratio: xAI defaults to `auto`, the best ratio
-                # for the prompt. Pinning 9:16 made every draw portrait.
+                # Without an aspect xAI defaults to `auto`, its best guess
+                # from the prompt — which read a cinema poster as a street
+                # scene and drew it 16:9. The planner knows what it asked for.
+                ratio = _XAI_ASPECT_RATIOS.get(aspect or "")
+                if ratio:
+                    kwargs["aspect_ratio"] = ratio
                 kwargs["quality"] = "high"
                 kwargs["resolution"] = "2k"
 
@@ -6687,6 +6712,8 @@ Examples (echo → action_prompt: ""):
         prompt: str,
         irc: Irc | None = None,
         msg: IrcMsg | None = None,
+        *,
+        aspect: str | None = None,
     ) -> ImageResult:
         """Generate image from text prompt with automatic safety rewrite.
 
@@ -6700,6 +6727,8 @@ Examples (echo → action_prompt: ""):
             prompt: Text description of image to generate
             irc: IRC connection for typing indicators (optional)
             msg: IRC message for context (optional)
+            aspect: The planner's shape for the image, threaded through every
+                attempt — the first, the rewrites, and a timed-out retry.
 
         Returns:
             ImageResult with URL to generated image or error message
@@ -6745,7 +6774,9 @@ Examples (echo → action_prompt: ""):
             block_reason = ""
 
             try:
-                result = self._attempt_image_generation(prompt, model, timeout, channel)
+                result = self._attempt_image_generation(
+                    prompt, model, timeout, channel, aspect=aspect
+                )
                 if result is not None:
                     return result
                 # Empty data = content blocked (Google Imagen)
@@ -6764,7 +6795,7 @@ Examples (echo → action_prompt: ""):
                     is_channel=is_channel,
                     prompt=original_prompt,
                     model=model,
-                    request_data={"prompt": original_prompt},
+                    request_data={"prompt": original_prompt, "aspect": aspect},
                     submitted_at=time.time(),
                     account=account,
                 )
@@ -6856,7 +6887,9 @@ Examples (echo → action_prompt: ""):
 
                 # Retry image generation with rewritten prompt
                 try:
-                    result = self._attempt_image_generation(current_prompt, model, timeout, channel)
+                    result = self._attempt_image_generation(
+                        current_prompt, model, timeout, channel, aspect=aspect
+                    )
                     if result is not None:
                         # Success! Aggregate costs and set rewritten_prompt
                         return ImageResult(

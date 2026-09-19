@@ -161,10 +161,13 @@ slower with this on. The typing indicator covers the wait. The usage table
 records research costs under the command name `dossier`, separately from the
 planner's own row, because the two run on different models.
 
-Only the dash-prefixed fact lines the research prompt asks for are kept. A
-model that declines the question, or wraps its answer in commentary,
-contributes nothing rather than contributing its refusal to the next model's
-prompt.
+Only the dash-prefixed fact lines the research prompt asks for are kept, and
+only those that end in a `(source: …)` tag. A model that declines the
+question, or wraps its answer in commentary, contributes nothing rather than
+contributing its refusal to the next model's prompt. The source tag guards the
+other failure: asked about a name that exists nowhere, a grounded model guesses
+an appearance from the words in it rather than answering `NONE`, and a guess
+has nothing to cite. The tag is stripped before the line reaches the planner.
 
 `subjectResearchModel` picks the model. Left empty it falls back to
 `searchModel` and then `assistantModel`, which in most deployments means the

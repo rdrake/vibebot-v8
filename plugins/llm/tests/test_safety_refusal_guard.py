@@ -313,7 +313,9 @@ class TestStaleImageGuard:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(False, "Error: rejected by content moderation."),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(
+                False, "Error: rejected by content moderation."
+            ),
         )
 
         assert stale not in (result.content or "")
@@ -341,7 +343,7 @@ class TestStaleImageGuard:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(True, fresh),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, fresh),
         )
 
         assert fresh in (result.content or "")

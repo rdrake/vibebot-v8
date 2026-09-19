@@ -3258,6 +3258,23 @@ class TestDrawForMeta:
         assert args[6] == 0.02
         assert kwargs["status"] == "success"
 
+    def test_draw_for_assistant_forwards_the_aspect(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN an aspect WHEN drawing for the tool THEN image_generation receives it."""
+        from llm.service import ImageResult
+
+        plugin.llm_service.image_generation.return_value = ImageResult(
+            content="https://img.example/poster.png", model="xai/grok-imagine-image"
+        )
+        msg = mocker.MagicMock()
+        msg.prefix = "user!ident@host"
+        msg.args = ["#test"]
+
+        plugin._draw_for_assistant(mock_irc, msg, "a poster", aspect="portrait")
+
+        assert plugin.llm_service.image_generation.call_args.kwargs["aspect"] == "portrait"
+
     def test_draw_for_assistant_returns_no_usage_to_the_caller(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
@@ -3487,7 +3504,7 @@ class TestDrawForMeta:
         assert result.ok is True
         assert result.message == "https://img.example/sunset.png"
         plugin.llm_service.image_generation.assert_called_once_with(
-            "a sunset", irc=mock_irc, msg=msg
+            "a sunset", irc=mock_irc, msg=msg, aspect=None
         )
 
 
@@ -4617,6 +4634,15 @@ class TestExecutorCoverageGaps:
         assert "id is required" in result.content
         cancel_fn.assert_not_called()
 
+    def test_generate_image_schema_offers_three_shapes(self) -> None:
+        """The planner can only choose what the schema lists; xAI's map is keyed on it."""
+        from llm.assistant import ASSISTANT_TOOLS
+
+        spec = next(t for t in ASSISTANT_TOOLS if t["function"]["name"] == "generate_image")
+        aspect = spec["function"]["parameters"]["properties"]["aspect"]
+        assert aspect["enum"] == ["portrait", "landscape", "square"]
+        assert "aspect" not in spec["function"]["parameters"]["required"]
+
     def test_generate_image_unavailable_when_no_draw_fn(self, mocker: MockerFixture) -> None:
         """generate_image without a draw_fn returns 'not available'."""
         ex = make_executor(
@@ -4679,6 +4705,36 @@ class TestExecutorCoverageGaps:
         result = ex.execute("generate_image", {"prompt": "a cat"})
         assert '"ok"' in result.content
         assert "example.com/cat.png" in result.content
+
+    def test_generate_image_passes_the_aspect_to_draw_fn(self, mocker: MockerFixture) -> None:
+        """GIVEN the model chose a shape WHEN the tool runs THEN draw_fn gets it by name."""
+        draw_fn = mocker.MagicMock(return_value=ToolCallbackResult(True, "https://x/y.png"))
+        ex = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        ex.execute("generate_image", {"prompt": "a poster", "aspect": "portrait"})
+        draw_fn.assert_called_once_with("a poster", aspect="portrait")
+
+    def test_generate_image_without_an_aspect_sends_none(self, mocker: MockerFixture) -> None:
+        """GIVEN no aspect (or garbage) WHEN the tool runs THEN draw_fn gets None."""
+        draw_fn = mocker.MagicMock(return_value=ToolCallbackResult(True, "https://x/y.png"))
+        ex = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="acct",
+            draw_fn=draw_fn,
+        )
+        ex.execute("generate_image", {"prompt": "a cat", "aspect": 7})
+        draw_fn.assert_called_once_with("a cat", aspect=None)
 
     def test_generate_image_does_not_misclassify_ok_message_with_error_word(
         self, mocker: MockerFixture

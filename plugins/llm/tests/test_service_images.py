@@ -1210,6 +1210,58 @@ class TestImageGenerationPaths:
         # prompt. A pinned 9:16 made every draw portrait.
         assert "aspect_ratio" not in call_kwargs[1]
 
+    @pytest.mark.parametrize(
+        ("aspect", "ratio"),
+        [("portrait", "2:3"), ("landscape", "3:2"), ("square", "1:1")],
+    )
+    def test_xai_aspect_maps_to_a_ratio(self, aspect: str, ratio: str) -> None:
+        """GIVEN the planner chose a shape WHEN drawing on xAI THEN it rides as aspect_ratio.
+
+        `auto` reads the prompt as a scene: a 1950s cinema poster came back
+        16:9 (2026-09-19). The planner knows it is a poster; it says so.
+        """
+        mock_response = self.mocker.Mock()
+        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
+        mock_img_gen = self.mocker.patch(
+            "llm.service.litellm.image_generation", return_value=mock_response
+        )
+        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
+        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+
+        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30, aspect=aspect)
+
+        assert mock_img_gen.call_args[1]["aspect_ratio"] == ratio
+
+    def test_unknown_aspect_is_ignored(self) -> None:
+        """GIVEN a shape the map does not know WHEN drawing THEN xAI keeps `auto`."""
+        mock_response = self.mocker.Mock()
+        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
+        mock_img_gen = self.mocker.patch(
+            "llm.service.litellm.image_generation", return_value=mock_response
+        )
+        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
+        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+
+        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30, aspect="wide")
+
+        assert "aspect_ratio" not in mock_img_gen.call_args[1]
+
+    def test_image_generation_threads_aspect_to_the_attempt(self) -> None:
+        """GIVEN an aspect WHEN image_generation runs THEN the attempt receives it."""
+        from llm.service import ImageResult
+
+        attempt = self.mocker.patch.object(
+            self.service,
+            "_attempt_image_generation",
+            return_value=ImageResult(content="http://img.png"),
+        )
+        self.mocker.patch.object(self.service, "validate_prompt", return_value=(True, ""))
+        self.mocker.patch.object(self.service, "_missing_image_key_error", return_value=None)
+
+        self.service.image_generation("a poster", aspect="portrait")
+
+        assert attempt.call_args.kwargs["aspect"] == "portrait"
+
     def test_b64_json_save_failure(self) -> None:
         """GIVEN b64_json data but save fails WHEN _attempt_image_generation called THEN returns error."""
         image_data = self.mocker.Mock()
@@ -1339,6 +1391,22 @@ class TestRetryImage:
 
         assert result.status == "failed_terminal"
         assert "OPENAI_API_KEY" in result.reason
+
+    def test_retry_image_carries_the_aspect(self) -> None:
+        """GIVEN a stashed draw with an aspect WHEN retried THEN the shape survives the stash."""
+        from llm.service import ImageResult
+
+        task = self._make_task(model="xai/grok-imagine-image")
+        self.mocker.patch.object(self.service, "_missing_image_key_error", return_value=None)
+        attempt = self.mocker.patch.object(
+            self.service,
+            "_attempt_image_generation",
+            return_value=ImageResult(content="http://img.png"),
+        )
+
+        self.service._retry_image(task, {"prompt": "cat", "aspect": "portrait"})
+
+        assert attempt.call_args.kwargs["aspect"] == "portrait"
 
     def test_retry_image_content_blocked(self) -> None:
         """GIVEN _attempt_image_generation returns None WHEN _retry_image called THEN returns failed_terminal with blocked reason."""

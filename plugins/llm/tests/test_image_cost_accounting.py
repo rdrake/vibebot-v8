@@ -184,7 +184,7 @@ class TestSpendIsAttributedToTheModelThatSpentIt:
         from llm.assistant import AssistantToolExecutor
 
         executor = object.__new__(AssistantToolExecutor)
-        executor._draw_fn = lambda _p: ToolCallbackResult(True, MINTED)
+        executor._draw_fn = lambda _p, **_kw: ToolCallbackResult(True, MINTED)
 
         result = AssistantToolExecutor._tool_generate_image(executor, {"prompt": "a party"})
 
@@ -218,7 +218,7 @@ class TestSpendIsAttributedToTheModelThatSpentIt:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(True, MINTED),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, MINTED),
         )
 
         assert result.content == MINTED
@@ -495,7 +495,7 @@ class TestRewordedImagesAreMarked:
 
         executor = object.__new__(AssistantToolExecutor)
         executor.image_reworded = False
-        executor._draw_fn = lambda _p: ToolCallbackResult(True, MINTED, reworded=True)
+        executor._draw_fn = lambda _p, **_kw: ToolCallbackResult(True, MINTED, reworded=True)
 
         AssistantToolExecutor._tool_generate_image(executor, {"prompt": "a cat"})
 
@@ -525,7 +525,7 @@ class TestRewordedImagesAreMarked:
             bot_nick="VibeBot",
             capabilities=frozenset({"llm.ask", "llm.draw"}),
             account="rdrake",
-            draw_fn=lambda _p: ToolCallbackResult(True, MINTED, reworded=True),
+            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, MINTED, reworded=True),
         )
 
         assert result.content == MINTED

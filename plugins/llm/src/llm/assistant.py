@@ -33,6 +33,10 @@ _log = logging.getLogger("supybot.plugins.LLM.assistant")
 
 # Tool definitions in OpenAI function-calling format.
 # LiteLLM passes these through to any provider that supports tool calling.
+# The shapes generate_image lets the planner choose. The service maps each to
+# a provider ratio; the executor drops anything else on the floor.
+IMAGE_ASPECTS: frozenset[str] = frozenset({"portrait", "landscape", "square"})
+
 ASSISTANT_TOOLS: list[dict[str, Any]] = [
     # NOTE: there is deliberately no get_instruction tool — the caller's
     # standing instruction is already injected into every request as a
@@ -422,6 +426,16 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                     "prompt": {
                         "type": "string",
                         "description": "Text description of the image to generate.",
+                    },
+                    "aspect": {
+                        "type": "string",
+                        "enum": ["portrait", "landscape", "square"],
+                        "description": (
+                            "Shape of the image. portrait for posters, covers, cards, "
+                            "phone wallpapers and a standing figure; landscape for "
+                            "scenes, panoramas, banners and groups; square for icons "
+                            "and avatars. Omit when the request implies no shape."
+                        ),
                     },
                 },
                 "required": ["prompt"],
@@ -835,7 +849,7 @@ class AssistantToolExecutor:
         list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
-        draw_fn: Callable[[str], ToolCallbackResult] | None = None,
+        draw_fn: Callable[..., ToolCallbackResult] | None = None,
         animate_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
@@ -1135,10 +1149,15 @@ class AssistantToolExecutor:
         prompt = args.get("prompt", "")
         if not prompt.strip():
             return self._err("A prompt is required.")
+        # The schema's enum is the contract; anything else is None and the
+        # image model picks its own shape, as it does when the field is absent.
+        aspect = args.get("aspect")
+        if aspect not in IMAGE_ASPECTS:
+            aspect = None
         # No usage returned on purpose — the draw callback books its own row
         # under the image model. Returning cost here as well would double-count
         # it. See ToolCallbackResult.
-        result = self._draw_fn(prompt)
+        result = self._draw_fn(prompt, aspect=aspect)
         if not result.ok:
             return self._err(result.message)
         # Latched, not overwritten: one reworded image in a turn marks the turn,

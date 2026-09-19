@@ -13,6 +13,12 @@ dash-prefixed lines the prompt asked for survive. A refusal, a preamble or a
 trailing caveat is dropped for having no dash, which is the same failure
 test_image_failure_guard.py guards one stage later — a model reading its own
 refusal back and parroting it forever.
+
+The second shape rule is the source tag. A grounded researcher asked about a
+name that does not exist ("Stinky Lads", 2026-09-19) does not answer NONE — it
+guesses from the words and the planner pastes the guess beside the name. So a
+line must end in "(source: ...)" to survive, and the tag is stripped before
+injection: the planner needs the appearance, not the citation.
 """
 
 from __future__ import annotations
@@ -49,8 +55,9 @@ class TestDossierParsing:
             mocker,
             service,
             "- Winston Churchill — heavyset man in his late sixties, bald crown, "
-            "jowled face, three-piece pinstripe suit and a cigar\n"
-            "- the Blitz — London after dark in 1940, smoke and searchlights",
+            "jowled face, three-piece pinstripe suit and a cigar (source: Wikipedia)\n"
+            "- the Blitz — London after dark in 1940, smoke and searchlights "
+            "(source: Imperial War Museums)",
         )
 
         result = service.subject_dossier("churchill during the blitz", channel="#test")
@@ -72,7 +79,7 @@ class TestDossierParsing:
             service,
             "Here are the subjects I could identify:\n"
             "- Amelia Earhart — slim woman in her thirties, cropped wavy hair, "
-            "leather flying jacket\n"
+            "leather flying jacket (source: Smithsonian)\n"
             "\nNote that appearance details vary between sources.",
         )
 
@@ -119,7 +126,8 @@ class TestDossierParsing:
         _answering(
             mocker,
             service,
-            "* Elvis Presley — pompadour, white jumpsuit\n• Graceland — white-columned Memphis mansion",
+            "* Elvis Presley — pompadour, white jumpsuit (source: Britannica)\n"
+            "• Graceland — white-columned Memphis mansion (source: graceland.com)",
         )
 
         result = service.subject_dossier("elvis at graceland", channel="#test")
@@ -136,7 +144,11 @@ class TestDossierParsing:
         unbounded one is an unbounded prompt.
         """
         service, _ = make_service()
-        _answering(mocker, service, "\n".join(f"- Subject {i} — a description" for i in range(20)))
+        _answering(
+            mocker,
+            service,
+            "\n".join(f"- Subject {i} — a description (source: site)" for i in range(20)),
+        )
 
         result = service.subject_dossier("a crowd scene", channel="#test")
 
@@ -145,11 +157,45 @@ class TestDossierParsing:
     def test_character_budget_is_capped(self, make_service, mocker) -> None:
         """GIVEN one enormous line WHEN parsed THEN the budget is not exceeded."""
         service, _ = make_service()
-        _answering(mocker, service, f"- Subject — {'x' * 4000}")
+        _answering(mocker, service, f"- Subject — {'x' * 4000} (source: site)")
 
         result = service.subject_dossier("a subject", channel="#test")
 
         assert len(result.text) <= 1500
+
+    def test_unsourced_lines_are_dropped(self, make_service, mocker) -> None:
+        """GIVEN a line with no source tag WHEN parsed THEN it never reaches the planner.
+
+        The live failure: "Stinky Lads" names nobody, the researcher invented
+        "young Australian men in their twenties, tanned, in caps", and three
+        of them were drawn. A guess has nowhere to cite.
+        """
+        service, _ = make_service()
+        _answering(
+            mocker,
+            service,
+            "- Stinky Lads — young Australian men in their twenties, athletic, "
+            "t-shirts and caps\n"
+            "- Hong Kong — dense neon-lit streets, 1980s taxis, harbour skyline "
+            "(source: Wikipedia)",
+        )
+
+        result = service.subject_dossier("Stinky Lads do Hong Kong", channel="#test")
+
+        assert result.text == ("- Hong Kong — dense neon-lit streets, 1980s taxis, harbour skyline")
+
+    def test_source_tag_is_stripped(self, make_service, mocker) -> None:
+        """GIVEN a sourced line WHEN parsed THEN the citation is not injected."""
+        service, _ = make_service()
+        _answering(
+            mocker,
+            service,
+            "- Churchill — heavyset, bald, cigar  (Source: en.wikipedia.org/wiki/Winston_Churchill)",
+        )
+
+        result = service.subject_dossier("churchill", channel="#test")
+
+        assert result.text == "- Churchill — heavyset, bald, cigar"
 
 
 class TestDossierModelSelection:
