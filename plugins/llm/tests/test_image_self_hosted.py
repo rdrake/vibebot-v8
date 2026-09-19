@@ -141,7 +141,9 @@ class TestHostedPathUnchanged:
 
         service._attempt_image_generation("a cat", "xai/grok-imagine", 120)
 
-        assert call.call_args.kwargs["aspect_ratio"] == "9:16"
+        assert call.call_args.kwargs["quality"] == "high"
+        assert call.call_args.kwargs["resolution"] == "2k"
+        assert "aspect_ratio" not in call.call_args.kwargs
 
 
 class TestSelfHostedKeyGuard:

@@ -1204,7 +1204,11 @@ class TestImageGenerationPaths:
         self.service._attempt_image_generation("cat", "xai/grok-2-image", 30)
 
         call_kwargs = mock_img_gen.call_args
-        assert call_kwargs[1]["aspect_ratio"] == "9:16"
+        assert call_kwargs[1]["quality"] == "high"
+        assert call_kwargs[1]["resolution"] == "2k"
+        # No aspect_ratio: xAI's default is `auto`, the best ratio for the
+        # prompt. A pinned 9:16 made every draw portrait.
+        assert "aspect_ratio" not in call_kwargs[1]
 
     def test_b64_json_save_failure(self) -> None:
         """GIVEN b64_json data but save fails WHEN _attempt_image_generation called THEN returns error."""

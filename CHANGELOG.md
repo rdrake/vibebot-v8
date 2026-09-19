@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Let xAI pick the aspect ratio instead of pinning 9:16 (`draw`)
 - --draw is a bare flag, --edit "..." is the explicit instruction (`meme`)
 - The picker sees the --draw subject and stops copying tags and examples (`meme`)
 - A sentence that fuzzy-matches a template name is a request (`meme`)

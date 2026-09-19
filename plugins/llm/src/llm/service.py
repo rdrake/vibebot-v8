@@ -5560,7 +5560,8 @@ Examples (echo → action_prompt: ""):
         else:
             api_key = apikeys.api_key_for(model)
             if model.startswith("xai/"):
-                kwargs["aspect_ratio"] = "9:16"
+                # No aspect_ratio: xAI defaults to `auto`, the best ratio
+                # for the prompt. Pinning 9:16 made every draw portrait.
                 kwargs["quality"] = "high"
                 kwargs["resolution"] = "2k"
 
