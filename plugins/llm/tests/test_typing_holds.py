@@ -93,6 +93,33 @@ class TestKeepalive:
         time.sleep(0.15)
         assert len(rec.states("afternet", "#chan")) == n
 
+    def test_a_stalled_keepalive_never_lands_after_the_last_done(self, rec) -> None:
+        """The TLC counterexample (docs/formal/TypingHolds.tla): the keepalive
+        picks the target while it is held, the last holder releases and sends
+        ``done``, then the keepalive's ``active`` lands and the client shows
+        typing after the reply."""
+        gate, stalled = threading.Event(), threading.Event()
+
+        def send(irc, target: str, state: str) -> None:
+            if threading.current_thread().name == "typing-keepalive" and not gate.is_set():
+                stalled.set()
+                gate.wait(5)
+            rec(irc, target, state)
+
+        holds = TypingHolds(send, logging.getLogger("test"), interval=0.05)
+        try:
+            release = holds.hold(_irc(), "#chan")
+            assert stalled.wait(5), "keepalive never fired"
+            releaser = threading.Thread(target=release)
+            releaser.start()
+            time.sleep(0.1)  # let the release race ahead of the stalled send
+            gate.set()
+            releaser.join(5)
+            time.sleep(0.2)
+            assert rec.states("afternet", "#chan")[-1] == "done"
+        finally:
+            holds.stop()
+
     def test_send_failure_does_not_kill_the_loop(self, rec) -> None:
         calls = {"n": 0}
 

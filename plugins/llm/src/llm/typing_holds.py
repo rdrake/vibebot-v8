@@ -14,6 +14,13 @@ does not keep its own copy of the state and cannot disagree with the direct
 holders about who owns the final ``done``.
 
 The network is part of the key because ``#chan`` on two networks is two rooms.
+
+Sends run outside ``_lock`` (a send can block on the IRC send lock behind a
+slow driver, and every ``hold()`` would stall with it) but inside
+``_send_lock``, and each one reads the key's state at send time rather than
+carrying the state it was triggered with. Otherwise a keepalive ``active``
+snapshotted before the last release lands after that release's ``done``, and
+the client shows typing after the reply. See docs/formal/TypingHolds*.tla.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ class TypingHolds:
         self._log = log
         self._interval = interval
         self._lock = threading.Lock()
+        # Serializes every send; taken before _lock, never inside it.
+        self._send_lock = threading.Lock()
         self._counts: dict[Key, int] = {}
         self._ircs: dict[Key, Any] = {}
         self._groups: dict[str, set[Key]] = {}
@@ -125,7 +134,7 @@ class TypingHolds:
                     self._counts[key] = remaining
                 raise
         if first:
-            self._safe_send(irc, key[1], "active")
+            self._send_current(key, irc)
             self._wake.set()
 
     def _release(self, key: Key) -> None:
@@ -140,7 +149,28 @@ class TypingHolds:
                 irc = None
                 last = False
         if last and irc is not None:
-            self._safe_send(irc, key[1], "done")
+            self._send_current(key, irc)
+
+    def _send_current(self, key: Key, fallback_irc: Any) -> None:
+        """Send whatever ``key`` is now: ``active`` if held, else ``done``.
+
+        A transition that lost a race sends the winner's state, which is a
+        harmless duplicate of the winner's own send; what it can never do is
+        land a stale state after a newer one.
+        """
+        with self._send_lock:
+            with self._lock:
+                held = key in self._counts
+                irc = self._ircs.get(key, fallback_irc)
+            self._safe_send(irc, key[1], "active" if held else "done")
+
+    def _keepalive(self, key: Key) -> None:
+        """Re-send ``active`` for ``key`` only if it is still held."""
+        with self._send_lock:
+            with self._lock:
+                irc = self._ircs.get(key)
+            if irc is not None:
+                self._safe_send(irc, key[1], "active")
 
     def _safe_send(self, irc: Any, target: str, state: str) -> None:
         try:
@@ -169,6 +199,6 @@ class TypingHolds:
                 if self._stop.wait(timeout=self._interval):
                     return
                 with self._lock:
-                    snapshot = list(self._ircs.items())
-                for (_network, target), irc in snapshot:
-                    self._safe_send(irc, target, "active")
+                    keys = list(self._ircs)
+                for key in keys:
+                    self._keepalive(key)
