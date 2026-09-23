@@ -97,6 +97,17 @@ class UsageRank(NamedTuple):
     total: int  # total entries in the leaderboard
 
 
+def lease_until(now: float, lease_seconds: float) -> float:
+    """The ``claimed_until`` a claim at ``now`` writes: the lease's identity.
+
+    ``claim_due_pending_tasks`` stamps rows with this, and a claimer that
+    passes the same value back as ``lease=`` to ``release_pending_task`` or
+    ``update_task_for_delivery`` only writes while it still holds the row.
+    One definition so both sides compute the same float.
+    """
+    return now + lease_seconds
+
+
 class PendingTaskRow(NamedTuple):
     """A pending task loaded from the database."""
 
@@ -1188,7 +1199,7 @@ class LLMDatabase:
                 conn.commit()
                 return []
 
-            claimed_until = now + lease_seconds
+            claimed_until = lease_until(now, lease_seconds)
             ids = [row[0] for row in rows]
             placeholders = ",".join("?" for _ in ids)
             conn.execute(
@@ -1207,6 +1218,7 @@ class LLMDatabase:
         next_attempt_at: float,
         last_error: str,
         increment_attempt: bool = True,
+        lease: float | None = None,
     ) -> bool:
         """Release a claimed task back to the queue for later retry.
 
@@ -1215,27 +1227,44 @@ class LLMDatabase:
             next_attempt_at: When to retry next.
             last_error: Error message from this attempt.
             increment_attempt: Whether to bump attempt_count.
+            lease: The ``lease_until`` value the caller claimed the row with.
+                When given, the write lands only if the row still carries it.
 
         Returns:
-            True if the task was updated, False if not found.
+            True if the task was updated, False if not found or the lease
+            was taken over.
         """
+        owner_clause, owner_params = self._lease_clause(lease)
         with self._write_txn() as conn:
             if increment_attempt:
                 cursor = conn.execute(
                     "UPDATE pending_tasks SET "
                     "next_attempt_at = ?, claimed_until = 0, "
                     "last_error = ?, attempt_count = attempt_count + 1 "
-                    "WHERE id = ?",
-                    (next_attempt_at, last_error, task_id),
+                    f"WHERE id = ?{owner_clause}",
+                    (next_attempt_at, last_error, task_id, *owner_params),
                 )
             else:
                 cursor = conn.execute(
                     "UPDATE pending_tasks SET "
                     "next_attempt_at = ?, claimed_until = 0, last_error = ? "
-                    "WHERE id = ?",
-                    (next_attempt_at, last_error, task_id),
+                    f"WHERE id = ?{owner_clause}",
+                    (next_attempt_at, last_error, task_id, *owner_params),
                 )
             return cursor.rowcount > 0
+
+    @staticmethod
+    def _lease_clause(lease: float | None) -> tuple[str, tuple[float, ...]]:
+        """``AND claimed_until = ?`` when the caller holds a lease.
+
+        A poll that outlives its lease — the one ``die()`` leaves running
+        across an @reload, whose 2s drain cannot wait out a slow provider
+        call — must not overwrite a row the next instance has since claimed
+        and settled. See docs/formal/PendingTasks.tla.
+        """
+        if lease is None:
+            return "", ()
+        return " AND claimed_until = ?", (lease,)
 
     def delete_pending_task(self, task_id: int) -> bool:
         """Delete a pending task by ID.
@@ -1258,6 +1287,7 @@ class LLMDatabase:
         task_id: int,
         delivery_state: str,
         result_payload: str,
+        lease: float | None = None,
     ) -> bool:
         """Transition a task to a delivery state with its result payload.
 
@@ -1265,16 +1295,19 @@ class LLMDatabase:
             task_id: ID of the task to update.
             delivery_state: New delivery state (ready, failed_terminal, etc.).
             result_payload: JSON-serialized result for delivery.
+            lease: As for ``release_pending_task``.
 
         Returns:
-            True if the task was updated, False if not found.
+            True if the task was updated, False if not found or the lease
+            was taken over.
         """
+        owner_clause, owner_params = self._lease_clause(lease)
         with self._write_txn() as conn:
             cursor = conn.execute(
                 "UPDATE pending_tasks SET "
                 "delivery_state = ?, result_payload = ?, claimed_until = 0 "
-                "WHERE id = ?",
-                (delivery_state, result_payload, task_id),
+                f"WHERE id = ?{owner_clause}",
+                (delivery_state, result_payload, task_id, *owner_params),
             )
             return cursor.rowcount > 0
 

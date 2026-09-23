@@ -38,7 +38,7 @@ from supybot.utils.file import AtomicFile
 
 from . import apikeys
 from .context import Role
-from .persistence import ScheduledLlmTaskRow
+from .persistence import ScheduledLlmTaskRow, lease_until
 from .profile import (
     PROFILE_ANIMATE,
     PROFILE_CHAT,
@@ -3733,6 +3733,11 @@ class LLMService:
                 )
             )
 
+        # Both claims below stamp rows with this, and every write this pass
+        # makes to a claimed row carries it: a pass that outlived its lease
+        # (see _lease_clause) then writes nothing instead of clobbering.
+        lease = lease_until(now, PENDING_LEASE_SECONDS)
+
         # ── Phase 1: Provider processing ──────────────────────────────
         claimed = db.claim_due_pending_tasks(
             now,
@@ -3750,7 +3755,7 @@ class LLMService:
                 # stale-clock class as the transient-backoff anchor below).
                 defer_at = time.time() + 30  # try again next tick
                 db.release_pending_task(
-                    task.id, defer_at, "Channel not available", increment_attempt=False
+                    task.id, defer_at, "Channel not available", increment_attempt=False, lease=lease
                 )
                 continue
 
@@ -3762,6 +3767,7 @@ class LLMService:
                     task.id,
                     "ready",
                     json.dumps({"status": "failed_terminal", "reason": "Malformed request data"}),
+                    lease=lease,
                 )
                 continue
 
@@ -3783,6 +3789,7 @@ class LLMService:
                                 "reason": f"Unknown task type: {task.task_type}",
                             }
                         ),
+                        lease=lease,
                     )
                     continue
 
@@ -3801,6 +3808,7 @@ class LLMService:
                                 "cost": result.cost,
                             }
                         ),
+                        lease=lease,
                     )
 
             except Exception as exc:
@@ -3814,6 +3822,7 @@ class LLMService:
                                 "reason": self._sanitize(str(exc))[:200],
                             }
                         ),
+                        lease=lease,
                     )
                 else:
                     # Transient error — release with backoff. Re-read the clock:
@@ -3826,6 +3835,7 @@ class LLMService:
                         task.id,
                         time.time() + delay,
                         self._sanitize(str(exc))[:200],
+                        lease=lease,
                     )
 
         # ── Phase 2: Delivery ─────────────────────────────────────────
@@ -3844,7 +3854,7 @@ class LLMService:
                 # matching deferral in Phase 1 above.
                 defer_at = time.time() + 30
                 db.release_pending_task(
-                    task.id, defer_at, "Channel not available", increment_attempt=False
+                    task.id, defer_at, "Channel not available", increment_attempt=False, lease=lease
                 )
                 continue
 

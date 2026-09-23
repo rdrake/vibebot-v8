@@ -14,6 +14,7 @@ from llm.persistence import (
     PendingTaskRow,
     ReminderRow,
     UsageRank,
+    lease_until,
 )
 
 
@@ -2827,3 +2828,58 @@ class TestPendingAnimateCounts:
         )
         test_db.update_task_for_delivery(done, delivery_state="ready", result_payload="{}")
         assert test_db.count_pending_animate_for(now, account="dave", nick="dave") == 1
+
+
+class TestLeaseOwnership:
+    """Writes that carry a lease land only while the writer still holds it.
+
+    The TLC counterexample (docs/formal/PendingTasks.tla): the poll die()
+    leaves running across an @reload outlives its lease, the new instance
+    claims the row and settles it ``completed``, and the old poll's late
+    ``failed_terminal`` overwrote that — the user was told a paid-for result
+    failed.
+    """
+
+    def _claimed(self, db: LLMDatabase, now: float) -> tuple[int, float, float]:
+        task_id = db.save_pending_task(
+            task_type="draw",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="a corgi",
+            model="m",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 3600,
+            next_attempt_at=now,
+        )
+        (row,) = db.claim_due_pending_tasks(now, limit=1, lease_seconds=120)
+        stale = lease_until(now, 120)
+        # The lease runs out mid-call and the next instance claims the row.
+        (row,) = db.claim_due_pending_tasks(now + 200, limit=1, lease_seconds=120)
+        return task_id, stale, lease_until(now + 200, 120)
+
+    def test_a_taken_over_lease_cannot_overwrite_the_new_owners_result(
+        self, test_db: LLMDatabase
+    ) -> None:
+        now = 1_000_000.0
+        task_id, stale, fresh = self._claimed(test_db, now)
+
+        assert test_db.update_task_for_delivery(
+            task_id, "ready", '{"status": "completed"}', lease=fresh
+        )
+        assert not test_db.update_task_for_delivery(
+            task_id, "ready", '{"status": "failed_terminal"}', lease=stale
+        )
+        assert not test_db.release_pending_task(task_id, now + 300, "late", lease=stale)
+
+        (row,) = test_db.load_pending_tasks("draw")
+        assert row.result_payload == '{"status": "completed"}'
+        assert row.attempt_count == 0
+
+    def test_the_holder_of_the_lease_still_writes(self, test_db: LLMDatabase) -> None:
+        now = 1_000_000.0
+        task_id, _stale, fresh = self._claimed(test_db, now)
+        assert test_db.release_pending_task(task_id, now + 300, "transient", lease=fresh)
+        (row,) = test_db.load_pending_tasks("draw")
+        assert row.claimed_until == 0 and row.attempt_count == 1
