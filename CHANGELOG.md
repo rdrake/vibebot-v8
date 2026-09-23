@@ -8,6 +8,10 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- A poll that lost its lease can no longer overwrite the row (`pending`)
+- Two requests can no longer both take the last queue slot (`animate`)
+- Budget the pastebin link line in bytes, not characters (`reply`)
+- A stalled keepalive can no longer land active after done (`typing`)
 - The dossier must cite a source, and the planner picks the shape (`draw`)
 - Let xAI pick the aspect ratio instead of pinning 9:16 (`draw`)
 - --draw is a bare flag, --edit "..." is the explicit instruction (`meme`)
@@ -460,6 +464,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- TLA+ models and a Lean proof behind the four fixes (`formal`)
 - Note that plugin INFO log lines never reach docker logs on prod (`plans`)
 - Describe subject research where users and operators will look for it
 - Plan the subject-research pre-stage for @draw and @animate (`plans`)
