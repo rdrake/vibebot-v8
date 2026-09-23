@@ -57,6 +57,7 @@ from .service import (
     account_from_server_tags,
     irc_has_caps,
     split_reference_url,
+    truncate_to_byte_budget,
     truncate_to_word_boundary,
     validate_external_url,
 )
@@ -4385,7 +4386,10 @@ class LLM(callbacks.Plugin):
         truncated = truncate_to_word_boundary(teaser, max_chars)
         if truncated != teaser:
             truncated = truncated.rstrip(" ,;:-")
-        return truncated or _FULL_ANSWER_LABEL
+        if truncated:
+            return truncated
+        # The label is a fallback, not an exemption from the budget.
+        return _FULL_ANSWER_LABEL if max_chars <= 0 or len(_FULL_ANSWER_LABEL) <= max_chars else ""
 
     @staticmethod
     def _fallback_long_reply_teaser(text: str, max_chars: int) -> str:
@@ -4440,12 +4444,22 @@ class LLM(callbacks.Plugin):
         if not url and save_failed_fallback is not None:
             return save_failed_fallback
         suffix = f" - {_FULL_ANSWER_LABEL}: {url}" if url else ""
-        max_chars = max(0, allowed - len(suffix) - len(nick_prefix))
-        if teaser_cap is not None:
-            max_chars = min(teaser_cap, max_chars)
+        label_line = f"{nick_prefix}{_FULL_ANSWER_LABEL}: {url}"
+        # Bytes, because ``allowed`` is what ircutils.wrap measures above: a
+        # character budget let a CJK or emoji teaser run the line to three
+        # times the budget and the server cut the URL off the end. Whatever
+        # teaser_fn returns — an LLM summary included — is clipped to it.
+        # Proved for any teaser_fn in docs/formal/IrcLine.lean.
+        max_bytes = max(0, allowed - len(suffix.encode()) - len(nick_prefix.encode()))
+        max_chars = max_bytes if teaser_cap is None else min(teaser_cap, max_bytes)
         if max_chars <= 0 and url:
-            return f"{nick_prefix}{_FULL_ANSWER_LABEL}: {url}"
-        teaser = teaser_fn(content, max_chars)
+            return label_line
+        raw = teaser_fn(content, max_chars)
+        teaser = truncate_to_byte_budget(raw, max_bytes)
+        if teaser != raw:
+            teaser = teaser.rstrip(" ,;:-")
+        if not teaser and url:
+            return label_line
         return f"{nick_prefix}{teaser}{suffix}"
 
     def _format_pending_completed_reply(

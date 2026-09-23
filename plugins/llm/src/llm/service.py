@@ -1314,6 +1314,27 @@ def truncate_to_word_boundary(text: str, max_chars: int) -> str:
     return trimmed
 
 
+def truncate_to_byte_budget(text: str, max_bytes: int) -> str:
+    """Truncate ``text`` to ``max_bytes`` of UTF-8, breaking at the last word boundary.
+
+    The byte twin of :func:`truncate_to_word_boundary`, for anything that has
+    to fit an IRC line: the wire limit counts bytes, and a character budget
+    lets CJK or emoji text through at three or four times the size. Unlike the
+    character version, a budget of zero or less yields ``""``.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    if max_bytes <= 0:
+        return ""
+    # A byte cut can split a character; "ignore" drops only that partial tail.
+    trimmed = encoded[:max_bytes].decode("utf-8", "ignore").rstrip()
+    last_space = trimmed.rfind(" ")
+    if last_space > 0:
+        trimmed = trimmed[:last_space].rstrip()
+    return trimmed
+
+
 def irc_has_caps(irc: Irc, *names: str) -> bool:
     """Return True iff every named IRCv3 capability is in ``capabilities_ack``.
 

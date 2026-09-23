@@ -4,17 +4,20 @@ These functions have no dependencies on plugin/registry/database state,
 so they sit in their own module rather than being attached to an
 ``LLMService`` instance fixture.
 
-Currently covers ``_compute_backoff`` and ``truncate_to_word_boundary``.
+Covers ``_compute_backoff``, ``truncate_to_word_boundary``, ``truncate_to_byte_budget``,
+and the byte budget of ``LLM._finish_irc_line``'s link line.
 """
 
 from __future__ import annotations
 
 from hypothesis import given
-from hypothesis.strategies import integers, text
+from hypothesis.strategies import integers, none, one_of, text
+from llm.plugin import LLM
 from llm.service import (
     PENDING_INITIAL_BACKOFF_SECONDS,
     PENDING_MAX_BACKOFF_SECONDS,
     LLMService,
+    truncate_to_byte_budget,
     truncate_to_word_boundary,
 )
 
@@ -82,3 +85,81 @@ def test_truncate_never_grows_the_text(s: str, max_chars: int) -> None:
 def test_truncate_nonpositive_max_returns_unchanged(s: str, max_chars: int) -> None:
     """A non-positive ``max_chars`` disables truncation (degenerate guard)."""
     assert truncate_to_word_boundary(s, max_chars) == s
+
+
+# --- truncate_to_byte_budget ---------------------------------------------------
+
+
+def _nbytes(s: str) -> int:
+    return len(s.encode("utf-8"))
+
+
+@given(s=text(max_size=300), max_bytes=integers(min_value=-5, max_value=600))
+def test_byte_truncate_never_exceeds_budget(s: str, max_bytes: int) -> None:
+    """The result always fits: ``max(0, max_bytes)`` is a hard bound, in bytes."""
+    assert _nbytes(truncate_to_byte_budget(s, max_bytes)) <= max(0, max_bytes)
+
+
+@given(s=text(max_size=300), max_bytes=integers(min_value=0, max_value=600))
+def test_byte_truncate_is_a_prefix(s: str, max_bytes: int) -> None:
+    """Only ever cuts the tail — never splices or re-encodes the text."""
+    assert s.startswith(truncate_to_byte_budget(s, max_bytes))
+
+
+@given(s=text(max_size=200))
+def test_byte_truncate_keeps_text_that_fits(s: str) -> None:
+    """At the exact-fit boundary the text is returned verbatim."""
+    assert truncate_to_byte_budget(s, _nbytes(s)) == s
+
+
+# --- LLM._finish_irc_line: the pastebin link line fits the wire budget ----------
+#
+# Mirrors ``finishFixed_fits`` in docs/formal/IrcLine.lean: for ANY teaser
+# (``teaser_fn`` can be an LLM summary), whenever the prefix and link suffix fit
+# at all, the line fits ``allowed`` bytes. The character budget it replaced let
+# a CJK teaser run a 400-byte line to 946 bytes, cutting the URL off.
+
+_URL = "https://bot.hextalk.org/llm/0123456789abcdef.html"
+
+
+@given(
+    teaser=text(min_size=20, max_size=400),
+    nick=text(alphabet="abcdefghij_", min_size=1, max_size=12),
+    allowed=integers(min_value=0, max_value=250),
+    cap=one_of(none(), integers(min_value=1, max_value=300)),
+)
+def test_link_line_fits_the_byte_budget(teaser: str, nick: str, allowed: int, cap) -> None:
+    prefix = f"{nick}: "
+    line = LLM._finish_irc_line(
+        None,
+        "body",
+        inline=None,
+        allowed=allowed,
+        teaser_fn=lambda _c, _m: teaser,
+        save_fn=lambda _c: _URL,
+        nick_prefix=prefix,
+        teaser_cap=cap,
+    )
+    assert line.startswith(prefix) and line.endswith(_URL)
+    if _nbytes(f"{prefix} - Full answer: {_URL}") <= allowed:
+        assert _nbytes(line) <= allowed
+
+
+def test_cjk_teaser_keeps_the_url_on_the_line() -> None:
+    """The concrete counterexample: 3-byte characters, 400-byte budget."""
+    line = LLM._finish_irc_line(
+        None,
+        "日本語の説明 " * 200,
+        inline=None,
+        allowed=400,
+        teaser_fn=LLM._fallback_long_reply_teaser,
+        save_fn=lambda _c: _URL,
+        nick_prefix="rdrake: ",
+    )
+    assert _nbytes(line) <= 400
+    assert line.endswith(_URL)
+
+
+def test_label_fallback_respects_a_tiny_budget() -> None:
+    """A teaser that trims to nothing no longer returns the 11-char label into 2 chars."""
+    assert LLM._trim_long_reply_teaser("--- x", 2) == ""
