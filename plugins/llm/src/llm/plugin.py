@@ -956,6 +956,12 @@ class LLM(callbacks.Plugin):
         self._render_typing_wake = threading.Event()
         self._render_typing_wake.set()
         self._render_typing_stop = threading.Event()
+
+        # Held from the admission count to the pending_tasks INSERT. The row
+        # that makes a clip count only exists after the POST to the box, so
+        # without it two requests inside that window both pass the caps. See
+        # docs/formal/AnimateAdmission.tla.
+        self._animate_admit_lock = threading.Lock()
         self._render_typing_thread = threading.Thread(
             target=self._render_typing_loop,
             name="animate-typing-refresher",
@@ -5717,22 +5723,23 @@ class LLM(callbacks.Plugin):
                 reference = self.llm_service.fetch_reference_image(url)
         if not prompt.strip():
             prompt = _ANIMATE_DEFAULT_MOTION
-        rejection = self._animate_admission(irc, msg, account=account, nick=display_nick)
-        if rejection:
-            self.log.info(
-                "animate admission refused: nick=%s reason=%s", display_nick, rejection[:80]
+        with self._animate_admit_lock:
+            rejection = self._animate_admission(irc, msg, account=account, nick=display_nick)
+            if rejection:
+                self.log.info(
+                    "animate admission refused: nick=%s reason=%s", display_nick, rejection[:80]
+                )
+                return VideoResult(content=rejection, error=rejection)
+            result = self.llm_service.video_generation(
+                prompt,
+                nick=display_nick,
+                reply_target=reply_target,
+                is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
+                channel=channel,
+                account=account,
+                reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
+                reference=reference,
             )
-            return VideoResult(content=rejection, error=rejection)
-        result = self.llm_service.video_generation(
-            prompt,
-            nick=display_nick,
-            reply_target=reply_target,
-            is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
-            channel=channel,
-            account=account,
-            reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
-            reference=reference,
-        )
         if not result.error:
             # A clip is on the box now, so the refresher has something to do.
             # Only on success: a rejected submission means nothing is

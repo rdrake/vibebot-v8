@@ -17,6 +17,8 @@ bug guarded in test_image_fabrication_guard.py.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -1741,6 +1743,38 @@ class TestAnimateAdmission:
 
         assert result.error
         submit.assert_not_called()
+
+    def test_concurrent_requests_cannot_both_take_the_last_slot(self, plugin_env, mocker) -> None:
+        """The TLC counterexample (docs/formal/AnimateAdmission.tla): the row
+        that makes a clip count is inserted only after the POST to the box, so
+        two requests inside that window both counted 1 < 2 and both queued."""
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
+        rows = [1]  # alice already has one clip; the per-user limit is 2
+        mocker.patch.object(
+            plugin.db, "count_pending_animate_for", side_effect=lambda *a, **k: rows[0]
+        )
+        mocker.patch.object(plugin.db, "count_pending_animate", side_effect=lambda *a: rows[0])
+
+        def slow_submit(*_a, **_k):
+            time.sleep(0.2)  # the POST to the box
+            rows[0] += 1  # save_pending_task
+            return _queued_result()
+
+        mocker.patch.object(plugin.llm_service, "video_generation", side_effect=slow_submit)
+
+        results: list = []
+        threads = [
+            threading.Thread(target=lambda: results.append(self._submit(plugin, irc, msg)))
+            for _ in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(5)
+
+        assert rows[0] == 2, "the per-user cap of 2 was exceeded"
+        assert sorted(bool(r.error) for r in results) == [False, True]
 
     def test_zero_disables_a_cap(self, plugin_env, mocker) -> None:
         """0 means off — both counts are well past the shipped defaults."""
