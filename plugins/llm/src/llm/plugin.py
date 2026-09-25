@@ -3281,7 +3281,13 @@ class LLM(callbacks.Plugin):
             result = self._run_unattended_assistant(
                 irc=active_irc,
                 msg=synthetic_msg,
-                prompt=action_prompt,
+                # Without the frame, "check if you reminded me" reads as a
+                # request to audit the pending list (ibutsu, 2026-09-25).
+                prompt=(
+                    f"({nick}'s reminder, set earlier, is firing now: this "
+                    "reply IS the reminder being delivered, so it is no "
+                    f"longer pending.)\n\n{action_prompt}"
+                ),
                 nick=nick,
                 account=account,
                 channel=channel,

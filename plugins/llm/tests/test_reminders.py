@@ -1546,7 +1546,11 @@ class TestReminderActionDelivery:
 
         plugin.llm_service.assistant_request.assert_called_once()
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        assert kwargs["prompt"] == "check build"
+        # The model is told this turn IS the reminder firing, so "check if
+        # you reminded me" gets "yes, this is it" instead of a task list.
+        assert kwargs["prompt"].endswith("\n\ncheck build")
+        assert "alice's reminder" in kwargs["prompt"]
+        assert "firing now" in kwargs["prompt"]
         ctx = kwargs["request_context"]
         assert ctx.entry_route == "remind_action"
         assert ctx.profile == "remind_action"
