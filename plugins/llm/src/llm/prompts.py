@@ -113,8 +113,8 @@ PENDING_TASKS_GUIDANCE = (
     "- After a successful set_reminder, schedule_llm_task, "
     "cancel_pending_task, or cancel_all_pending_tasks, the user has "
     "already been acknowledged with an emoji reaction (clock for set, "
-    "thumbs-up for cancel). You can stay quiet — your reply would just "
-    "duplicate the reaction. If the tool returned an error or refusal "
+    "thumbs-up for cancel). Any text you write after it is discarded, "
+    "so write none. If the tool returned an error or refusal "
     "(cap reached, not found, parse failed), DO speak: surface the "
     "reason in one short sentence so the user knows what went wrong."
 )

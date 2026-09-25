@@ -4769,13 +4769,14 @@ class LLM(callbacks.Plugin):
         empty-response error branch; that is the existing behaviour and must
         be preserved.
         """
-        if suppress_reminder_mutations and (
-            result.last_successful_tool in _REMINDER_MUTATION_TOOLS
-            and not result.final_text_after_tools.strip()
-        ):
+        if suppress_reminder_mutations and result.last_successful_tool in _REMINDER_MUTATION_TOOLS:
+            # Any text is dropped, not just empty text: told it may stay
+            # quiet, gemini narrated the silence instead (2026-09-25:
+            # "An empty response is submitted to stay quiet...").
             self.log.info(
-                "suppressing empty post-reminder-mutation reply tool=%s %s/%s",
+                "suppressing post-reminder-mutation reply tool=%s chars=%s %s/%s",
                 result.last_successful_tool,
+                len(result.final_text_after_tools.strip()),
                 channel,
                 nick,
             )

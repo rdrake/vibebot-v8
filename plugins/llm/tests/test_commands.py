@@ -273,14 +273,21 @@ class TestAskCommand:
         # Usage still logged so the suppressed path isn't free.
         plugin.db.log_usage.assert_called_once()
 
-    def test_ask_reminder_mutation_with_text_does_not_suppress(
+    def test_ask_reminder_mutation_with_text_is_still_suppressed(
         self, plugin_env, mocker: MockerFixture
     ):
-        """GIVEN successful set_reminder + follow-up text WHEN ask called THEN reply IS sent."""
+        """GIVEN successful set_reminder + follow-up text WHEN ask called THEN nothing is sent.
+
+        The reaction is the only ack. Observed 2026-09-25: gemini narrated
+        its own silence ("An empty response is submitted to stay quiet...").
+        """
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
-        follow_up = "Got it. Want me to also remind you about the receipt?"
+        follow_up = (
+            "An empty response is submitted to stay quiet, as the user is "
+            "acknowledged via reaction."
+        )
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content=follow_up,
             grounding_used=False,
@@ -294,7 +301,7 @@ class TestAskCommand:
 
         plugin.ask(mock_irc, mock_msg, ["remind", "me", "in", "1m"])
 
-        mock_irc.reply.assert_called_once_with(follow_up, prefixNick=False)
+        mock_irc.reply.assert_not_called()
         mock_irc.error.assert_not_called()
 
     def test_ask_non_reminder_tool_with_empty_text_does_not_suppress(
