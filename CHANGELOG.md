@@ -399,6 +399,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for multiline replies (`changelog`)
 - Regenerate for the formal-verification fixes (`changelog`)
 - Regenerate for the subject-research pre-stage (`changelog`)
 - Ignore the supybot data dir tests generate
@@ -646,6 +647,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Adjust via cancel-then-set; ask before an implied cancel (`reminders`)
 - Send short overflows as one draft/multiline batch (`reply`)
 - The picker gets @draw's grounding and a typing indicator (`meme`)
 - No flags for pictures — the picker decides draw and animated (`meme`)
