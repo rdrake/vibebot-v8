@@ -198,9 +198,11 @@ duplicates a command the user can already type:
   `@instruct clear`
 - `get_usage`, `get_channel_usage` → `@usage [<nick or #channel>]`
 - `forget_context` → `@forget [<channel>]`
-- `list_pending_tasks`, `cancel_pending_task`,
-  `cancel_all_pending_tasks` → `@remind list`, `@remind delete <id>`,
-  `@remind clear`
+
+`list_pending_tasks`, `cancel_pending_task` and `cancel_all_pending_tasks`
+used to be on this list. They are back in chat: with `set_reminder`
+visible and the cancel tools hidden, chat answered "cancel my reminder"
+with a made-up confirmation and the reminder fired anyway.
 
 Keeping the advertised surface small is a correctness measure, not
 tidiness. `xai/grok-4-1-fast-reasoning` starts returning empty

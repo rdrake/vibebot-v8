@@ -4074,9 +4074,13 @@ class TestChatToolSurfaceStaysSmall:
         assert not names & {"list_memories", "update_memory", "delete_memory"}
 
     def test_chat_surface_stays_under_budget(self) -> None:
-        """A ceiling, so the surface cannot creep back one tool at a time."""
+        """A ceiling, so the surface cannot creep back one tool at a time.
+
+        12, not 10, since list/cancel/cancel_all_pending_tasks came back on
+        2026-09-25: without them chat faked every cancel it was asked for.
+        """
         count = len(get_tools_for_profile("chat"))
-        assert count <= 10, f"chat advertises {count} tools; keep the surface small"
+        assert count <= 12, f"chat advertises {count} tools; keep the surface small"
 
 
 class TestToolSpecVisibility:
@@ -4268,8 +4272,8 @@ class TestScheduleLlmTaskFamily:
     def test_schedule_llm_task_specs_overrides_applied(self) -> None:
         """C2: ToolSpec overrides give schedule_llm_task require_account=True;
         list/cancel inherit defaults (llm.ask, no account). All three are
-        hidden from verse; list/cancel are also hidden from chat as
-        bookkeeping duplicates of @remind — see _PROFILE_EXCLUDED_TOOLS."""
+        hidden from verse and visible in chat, which fakes a cancel it
+        cannot perform — see _PROFILE_EXCLUDED_TOOLS."""
         from llm.assistant import ASSISTANT_TOOL_REGISTRY
 
         sch = ASSISTANT_TOOL_REGISTRY["schedule_llm_task"]
@@ -4280,12 +4284,12 @@ class TestScheduleLlmTaskFamily:
         lst = ASSISTANT_TOOL_REGISTRY["list_pending_tasks"]
         assert lst.capability == "llm.ask"
         assert lst.require_account is False
-        assert lst.visible_in == frozenset({"remind_action"})
+        assert lst.visible_in == frozenset({"chat", "remind_action"})
 
         can = ASSISTANT_TOOL_REGISTRY["cancel_pending_task"]
         assert can.capability == "llm.ask"
         assert can.require_account is False
-        assert can.visible_in == frozenset({"remind_action"})
+        assert can.visible_in == frozenset({"chat", "remind_action"})
 
     def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
         """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""

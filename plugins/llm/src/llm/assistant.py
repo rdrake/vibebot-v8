@@ -726,7 +726,11 @@ PENDING_TASK_TOOLS: frozenset[str] = frozenset(
 #   set_instruction, clear_instruction        -> @instruct [<text>|clear]
 #   get_usage, get_channel_usage              -> @usage [nick|#channel]
 #   forget_context                            -> @forget [channel]
-#   list/cancel/cancel_all_pending_tasks      -> @remind [list|del|clear]
+#
+# list/cancel/cancel_all_pending_tasks were here too and came back to chat on
+# 2026-09-25: with set_reminder visible and those hidden, "cancel my reminder"
+# got a confident fake ("Slate wiped clean") and the reminder fired anyway.
+# A model that can create but not cancel will invent the cancel.
 #
 # Spending two thirds of the tool budget on self-administration is backwards:
 # memories are meant to be learned automatically by the background
@@ -739,8 +743,6 @@ PENDING_TASK_TOOLS: frozenset[str] = frozenset(
 # rather than wait for the candidate-reinforcement threshold.
 _BOOKKEEPING_TOOLS: frozenset[str] = frozenset(
     {
-        "cancel_all_pending_tasks",
-        "cancel_pending_task",
         "cleanup_memories",
         "clear_instruction",
         "clear_memories",
@@ -749,7 +751,6 @@ _BOOKKEEPING_TOOLS: frozenset[str] = frozenset(
         "get_channel_usage",
         "get_usage",
         "list_memories",
-        "list_pending_tasks",
         "set_instruction",
         "update_memory",
     }
@@ -772,7 +773,7 @@ _PROFILE_EXCLUDED_TOOLS: dict[str, frozenset[str]] = {
     # Everything chat hides, plus scheduling and reminders, which have no role
     # in storytelling. Verse must stay a subset of chat — see
     # test_verse_profile_is_strict_subset_of_chat.
-    PROFILE_VERSE: _BOOKKEEPING_TOOLS | {"schedule_llm_task", "set_reminder"},
+    PROFILE_VERSE: _BOOKKEEPING_TOOLS | PENDING_TASK_TOOLS,
 }
 
 

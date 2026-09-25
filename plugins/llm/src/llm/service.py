@@ -174,6 +174,13 @@ EXPLICIT_VIDEO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Any chat mention of a reminder. Unlike the regexes above this forces "some
+# tool", not a named one, so a false positive costs one list call. On
+# 2026-09-25 gemini answered "cancel my reminder" and then "list my reminders"
+# with tool_calls=0 both times ("Slate wiped clean", "You don't have any") and
+# the reminder fired anyway. The prompt already said ALWAYS list first.
+EXPLICIT_REMINDER_RE = re.compile(r"\bremind(?:ers?|s)?\b", re.IGNORECASE)
+
 # Line-break characters that could let untrusted text (e.g. a channel topic)
 # start a new "instruction line" in a prompt. Excludes IRC formatting codes
 # (color/bold/etc.) which are not line separators.
@@ -6158,6 +6165,14 @@ Examples (echo → action_prompt: ""):
                 profile.id == PROFILE_ANIMATE or EXPLICIT_VIDEO_RE.search(prompt) is not None
             )
 
+            # Chat only: the remind_action fire frame names the reminder on
+            # every fire, and forcing a tool there would be wrong.
+            force_initial_pending_tool = (
+                route_profile == PROFILE_CHAT
+                and _has_tool(profile_tools, "list_pending_tasks")
+                and EXPLICIT_REMINDER_RE.search(prompt) is not None
+            )
+
             last_assistant_text = ""
             # Tracks the most recent tool call that completed without an
             # error sentinel — used downstream by the chat reply path to
@@ -6227,6 +6242,8 @@ Examples (echo → action_prompt: ""):
                         "type": "function",
                         "function": {"name": "search_web"},
                     }
+                elif _step == 0 and force_initial_pending_tool:
+                    completion_kwargs["tool_choice"] = "required"
 
                 response = self._timed_completion(
                     f"assistant_step_{_step + 1}",
