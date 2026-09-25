@@ -279,6 +279,7 @@ Because `skipAutoWhoOnJoin` suppresses the WHO on join, the flag is fetched on d
 | `imageUploadUrl` | global | empty | External image host for generated images. Empty stores them locally |
 | `helpUrl` | global | `https://rdrake.github.io/vibebot-v8/` | URL shown in help output |
 | `longReplyTeaserMaxChars` | channel | `220` | Characters in the one-line teaser for long replies saved as HTML |
+| `multilineMaxLines` | channel | `3` | Replies that wrap to at most this many IRC lines go inline as one IRCv3 `draft/multiline` batch instead of a teaser and link. Needs `supybot.protocols.irc.experimentalExtensions`. `0` turns it off |
 | `fileCleanupAge` | global | `720` | Delete output files older than this many hours (30 days) |
 | `fileCleanupMax` | global | `1000` | Cap on files kept in the output directory |
 

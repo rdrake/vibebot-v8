@@ -4606,22 +4606,34 @@ class LLM(callbacks.Plugin):
         prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
         style: str = "answer",
     ) -> None:
-        """Reply with ``text`` as one IRC line, pastebinning anything longer.
+        """Reply with ``text`` inline when it is short, pastebinning the rest.
 
-        Replies are NEVER paginated across multiple IRC messages: if ``text``
-        fits in a single wire-line it is sent as-is; otherwise the whole
-        answer is saved to the bot's HTTP server and the channel receives a
-        one-line teaser plus the URL. When the save fails, we collapse to a
-        single line ("teaser only") so we never trip Excess Flood with a raw
-        multi-line body.
+        One wire-line goes out as-is. A reply that wraps to at most
+        ``multilineMaxLines`` wire-lines goes out as a single draft/multiline
+        batch when the cap is negotiated — a click-through for two lines of
+        answer was the complaint. Anything longer is saved to the bot's HTTP
+        server and the channel receives a one-line teaser plus the URL. When
+        the save fails, we collapse to a single line ("teaser only") so we
+        never send a raw multi-line body.
         """
         target = msg.channel if msg.channel else msg.nick
         allowed = self._reply_mores_length(target, network=irc.network)
 
-        # Multi-line answers pastebin unconditionally (never collapsed into
+        logical_lines = [line for line in text.split("\n") if line.strip()]
+        # (wire text, is a wrap-continuation of the previous logical line)
+        chunks = [
+            (piece, i > 0)
+            for line in logical_lines
+            for i, piece in enumerate(ircutils.wrap(line, allowed) or [line])
+        ]
+        max_lines = int(self.registryValue("multilineMaxLines", target) or 0)
+        if 1 < len(chunks) <= max_lines and self._multiline_negotiated(irc):
+            self._send_multiline_batch(irc, msg, chunks, prefixNick=prefixNick)
+            return
+
+        # Without a batch, multi-line answers pastebin (never collapsed into
         # one line); only a sole non-blank logical line may go inline, and
         # _finish_irc_line still byte-wraps it against the wire budget.
-        logical_lines = [line for line in text.split("\n") if line.strip()]
         inline = logical_lines[0] if len(logical_lines) == 1 else None
 
         # One summary serves double duty: the page <title> (echoed by URL-title
@@ -4651,6 +4663,60 @@ class LLM(callbacks.Plugin):
             teaser_cap=configured_max_chars,
         )
         self._safe_reply(irc, line, prefixNick=prefixNick)
+
+    @staticmethod
+    def _multiline_negotiated(irc: callbacks.Irc) -> bool:
+        """True when a draft/multiline batch may be sent on this connection."""
+        return bool(
+            conf.supybot.protocols.irc.experimentalExtensions()
+            and "draft/multiline" in irc.state.capabilities_ack
+        )
+
+    def _send_multiline_batch(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        chunks: list[tuple[str, bool]],
+        *,
+        prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
+    ) -> bool:
+        """Send ``chunks`` as one draft/multiline batch addressed like irc.reply.
+
+        Each line is built by Limnoria's own ``_makeReply`` so the target,
+        PRIVMSG-vs-NOTICE choice (``withNoticeWhenPrivate``) and nick prefix
+        match a plain ``irc.reply``. Limnoria's ``queueMultilineBatches`` can't
+        be used: it takes one batch-wide ``concat`` flag, and the tag is only
+        valid on wrap-continuations — distinct lines must stay distinct.
+
+        The spec forbids client tags inside the batch, so the first line's
+        tags (``+draft/reply``) move to the opening BATCH. Callers keep the
+        batch far under the server's ``max-bytes``, so it is never split.
+        """
+        lines = [
+            callbacks._makeReply(irc, msg, text, prefixNick=prefixNick and i == 0)
+            for i, (text, _concat) in enumerate(chunks)
+        ]
+        name = ircutils.makeLabel()
+        batch = [
+            ircmsgs.IrcMsg(
+                command="BATCH",
+                args=("+" + name, "draft/multiline", lines[0].args[0]),
+                server_tags=dict(lines[0].server_tags),
+            )
+        ]
+        for i, (line, (_text, concat)) in enumerate(zip(lines, chunks, strict=True)):
+            line.server_tags = {"batch": name}
+            if concat and i > 0:
+                line.server_tags["draft/multiline-concat"] = None
+            batch.append(line)
+        batch.append(ircmsgs.IrcMsg(command="BATCH", args=("-" + name,)))
+
+        if self._llm_executor.closing:
+            self.log.debug("multiline batch dropped (closing)")
+            return False
+        with self._irc_send_lock:
+            irc.queueBatch(batch)
+        return True
 
     def _record_last_verse_line(self, irc: callbacks.Irc, channel: str, text: str, result) -> None:
         """Remember the bot's last VERSE line per (network, channel) for reaction

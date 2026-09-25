@@ -773,6 +773,124 @@ class TestSendLongReply:
         assert final_reply.endswith(suffix)
 
 
+class TestSendLongReplyMultiline:
+    """Short overflows go out as one draft/multiline batch instead of a paste.
+
+    Only when the cap is negotiated and the reply wraps to at most
+    ``multilineMaxLines`` wire-lines; anything longer still pastebins.
+    """
+
+    @pytest.fixture
+    def env(self, plugin_env, mocker: MockerFixture):
+        from supybot import conf, ircutils
+
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.capabilities_ack = {"draft/multiline", "message-tags"}
+        mock_irc.state.capabilities_ls = {"draft/multiline": "max-bytes=16384,max-lines=100"}
+        mock_irc.isChannel = ircutils.isChannel
+        mock_irc.stripChannelPrefix = lambda s: s
+        mock_irc.network = "afternet"
+        mocker.patch.object(conf.supybot.protocols.irc.experimentalExtensions, "value", True)
+        mocker.patch.object(plugin, "_reply_mores_length", return_value=100)
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Teaser."
+        return plugin, mock_irc, mock_msg
+
+    @staticmethod
+    def _batch(mock_irc):
+        mock_irc.queueBatch.assert_called_once()
+        return mock_irc.queueBatch.call_args.args[0]
+
+    def test_wrapped_line_batches_with_concat(self, env):
+        """GIVEN one line wrapping to 2 wire-lines WHEN sent THEN one batch, the
+        continuation tagged multiline-concat, and no paste or summary call."""
+        plugin, mock_irc, mock_msg = env
+        text = "alpha " * 30  # 180 bytes -> 2 chunks at a 100-byte budget
+
+        plugin._send_long_reply(mock_irc, mock_msg, text)
+
+        batch = self._batch(mock_irc)
+        assert [m.command for m in batch] == ["BATCH", "PRIVMSG", "PRIVMSG", "BATCH"]
+        assert batch[0].args[1:] == ("draft/multiline", "#test")
+        name = batch[0].args[0][1:]
+        assert batch[-1].args == ("-" + name,)
+        assert batch[1].server_tags == {"batch": name}
+        assert batch[2].server_tags == {"batch": name, "draft/multiline-concat": None}
+        assert all(m.args[0] == "#test" for m in batch[1:3])
+        assert "".join(m.args[1] for m in batch[1:3]).split() == text.split()
+        mock_irc.reply.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
+        plugin.llm_service.summarize_for_irc.assert_not_called()
+
+    def test_distinct_lines_are_not_concatenated(self, env):
+        """Separate logical lines stay separate lines on the receiving end."""
+        plugin, mock_irc, mock_msg = env
+
+        plugin._send_long_reply(mock_irc, mock_msg, "first point\n\nsecond point")
+
+        batch = self._batch(mock_irc)
+        lines = batch[1:-1]
+        assert [m.args[1] for m in lines] == ["first point", "second point"]
+        assert all("draft/multiline-concat" not in m.server_tags for m in lines)
+
+    def test_reply_tag_moves_to_batch_opener(self, env):
+        """Client tags belong on the BATCH command, never on the lines inside it."""
+        plugin, mock_irc, mock_msg = env
+        mock_msg.server_tags = {"msgid": "abc123"}
+
+        plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
+
+        batch = self._batch(mock_irc)
+        assert batch[0].server_tags == {"+draft/reply": "abc123"}
+        assert all(set(m.server_tags) <= {"batch", "draft/multiline-concat"} for m in batch[1:])
+
+    def test_over_cap_still_pastebins(self, env):
+        """GIVEN 4 wire-lines against a cap of 3 WHEN sent THEN teaser + URL."""
+        plugin, mock_irc, mock_msg = env
+
+        plugin._send_long_reply(mock_irc, mock_msg, "a\nb\nc\nd")
+
+        mock_irc.queueBatch.assert_not_called()
+        mock_irc.reply.assert_called_once_with(
+            "Teaser. - Full answer: https://e.co/x.html", prefixNick=False
+        )
+
+    def test_cap_zero_disables(self, env):
+        plugin, mock_irc, mock_msg = env
+        plugin.registryValue = make_registry_side_effect({"multilineMaxLines": 0})
+
+        plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
+
+        mock_irc.queueBatch.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_called_once()
+
+    def test_not_negotiated_pastebins(self, env):
+        plugin, mock_irc, mock_msg = env
+        mock_irc.state.capabilities_ack = {"message-tags"}
+
+        plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
+
+        mock_irc.queueBatch.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_called_once()
+
+    def test_single_line_still_plain_reply(self, env):
+        plugin, mock_irc, mock_msg = env
+
+        plugin._send_long_reply(mock_irc, mock_msg, "hello")
+
+        mock_irc.queueBatch.assert_not_called()
+        mock_irc.reply.assert_called_once_with("hello", prefixNick=False)
+
+    def test_dropped_when_closing(self, env):
+        plugin, mock_irc, mock_msg = env
+        plugin._llm_executor.shutdown()
+
+        plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
+
+        mock_irc.queueBatch.assert_not_called()
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # draw
 # ---------------------------------------------------------------------------

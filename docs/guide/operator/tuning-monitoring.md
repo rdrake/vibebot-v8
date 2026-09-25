@@ -118,6 +118,7 @@ Plugins that nest sub-leaves under a `Commands` group (notably `RSS`'s `announce
 | `httpRoot` | empty | Filesystem path for output files. Empty uses the built-in server |
 | `httpUrlBase` | empty | Public base URL. Empty uses Limnoria's public URL plus `/llm/` |
 | `longReplyTeaserMaxChars` | `220` | Characters in the one-line teaser when a long reply is saved as HTML and linked |
+| `multilineMaxLines` | `3` | Replies up to this many IRC lines go inline as one `draft/multiline` batch; longer ones get the teaser and link. `0` turns it off |
 | `fileCleanupAge` | `720` | Delete output files older than this many hours (30 days) |
 | `fileCleanupMax` | `1000` | Cap on files kept in the output directory |
 

@@ -908,6 +908,18 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "multilineMaxLines",
+    registry.NonNegativeInteger(
+        3,
+        _("""Replies that wrap to at most this many IRC lines are sent inline as
+        one IRCv3 draft/multiline batch instead of a teaser plus pastebin link.
+        Needs the draft/multiline capability and
+        supybot.protocols.irc.experimentalExtensions. 0 disables."""),
+    ),
+)
+
 
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)

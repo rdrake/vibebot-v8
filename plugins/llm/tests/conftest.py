@@ -676,6 +676,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "commandPrefixes": ["."],
         "httpUrlBase": TEST_URL_BASE,
         "longReplyTeaserMaxChars": 220,
+        "multilineMaxLines": 3,
         "fileCleanupAge": 24,
         "fileCleanupMax": 100,
         "logLevel": "WARNING",
