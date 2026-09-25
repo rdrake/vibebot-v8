@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- A firing one-shot no longer lists itself as pending (`reminders`)
 - List_pending_tasks read ReminderRow by stale positions (`reminders`)
 - A poll that lost its lease can no longer overwrite the row (`pending`)
 - Two requests can no longer both take the last queue slot (`animate`)
@@ -400,6 +401,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for list_pending_tasks fix (`changelog`)
 - Regenerate for reminder adjust/cancel rules (`changelog`)
 - Regenerate for multiline replies (`changelog`)
 - Regenerate for the formal-verification fixes (`changelog`)
