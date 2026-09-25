@@ -399,6 +399,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the formal-verification fixes (`changelog`)
 - Regenerate for the subject-research pre-stage (`changelog`)
 - Ignore the supybot data dir tests generate
 - Assistant/config/infra polish
@@ -645,6 +646,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Send short overflows as one draft/multiline batch (`reply`)
 - The picker gets @draw's grounding and a typing indicator (`meme`)
 - No flags for pictures — the picker decides draw and animated (`meme`)
 - --draw sends the captioned meme through xAI image edit (`meme`)
