@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Drop all text after a successful reminder mutation (`reminders`)
 - A firing one-shot no longer lists itself as pending (`reminders`)
 - List_pending_tasks read ReminderRow by stale positions (`reminders`)
 - A poll that lost its lease can no longer overwrite the row (`pending`)
@@ -401,6 +402,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for reminder fire frame (`changelog`)
 - Regenerate for firing-reminder self-list fix (`changelog`)
 - Regenerate for list_pending_tasks fix (`changelog`)
 - Regenerate for reminder adjust/cancel rules (`changelog`)
