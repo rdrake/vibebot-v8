@@ -223,6 +223,23 @@ class TestPendingTasksGuidanceSplit:
         assert "ONCE — do not list and then cancel" in prompts.PENDING_TASKS_GUIDANCE
         assert "emoji reaction" in prompts.PENDING_TASKS_GUIDANCE
 
+    def test_guidance_describes_adjust_as_cancel_then_set(self):
+        """No edit tool exists, so the rule must spell out the sequence."""
+        guidance = prompts.PENDING_TASKS_GUIDANCE
+        assert "There is no edit tool" in guidance
+        rule = guidance[guidance.index("There is no edit tool") :]
+        rule = rule[: rule.index("\n")]
+        assert (
+            rule.index("list_pending_tasks")
+            < rule.index("cancel_pending_task")
+            < rule.index("set_reminder")
+        )
+
+    def test_guidance_asks_before_an_implied_cancel(self):
+        guidance = prompts.PENDING_TASKS_GUIDANCE
+        assert "Only cancel when the user asks you to" in guidance
+        assert "ask whether to cancel it" in guidance
+
 
 class TestMemeGuidanceSplit:
     """The make_meme HARD RULE rides only when the tool is injected."""
