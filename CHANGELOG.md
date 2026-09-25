@@ -401,6 +401,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for firing-reminder self-list fix (`changelog`)
 - Regenerate for list_pending_tasks fix (`changelog`)
 - Regenerate for reminder adjust/cancel rules (`changelog`)
 - Regenerate for multiline replies (`changelog`)
@@ -651,6 +652,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Tell the model an action reminder is firing now (`reminders`)
 - Adjust via cancel-then-set; ask before an implied cancel (`reminders`)
 - Send short overflows as one draft/multiline batch (`reply`)
 - The picker gets @draw's grounding and a typing indicator (`meme`)
