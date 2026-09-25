@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Chat can list and cancel reminders again (`reminders`)
 - Drop all text after a successful reminder mutation (`reminders`)
 - A firing one-shot no longer lists itself as pending (`reminders`)
 - List_pending_tasks read ReminderRow by stale positions (`reminders`)
@@ -402,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for post-mutation reply drop (`changelog`)
 - Regenerate for reminder fire frame (`changelog`)
 - Regenerate for firing-reminder self-list fix (`changelog`)
 - Regenerate for list_pending_tasks fix (`changelog`)
