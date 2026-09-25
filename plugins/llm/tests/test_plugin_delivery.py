@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.assistant import ToolCallbackResult
 
-from .conftest import make_registry_side_effect
+from .conftest import make_registry_side_effect, make_reminder_row
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -1240,7 +1240,16 @@ class TestPendingTaskFns:
         # Reminder side: stub _get_user_reminders + the per-id helpers used
         # internally by cancel_pending_task_fn.
         stand_in._get_user_reminders.return_value = [
-            ("llm_remind_rdrake_abc123", ("rdrake", "#t", "check build")),
+            (
+                "llm_remind_rdrake_abc123",
+                make_reminder_row(
+                    event_name="llm_remind_rdrake_abc123",
+                    nick="rdrake",
+                    channel="#t",
+                    message="check build",
+                    fire_at=1_800_000_000.0,
+                ),
+            ),
         ]
         stand_in._remind_set_for_assistant.return_value = ToolCallbackResult(
             True, "I'll remind you."
@@ -1290,6 +1299,8 @@ class TestPendingTaskFns:
         reminder = next(r for r in listed if r["kind"] == "reminder")
         assert reminder["id"] == "abc123"
         assert reminder["description"] == "check build"
+        assert reminder["channel"] == "#t"
+        assert reminder["when"] == "2027-01-15T08:00:00Z"
 
         # cancel_pending_task_fn routes by id prefix to the right backend.
         cancelled = fns["cancel_pending_task_fn"]("llm_task_ev1")

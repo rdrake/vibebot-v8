@@ -8758,8 +8758,9 @@ class LLM(callbacks.Plugin):
                     {
                         "kind": "reminder",
                         "id": rid,
-                        "channel": data[1],
-                        "description": data[2],
+                        "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(data.fire_at)),
+                        "channel": data.channel,
+                        "description": data.message,
                     }
                 )
             for row in self.llm_service.list_scheduled_llm_tasks(
