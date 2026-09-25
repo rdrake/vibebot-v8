@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- List_pending_tasks read ReminderRow by stale positions (`reminders`)
 - A poll that lost its lease can no longer overwrite the row (`pending`)
 - Two requests can no longer both take the last queue slot (`animate`)
 - Budget the pastebin link line in bytes, not characters (`reply`)
@@ -399,6 +400,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for reminder adjust/cancel rules (`changelog`)
 - Regenerate for multiline replies (`changelog`)
 - Regenerate for the formal-verification fixes (`changelog`)
 - Regenerate for the subject-research pre-stage (`changelog`)
