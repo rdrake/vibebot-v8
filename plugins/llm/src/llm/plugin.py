@@ -3458,6 +3458,14 @@ class LLM(callbacks.Plugin):
                 if self._llm_executor.closing:
                     return
 
+                # A firing one-shot is no longer pending: without this, an
+                # action that calls list_pending_tasks lists itself. The DB
+                # row stays until finalize, so a crash mid-fire still reloads.
+                # Recurring chains keep the entry: it IS still pending, and
+                # _mechanical_reschedule reads it as "not cancelled mid-fire".
+                if not is_structured:
+                    with self._reminders_lock:
+                        self._reminders.pop(event_name, None)
                 self._llm_executor.submit(
                     f"reminder:{event_name}",
                     self._fire_reminder_action,

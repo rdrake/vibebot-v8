@@ -1253,6 +1253,29 @@ class TestWatchModeReminderMigration:
         label = plugin._llm_executor.submit.call_args[0][0]
         assert label.startswith("reminder:")
 
+    def test_action_fire_drops_itself_from_pending_before_submit(self, plugin_env, mocker) -> None:
+        # ibutsu 2026-09-25: "remind me to check if you reminded me" fired
+        # as an action, called list_pending_tasks, and found itself still
+        # pending. A firing reminder must not list as pending.
+        plugin, irc, _msg = plugin_env
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = False
+        mocker.patch("llm.plugin.world.ircs", [irc])
+        plugin._check_rate_limit = mocker.MagicMock(return_value=False)
+        plugin._reminders["evt-self"] = make_reminder_row(
+            event_name="evt-self", nick="alice", channel="#chan", action_prompt="check"
+        )
+        seen_during_submit: list[bool] = []
+        plugin._llm_executor.submit.side_effect = lambda *a, **k: seen_during_submit.append(
+            "evt-self" in plugin._reminders
+        )
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice", "#chan", "check", "evt-self", action_prompt="check"
+        )
+        deliver()
+        assert seen_during_submit == [False]
+
     def test_legacy_no_action_prompt_does_not_submit(self, plugin_env, mocker) -> None:
         plugin, irc, _msg = plugin_env
         plugin._llm_executor = mocker.MagicMock()
