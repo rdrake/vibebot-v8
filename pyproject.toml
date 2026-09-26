@@ -7,7 +7,7 @@ dependencies = [
     "llm",
     "nickinmiddle",
     # Runtime dep for Limnoria's stock RSS plugin (not used by our workspace plugins).
-    "feedparser>=6.0",
+    "feedparser>=6.0.14",
 ]
 
 [tool.uv.workspace]
