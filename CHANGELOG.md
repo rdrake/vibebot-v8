@@ -403,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for chat reminder cancel (`changelog`)
 - Regenerate for post-mutation reply drop (`changelog`)
 - Regenerate for reminder fire frame (`changelog`)
 - Regenerate for firing-reminder self-list fix (`changelog`)
@@ -656,6 +657,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Replies to the bot's lines count as addressing it (`chat`)
 - Tell the model an action reminder is firing now (`reminders`)
 - Adjust via cancel-then-set; ask before an implied cancel (`reminders`)
 - Send short overflows as one draft/multiline batch (`reply`)
