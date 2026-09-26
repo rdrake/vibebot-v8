@@ -403,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for user time zones (`changelog`)
 - Regenerate for reply addressing (`changelog`)
 - Regenerate for chat reminder cancel (`changelog`)
 - Regenerate for post-mutation reply drop (`changelog`)
@@ -658,6 +659,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Parse and reschedule in the owner's time zone (`scheduled-tasks`)
 - Read absolute times in the user's time zone (`reminders`)
 - Replies to the bot's lines count as addressing it (`chat`)
 - Tell the model an action reminder is firing now (`reminders`)
