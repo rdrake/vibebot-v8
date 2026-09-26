@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
@@ -62,6 +62,14 @@ from .service import (
     validate_external_url,
 )
 from .tracing import TraceFilter, generate_request_id, request_id
+from .usertz import (
+    SOURCE_CTCP,
+    SOURCE_SET,
+    UTC_DEFAULT,
+    UserTz,
+    offset_from_ctcp_time,
+    parse_zone,
+)
 from .verse import reactions
 from .verse.aging import AgingOutcome
 from .verse.avatar import (
@@ -501,6 +509,17 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "@remind admin del someone abc1",
             "@remind admin clear someone",
         ),
+        category="utility",
+    ),
+    CommandInfo(
+        name="tz",
+        args="[<zone> | clear]",
+        description=(
+            "Set your time zone so a reminder for 9am fires at 9am your time. "
+            "Use an IANA name like America/Toronto. Unset, reminders go by your "
+            "client's clock if it answers CTCP TIME, else UTC."
+        ),
+        examples=("@tz America/Toronto", "@tz Europe/London", "@tz clear", "@tz"),
         category="utility",
     ),
     CommandInfo(
@@ -951,6 +970,13 @@ class LLM(callbacks.Plugin):
 
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
+
+        # CTCP TIME fallback for users with no @tz. Answers (and silences)
+        # are cached per lowercased nick so one reminder costs at most one
+        # probe a day; waiters hold the in-flight probe the NOTICE fills in.
+        self._ctcp_tz_lock = threading.Lock()
+        self._ctcp_tz_cache: dict[str, tuple[tzinfo | None, float]] = {}
+        self._ctcp_tz_waiters: dict[str, tuple[threading.Event, list[str]]] = {}
 
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
@@ -2507,6 +2533,8 @@ class LLM(callbacks.Plugin):
            text readable for the LLM.
         """
         self._remember_own_msgid(irc, msg)
+        if msg.command == "NOTICE":
+            self._capture_ctcp_time(irc, msg)
         if msg.command != "PRIVMSG" or len(msg.args) < 2:
             return msg
 
@@ -8509,6 +8537,61 @@ class LLM(callbacks.Plugin):
 
     instruct = wrap(instruct, [optional("text")])
 
+    def tz(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        args: list,
+        text: str | None,
+    ) -> None:
+        """[<zone> | clear]
+
+        Set your time zone so reminders like "tomorrow at 9am" fire at 9am
+        your time. Use an IANA name (Area/City).
+
+        Examples:
+          @tz America/Toronto
+          @tz clear
+          @tz          (show current zone)
+        """
+        caller = self._resolve_identity(irc, msg)
+
+        if not text:
+            zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
+            if zone is not None:
+                label = UserTz(tz=zone, source=SOURCE_SET).label()
+                irc.reply(f"Your time zone: {label}", prefixNick=False)
+            else:
+                irc.reply(
+                    "No time zone set, so reminders use your client's clock or UTC. "
+                    "Set one with @tz <Area/City>, e.g. @tz America/Toronto",
+                    prefixNick=False,
+                )
+            return
+
+        if text.strip().lower() == "clear":
+            if self.db.delete_user_timezone(caller.key):
+                irc.reply("Time zone cleared.", prefixNick=False)
+            else:
+                irc.reply("No time zone to clear.", prefixNick=False)
+            return
+
+        zone = parse_zone(text)
+        if zone is None:
+            irc.reply(
+                "Unknown time zone. Use an IANA name like America/Toronto or Europe/London.",
+                prefixNick=False,
+            )
+            return
+
+        self.db.save_user_timezone(caller.key, zone.key)
+        irc.reply(
+            f"Time zone set: {UserTz(tz=zone, source=SOURCE_SET).label()}",
+            prefixNick=False,
+        )
+
+    tz = wrap(tz, [optional("text")])
+
     def avatar(
         self,
         irc: callbacks.Irc,
@@ -9084,19 +9167,20 @@ class LLM(callbacks.Plugin):
         return recurrence_seconds is not None or recurrence_rrule is not None
 
     @staticmethod
-    def _next_rrule_fire(rule_str: str, now: float) -> float | None:
+    def _next_rrule_fire(rule_str: str, now: float, tz: tzinfo = UTC) -> float | None:
         """Compute the next fire time after ``now`` for an RRULE string.
 
-        Uses dateutil with timezone-aware UTC so DST transitions don't
-        produce duplicate or skipped fires. Returns None when the rule
-        is malformed or has no future occurrence.
+        BYHOUR/BYMINUTE are wall-clock times in ``tz`` (the owner's zone, as
+        the parser was told), so "daily at 8am" stays at 8am across a DST
+        change. Returns None when the rule is malformed or has no future
+        occurrence.
         """
         from dateutil.rrule import rrulestr
 
         try:
-            now_utc = datetime.fromtimestamp(now, tz=UTC)
-            rule = rrulestr(rule_str, dtstart=now_utc)
-            next_dt = rule.after(now_utc)
+            now_local = datetime.fromtimestamp(now, tz=tz)
+            rule = rrulestr(rule_str, dtstart=now_local)
+            next_dt = rule.after(now_local)
         except (ValueError, TypeError):
             return None
         if next_dt is None:
@@ -9144,7 +9228,8 @@ class LLM(callbacks.Plugin):
         if recurrence_seconds is not None:
             next_fire = now + recurrence_seconds
         elif recurrence_rrule is not None:
-            next_fire = self._next_rrule_fire(recurrence_rrule, now)
+            owner_tz = self._resolve_user_tz(Identity(raw_nick=nick, account=account)).tz
+            next_fire = self._next_rrule_fire(recurrence_rrule, now, owner_tz)
             if next_fire is None:
                 self.log.warning(
                     "reminder_reschedule_skipped reason=rrule_invalid_or_exhausted "
@@ -9279,6 +9364,83 @@ class LLM(callbacks.Plugin):
             self._reminders.pop(event_name, None)
         self.db.delete_reminder(event_name)
 
+    _CTCP_TIME_TIMEOUT_SECONDS = 3.0
+    _CTCP_TIME_CACHE_SECONDS = 24 * 3600
+
+    def _resolve_user_tz(self, caller: Identity, *, irc: callbacks.Irc | None = None) -> UserTz:
+        """The caller's zone: @tz, else their client clock, else UTC.
+
+        ``irc`` enables the CTCP TIME probe. Leave it out on paths that must
+        not block or talk to the user (a recurring reminder rescheduling
+        itself); they still get a cached answer.
+        """
+        zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
+        if zone is not None:
+            return UserTz(tz=zone, source=SOURCE_SET)
+
+        key = ircutils.toLower(caller.raw_nick)
+        with self._ctcp_tz_lock:
+            cached = self._ctcp_tz_cache.get(key)
+        if cached is not None and cached[1] > time.time():
+            offset = cached[0]
+        elif irc is not None:
+            offset = self._probe_ctcp_tz(irc, caller.raw_nick)
+        else:
+            offset = None
+        if offset is not None:
+            return UserTz(tz=offset, source=SOURCE_CTCP)
+        return UTC_DEFAULT
+
+    def _probe_ctcp_tz(self, irc: callbacks.Irc, nick: str) -> tzinfo | None:
+        """Ask ``nick``'s client for its clock and wait briefly for the answer.
+
+        Many clients never answer (most mobile ones), and a bouncer answers
+        with its own clock. A silence is cached like an answer, so the wait
+        is paid at most once a day per nick.
+        """
+        key = ircutils.toLower(nick)
+        with self._ctcp_tz_lock:
+            waiter = self._ctcp_tz_waiters.get(key)
+            owner = waiter is None
+            if owner:
+                waiter = (threading.Event(), [])
+                self._ctcp_tz_waiters[key] = waiter
+        event, replies = waiter
+        if owner:
+            self._safe_queue(irc, ircmsgs.privmsg(nick, "\x01TIME\x01"))
+        event.wait(self._CTCP_TIME_TIMEOUT_SECONDS)
+
+        offset = offset_from_ctcp_time(replies[0], datetime.now(UTC)) if replies else None
+        with self._ctcp_tz_lock:
+            if owner:
+                self._ctcp_tz_waiters.pop(key, None)
+            self._ctcp_tz_cache[key] = (offset, time.time() + self._CTCP_TIME_CACHE_SECONDS)
+        log.info(
+            "ctcp_time nick=%s answered=%s offset=%s",
+            nick,
+            bool(replies),
+            offset,
+        )
+        return offset
+
+    def _capture_ctcp_time(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Hand a CTCP TIME reply to the probe waiting on its sender.
+
+        Unsolicited replies are ignored, so nobody can set another user's
+        offset by sending the bot a crafted NOTICE.
+        """
+        if len(msg.args) < 2 or not ircutils.strEqual(msg.args[0], irc.nick):
+            return
+        text = msg.args[1]
+        if not text.startswith("\x01TIME "):
+            return
+        with self._ctcp_tz_lock:
+            waiter = self._ctcp_tz_waiters.get(ircutils.toLower(msg.nick or ""))
+            if waiter is None or waiter[1]:
+                return
+            waiter[1].append(text[len("\x01TIME ") :].rstrip("\x01"))
+        waiter[0].set()
+
     def _schedule_reminder(
         self,
         irc: callbacks.Irc,
@@ -9300,13 +9462,17 @@ class LLM(callbacks.Plugin):
         ``chain_position`` so we can enforce the per-chain cap.
         """
         channel = self._get_channel(msg)
+        # Resolved before taking an executor permit: the CTCP probe can wait
+        # seconds on the user's client. A chain rescheduling itself does not
+        # probe; it is not the user asking.
+        user_tz = self._resolve_user_tz(caller, irc=irc if parent_chain is None else None)
 
         with (
             self._trace_request("remind", caller.key, channel),
             self._allow_concurrent(),
             self._llm_executor.permit(),
         ):
-            result = self.llm_service.parse_reminder(text, channel)
+            result = self.llm_service.parse_reminder(text, channel, user_tz=user_tz)
 
         if result.action == "clarify":
             return ReminderScheduleResult(ok=True, message=result.confirmation)

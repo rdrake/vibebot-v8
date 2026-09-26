@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -616,6 +616,19 @@ class LLMDatabase:
             self._add_column_if_missing(
                 conn, "reminders", "reply_msgid", "reply_msgid TEXT NOT NULL DEFAULT ''"
             )
+            conn.commit()
+
+        if current_version < 20:
+            # IRC carries no time zone, so "tomorrow morning" parsed as UTC.
+            # Keyed like user_instructions: account when identified, nick
+            # otherwise.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_timezones (
+                    nick TEXT PRIMARY KEY,
+                    tz TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+            """)
             conn.commit()
 
         # Stamp the schema version so future opens skip completed migrations.
@@ -1588,20 +1601,20 @@ class LLMDatabase:
             return cursor.rowcount
 
     def migrate_user_data(self, old_nick: str, new_nick: str) -> int:
-        """Re-attribute memories, candidates, instruction, and persona rows.
+        """Re-attribute memories, candidates, instruction, persona and tz rows.
 
         Companion to :meth:`migrate_nick` / :meth:`migrate_conversations` —
         without it, facts and personas accumulated while unidentified became
         permanently invisible the moment the user identified.
 
         ``memories`` / ``memory_candidates`` rows are plain per-fact rows and
-        are simply renamed. ``user_instructions`` / ``user_avatar_personas``
-        are keyed on nick: when the destination already has a row it wins
+        are simply renamed. ``user_instructions`` / ``user_avatar_personas`` /
+        ``user_timezones`` are keyed on nick: when the destination already has a row it wins
         (the identified-user copy is canonical) and the source row is
         dropped, mirroring ``migrate_conversations``.
 
         Returns:
-            Number of rows renamed across all four tables.
+            Number of rows renamed across all five tables.
         """
         old = old_nick.lower()
         new = new_nick.lower()
@@ -1615,7 +1628,7 @@ class LLMDatabase:
                     (new, old),
                 )
                 moved += cursor.rowcount
-            for table in ("user_instructions", "user_avatar_personas"):
+            for table in ("user_instructions", "user_avatar_personas", "user_timezones"):
                 conn.execute(
                     f"DELETE FROM {table} WHERE nick = ? AND EXISTS ("  # noqa: S608
                     f"  SELECT 1 FROM {table} WHERE nick = ?"
@@ -2229,6 +2242,39 @@ class LLMDatabase:
         with self._write_txn() as conn:
             cursor = conn.execute(
                 "DELETE FROM user_instructions WHERE nick = ?",
+                (nick.lower(),),
+            )
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Per-user time zone (IANA name, set with @tz)
+    # ------------------------------------------------------------------
+
+    def get_user_timezone(self, nick: str) -> str | None:
+        """Get the user's IANA time zone name, or None if not set."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT tz FROM user_timezones WHERE nick = ?",
+            (nick.lower(),),
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_user_timezone(self, nick: str, tz: str) -> None:
+        """Save or overwrite the user's time zone."""
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO user_timezones (nick, tz, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(nick) DO UPDATE SET tz = excluded.tz, "
+                "updated_at = excluded.updated_at",
+                (nick.lower(), tz, time.time()),
+            )
+
+    def delete_user_timezone(self, nick: str) -> bool:
+        """Delete the user's time zone. Returns True if one was deleted."""
+        with self._write_txn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_timezones WHERE nick = ?",
                 (nick.lower(),),
             )
             return cursor.rowcount > 0

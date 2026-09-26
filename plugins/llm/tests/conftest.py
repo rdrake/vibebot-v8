@@ -67,6 +67,17 @@ def _isolate_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_ctcp_time_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop a reminder test from waiting on a client that will never answer.
+
+    Any fixture that builds a real LLM and schedules a reminder runs the CTCP
+    TIME probe; at the production timeout each one sleeps 3 seconds and skews
+    tests that compare fire times against time.time().
+    """
+    monkeypatch.setattr(LLM, "_CTCP_TIME_TIMEOUT_SECONDS", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _restore_global_logging_filters() -> Generator[None]:
     """Undo any ``SecretFilter`` installation left on process-global logging state.
 
@@ -512,6 +523,10 @@ def plugin_env(mocker: MockerFixture):
     # these against an int, so the bare mock's auto-attribute would raise
     # TypeError in every test that submits a clip without caring about caps.
     plugin.db.count_pending_animate.return_value = 0
+    # No @tz set, and no CTCP TIME probe: a real one would wait on a client
+    # that is not there. Probe tests call LLM._probe_ctcp_tz directly.
+    plugin.db.get_user_timezone.return_value = None
+    plugin._probe_ctcp_tz = mocker.MagicMock(return_value=None)
     plugin.db.count_pending_animate_for.return_value = 0
 
     # The typing registry is real even though the service is mocked: the

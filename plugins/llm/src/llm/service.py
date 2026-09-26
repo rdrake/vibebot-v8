@@ -57,6 +57,7 @@ from .prompts import (
 )
 from .tracing import TraceFilter, extract_server_headers, request_id
 from .typing_holds import TypingHolds
+from .usertz import SOURCE_CTCP, SOURCE_SET, UTC_DEFAULT, UserTz
 
 # MUST be set before any LiteLLM calls create HTTPHandler
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
@@ -4733,7 +4734,13 @@ class LLMService:
             manage_typing=manage_typing,
         )
 
-    def parse_reminder(self, text: str, channel: str | None = None) -> ReminderParseResult:
+    def parse_reminder(
+        self,
+        text: str,
+        channel: str | None = None,
+        *,
+        user_tz: UserTz = UTC_DEFAULT,
+    ) -> ReminderParseResult:
         """Parse a natural language reminder request using LLM.
 
         Uses the ask model (with Google Search grounding for time awareness) to
@@ -4770,8 +4777,25 @@ class LLMService:
             )
         timeout = self.plugin.registryValue("timeout")
 
-        # Current UTC time for context
-        current_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # The user's wall clock, so "tomorrow morning" means their morning.
+        now_utc = datetime.now(UTC)
+        local_now = now_utc.astimezone(user_tz.tz)
+        current_time = (
+            f"{local_now.strftime('%A %Y-%m-%d %H:%M:%S')} {user_tz.label(now_utc)} "
+            f"(user's local time; {now_utc.strftime('%H:%M')} UTC)"
+        )
+        if user_tz.source == SOURCE_SET:
+            zone_rule = "the user set this zone themselves; set note to null"
+        elif user_tz.source == SOURCE_CTCP:
+            zone_rule = (
+                "this offset was read from the user's IRC client clock; set note to "
+                '"Using your client\'s clock (<offset>); set a zone with @tz <Area/City>"'
+            )
+        else:
+            zone_rule = (
+                "the user's zone is unknown so UTC is assumed; set note to "
+                '"Assuming UTC; set your zone with @tz <Area/City>"'
+            )
 
         system_prompt = f"""You parse reminder requests. Return JSON only, no markdown fences.
 
@@ -4785,7 +4809,8 @@ or
 Rules:
 - "seconds" = seconds from now until reminder fires (must be positive)
 - For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
-- For absolute times ("at 3pm") without a timezone, assume UTC and set note suggesting they specify next time
+- Absolute and calendar times ("at 3pm", "tomorrow morning", "tonight") without a timezone are in the user's local time above; {zone_rule}. "Morning" means 09:00, "afternoon" 15:00, "evening" 19:00, "tonight" 21:00.
+- RRULE BYHOUR/BYMINUTE are the user's local wall-clock time, not UTC.
 - If request is too vague (missing time or message), use "clarify"
 - "confirmation" is shown to the user immediately at scheduling time. It MUST only state that the reminder was set and when. Do NOT speculate about what the bot can or cannot do at fire time, do NOT mention tool limits, do NOT add disclaimers like "though I can only ..." — capability decisions happen at fire time, not now.
 - Keep confirmation concise (under 100 chars)

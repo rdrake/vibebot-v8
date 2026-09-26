@@ -847,6 +847,7 @@ class TestCommandRegistry:
             "instruct",
             "avatar",
             "remind",
+            "tz",
             "usage",
             "verseopt",
             "verse",

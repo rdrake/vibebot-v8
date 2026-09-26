@@ -15,7 +15,25 @@ Set reminders in natural language. When the time comes, the bot either echoes yo
 @remind tomorrow at 9am standup meeting
 ```
 
-The bot parses times such as "in 30 minutes", "at 5 p.m.", and "tomorrow at 9 a.m." An absolute time with no time zone is read as UTC, and the confirmation says so — name the zone if you meant something else.
+The bot parses times such as "in 30 minutes", "at 5 p.m.", and "tomorrow at 9 a.m." An absolute time with no time zone is read in your time zone, found in this order:
+
+1. The zone you set with `@tz`, such as `@tz America/Toronto`. Recurring reminders keep their wall-clock time across daylight saving changes.
+2. Your IRC client's clock, if it answers CTCP TIME. That gives an offset, not a zone, so a recurring reminder drifts an hour at a daylight saving change. A bouncer answers with its own clock.
+3. UTC.
+
+For the last two, the confirmation says which one it used.
+
+## `tz`
+
+**Usage:** `@tz [<zone> | clear]`
+
+```
+@tz America/Toronto
+@tz
+@tz clear
+```
+
+Takes an IANA zone name (Area/City). With no argument it shows your current zone.
 
 A reminder has to fire between 10 seconds and 7 days from now, the text after `@remind` is capped at 500 characters, and you can hold 25 pending reminders at a time.
 

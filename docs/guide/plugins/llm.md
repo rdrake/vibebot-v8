@@ -13,7 +13,7 @@ tools.
 |--------|----------|-------|
 | Core AI | `@ask`, `@code`, `@draw`, `@meme`, `@story` | Chat with vision, code with HTTP links, images, captioned memes, illustrated pages. |
 | Memory | `@forget`, `@memories`, `@instruct` | Volatile context, durable facts, persistent instructions. |
-| Reminders | `@remind` | Natural-language reminders with recurring support. |
+| Reminders | `@remind`, `@tz` | Natural-language reminders with recurring support, read in your time zone. |
 | Accounting | `@usage` | Per-account and per-channel API usage. |
 | Verse (user) | `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar` | Opt in, roleplay, inspect the scene, set a persona. |
 | Verse (editor) | `@canon`, `@versedit` | Curate durable canon. Requires `llm.verse.edit`. |
@@ -45,7 +45,7 @@ Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
 `@versepurge`, `@versecompact`).
 
 `@remind` also needs `llm.ask`, since it manages persisted reminders and
-scheduled tasks. `@memories`, `@instruct`, `@usage`, and `@avatar` carry
+scheduled tasks. `@memories`, `@instruct`, `@tz`, `@usage`, and `@avatar` carry
 no capability of their own. The paths that reach past your own data check
 inline instead: `owner` for `@memories <nick>` and `@remind admin`,
 `admin` for a bare `@usage` by PM. Owner and admin accounts bypass rate limits.

@@ -1411,13 +1411,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_19(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 19."""
+    def test_schema_version_is_20(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 20."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 19
+            assert row[0] == 20
         finally:
             conn.close()
 
@@ -1905,6 +1905,24 @@ class TestUserInstructions:
     def test_delete_instruction_missing(self, test_db: LLMDatabase) -> None:
         """GIVEN no instruction WHEN deleted THEN returns False."""
         assert test_db.delete_instruction("testnick") is False
+
+
+class TestUserTimezones:
+    """Tests for user_timezones table CRUD."""
+
+    def test_get_returns_none_when_empty(self, test_db: LLMDatabase) -> None:
+        assert test_db.get_user_timezone("testnick") is None
+
+    def test_save_get_overwrite_case_insensitive(self, test_db: LLMDatabase) -> None:
+        test_db.save_user_timezone("RDrake", "America/Toronto")
+        test_db.save_user_timezone("rdrake", "Europe/London")
+        assert test_db.get_user_timezone("RDRAKE") == "Europe/London"
+
+    def test_delete(self, test_db: LLMDatabase) -> None:
+        test_db.save_user_timezone("testnick", "UTC")
+        assert test_db.delete_user_timezone("testnick") is True
+        assert test_db.delete_user_timezone("testnick") is False
+        assert test_db.get_user_timezone("testnick") is None
 
 
 class TestUserAvatarPersonas:
@@ -2660,6 +2678,14 @@ class TestMigrateUserData:
         test_db.migrate_user_data("tempnick", "account")
 
         assert test_db.get_avatar_persona("account") == "a fox"
+
+    def test_timezone_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
+        test_db.save_user_timezone("tempnick", "America/Toronto")
+
+        test_db.migrate_user_data("tempnick", "account")
+
+        assert test_db.get_user_timezone("account") == "America/Toronto"
+        assert test_db.get_user_timezone("tempnick") is None
 
     def test_same_identity_is_noop(self, test_db: LLMDatabase) -> None:
         test_db.save_instruction("bob", "x")

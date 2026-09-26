@@ -11,6 +11,8 @@ dependencies = [
     "nh3>=0.2.0",
     "Pillow>=10.0.0",
     "python-dateutil>=2.9",
+    # zoneinfo reads the system tz database, which python:slim may lack.
+    "tzdata>=2024.1",
 ]
 
 [project.entry-points."limnoria.plugins"]

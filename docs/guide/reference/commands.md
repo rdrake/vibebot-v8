@@ -109,6 +109,7 @@ See [memory and instructions](../user/memory.md) for full details.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@remind` | `[<text> \| list \| del <id> [<id>...] \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders, plus your scheduled tasks in `list`, `del` and `clear`. `del` takes several ids at once. Requires `llm.ask`; the `admin` subcommands are owner-only. |
+| `@tz` | `[<zone> \| clear]` | Set the IANA time zone reminders read absolute times in, such as `America/Toronto`. Unset, the bot uses your client's CTCP TIME clock, else UTC. Empty shows the current zone. |
 
 Reminders that ask the bot to *do* something (look up, check, fetch,
 summarise) run as an LLM query at fire time and appear as `[auto]` in
