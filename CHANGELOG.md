@@ -403,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for reply addressing (`changelog`)
 - Regenerate for chat reminder cancel (`changelog`)
 - Regenerate for post-mutation reply drop (`changelog`)
 - Regenerate for reminder fire frame (`changelog`)
@@ -657,6 +658,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Read absolute times in the user's time zone (`reminders`)
 - Replies to the bot's lines count as addressing it (`chat`)
 - Tell the model an action reminder is firing now (`reminders`)
 - Adjust via cancel-then-set; ask before an implied cancel (`reminders`)
