@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import inspect
 import threading
 import time
@@ -63,6 +64,8 @@ class TestDoPrivmsg:
         plugin._bot_probed_at = {}
         plugin._bot_reply_counts = {}
         plugin._bot_loop_lock = threading.Lock()
+        plugin._own_msgids = collections.OrderedDict()
+        plugin._own_msgids_lock = threading.Lock()
 
         try:
             yield plugin, mock_irc, mock_msg
@@ -248,6 +251,95 @@ class TestDoPrivmsg:
         plugin.doPrivmsg(mock_irc, mock_msg)
 
         plugin._route_addressed_to_assistant.assert_not_called()
+
+    def test_doprivmsg_routes_reply_to_bot_line(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN +draft/reply to a msgid the bot sent WHEN doPrivmsg THEN routes, no nick needed."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        plugin._own_msgids[(mock_irc.network, "bot-1")] = None
+        mock_msg.args = ("#channel", "and what about tomorrow?")
+        mock_msg.server_tags = {"+draft/reply": "bot-1"}
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_called_once_with(
+            mock_irc, mock_msg, "and what about tomorrow?"
+        )
+        plugin.context.add_message.assert_not_called()
+
+    def test_doprivmsg_reply_to_someone_else_is_chatter(self, plugin_with_mocks: tuple) -> None:
+        """GIVEN +draft/reply to a msgid the bot never sent WHEN doPrivmsg THEN plain chatter."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        plugin._own_msgids[(mock_irc.network, "bot-1")] = None
+        mock_msg.args = ("#channel", "lol same")
+        mock_msg.server_tags = {"+draft/reply": "human-7"}
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_called_once()
+
+
+class TestOwnMsgidTracking:
+    """inFilter learns the bot's own msgids from echo-message."""
+
+    @pytest.fixture
+    def plugin_and_irc(self, mocker: MockerFixture):
+        from llm.plugin import LLM
+
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+        plugin._own_msgids = collections.OrderedDict()
+        plugin._own_msgids_lock = threading.Lock()
+        irc = mocker.MagicMock()
+        irc.nick = "botname"
+        irc.network = "afternet"
+        return plugin, irc
+
+    def _msg(self, command: str, args: tuple, *, sender: str, msgid: str) -> object:
+        from supybot import ircmsgs
+
+        return ircmsgs.IrcMsg(
+            prefix=f"{sender}!u@h",
+            command=command,
+            args=args,
+            server_tags={"msgid": msgid},
+        )
+
+    def _reply(self, msgid: str) -> object:
+        from supybot import ircmsgs
+
+        return ircmsgs.IrcMsg(
+            prefix="user!u@h",
+            command="PRIVMSG",
+            args=("#chan", "why?"),
+            server_tags={"+draft/reply": msgid},
+        )
+
+    def test_echoed_privmsg_and_batch_are_remembered(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        plugin.inFilter(irc, self._msg("PRIVMSG", ("#chan", "hi"), sender="botname", msgid="a"))
+        plugin.inFilter(
+            irc,
+            self._msg("BATCH", ("+r1", "draft/multiline", "#chan"), sender="botname", msgid="b"),
+        )
+
+        assert plugin._is_reply_to_own_line(irc, self._reply("a"))
+        assert plugin._is_reply_to_own_line(irc, self._reply("b"))
+
+    def test_other_speakers_msgids_are_ignored(self, plugin_and_irc: tuple) -> None:
+        plugin, irc = plugin_and_irc
+        plugin.inFilter(irc, self._msg("PRIVMSG", ("#chan", "hi"), sender="user", msgid="c"))
+
+        assert not plugin._is_reply_to_own_line(irc, self._reply("c"))
+
+    def test_memory_is_bounded(self, plugin_and_irc: tuple, mocker: MockerFixture) -> None:
+        plugin, irc = plugin_and_irc
+        mocker.patch("llm.plugin._OWN_MSGID_CAP", 2)
+        for mid in ("x", "y", "z"):
+            plugin.inFilter(irc, self._msg("PRIVMSG", ("#chan", "hi"), sender="botname", msgid=mid))
+
+        assert not plugin._is_reply_to_own_line(irc, self._reply("x"))
+        assert plugin._is_reply_to_own_line(irc, self._reply("z"))
 
 
 class TestInFilterDispatchGate:

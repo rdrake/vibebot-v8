@@ -178,6 +178,11 @@ _AMBIENT_ENTRY_ROUTES = frozenset({"addressed", "invalid_command"})
 # a beat is not blocked.
 _DISPATCH_DEDUP_WINDOW = 12.0
 
+# How many of the bot's own msgids to remember for +draft/reply addressing.
+# A busy channel sees a few hundred bot lines a day; replies to anything
+# older than that are rare enough to need the nick.
+_OWN_MSGID_CAP = 2000
+
 # Re-ask the network about an unflagged nick at most this often. A WHO per
 # stranger is cheap, one per stranger per hour is nothing, and the answer is
 # stable — nobody stops being a bot mid-afternoon.
@@ -917,6 +922,11 @@ class LLM(callbacks.Plugin):
         # (target, bot nick) -> (consecutive replies, last reply time).
         self._bot_reply_counts: dict[tuple[str, str], tuple[int, float]] = {}
         self._bot_loop_lock = threading.Lock()
+        # msgids of the bot's own lines, learned from echo-message, so an
+        # IRCv3 +draft/reply to one of them counts as addressing the bot.
+        # Bounded LRU keyed (network, msgid); see _remember_own_msgid.
+        self._own_msgids: collections.OrderedDict[tuple[str, str], None] = collections.OrderedDict()
+        self._own_msgids_lock = threading.Lock()
         # Pending LIST / NAMES queries: fed by do322/do353 et al. on the
         # driver thread, awaited by @channels/@names and the irc_lookup tool.
         self._irc_queries = ircquery.IrcQueryRegistry()
@@ -2453,6 +2463,33 @@ class LLM(callbacks.Plugin):
         if r.status == "completed" and delivered and not self._llm_executor.closing:
             self._log_pending_delivery_usage(r, nick, target)
 
+    def _remember_own_msgid(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Record the msgid of an echoed bot line (PRIVMSG, NOTICE, or the
+        BATCH opener of a multiline reply, which is what clients reply to).
+
+        Needs echo-message; without it nothing is recorded and replies to the
+        bot stay unaddressed, as before.
+        """
+        if msg.command not in ("PRIVMSG", "NOTICE", "BATCH") or not msg.prefix:
+            return
+        if not ircutils.isUserHostmask(msg.prefix) or not ircutils.strEqual(irc.nick, msg.nick):
+            return
+        msgid = (getattr(msg, "server_tags", None) or {}).get("msgid")
+        if not msgid:
+            return
+        with self._own_msgids_lock:
+            self._own_msgids[(irc.network, msgid)] = None
+            while len(self._own_msgids) > _OWN_MSGID_CAP:
+                self._own_msgids.popitem(last=False)
+
+    def _is_reply_to_own_line(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
+        """True when msg carries +draft/reply pointing at one of the bot's lines."""
+        target = (getattr(msg, "server_tags", None) or {}).get("+draft/reply")
+        if not target:
+            return False
+        with self._own_msgids_lock:
+            return (irc.network, target) in self._own_msgids
+
     def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg:  # noqa: N802
         """Sanitize PRIVMSG text before Limnoria's tokenizer processes it.
 
@@ -2469,6 +2506,7 @@ class LLM(callbacks.Plugin):
            are unbalanced — prevents the tokenizer crash while keeping the
            text readable for the LLM.
         """
+        self._remember_own_msgid(irc, msg)
         if msg.command != "PRIVMSG" or len(msg.args) < 2:
             return msg
 
@@ -2558,6 +2596,8 @@ class LLM(callbacks.Plugin):
         addressed_text = text.strip() if is_pm else self._strip_nick_address(irc.nick, text)
         if not addressed_text and action_body is not None and not is_pm:
             addressed_text = self._strip_nick_mention(irc.nick, text)
+        if not addressed_text and not is_pm and self._is_reply_to_own_line(irc, msg):
+            addressed_text = text.strip()
 
         if addressed_text:
             if action_body is not None:
