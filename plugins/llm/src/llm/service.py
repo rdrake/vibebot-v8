@@ -8678,6 +8678,7 @@ Examples (echo → action_prompt: ""):
         when_natural: str,
         prompt: str,
         reply_target: str | None = None,
+        user_tz: UserTz = UTC_DEFAULT,
     ) -> ScheduleLlmTaskResult:
         """Schedule a future @ask invocation (Phase 2 Task 3).
 
@@ -8757,7 +8758,7 @@ Examples (echo → action_prompt: ""):
         # parse_reminder expects both time AND message in one string, so compose.
         # The structured prompt is stored verbatim; parsed.message/action_prompt
         # are discarded.
-        parsed = self.parse_reminder(f"{when_natural} {prompt}", channel=channel)
+        parsed = self.parse_reminder(f"{when_natural} {prompt}", channel=channel, user_tz=user_tz)
         if parsed.action != "schedule" or not parsed.seconds:
             return ScheduleLlmTaskResult(
                 status="clarify",
@@ -9019,7 +9020,11 @@ Examples (echo → action_prompt: ""):
         if row.recurrence_seconds:
             return time.time() + row.recurrence_seconds
         if row.recurrence_rrule:
-            return self.plugin._next_rrule_fire(row.recurrence_rrule, time.time())
+            return self.plugin._next_rrule_fire(
+                row.recurrence_rrule,
+                time.time(),
+                self.plugin._owner_tz(row.creator_nick, row.account),
+            )
         return None
 
     def list_scheduled_llm_tasks(

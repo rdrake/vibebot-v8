@@ -307,3 +307,89 @@ class TestMechanicalRescheduleUsesOwnerZone:
         plugin.db.get_user_timezone.assert_called_once_with("rdrake")
         assert next_fire.call_args.args[2] == TORONTO
         plugin._probe_ctcp_tz.assert_not_called()
+
+
+class TestScheduledTaskUsesZone:
+    @pytest.fixture
+    def service(self, mocker: MockerFixture):
+        from llm.service import LLMService
+
+        plugin = mocker.MagicMock()
+        plugin.registryValue.side_effect = lambda key, *args: {
+            "bridgeScheduledTaskLimit": 5,
+        }.get(key, "")
+        plugin.db.count_scheduled_llm_tasks_for.return_value = 0
+        mocker.patch("llm.service.log")
+        return LLMService(plugin)
+
+    def test_zone_reaches_the_parser(self, service, mocker: MockerFixture) -> None:
+        zone = UserTz(tz=TORONTO, source=SOURCE_SET)
+        parse = mocker.patch.object(
+            service,
+            "parse_reminder",
+            return_value=ReminderParseResult(action="clarify", confirmation="When?"),
+        )
+        msg = mocker.MagicMock()
+        msg.tagged.return_value = None
+
+        service.schedule_llm_task(
+            irc=mocker.MagicMock(),
+            msg=msg,
+            creator_nick="rdrake",
+            account="rdrake",
+            channel="#t",
+            when_natural="every weekday at 9am",
+            prompt="check the build",
+            user_tz=zone,
+        )
+
+        assert parse.call_args.kwargs["user_tz"] == zone
+
+    def test_rrule_reschedule_uses_owner_zone(self, service, mocker: MockerFixture) -> None:
+        service.plugin._owner_tz.return_value = TORONTO
+        row = mocker.MagicMock(
+            recurrence_seconds=None,
+            recurrence_rrule="FREQ=DAILY;BYHOUR=9",
+            creator_nick="rd_phone",
+            account="rdrake",
+        )
+
+        service._compute_next_fire(row)
+
+        service.plugin._owner_tz.assert_called_once_with("rd_phone", "rdrake")
+        assert service.plugin._next_rrule_fire.call_args.args[2] == TORONTO
+
+
+class TestOwnerTz:
+    def test_uses_stored_zone_without_probing(self, plugin_env) -> None:
+        plugin, _, _ = plugin_env
+        plugin.db.get_user_timezone.return_value = "America/Toronto"
+
+        assert plugin._owner_tz("rd_phone", "rdrake") == TORONTO
+        plugin.db.get_user_timezone.assert_called_once_with("rdrake")
+        plugin._probe_ctcp_tz.assert_not_called()
+
+
+class TestScheduleFnProbing:
+    def _fns(self, plugin, mocker: MockerFixture, *, from_fire: bool):
+        return plugin._pending_task_fns(
+            caller=Identity("rdrake", "rdrake"),
+            irc=mocker.MagicMock(),
+            msg=mocker.MagicMock(),
+            channel="#t",
+            pass_irc_msg_to_callbacks=not from_fire,
+        )
+
+    def test_user_request_may_probe(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, _, _ = plugin_env
+        self._fns(plugin, mocker, from_fire=False)["schedule_llm_task_fn"](
+            when_natural="at 9am", prompt="x"
+        )
+        plugin._probe_ctcp_tz.assert_called_once()
+
+    def test_action_fire_does_not_probe(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, _, _ = plugin_env
+        self._fns(plugin, mocker, from_fire=True)["schedule_llm_task_fn"](
+            when_natural="at 9am", prompt="x"
+        )
+        plugin._probe_ctcp_tz.assert_not_called()

@@ -1286,7 +1286,10 @@ class TestPendingTaskFns:
             when_natural="in 60s",
             prompt="ping me",
             reply_target=None,
+            user_tz=stand_in._resolve_user_tz.return_value,
         )
+        # A user-initiated schedule may probe the client clock for a zone.
+        stand_in._resolve_user_tz.assert_called_once_with(caller, irc=irc)
 
         # list_pending_tasks_fn merges reminders + scheduled tasks with
         # `kind` discriminators.

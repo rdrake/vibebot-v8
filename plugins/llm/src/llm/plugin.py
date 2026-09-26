@@ -8868,6 +8868,8 @@ class LLM(callbacks.Plugin):
             prompt: str,
             reply_target: str | None = None,
         ) -> dict[str, object]:
+            # The action-fire path is not the user asking, so it does not probe.
+            user_tz = self._resolve_user_tz(caller, irc=react_irc)
             result = self.llm_service.schedule_llm_task(
                 irc=irc,
                 msg=msg,
@@ -8877,6 +8879,7 @@ class LLM(callbacks.Plugin):
                 when_natural=when_natural,
                 prompt=prompt,
                 reply_target=reply_target,
+                user_tz=user_tz,
             )
             return {
                 "status": result.status,
@@ -9228,8 +9231,7 @@ class LLM(callbacks.Plugin):
         if recurrence_seconds is not None:
             next_fire = now + recurrence_seconds
         elif recurrence_rrule is not None:
-            owner_tz = self._resolve_user_tz(Identity(raw_nick=nick, account=account)).tz
-            next_fire = self._next_rrule_fire(recurrence_rrule, now, owner_tz)
+            next_fire = self._next_rrule_fire(recurrence_rrule, now, self._owner_tz(nick, account))
             if next_fire is None:
                 self.log.warning(
                     "reminder_reschedule_skipped reason=rrule_invalid_or_exhausted "
@@ -9390,6 +9392,10 @@ class LLM(callbacks.Plugin):
         if offset is not None:
             return UserTz(tz=offset, source=SOURCE_CTCP)
         return UTC_DEFAULT
+
+    def _owner_tz(self, nick: str, account: str | None) -> tzinfo:
+        """Zone for a stored reminder or task's owner, without probing."""
+        return self._resolve_user_tz(Identity(raw_nick=nick, account=account)).tz
 
     def _probe_ctcp_tz(self, irc: callbacks.Irc, nick: str) -> tzinfo | None:
         """Ask ``nick``'s client for its clock and wait briefly for the answer.
