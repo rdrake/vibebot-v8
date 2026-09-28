@@ -12,6 +12,7 @@ from llm.usertz import (
     UTC_DEFAULT,
     UserTz,
     format_offset,
+    needs_zone,
     offset_from_ctcp_time,
     parse_zone,
 )
@@ -90,3 +91,39 @@ class TestOffsetFromCtcpTime:
     @pytest.mark.parametrize("reply", ["", "no idea", "\x01"])
     def test_garbage_is_rejected(self, reply: str) -> None:
         assert offset_from_ctcp_time(reply, NOW) is None
+
+
+class TestNeedsZone:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "at 5pm call Bob",
+            "5:30 a.m. stretch",
+            "17:30 standup",
+            "at 9 check the build",
+            "tomorrow morning strike",
+            "tonight feed the cat",
+            "every Monday post the agenda",
+            "on the 3rd pay rent",
+            "Sept 30 renew the cert",
+            "2026-10-01 renew the cert",
+            "at noon lunch",
+            "next week review the PR",
+        ],
+    )
+    def test_wall_clock_times(self, text: str) -> None:
+        assert needs_zone(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "d0nk when its going to rain",
+            "in 20 minutes check the oven",
+            "every hour tag rdrake with a penguin gif",
+            "in 2 days renew the cert",
+            "let me know when the build is green",
+            "every 5 minutes check the Debian CVE-2026-31431 status",
+        ],
+    )
+    def test_relative_times(self, text: str) -> None:
+        assert not needs_zone(text)

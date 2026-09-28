@@ -220,6 +220,46 @@ class TestScheduleReminderUsesZone:
 
         plugin._probe_ctcp_tz.assert_not_called()
 
+    def test_relative_time_does_not_probe(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule", seconds=3600, message="x", confirmation="Set."
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_reminder(
+            mock_irc, mock_msg, Identity("Rubin", None), "remind d0nk when its going to rain"
+        )
+
+        plugin._probe_ctcp_tz.assert_not_called()
+        assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"] == UTC_DEFAULT
+
+    def test_relative_time_still_uses_cached_answer(
+        self, plugin_env, mocker: MockerFixture
+    ) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        offset = timezone(timedelta(hours=-4))
+        plugin._ctcp_tz_cache["rubin"] = (offset, float("inf"))
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule", seconds=3600, message="x", confirmation="Set."
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", None), "in 1 hour x")
+
+        assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"].tz == offset
+
+    def test_wall_clock_time_probes(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule", seconds=3600, message="x", confirmation="Set."
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", None), "at 5pm x")
+
+        plugin._probe_ctcp_tz.assert_called_once_with(mock_irc, "Rubin")
+
 
 class TestNextRruleFireInZone:
     # 2026-09-26 05:00 in Toronto (EDT, UTC-4).
@@ -391,5 +431,12 @@ class TestScheduleFnProbing:
         plugin, _, _ = plugin_env
         self._fns(plugin, mocker, from_fire=True)["schedule_llm_task_fn"](
             when_natural="at 9am", prompt="x"
+        )
+        plugin._probe_ctcp_tz.assert_not_called()
+
+    def test_relative_time_does_not_probe(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, _, _ = plugin_env
+        self._fns(plugin, mocker, from_fire=False)["schedule_llm_task_fn"](
+            when_natural="in 2 hours", prompt="check the build"
         )
         plugin._probe_ctcp_tz.assert_not_called()

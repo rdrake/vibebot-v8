@@ -1274,7 +1274,7 @@ class TestPendingTaskFns:
         }
 
         # schedule_fn forwards keyword args and binds caller identity.
-        out = fns["schedule_llm_task_fn"](when_natural="in 60s", prompt="ping me")
+        out = fns["schedule_llm_task_fn"](when_natural="at 9am", prompt="ping me")
         assert out["status"] == "ok"
         assert out["event_name"] == "llm_task_xyz"
         stand_in.llm_service.schedule_llm_task.assert_called_once_with(
@@ -1283,12 +1283,12 @@ class TestPendingTaskFns:
             creator_nick="rdrake",
             account="rdrake_a",
             channel="#t",
-            when_natural="in 60s",
+            when_natural="at 9am",
             prompt="ping me",
             reply_target=None,
             user_tz=stand_in._resolve_user_tz.return_value,
         )
-        # A user-initiated schedule may probe the client clock for a zone.
+        # A user-initiated wall-clock schedule may probe the client clock.
         stand_in._resolve_user_tz.assert_called_once_with(caller, irc=irc)
 
         # list_pending_tasks_fn merges reminders + scheduled tasks with

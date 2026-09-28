@@ -67,6 +67,7 @@ from .usertz import (
     SOURCE_SET,
     UTC_DEFAULT,
     UserTz,
+    needs_zone,
     offset_from_ctcp_time,
     parse_zone,
 )
@@ -8868,8 +8869,10 @@ class LLM(callbacks.Plugin):
             prompt: str,
             reply_target: str | None = None,
         ) -> dict[str, object]:
-            # The action-fire path is not the user asking, so it does not probe.
-            user_tz = self._resolve_user_tz(caller, irc=react_irc)
+            # The action-fire path is not the user asking, so it does not probe;
+            # neither does a relative time, which lands the same in any zone.
+            probe = needs_zone(f"{when_natural} {prompt}")
+            user_tz = self._resolve_user_tz(caller, irc=react_irc if probe else None)
             result = self.llm_service.schedule_llm_task(
                 irc=irc,
                 msg=msg,
@@ -9470,8 +9473,10 @@ class LLM(callbacks.Plugin):
         channel = self._get_channel(msg)
         # Resolved before taking an executor permit: the CTCP probe can wait
         # seconds on the user's client. A chain rescheduling itself does not
-        # probe; it is not the user asking.
-        user_tz = self._resolve_user_tz(caller, irc=irc if parent_chain is None else None)
+        # probe; it is not the user asking. Nor does a request with no wall
+        # clock in it: "in 20 minutes" needs no zone.
+        probe = parent_chain is None and needs_zone(text)
+        user_tz = self._resolve_user_tz(caller, irc=irc if probe else None)
 
         with (
             self._trace_request("remind", caller.key, channel),

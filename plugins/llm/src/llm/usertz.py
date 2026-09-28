@@ -14,6 +14,7 @@ Everything here is pure; the plugin owns the probe and the cache.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -51,6 +52,38 @@ class UserTz:
 UTC_DEFAULT = UserTz(tz=UTC, source=SOURCE_DEFAULT)
 
 
+_WALL_CLOCK_RE = re.compile(
+    r"""
+    \b\d{1,2}(?::\d{2})?\s*(?:a\.?m\b\.?|p\.?m\b\.?)   # 5pm, 5:30 a.m.
+    | \b\d{1,2}:\d{2}\b                               # 17:30
+    | \bat\s+\d{1,2}\b                                # at 5
+    | \b\d{4}-\d{1,2}-\d{1,2}\b | \b\d{1,2}/\d{1,2}\b  # 2026-09-28, 9/28
+    | \b\d{1,2}(?:st|nd|rd|th)\b                      # the 3rd
+    | \b(?:o'?clock|noon|midnight|today|tonight|tomorrow|tmrw|tmr
+        |morning|afternoon|evening|night|lunch|dinner|breakfast|bedtime
+        |eod|weekday|weekend|next\s+(?:week|month|year)
+        |mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun
+        |(?:mon|tues|wednes|thurs|fri|satur|sun)days?
+        |jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec
+        |january|february|march|april|june|july|august|september
+        |october|november|december)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def needs_zone(text: str) -> bool:
+    """True when ``text`` names a wall-clock time or calendar day.
+
+    "in 20 minutes" and "every hour" land the same instant in any zone, so
+    asking the user's client for its clock is wasted (and, observed
+    2026-09-28, visible: Rubin got TIME'd for "remind d0nk when it's going
+    to rain"). Errs towards True: a spare probe costs 3 s at most, a missed
+    one parses "at 5pm" as UTC.
+    """
+    return _WALL_CLOCK_RE.search(text) is not None
+
+
 def parse_zone(name: str) -> ZoneInfo | None:
     """Return the IANA zone for ``name``, or None when it is not one."""
     name = name.strip()
@@ -83,7 +116,8 @@ def offset_from_ctcp_time(reply: str, now_utc: datetime) -> timezone | None:
     ``now_utc``. Returns None for anything unparseable or out of range.
     """
     try:
-        parsed = date_parser.parse(reply.strip(), fuzzy=True)
+        # A reply with no date takes now_utc's, not the host calendar's.
+        parsed = date_parser.parse(reply.strip(), fuzzy=True, default=now_utc.replace(tzinfo=None))
     except (ValueError, OverflowError):
         return None
 
