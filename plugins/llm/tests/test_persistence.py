@@ -1411,13 +1411,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_20(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 20."""
+    def test_schema_version_is_21(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 21."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 20
+            assert row[0] == 21
         finally:
             conn.close()
 
@@ -1923,6 +1923,24 @@ class TestUserTimezones:
         assert test_db.delete_user_timezone("testnick") is True
         assert test_db.delete_user_timezone("testnick") is False
         assert test_db.get_user_timezone("testnick") is None
+
+
+class TestUserClockOffsets:
+    """Tests for user_clock_offsets, the stored CTCP TIME answers."""
+
+    def test_get_returns_none_when_never_probed(self, test_db: LLMDatabase) -> None:
+        assert test_db.get_clock_offset("testnick") is None
+
+    def test_save_get_overwrite_case_insensitive(self, test_db: LLMDatabase) -> None:
+        test_db.save_clock_offset("Rubin", -4 * 3600)
+        test_db.save_clock_offset("rubin", 3600)
+        offset, probed_at = test_db.get_clock_offset("RUBIN")
+        assert offset == 3600
+        assert probed_at > 0
+
+    def test_silence_is_stored_as_none(self, test_db: LLMDatabase) -> None:
+        test_db.save_clock_offset("rubin", None)
+        assert test_db.get_clock_offset("rubin")[0] is None
 
 
 class TestUserAvatarPersonas:
@@ -2686,6 +2704,14 @@ class TestMigrateUserData:
 
         assert test_db.get_user_timezone("account") == "America/Toronto"
         assert test_db.get_user_timezone("tempnick") is None
+
+    def test_clock_offset_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
+        test_db.save_clock_offset("tempnick", -4 * 3600)
+
+        test_db.migrate_user_data("tempnick", "account")
+
+        assert test_db.get_clock_offset("account")[0] == -4 * 3600
+        assert test_db.get_clock_offset("tempnick") is None
 
     def test_same_identity_is_noop(self, test_db: LLMDatabase) -> None:
         test_db.save_instruction("bob", "x")

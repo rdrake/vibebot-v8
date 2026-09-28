@@ -3033,6 +3033,8 @@ class TestReminderMetaHelpers:
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda s: s
         plugin.db = mocker.MagicMock()
+        plugin.db.get_user_timezone.return_value = None
+        plugin.db.get_clock_offset.return_value = None
         plugin._reminders = {}
         plugin._reminders_lock = threading.Lock()
         plugin._MetaSynchronized_rlock = threading.RLock()

@@ -18,7 +18,7 @@ Set reminders in natural language. When the time comes, the bot either echoes yo
 The bot parses times such as "in 30 minutes", "at 5 p.m.", and "tomorrow at 9 a.m." An absolute time with no time zone is read in your time zone, found in this order:
 
 1. The zone you set with `@tz`, such as `@tz America/Toronto`. Recurring reminders keep their wall-clock time across daylight saving changes.
-2. Your IRC client's clock, if it answers CTCP TIME. That gives an offset, not a zone, so a recurring reminder drifts an hour at a daylight saving change. A bouncer answers with its own clock.
+2. Your IRC client's clock, if it answers CTCP TIME. The bot asks only when the request names a clock time or a day, remembers the answer, and asks again after a week. That gives an offset, not a zone, so a recurring reminder drifts an hour at a daylight saving change. A bouncer answers with its own clock.
 3. UTC.
 
 For the last two, the confirmation says which one it used.

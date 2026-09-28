@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -106,22 +107,58 @@ class TestResolveUserTz:
         assert plugin._resolve_user_tz(Identity("rdrake", None)) == UTC_DEFAULT
         plugin._probe_ctcp_tz.assert_not_called()
 
-    def test_cached_answer_skips_probe(self, plugin_env) -> None:
+    def test_fresh_answer_skips_probe(self, plugin_env) -> None:
         plugin, mock_irc, _ = plugin_env
-        offset = timezone(timedelta(hours=1))
-        plugin._ctcp_tz_cache["rdrake"] = (offset, float("inf"))
+        plugin.db.get_clock_offset.return_value = (3600, time.time())
 
         tz = plugin._resolve_user_tz(Identity("RDrake", None), irc=mock_irc)
 
-        assert tz.tz == offset
+        assert tz == UserTz(tz=timezone(timedelta(hours=1)), source=SOURCE_CTCP)
+        plugin.db.get_clock_offset.assert_called_once_with("RDrake")
         plugin._probe_ctcp_tz.assert_not_called()
 
-    def test_cached_silence_is_utc_without_probe(self, plugin_env) -> None:
+    def test_fresh_silence_is_utc_without_probe(self, plugin_env) -> None:
         plugin, mock_irc, _ = plugin_env
-        plugin._ctcp_tz_cache["rdrake"] = (None, float("inf"))
+        plugin.db.get_clock_offset.return_value = (None, time.time())
 
         assert plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc) == UTC_DEFAULT
         plugin._probe_ctcp_tz.assert_not_called()
+
+    def test_week_old_answer_is_reprobed(self, plugin_env) -> None:
+        plugin, mock_irc, _ = plugin_env
+        plugin.db.get_clock_offset.return_value = (3600, time.time() - 8 * 86400)
+        plugin._probe_ctcp_tz.return_value = timezone(timedelta(hours=-5))
+
+        tz = plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc)
+
+        assert tz.tz == timezone(timedelta(hours=-5))
+        plugin.db.save_clock_offset.assert_called_once_with("rdrake", -5 * 3600)
+
+    def test_stale_answer_still_used_without_irc(self, plugin_env) -> None:
+        # A recurring reminder rescheduling itself cannot probe; last week's
+        # offset beats UTC.
+        plugin, _, _ = plugin_env
+        plugin.db.get_clock_offset.return_value = (-4 * 3600, 0.0)
+
+        tz = plugin._resolve_user_tz(Identity("rdrake", None))
+
+        assert tz == UserTz(tz=timezone(timedelta(hours=-4)), source=SOURCE_CTCP)
+
+    def test_probe_result_is_saved_under_account(self, plugin_env) -> None:
+        plugin, mock_irc, _ = plugin_env
+        plugin._probe_ctcp_tz.return_value = timezone(timedelta(hours=-4))
+
+        plugin._resolve_user_tz(Identity("rd_phone", "rdrake"), irc=mock_irc)
+
+        plugin._probe_ctcp_tz.assert_called_once_with(mock_irc, "rd_phone")
+        plugin.db.save_clock_offset.assert_called_once_with("rdrake", -4 * 3600)
+
+    def test_silence_is_saved(self, plugin_env) -> None:
+        plugin, mock_irc, _ = plugin_env
+
+        plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc)
+
+        plugin.db.save_clock_offset.assert_called_once_with("rdrake", None)
 
 
 class TestCtcpTimeProbe:
@@ -162,15 +199,14 @@ class TestCtcpTimeProbe:
         sent = mock_irc.queueMsg.call_args.args[0]
         assert sent.command == "PRIVMSG"
         assert sent.args == ("rdrake", "\x01TIME\x01")
-        assert plugin._ctcp_tz_cache["rdrake"][0] == offset
         assert plugin._ctcp_tz_waiters == {}
 
-    def test_silence_is_cached_as_none(self, plugin, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_silence_is_none(self, plugin, monkeypatch: pytest.MonkeyPatch) -> None:
         plugin, mock_irc = plugin
         monkeypatch.setattr(LLM, "_CTCP_TIME_TIMEOUT_SECONDS", 0.0)
 
         assert LLM._probe_ctcp_tz(plugin, mock_irc, "rdrake") is None
-        assert plugin._ctcp_tz_cache["rdrake"][0] is None
+        assert plugin._ctcp_tz_waiters == {}
 
     def test_reply_from_another_nick_is_ignored(
         self, plugin, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
@@ -188,7 +224,6 @@ class TestCtcpTimeProbe:
         plugin.inFilter(mock_irc, self._notice(mocker, "rdrake", "\x01TIME 12:00:00\x01"))
 
         assert plugin._ctcp_tz_waiters == {}
-        assert plugin._ctcp_tz_cache == {}
 
 
 class TestScheduleReminderUsesZone:
@@ -234,12 +269,12 @@ class TestScheduleReminderUsesZone:
         plugin._probe_ctcp_tz.assert_not_called()
         assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"] == UTC_DEFAULT
 
-    def test_relative_time_still_uses_cached_answer(
+    def test_relative_time_still_uses_stored_answer(
         self, plugin_env, mocker: MockerFixture
     ) -> None:
         plugin, mock_irc, mock_msg = plugin_env
         offset = timezone(timedelta(hours=-4))
-        plugin._ctcp_tz_cache["rubin"] = (offset, float("inf"))
+        plugin.db.get_clock_offset.return_value = (-4 * 3600, time.time())
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule", seconds=3600, message="x", confirmation="Set."
         )

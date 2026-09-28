@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
@@ -972,11 +972,10 @@ class LLM(callbacks.Plugin):
         self._reminders: dict[str, ReminderRow] = {}
         self._reminders_lock = threading.Lock()
 
-        # CTCP TIME fallback for users with no @tz. Answers (and silences)
-        # are cached per lowercased nick so one reminder costs at most one
-        # probe a day; waiters hold the in-flight probe the NOTICE fills in.
+        # CTCP TIME fallback for users with no @tz; answers (and silences)
+        # persist in user_clock_offsets. Waiters hold the in-flight probe,
+        # keyed by lowercased nick, that the NOTICE fills in.
         self._ctcp_tz_lock = threading.Lock()
-        self._ctcp_tz_cache: dict[str, tuple[tzinfo | None, float]] = {}
         self._ctcp_tz_waiters: dict[str, tuple[threading.Event, list[str]]] = {}
 
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
@@ -9370,26 +9369,30 @@ class LLM(callbacks.Plugin):
         self.db.delete_reminder(event_name)
 
     _CTCP_TIME_TIMEOUT_SECONDS = 3.0
-    _CTCP_TIME_CACHE_SECONDS = 24 * 3600
+    # A client clock goes stale when DST flips or its owner travels, so the
+    # probe path re-asks after a week. Paths that cannot probe keep using the
+    # old answer: last week's offset is closer than UTC.
+    _CTCP_TIME_REFRESH_SECONDS = 7 * 86400
 
     def _resolve_user_tz(self, caller: Identity, *, irc: callbacks.Irc | None = None) -> UserTz:
         """The caller's zone: @tz, else their client clock, else UTC.
 
         ``irc`` enables the CTCP TIME probe. Leave it out on paths that must
         not block or talk to the user (a recurring reminder rescheduling
-        itself); they still get a cached answer.
+        itself); they still get the stored answer, however old.
         """
         zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
         if zone is not None:
             return UserTz(tz=zone, source=SOURCE_SET)
 
-        key = ircutils.toLower(caller.raw_nick)
-        with self._ctcp_tz_lock:
-            cached = self._ctcp_tz_cache.get(key)
-        if cached is not None and cached[1] > time.time():
-            offset = cached[0]
-        elif irc is not None:
+        stored = self.db.get_clock_offset(caller.key)
+        fresh = stored is not None and stored[1] + self._CTCP_TIME_REFRESH_SECONDS > time.time()
+        if irc is not None and not fresh:
             offset = self._probe_ctcp_tz(irc, caller.raw_nick)
+            seconds = None if offset is None else int(offset.utcoffset(None).total_seconds())
+            self.db.save_clock_offset(caller.key, seconds)
+        elif stored is not None and stored[0] is not None:
+            offset = timezone(timedelta(seconds=stored[0]))
         else:
             offset = None
         if offset is not None:
@@ -9400,12 +9403,12 @@ class LLM(callbacks.Plugin):
         """Zone for a stored reminder or task's owner, without probing."""
         return self._resolve_user_tz(Identity(raw_nick=nick, account=account)).tz
 
-    def _probe_ctcp_tz(self, irc: callbacks.Irc, nick: str) -> tzinfo | None:
+    def _probe_ctcp_tz(self, irc: callbacks.Irc, nick: str) -> timezone | None:
         """Ask ``nick``'s client for its clock and wait briefly for the answer.
 
         Many clients never answer (most mobile ones), and a bouncer answers
-        with its own clock. A silence is cached like an answer, so the wait
-        is paid at most once a day per nick.
+        with its own clock. The caller stores a silence like an answer, so
+        the wait is paid at most once a week per user.
         """
         key = ircutils.toLower(nick)
         with self._ctcp_tz_lock:
@@ -9420,10 +9423,9 @@ class LLM(callbacks.Plugin):
         event.wait(self._CTCP_TIME_TIMEOUT_SECONDS)
 
         offset = offset_from_ctcp_time(replies[0], datetime.now(UTC)) if replies else None
-        with self._ctcp_tz_lock:
-            if owner:
+        if owner:
+            with self._ctcp_tz_lock:
                 self._ctcp_tz_waiters.pop(key, None)
-            self._ctcp_tz_cache[key] = (offset, time.time() + self._CTCP_TIME_CACHE_SECONDS)
         log.info(
             "ctcp_time nick=%s answered=%s offset=%s",
             nick,

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -627,6 +627,19 @@ class LLMDatabase:
                     nick TEXT PRIMARY KEY,
                     tz TEXT NOT NULL,
                     updated_at REAL NOT NULL
+                );
+            """)
+            conn.commit()
+
+        if current_version < 21:
+            # The CTCP TIME fallback's answer, so a restart does not re-probe
+            # everyone and a recurring reminder keeps its owner's offset.
+            # offset_seconds NULL records a client that never answered.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_clock_offsets (
+                    nick TEXT PRIMARY KEY,
+                    offset_seconds INTEGER,
+                    probed_at REAL NOT NULL
                 );
             """)
             conn.commit()
@@ -1601,7 +1614,7 @@ class LLMDatabase:
             return cursor.rowcount
 
     def migrate_user_data(self, old_nick: str, new_nick: str) -> int:
-        """Re-attribute memories, candidates, instruction, persona and tz rows.
+        """Re-attribute memories, candidates, instruction, persona, tz and clock rows.
 
         Companion to :meth:`migrate_nick` / :meth:`migrate_conversations` —
         without it, facts and personas accumulated while unidentified became
@@ -1609,12 +1622,12 @@ class LLMDatabase:
 
         ``memories`` / ``memory_candidates`` rows are plain per-fact rows and
         are simply renamed. ``user_instructions`` / ``user_avatar_personas`` /
-        ``user_timezones`` are keyed on nick: when the destination already has a row it wins
+        ``user_timezones`` / ``user_clock_offsets`` are keyed on nick: when the destination already has a row it wins
         (the identified-user copy is canonical) and the source row is
         dropped, mirroring ``migrate_conversations``.
 
         Returns:
-            Number of rows renamed across all five tables.
+            Number of rows renamed across all six tables.
         """
         old = old_nick.lower()
         new = new_nick.lower()
@@ -1628,7 +1641,12 @@ class LLMDatabase:
                     (new, old),
                 )
                 moved += cursor.rowcount
-            for table in ("user_instructions", "user_avatar_personas", "user_timezones"):
+            for table in (
+                "user_instructions",
+                "user_avatar_personas",
+                "user_timezones",
+                "user_clock_offsets",
+            ):
                 conn.execute(
                     f"DELETE FROM {table} WHERE nick = ? AND EXISTS ("  # noqa: S608
                     f"  SELECT 1 FROM {table} WHERE nick = ?"
@@ -2278,6 +2296,30 @@ class LLMDatabase:
                 (nick.lower(),),
             )
             return cursor.rowcount > 0
+
+    def get_clock_offset(self, nick: str) -> tuple[int | None, float] | None:
+        """``(offset_seconds, probed_at)`` from the last CTCP TIME probe.
+
+        ``offset_seconds`` is None when the client never answered; the whole
+        result is None when the user was never probed.
+        """
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT offset_seconds, probed_at FROM user_clock_offsets WHERE nick = ?",
+            (nick.lower(),),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def save_clock_offset(self, nick: str, offset_seconds: int | None) -> None:
+        """Record a CTCP TIME probe's answer (None for silence)."""
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO user_clock_offsets (nick, offset_seconds, probed_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(nick) DO UPDATE SET offset_seconds = excluded.offset_seconds, "
+                "probed_at = excluded.probed_at",
+                (nick.lower(), offset_seconds, time.time()),
+            )
 
     # ------------------------------------------------------------------
     # Avatar persona operations (verse-only, separate from user_instructions)

@@ -526,6 +526,7 @@ def plugin_env(mocker: MockerFixture):
     # No @tz set, and no CTCP TIME probe: a real one would wait on a client
     # that is not there. Probe tests call LLM._probe_ctcp_tz directly.
     plugin.db.get_user_timezone.return_value = None
+    plugin.db.get_clock_offset.return_value = None
     plugin._probe_ctcp_tz = mocker.MagicMock(return_value=None)
     plugin.db.count_pending_animate_for.return_value = 0
 
@@ -905,6 +906,8 @@ def plugin_init_patches(
     patches["LLMService"] = mocker.patch("llm.plugin.LLMService")
     if mock_database:
         patches["LLMDatabase"] = mocker.patch("llm.plugin.LLMDatabase")
+        # Never probed: a bare MagicMock row would be compared with a float.
+        patches["LLMDatabase"].return_value.get_clock_offset.return_value = None
     patches["log"] = mocker.patch("llm.plugin.log")
     patches["httpserver_hook"] = mocker.patch("llm.plugin.httpserver.hook")
     patches["addPeriodicEvent"] = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
