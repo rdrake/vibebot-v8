@@ -2574,8 +2574,13 @@ class LLMService:
 
         return self._format_duration(uptime_seconds)
 
-    def send_reaction(self, irc: Irc, target: str, msgid: str, emoji: str) -> bool:
+    def send_reaction(
+        self, irc: Irc, target: str, msgid: str, emoji: str, *, remove: bool = False
+    ) -> bool:
         """Send an IRCv3 +draft/react client tag anchored to a message.
+
+        ``remove`` sends +draft/unreact instead, taking back an earlier
+        reaction with the same emoji.
 
         Returns True if the TAGMSG was queued, False if the server lacks
         the message-tags capability or no msgid is available (in which
@@ -2590,7 +2595,7 @@ class LLMService:
             command="TAGMSG",
             args=(target,),
             server_tags={
-                "+draft/react": emoji,
+                "+draft/unreact" if remove else "+draft/react": emoji,
                 "+draft/reply": msgid,
             },
         )

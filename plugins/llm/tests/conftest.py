@@ -337,6 +337,7 @@ def make_reminder_row(
     watch_mode: bool = False,
     id: int = 0,  # noqa: A002 — keyword-only builder, builtin shadow is fine.
     created_at: float = 0.0,
+    reply_msgid: str = "",
 ) -> ReminderRow:
     """Build a ReminderRow with sensible defaults for tests.
 
@@ -358,6 +359,7 @@ def make_reminder_row(
         recurrence_seconds=recurrence_seconds,
         recurrence_rrule=recurrence_rrule,
         watch_mode=watch_mode,
+        reply_msgid=reply_msgid,
     )
 
 

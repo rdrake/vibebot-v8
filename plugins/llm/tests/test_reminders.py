@@ -1387,6 +1387,46 @@ class TestReminderDeliveryClosure:
 
         return plugin
 
+    def test_cancel_takes_back_the_clock(self, plugin: MagicMock, mocker: MockerFixture) -> None:
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
+        mock_world.ircs = [mock_irc]
+        plugin._reminders["llm_remind_a"] = make_reminder_row(
+            event_name="llm_remind_a", nick="Rubin", channel="#chan", reply_msgid="m1"
+        )
+
+        plugin._cancel_reminder("llm_remind_a")
+
+        plugin.llm_service.send_reaction.assert_called_once_with(
+            mock_irc, "#chan", "m1", "⏰", remove=True
+        )
+
+    def test_cancel_in_pm_unreacts_to_the_sender(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        mock_world = mocker.patch("llm.plugin.world")
+        mock_irc = mocker.MagicMock()
+        mock_world.ircs = [mock_irc]
+        plugin._reminders["llm_remind_a"] = make_reminder_row(
+            event_name="llm_remind_a", nick="Rubin", channel="vibebot", reply_msgid="m1"
+        )
+
+        plugin._cancel_reminder("llm_remind_a")
+
+        assert plugin.llm_service.send_reaction.call_args.args[1] == "Rubin"
+
+    def test_cancel_without_msgid_sends_nothing(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("llm.plugin.world").ircs = [mocker.MagicMock()]
+        plugin._reminders["llm_remind_a"] = make_reminder_row(
+            event_name="llm_remind_a", nick="Rubin", channel="#chan"
+        )
+
+        plugin._cancel_reminder("llm_remind_a")
+
+        plugin.llm_service.send_reaction.assert_not_called()
+
     def test_delivery_cleans_up_on_success(self, plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN delivery closure WHEN queueMsg succeeds THEN cleans up reminder."""
         mock_world = mocker.patch("llm.plugin.world")

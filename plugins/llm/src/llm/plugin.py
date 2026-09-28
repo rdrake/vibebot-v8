@@ -9361,12 +9361,23 @@ class LLM(callbacks.Plugin):
             irc.reply(fallback_text, prefixNick=prefixNick)
 
     def _cancel_reminder(self, event_name: str) -> None:
-        """Remove a single reminder from scheduler, in-memory dict, and database."""
+        """Remove a single reminder from scheduler, in-memory dict, and database.
+
+        Also takes back the ⏰ put on the message that set it, so a cancelled
+        reminder does not still look pending in the channel.
+        """
         with contextlib.suppress(KeyError):
             schedule.removeEvent(event_name)
         with self._reminders_lock:
-            self._reminders.pop(event_name, None)
+            row = self._reminders.pop(event_name, None)
         self.db.delete_reminder(event_name)
+        irc = next(iter(world.ircs), None)
+        if row is None or not row.reply_msgid or irc is None:
+            return
+        # A PM reminder stores the bot's own nick as its channel; the
+        # reaction went to the sender, as in _react.
+        target = row.channel if ircutils.isChannel(row.channel) else row.nick
+        self.llm_service.send_reaction(irc, target, row.reply_msgid, "⏰", remove=True)
 
     _CTCP_TIME_TIMEOUT_SECONDS = 3.0
     # A client clock goes stale when DST flips or its owner travels, so the

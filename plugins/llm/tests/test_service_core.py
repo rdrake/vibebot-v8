@@ -627,6 +627,14 @@ class TestTypingIndicators:
         assert sent.command == "TAGMSG"
         assert sent.server_tags["+draft/reply"] == "msgid-1"
 
+    def test_send_reaction_remove_sends_unreact(self) -> None:
+        irc = self._make_mock_irc(capabilities={"message-tags"})
+
+        assert self.service.send_reaction(irc, "#test", "msgid-1", "⏰", remove=True)
+
+        sent = self.mock_plugin._safe_queue.call_args[0][1]
+        assert sent.server_tags == {"+draft/unreact": "⏰", "+draft/reply": "msgid-1"}
+
 
 class TestXssSanitization:
     """Tests for XSS prevention in HTML output."""
