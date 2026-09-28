@@ -403,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for CTCP probe gate (`changelog`)
 - Regenerate for scheduled-task time zones (`changelog`)
 - Regenerate for user time zones (`changelog`)
 - Regenerate for reply addressing (`changelog`)
@@ -660,6 +661,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Store the CTCP TIME answer per user in the database (`reminders`)
 - Probe CTCP TIME only when the request names a wall clock (`reminders`)
 - Parse and reschedule in the owner's time zone (`scheduled-tasks`)
 - Read absolute times in the user's time zone (`reminders`)
