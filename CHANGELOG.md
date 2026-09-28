@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Take back the ⏰ reaction when a reminder is cancelled (`reminders`)
 - Chat can list and cancel reminders again (`reminders`)
 - Drop all text after a successful reminder mutation (`reminders`)
 - A firing one-shot no longer lists itself as pending (`reminders`)
@@ -403,6 +404,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for stored clock offsets (`changelog`)
 - Regenerate for CTCP probe gate (`changelog`)
 - Regenerate for scheduled-task time zones (`changelog`)
 - Regenerate for user time zones (`changelog`)
