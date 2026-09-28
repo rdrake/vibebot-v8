@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Tell the chat model the bot sends CTCP TIME for reminders (`prompts`)
 - Take back the ⏰ reaction when a reminder is cancelled (`reminders`)
 - Chat can list and cancel reminders again (`reminders`)
 - Drop all text after a successful reminder mutation (`reminders`)
@@ -404,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for reminder unreact (`changelog`)
 - Regenerate for stored clock offsets (`changelog`)
 - Regenerate for CTCP probe gate (`changelog`)
 - Regenerate for scheduled-task time zones (`changelog`)
