@@ -403,6 +403,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for scheduled-task time zones (`changelog`)
 - Regenerate for user time zones (`changelog`)
 - Regenerate for reply addressing (`changelog`)
 - Regenerate for chat reminder cancel (`changelog`)
@@ -659,6 +660,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Probe CTCP TIME only when the request names a wall clock (`reminders`)
 - Parse and reschedule in the owner's time zone (`scheduled-tasks`)
 - Read absolute times in the user's time zone (`reminders`)
 - Replies to the bot's lines count as addressing it (`chat`)
