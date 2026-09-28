@@ -116,7 +116,12 @@ PENDING_TASKS_GUIDANCE = (
     "thumbs-up for cancel). Any text you write after it is discarded, "
     "so write none. If the tool returned an error or refusal "
     "(cap reached, not found, parse failed), DO speak: surface the "
-    "reason in one short sentence so the user knows what went wrong."
+    "reason in one short sentence so the user knows what went wrong.\n"
+    "- When a reminder or scheduled task names a clock time or day and "
+    "the requester has no @tz set, the bot sends the requester a CTCP "
+    "TIME to read their client's clock, and remembers the answer for a "
+    "week. If someone asks about a TIME request from the bot, that was "
+    "it; @tz <Area/City> stops it."
 )
 
 # Appended to the chat framework ONLY when the bridge tools are actually
