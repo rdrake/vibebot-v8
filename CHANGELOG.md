@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for GitHub link digests (`changelog`)
 - Regenerate for Gemini free-key fallback (`changelog`)
 - Regenerate for CTCP disclosure (`changelog`)
 - Regenerate for reminder unreact (`changelog`)
@@ -667,6 +668,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- MemoryModel for extraction and a three-search cap per request (`llm`)
 - Read GitHub links through the GitHub API (`llm`)
 - Try the Gemini free-tier key first, fall back to paid (`llm`)
 - Store the CTCP TIME answer per user in the database (`reminders`)
