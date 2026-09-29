@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for local-model docs (`changelog`)
 - Regenerate for free-key overload retry (`changelog`)
 - Regenerate for memoryModel and search cap (`changelog`)
 - Regenerate for GitHub link digests (`changelog`)
@@ -489,6 +490,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Generate llms.txt and llms-full.txt with mkdocs-llmstxt
 - Local-model setup, free Gemini key in env template, drop unused data dir (`ops`)
 - TLA+ models and a Lean proof behind the four fixes (`formal`)
 - Note that plugin INFO log lines never reach docker logs on prod (`plans`)
