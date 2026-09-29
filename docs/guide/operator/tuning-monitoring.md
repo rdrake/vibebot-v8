@@ -6,10 +6,11 @@ The model surface splits by workload so cost and quality can differ per task. Ev
 
 | Setting | Used for |
 |---------|----------|
-| `assistantModel` | Chat, the planner loop, bridge tool selection, reminder parsing, memory extraction and cleanup, image-prompt rewrites, scheduled tasks |
+| `assistantModel` | Chat, the planner loop, bridge tool selection, reminder parsing, memory cleanup, image-prompt rewrites, scheduled tasks |
+| `memoryModel` | Memory extraction after every reply. Falls back to `assistantModel` when empty |
 | `codeModel` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop that calls it runs on `assistantModel` |
 | `imageModel` | Image generation |
-| `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty |
+| `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty. GitHub links are read through GitHub's API instead |
 | `subjectResearchModel` | The subject-research pre-stage in front of the `@draw` and `@animate` planners. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | Verse-mode narration. Falls back to `assistantModel` when empty |
 | `verseCompactionModel` | The daily verse compaction digest |
@@ -19,6 +20,7 @@ Guidance from operating this surface:
 - `assistantModel` needs vision support if users paste image URLs into chat.
 - Reasoning models make terse, flat narrators. If the assistant model is a reasoning model, point `verseModel` at a non-reasoning model for verse prose.
 - Compaction is a cheap summarization job; leave `verseCompactionModel` on a flash-lite class model.
+- Memory extraction runs after every reply and its output is never shown. Put `memoryModel` on a flash-lite class model. On Gemini's free tier each model has its own daily quota, so a different model also keeps extraction from using up the chat model's.
 - Subject research is a lookup, not a writing job, so a flash-class model is enough. What matters is whether it will describe real people at all: a model that declines contributes nothing and the picture loses its likeness. If dossiers come back empty on obvious subjects, point `subjectResearchModel` at a more permissive model than `searchModel`.
 
 Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.

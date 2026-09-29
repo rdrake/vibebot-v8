@@ -8611,7 +8611,9 @@ Examples (echo → action_prompt: ""):
 
         try:
             target = self._channel_target(channel)
-            model = self.plugin.registryValue("assistantModel", target)
+            model = self.plugin.registryValue("memoryModel", target) or self.plugin.registryValue(
+                "assistantModel", target
+            )
             response = self._timed_completion(
                 "extract_memories",
                 model=model,

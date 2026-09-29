@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -29,6 +30,12 @@ if TYPE_CHECKING:
     from .persistence import LLMDatabase, UsageSummary
 
 _log = logging.getLogger("supybot.plugins.LLM.assistant")
+
+# search_web calls allowed per request, across every step of the tool loop.
+# September's costliest request ran eight grounded searches over 4.5 minutes
+# after its link reads came back empty. Of 169 requests that searched over
+# 20 days (to 2026-09-28), 164 used three or fewer.
+MAX_SEARCHES_PER_REQUEST = 3
 
 
 # Tool definitions in OpenAI function-calling format.
@@ -875,6 +882,8 @@ class AssistantToolExecutor:
         self._animate_fn = animate_fn
         self._search_fn = search_fn
         self._fetch_fn = fetch_fn
+        self._search_lock = threading.Lock()
+        self._searches = 0
         self._code_fn = code_fn
         self._schedule_llm_task_fn = schedule_llm_task_fn
         self._status_fn = status_fn
@@ -1185,6 +1194,28 @@ class AssistantToolExecutor:
     def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:
         if not self._search_fn:
             return ToolResult(content=json.dumps({"error": "Search is unavailable."}))
+        # Locked: one model turn can issue parallel search_web calls.
+        with self._search_lock:
+            over = self._searches >= MAX_SEARCHES_PER_REQUEST
+            if not over:
+                self._searches += 1
+        if over:
+            _log.info(
+                "search_web capped nick=%s channel=%s limit=%i",
+                self.nick,
+                self.channel,
+                MAX_SEARCHES_PER_REQUEST,
+            )
+            return ToolResult(
+                content=json.dumps(
+                    {
+                        "error": (
+                            f"Search limit reached ({MAX_SEARCHES_PER_REQUEST} per request). "
+                            "Answer with what the earlier searches found."
+                        )
+                    }
+                )
+            )
         query = arguments.get("query", "")
         return self._search_fn(query)
 

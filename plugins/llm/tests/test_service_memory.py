@@ -347,6 +347,28 @@ class TestMemoryExtraction:
         )
         assert result.add == ["likes Python", "lives in Toronto"]
 
+    def test_extract_memories_uses_memory_model(self, make_service, mocker: MockerFixture) -> None:
+        """memoryModel, when set, replaces assistantModel for extraction only."""
+        service, _ = make_service(
+            assistantModel="gemini/gemini-flash-latest",
+            memoryModel="gemini/gemini-flash-lite-latest",
+        )
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_litellm.completion.return_value = make_completion_response('{"add": []}')
+        service.extract_memories("user1", "#test", "hello", "hi", [])
+        assert (
+            mock_litellm.completion.call_args.kwargs["model"] == "gemini/gemini-flash-lite-latest"
+        )
+
+    def test_extract_memories_falls_back_to_assistant_model(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        service, _ = make_service(assistantModel="gemini/gemini-flash-latest", memoryModel="")
+        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_litellm.completion.return_value = make_completion_response('{"add": []}')
+        service.extract_memories("user1", "#test", "hello", "hi", [])
+        assert mock_litellm.completion.call_args.kwargs["model"] == "gemini/gemini-flash-latest"
+
     def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN boring conversation WHEN extracted THEN returns empty result."""
         service, mock_plugin = make_service()

@@ -637,6 +637,51 @@ class TestAssistantToolExecutor:
         search_fn.assert_called_once_with("python async")
         assert result.content == "web results"
 
+    def test_tool_search_web_capped_per_request(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """The fourth search_web in one request is refused without searching."""
+        from llm.assistant import MAX_SEARCHES_PER_REQUEST
+
+        search_fn = mocker.MagicMock(return_value=ToolResult(content="web results"))
+        executor = make_executor(
+            db=mock_db,
+            context=mock_context,
+            nick="testuser",
+            channel="#test",
+            route_profile="chat",
+            search_fn=search_fn,
+        )
+        results = [
+            executor.execute("search_web", {"query": f"q{i}"})
+            for i in range(MAX_SEARCHES_PER_REQUEST + 2)
+        ]
+        assert search_fn.call_count == MAX_SEARCHES_PER_REQUEST == 3
+        assert all(r.content == "web results" for r in results[:3])
+        assert all("Search limit reached" in r.content for r in results[3:])
+
+    def test_search_cap_is_per_executor(
+        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """A new request (new executor) gets a fresh search budget."""
+        search_fn = mocker.MagicMock(return_value=ToolResult(content="web results"))
+
+        def run() -> None:
+            executor = make_executor(
+                db=mock_db,
+                context=mock_context,
+                nick="testuser",
+                channel="#test",
+                route_profile="chat",
+                search_fn=search_fn,
+            )
+            for i in range(3):
+                executor.execute("search_web", {"query": f"q{i}"})
+
+        run()
+        run()
+        assert search_fn.call_count == 6
+
     def test_tool_search_web_no_fn_returns_error(
         self, mock_db: MagicMock, mock_context: MagicMock
     ) -> None:

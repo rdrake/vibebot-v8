@@ -282,6 +282,18 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "memoryModel",
+    ValidatedModelName(
+        "",
+        _("""Model for the memory extraction that runs after every reply.
+        Falls back to assistantModel if empty. Its output is never shown, so a
+        flash-lite class model is enough; on Gemini a different model also
+        keeps these calls out of the chat model's free-tier daily quota."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "subjectResearchEnabled",
     registry.Boolean(
         True,

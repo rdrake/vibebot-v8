@@ -37,6 +37,17 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
+### Gemini free-tier key
+
+`GEMINI_FREE_API_KEY` is optional: a Gemini key from a project with billing turned off. When set, every Gemini chat-completions call tries it first and falls back to `GEMINI_API_KEY` when the free tier answers 429 (quota) or is overloaded. After a 429 the free key is skipped for that model for five minutes. Calls served by the free key are recorded at $0, and each `completion_timing` log line ends in `key=free` or `key=paid`.
+
+Two limits of the free tier shape the rest of the configuration:
+
+- Google Search grounding is unavailable on free-tier Gemini 3.x models. Point `searchModel` at `gemini/gemini-2.5-flash`, which searches on both tiers.
+- Google uses free-tier prompts and responses to improve its products. Paid-tier traffic is not used that way.
+
+Rate limits are per Google project, not per key, so the free key needs its own project.
+
 Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. The default `imageModel` is `gemini/imagen-4.0-fast-generate-001`, so a fresh install needs only `GEMINI_API_KEY` for chat, `@code`, `@draw`, and search.
 
 ### Opting in to Vertex AI
@@ -125,7 +136,8 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `imageFallbackModel` | channel | empty | Model for `imageFallbackApiBase`. A plain string, not a validated model name |
 | `imageFallbackSteps` | channel | `0` | Denoising steps for the fallback endpoint |
 | `imageFallbackSize` | channel | empty | Output geometry as `WxH` for the fallback endpoint |
-| `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel` |
+| `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel`. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
+| `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
 | `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` or `@animate` request names before the planner writes the prompt — see [Subject research](#subject-research) |
 | `subjectResearchModel` | channel | empty | Model for the subject-research pre-stage. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
