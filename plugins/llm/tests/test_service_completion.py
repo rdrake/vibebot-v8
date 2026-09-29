@@ -1772,36 +1772,12 @@ class TestGeminiFreeKey:
         )
         self.completion.side_effect = [
             busy,
-            busy,
             make_completion_response(),
             make_completion_response(),
         ]
         self._call()
         self._call()
-        assert self._keys() == [self.FREE, self.FREE, self.PAID, self.FREE]
-
-    def test_overload_retries_free_once_before_paying(self) -> None:
-        busy = self.litellm.ServiceUnavailableError(
-            message="high demand", model="gemini-flash-latest", llm_provider="gemini"
-        )
-        self.completion.side_effect = [busy, make_completion_response()]
-        response = self._call()
-        assert self._keys() == [self.FREE, self.FREE]
-        assert self.service._extract_usage(response, "gemini/gemini-flash-latest")[2] == 0.0
-
-    def test_429_after_overload_parks_and_pays(self) -> None:
-        busy = self.litellm.ServiceUnavailableError(
-            message="high demand", model="gemini-flash-latest", llm_provider="gemini"
-        )
-        self.completion.side_effect = [
-            busy,
-            self._rate_limited(),
-            make_completion_response(),
-            make_completion_response(),
-        ]
-        self._call()
-        self._call()
-        assert self._keys() == [self.FREE, self.FREE, self.PAID, self.PAID]
+        assert self._keys() == [self.FREE, self.PAID, self.FREE]
 
     def test_other_errors_do_not_retry_on_paid(self) -> None:
         self.completion.side_effect = self.litellm.BadRequestError(

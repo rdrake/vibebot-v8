@@ -3272,8 +3272,8 @@ class LLMService:
         """Run litellm.completion and emit a completion_timing log line.
 
         Gemini calls try the free-tier key first when one is configured and
-        fall back to the paid key on 429 (quota), or on a second 503/500 (free
-        tier shed under load). Measured 2026-09-29: the free tier serves every model with
+        fall back to the paid key on 429 (quota), or 503/500 (free tier shed
+        under load). Measured 2026-09-29: the free tier serves every model with
         ``urlContext``, but ``googleSearch`` on any Gemini 3.x model is an
         instant 429 — so a 429 parks the free key for that (model, search)
         pair for ``_FREE_TIER_SKIP_SECONDS`` instead of paying the doomed
@@ -3342,12 +3342,7 @@ class LLMService:
             model,
             any("googleSearch" in t for t in kwargs.get("tools") or [] if isinstance(t, dict)),
         )
-        # An overload (503/500) gets one more free try before paying: every
-        # paid call on 2026-09-29 was a free-tier 503, each ~2s. A 429 pays
-        # at once — the free tier said no, not "busy".
-        for tries_left in (1, 0):
-            if time.monotonic() < self._free_tier_skip_until.get(skip, 0.0):
-                break
+        if time.monotonic() >= self._free_tier_skip_until.get(skip, 0.0):
             try:
                 response = attempt(free_key, "free")
             except (
@@ -3355,18 +3350,15 @@ class LLMService:
                 litellm.ServiceUnavailableError,
                 litellm.InternalServerError,  # LiteLLM's mapping of "The model is overloaded."
             ) as exc:
-                rate_limited = isinstance(exc, litellm.RateLimitError)
-                if rate_limited:
+                if isinstance(exc, litellm.RateLimitError):
                     self._free_tier_skip_until[skip] = time.monotonic() + _FREE_TIER_SKIP_SECONDS
-                if rate_limited or not tries_left:
-                    self.log.warning(
-                        "gemini_free_fallback op=%s model=%s search=%s error_type=%s",
-                        op,
-                        model,
-                        skip[1],
-                        type(exc).__name__,
-                    )
-                    break
+                self.log.warning(
+                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s",
+                    op,
+                    model,
+                    skip[1],
+                    type(exc).__name__,
+                )
             else:
                 # _extract_usage books a free-tier call at $0.
                 hidden = getattr(response, "_hidden_params", None)
