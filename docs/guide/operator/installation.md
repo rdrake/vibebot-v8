@@ -1,5 +1,7 @@
 # Installation and deployment
 
+To ask a chat assistant about setup, give it [llms-full.txt](https://rdrake.github.io/vibebot-v8/llms-full.txt): this whole guide as one Markdown file. [llms.txt](https://rdrake.github.io/vibebot-v8/llms.txt) is the page index.
+
 ## Prerequisites
 
 You need one of:
