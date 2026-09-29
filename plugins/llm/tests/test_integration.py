@@ -286,6 +286,8 @@ class TestRateLimitFullFlow:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.llm_service.draw_unavailable_reason.return_value = None
+        plugin.llm_service.video_available.return_value = True
 
         return plugin, mock_irc
 
@@ -388,6 +390,8 @@ class TestMemoryIntegration:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.llm_service.draw_unavailable_reason.return_value = None
+        plugin.llm_service.video_available.return_value = True
 
         # Bridge assistant_request to completion so integration tests that
         # mock completion continue to work through the unified facade.
@@ -515,6 +519,8 @@ class TestMemoryIntegration:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        plugin.llm_service.draw_unavailable_reason.return_value = None
+        plugin.llm_service.video_available.return_value = True
 
         def _assistant_request_bridge(prompt, *, request_context, **kwargs):
             from llm.service import AssistantResult as _AssistantResult

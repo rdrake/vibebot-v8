@@ -41,6 +41,7 @@ _HOSTED = "https://paste.boxlabs.uk/img/img_abc.png"
 def meme_plugin(plugin_env, mocker):
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
+    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
     mocker.patch.object(
         meme.CachedCatalog, "get", return_value=meme.MemeCatalog(_TEMPLATES), autospec=True
     )
@@ -56,6 +57,15 @@ def meme_plugin(plugin_env, mocker):
 
 
 class TestMemeCommand:
+    def test_refused_when_memes_are_off(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": False})
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        assert mock_irc.reply.call_args.args[0] == "Memes are turned off in this channel."
+        plugin.llm_service._download_and_save_image.assert_not_called()
+
     def test_posts_the_rehosted_image(self, meme_plugin) -> None:
         plugin, mock_irc, _ = meme_plugin
 
@@ -347,7 +357,7 @@ class TestCustomAndAliases:
     def test_registry_aliases_reach_the_resolver(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeAliases": ["hotline=drake"]}
+            {"memeEnabled": True, "memeAliases": ["hotline=drake"]}
         )
 
         plugin.meme(mock_irc, mock_msg, ["hotline bling | a | b"])

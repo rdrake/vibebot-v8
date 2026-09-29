@@ -345,7 +345,7 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST` / `NAMES`) to chat. `@channels` and `@names` work regardless |
 | `memeModel` | channel | `gemini/gemini-flash-latest` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. One JSON completion over the ~30 KB catalog per pick, about 8.5K prompt tokens, $0.01, 3 s. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
 | `memeEditModel` | global | `xai/grok-imagine-image` | Image-edit model for the picker's `draw` (and `make_meme`'s): the captioned meme goes to xAI's `/v1/images/edits` with the instruction. `xai/` only. About $0.02 per edit, refusals billed too |
-| `memeEnabled` | channel | `True` | Advertise the `make_meme` tool to chat. `@meme` works regardless |
+| `memeEnabled` | channel | `True` | `False` refuses `@meme` and hides the `make_meme` tool from chat |
 | `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |
 | `memeApiBase` | global | `https://api.memegen.link` | memegen-compatible API. The bot reads `/templates/` once a day and fetches each meme's PNG from `/images/`, then rehosts it like a generated image |
 
@@ -387,6 +387,7 @@ When an API call times out, the bot retries in the background for a bounded wind
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
+| `drawEnabled` | channel | `True` | `False` refuses `@draw` and hides the `generate_image` tool from chat. The tool is also hidden when `imageModel`'s provider has no key |
 | `drawAutoRewriteMax` | channel | `1` | Automatic prompt rewordings when a safety filter blocks a request. `0` disables. Each rewording costs a second billed image call on top of the refused one, and every recovery observed in prod landed on the first attempt, so raising this mostly buys repeat refusals of a prompt that was never going to pass |
 | `drawContextMaxAgeSeconds` | channel | `60` | Pass conversation context to draw requests only when the last activity is this recent. `0` always starts fresh |
 
@@ -396,6 +397,7 @@ When an API call times out, the bot retries in the background for a bounded wind
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
+| `animateEnabled` | channel | `True` | `False` refuses `@animate` and hides the `generate_video` tool from chat. Both are off everywhere until the video box is configured |
 | `animateSteps` | channel | `25` | Denoising steps, and the dominant cost knob — latency is roughly linear in it. Measured on the reference box at 1280x704: a four-second clip took 68s at 25 steps and 171s at 50; at 25 steps a seven-second clip took 135s |
 | `animateSize` | channel | `1280x704` | Output resolution. Must be a geometry the loaded model supports |
 | `animateDuration` | channel | `7` | Clip length in seconds. The whole clip is exclusive GPU time, so raising it slows every queued request behind it. Also watch the file size: a 7s clip measured 8.87 MB, leaving about 1 MB under the uploader's 10 MB ceiling, and a clip over it falls back to local storage instead of `imageUploadUrl` |

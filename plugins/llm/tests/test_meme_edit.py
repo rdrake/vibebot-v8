@@ -17,6 +17,8 @@ import pytest
 from llm import meme
 from llm.service import ImageResult, LLMService
 
+from .conftest import make_registry_side_effect
+
 if TYPE_CHECKING:
     pass
 
@@ -113,6 +115,7 @@ def meme_plugin(plugin_env, mocker):
 
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
+    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
     mocker.patch.object(
         meme.CachedCatalog, "get", return_value=meme.MemeCatalog(_TEMPLATES), autospec=True
     )

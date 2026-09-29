@@ -6264,8 +6264,10 @@ Examples (echo → action_prompt: ""):
             # tokens: the tool promises the user a clip that arrives later, so
             # a model that calls it on an unconfigured box says "rendering it
             # now" about a video that will never come.
-            if not self.animate_available():
+            if not self.video_available(channel):
                 exclude_tools = exclude_tools | {"generate_video"}
+            if self.draw_unavailable_reason(channel):
+                exclude_tools = exclude_tools | {"generate_image"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
             profile_tools = _with_status_context(profile_tools, status_sources, status_pages)
             if extra_tools:
@@ -7196,6 +7198,26 @@ Examples (echo → action_prompt: ""):
         """
         return bool(self._animate_base_url() and apikeys.animate_api_key())
 
+    def video_available(self, channel: str | None) -> bool:
+        """True when video is configured and ``animateEnabled`` is on here."""
+        return bool(self.plugin.registryValue("animateEnabled", channel)) and (
+            self.animate_available()
+        )
+
+    def draw_unavailable_reason(self, channel: str | None) -> str | None:
+        """Why @draw and generate_image are off in ``channel``, or None.
+
+        Checked before the tool is advertised, for the same reason as
+        generate_video: a model offered a tool that cannot work will call it
+        and then narrate the failure.
+        """
+        if not self.plugin.registryValue("drawEnabled", channel):
+            return _("Drawing is turned off in this channel.")
+        model = (self.plugin.registryValue("imageModel", channel) or "").strip()
+        if not model:
+            return _("Error: no image model configured.")
+        return self._missing_image_key_error(model, channel)
+
     def _animate_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {apikeys.animate_api_key()}",
@@ -7469,8 +7491,12 @@ Examples (echo → action_prompt: ""):
         Returns:
             VideoResult whose ``content`` is the acknowledgement to print now.
         """
-        if not self.animate_available():
-            msg = _("Error: video generation is not configured.")
+        if not self.video_available(channel):
+            msg = (
+                _("Video is turned off in this channel.")
+                if self.animate_available()
+                else _("Error: video generation is not configured.")
+            )
             return VideoResult(content=msg, error=msg)
 
         model = (self.plugin.registryValue("animateModel", channel) or "").strip()

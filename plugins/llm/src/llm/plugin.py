@@ -7360,6 +7360,10 @@ class LLM(callbacks.Plugin):
         # Skip ZNC playback messages
         if self._is_old_message(msg):
             return
+        off = self.llm_service.draw_unavailable_reason(msg.channel)
+        if off:
+            irc.reply(off)
+            return
 
         pf = self._run_preflight(
             irc,
@@ -7799,6 +7803,9 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
+        if not self.registryValue("memeEnabled", msg.channel):
+            irc.reply(_("Memes are turned off in this channel."))
+            return
 
         options = meme.MemeOptions(
             animated=any(opt == "gif" for opt, _v in optlist),
@@ -7912,6 +7919,13 @@ class LLM(callbacks.Plugin):
         """
         # Skip ZNC playback messages
         if self._is_old_message(msg):
+            return
+        if not self.llm_service.video_available(msg.channel):
+            irc.reply(
+                _("Video is turned off in this channel.")
+                if self.llm_service.animate_available()
+                else _("Error: video generation is not configured.")
+            )
             return
 
         pf = self._run_preflight(

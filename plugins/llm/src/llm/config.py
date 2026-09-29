@@ -188,6 +188,17 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "drawEnabled",
+    registry.Boolean(
+        True,
+        _("""When False, @draw is refused and chat does not advertise the
+        generate_image tool in this channel. The tool is also hidden when
+        imageModel's provider has no key configured."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "imageApiBase",
     registry.String(
         "",
@@ -412,6 +423,17 @@ conf.registerChannelValue(
 # The bearer token lives in ANIMATE_API_KEY, not here: the registry is
 # bot.conf, which the bot rewrites on shutdown, and _API_KEY suffixes are
 # already covered by log redaction (apikeys.SECRET_SUFFIXES).
+
+conf.registerChannelValue(
+    LLM,
+    "animateEnabled",
+    registry.Boolean(
+        True,
+        _("""When False, @animate is refused and chat does not advertise the
+        generate_video tool in this channel. Both are also off everywhere
+        until animateApiUrl and ANIMATE_API_KEY are set."""),
+    ),
+)
 
 conf.registerGlobalValue(
     LLM,
@@ -1318,9 +1340,8 @@ conf.registerChannelValue(
     "memeEnabled",
     registry.Boolean(
         True,
-        _("""When True, chat advertises the make_meme tool so 'vibebot make a
-        drake meme: X / Y' works in conversation. The @meme command works
-        regardless."""),
+        _("""When False, @meme is refused and chat does not advertise the
+        make_meme tool in this channel."""),
     ),
 )
 

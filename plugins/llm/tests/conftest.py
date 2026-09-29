@@ -519,6 +519,9 @@ def plugin_env(mocker: MockerFixture):
 
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
+    # Draw and video are available unless a test says otherwise.
+    plugin.llm_service.draw_unavailable_reason.return_value = None
+    plugin.llm_service.video_available.return_value = True
 
     # An unconfigured mock database is an EMPTY database, not one holding a
     # MagicMock's worth of queued clips. The animate admission caps compare
@@ -785,6 +788,9 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "statusQueryablePages": [],
         # Empty = every Gemini model may try the free key (config default).
         "geminiFreeKeyModels": [],
+        # Feature switches default on, matching config.py.
+        "drawEnabled": True,
+        "animateEnabled": True,
     }
     if overrides:
         defaults.update(overrides)
