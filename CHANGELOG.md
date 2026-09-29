@@ -405,6 +405,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Keep ruff 0.16 out of Markdown code blocks (`ruff`)
+- Regenerate for llms.txt (`changelog`)
 - Regenerate for local-model docs (`changelog`)
 - Regenerate for free-key overload retry (`changelog`)
 - Regenerate for memoryModel and search cap (`changelog`)
@@ -472,6 +474,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Dependencies
 
+- Litellm 1.95.0, feedparser 6.0.14, markdown 3.10.3, hypothesis 6.165.0, prek 0.5.3, ruff 0.16.8, ty 0.0.83
 - Consolidated dependency upgrade via uv lock --upgrade
 - Consolidate Dependabot bumps into one re-lock (#67-#71)
 - Bump the dev-tools group with 2 updates (#63)
