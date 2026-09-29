@@ -1,0 +1,224 @@
+"""GitHub link digests: URL classification, formatting, budget, and fallback."""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+
+import pytest
+from llm import github
+
+
+class TestParse:
+    @pytest.mark.parametrize(
+        ("url", "kind"),
+        [
+            ("https://github.com/evilnet/nefarious2/pull/107", "pull"),
+            ("https://github.com/evilnet/nefarious2/pull/107/files", "pull"),
+            ("https://github.com/evilnet/nefarious2/pull/107.diff", "pull"),
+            ("https://github.com/evilnet/nefarious2/pull/107#pullrequestreview-5", "pull"),
+            ("https://github.com/o/r/issues/12", "issue"),
+            ("https://github.com/o/r/commit/2d0fdec175a1", "commit"),
+            ("https://github.com/o/r/commit/2d0fdec175a1.patch", "commit"),
+            ("https://github.com/o/r/blob/main/src/a.c", "blob"),
+            ("https://github.com/rdrake/vibebot-v8", "repo"),
+            ("https://github.com/rdrake/vibebot-v8/", "repo"),
+            ("https://gist.github.com/MrLenin/491f87ea4d95", "gist"),
+            ("https://gist.githubusercontent.com/MrLenin/491f/raw/x.md", "raw"),
+            ("https://raw.githubusercontent.com/o/r/main/README.md", "raw"),
+        ],
+    )
+    def test_recognised(self, url: str, kind: str) -> None:
+        parsed = github.parse(url)
+        assert parsed is not None
+        assert parsed[0] == kind
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://rdrake.github.io/vibebot-v8/",
+            "https://www.githubstatus.com/incidents/x",
+            "https://github.com/o/r/security/advisories/GHSA-1",
+            "https://github.com/o/r/actions/runs/1",
+            "https://example.com/o/r/pull/1",
+            "https://evil.example/github.com/o/r/pull/1",
+        ],
+    )
+    def test_not_recognised(self, url: str) -> None:
+        assert github.parse(url) is None
+        assert github.digest(url, fetch=_never) is None
+
+
+def _never(url: str, raw: bool) -> str:
+    raise AssertionError(f"unexpected fetch {url}")
+
+
+def _fake(routes: dict[str, object]):
+    calls: list[str] = []
+
+    def fetch(url: str, raw: bool) -> str:
+        calls.append(url)
+        body = routes[url]
+        if isinstance(body, Exception):
+            raise body
+        return body if isinstance(body, str) else json.dumps(body)
+
+    return fetch, calls
+
+
+BASE = "https://api.github.com/repos/o/r"
+
+
+class TestDigest:
+    def test_pull_request(self) -> None:
+        fetch, calls = _fake(
+            {
+                f"{BASE}/pulls/7": {
+                    "title": "Fix push",
+                    "user": {"login": "sean"},
+                    "merged": True,
+                    "state": "closed",
+                    "head": {"label": "sean:fix"},
+                    "base": {"label": "o:main"},
+                    "commits": 1,
+                    "additions": 3,
+                    "deletions": 1,
+                    "changed_files": 1,
+                    "body": "Explains the change.",
+                },
+                f"{BASE}/pulls/7/files?per_page=100": [
+                    {
+                        "filename": "a.c",
+                        "status": "modified",
+                        "additions": 3,
+                        "deletions": 1,
+                        "patch": "@@ -1 +1 @@\n-old\n+new",
+                    },
+                ],
+            }
+        )
+        text = github.digest("https://github.com/o/r/pull/7", fetch=fetch)
+        assert text is not None
+        assert "Pull request #7: Fix push" in text
+        assert "merged" in text
+        assert "Explains the change." in text
+        assert "- a.c (modified, +3/-1)" in text
+        assert "+new" in text
+        assert len(calls) == 2
+
+    def test_commit(self) -> None:
+        fetch, _ = _fake(
+            {
+                f"{BASE}/commits/abc123": {
+                    "sha": "abc1234567890",
+                    "commit": {
+                        "message": "Do the thing",
+                        "author": {"name": "Ann", "date": "2026-09-01"},
+                    },
+                    "stats": {"additions": 1, "deletions": 0},
+                    "files": [
+                        {"filename": "b.py", "status": "added", "additions": 1, "deletions": 0}
+                    ],
+                }
+            }
+        )
+        text = github.digest("https://github.com/o/r/commit/abc123", fetch=fetch)
+        assert text is not None
+        assert "Commit abc1234567 by Ann" in text
+        assert "Do the thing" in text
+        assert "- b.py (added, +1/-0)" in text
+
+    def test_issue_with_comments(self) -> None:
+        fetch, _ = _fake(
+            {
+                f"{BASE}/issues/3": {
+                    "title": "Crash",
+                    "user": {"login": "u"},
+                    "state": "open",
+                    "comments": 1,
+                    "body": "It crashes.",
+                },
+                f"{BASE}/issues/3/comments?per_page=20": [
+                    {"user": {"login": "m"}, "body": "Repro?"}
+                ],
+            }
+        )
+        text = github.digest("https://github.com/o/r/issues/3", fetch=fetch)
+        assert text is not None
+        assert "Issue #3: Crash" in text
+        assert "m: Repro?" in text
+
+    def test_repo_without_readme_still_digests(self) -> None:
+        fetch, _ = _fake(
+            {
+                BASE: {
+                    "full_name": "o/r",
+                    "description": "A bot",
+                    "language": "Python",
+                    "stargazers_count": 5,
+                    "pushed_at": "2026-09-28",
+                },
+                f"{BASE}/readme": urllib.error.HTTPError(f"{BASE}/readme", 404, "nf", None, None),  # type: ignore[arg-type]
+            }
+        )
+        text = github.digest("https://github.com/o/r", fetch=fetch)
+        assert text is not None
+        assert "Repository o/r: A bot" in text
+        assert "README" not in text
+
+    def test_raw_is_fetched_verbatim(self) -> None:
+        url = "https://raw.githubusercontent.com/o/r/main/x.txt"
+        fetch, _ = _fake({url: "hello"})
+        assert github.digest(url, fetch=fetch) == f"Source: {url}\nhello"
+
+    def test_digest_is_capped(self) -> None:
+        huge = [
+            {
+                "filename": f"f{i}.c",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "patch": "x" * 5_000,
+            }
+            for i in range(50)
+        ]
+        fetch, _ = _fake(
+            {
+                f"{BASE}/pulls/1": {"title": "t", "body": "b" * 10_000},
+                f"{BASE}/pulls/1/files?per_page=100": huge,
+            }
+        )
+        text = github.digest("https://github.com/o/r/pull/1", fetch=fetch)
+        assert text is not None
+        assert len(text) <= github.MAX_CHARS + len("\n[…truncated]")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            urllib.error.HTTPError("u", 403, "rate limited", None, None),  # type: ignore[arg-type]
+            urllib.error.URLError("dns"),
+            TimeoutError(),
+            ValueError("bad json"),
+        ],
+    )
+    def test_failures_fall_back_with_none(self, error: Exception) -> None:
+        fetch, _ = _fake({f"{BASE}/pulls/1": error})
+        assert github.digest("https://github.com/o/r/pull/1", fetch=fetch) is None
+
+
+class TestUrlCompletionUsesDigest:
+    def test_github_link_skips_the_model(self, make_service, mocker) -> None:
+        service, _ = make_service()
+        mocker.patch("llm.service.github.digest", return_value="Source: x\nPR body")
+        grounded = mocker.patch.object(service, "_grounded_completion")
+        result = service.url_completion("https://github.com/o/r/pull/1", channel="#t")
+        grounded.assert_not_called()
+        assert "<fetched_content>\nSource: x\nPR body\n</fetched_content>" in result.content
+        assert result.cost == 0.0
+
+    def test_other_links_keep_url_context(self, make_service, mocker) -> None:
+        service, _ = make_service()
+        mocker.patch("llm.service.github.digest", return_value=None)
+        grounded = mocker.patch.object(service, "_grounded_completion")
+        service.url_completion("https://example.com/page", channel="#t")
+        grounded.assert_called_once()
