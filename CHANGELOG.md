@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for free-key overload retry (`changelog`)
 - Regenerate for memoryModel and search cap (`changelog`)
 - Regenerate for GitHub link digests (`changelog`)
 - Regenerate for Gemini free-key fallback (`changelog`)
@@ -488,6 +489,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Local-model setup, free Gemini key in env template, drop unused data dir (`ops`)
 - TLA+ models and a Lean proof behind the four fixes (`formal`)
 - Note that plugin INFO log lines never reach docker logs on prod (`plans`)
 - Describe subject research where users and operators will look for it
