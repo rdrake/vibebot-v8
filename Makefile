@@ -238,7 +238,6 @@ install-service:
 	@echo "Creating directories..."
 	mkdir -p ~/.config/systemd/user
 	mkdir -p ~/.config/vibebot
-	mkdir -p ~/.local/share/vibebot/{conf,data,logs}
 	@echo "Installing systemd unit..."
 	cp vibebot.service ~/.config/systemd/user/
 	@if [ ! -f ~/.config/vibebot/env ]; then \

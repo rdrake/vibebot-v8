@@ -50,6 +50,24 @@ Rate limits are per Google project, not per key, so the free key needs its own p
 
 Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. The default `imageModel` is `gemini/imagen-4.0-fast-generate-001`, so a fresh install needs only `GEMINI_API_KEY` for chat, `@code`, `@draw`, and search.
 
+### Running on local models
+
+A local server (Ollama, vLLM, LM Studio) takes no key from this plugin. Set its address in the env file and pick models with the matching LiteLLM prefix:
+
+| Server | Env variable | Model prefix |
+|--------|--------------|--------------|
+| Ollama | `OLLAMA_API_BASE=http://host:11434` | `ollama_chat/<model>` |
+| vLLM | `HOSTED_VLLM_API_BASE=http://host:8000/v1` | `hosted_vllm/<model>` |
+| LM Studio | `LM_STUDIO_API_BASE=http://host:1234/v1` | `lm_studio/<model>` |
+
+```
+@config channel #chan supybot.plugins.LLM.assistantModel ollama_chat/qwen3:14b
+```
+
+Don't use `openai/<model>` with `OPENAI_API_BASE` for a local server. That redirects every OpenAI call in the bot and sends `OPENAI_API_KEY` to your box.
+
+The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `codeModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn on `contextTrackAllMessages`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
+
 ### Opting in to Vertex AI
 
 Vertex AI is not the default, but it remains a supported `imageModel` (and general model) choice for anyone who wants it — for example to bill image generation to a separate GCP project. Credentials (ADC, IAM) are enough for authentication, but LiteLLM's Vertex Imagen path separately requires the project and region, and it fails closed with `vertex_project and vertex_location are required for Vertex AI` if they are missing:
@@ -259,7 +277,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 | `contextEnabled` | channel | `True` | Enable conversation context |
 | `contextMaxMessages` | channel | `20` | Messages kept in per-user history |
 | `contextTimeoutMinutes` | channel | `5` | Clear context after this much inactivity |
-| `contextTrackAllMessages` | channel | `False` | Track every channel message, not just bot interactions. Off by default for privacy |
+| `contextTrackAllMessages` | channel | `False` | Track every channel message, not just bot interactions. Off by default for privacy: the lines go to whichever provider serves the channel's models. See [Running on local models](#running-on-local-models) |
 | `channelContextMaxMessages` | channel | `10` | Messages in the shared channel context |
 
 ## Rate limiting

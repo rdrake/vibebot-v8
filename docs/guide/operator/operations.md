@@ -202,4 +202,4 @@ Both targets leave `~/.config/vibebot/` alone: `bot.conf`, the `env` file, and t
 
 If you set `httpRoot`, that output lands there instead, outside `~/.config/vibebot/`; the shipped unit mounts `/var/www/llm` for that case, and removing the config directory leaves it behind.
 
-`make install-service` also creates `~/.local/share/vibebot/{conf,data,logs}`, but the container never mounts it. It is empty and safe to remove.
+Installs made before September 2026 also have an empty `~/.local/share/vibebot/{conf,data,logs}`. The container never mounted it, so it is safe to remove.

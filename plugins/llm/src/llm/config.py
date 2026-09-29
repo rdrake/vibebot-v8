@@ -970,7 +970,8 @@ conf.registerChannelValue(
     registry.Boolean(
         False,
         _("""Track all channel messages for richer context (privacy: disabled by default
-        since messages are sent to third-party LLM providers)"""),
+        since every tracked line goes to whichever provider serves this channel's
+        models; safe to enable when all of them are local)"""),
     ),
 )
 
