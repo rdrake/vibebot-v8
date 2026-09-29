@@ -1793,6 +1793,23 @@ class TestGeminiFreeKey:
         assert _free_tier_park_seconds(daily, now) == (16 * 60 + 34) * 60
         assert _free_tier_park_seconds(self._rate_limited(), now) == _FREE_TIER_SKIP_SECONDS
 
+    def test_fallback_log_names_the_exhausted_quota(self, mocker: MockerFixture) -> None:
+        warning = mocker.patch.object(self.service.log, "warning")
+        daily = self.litellm.RateLimitError(
+            message='{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}',
+            model="gemini-flash-latest",
+            llm_provider="gemini",
+        )
+        self.completion.side_effect = [daily, make_completion_response()]
+        self._call()
+        rendered = next(
+            c.args[0] % c.args[1:]
+            for c in warning.call_args_list
+            if c.args[0].startswith("gemini_free_fallback")
+        )
+        assert "quota=GenerateRequestsPerDayPerProjectPerModel-FreeTier" in rendered
+        assert "detail=" in rendered
+
     def test_models_outside_the_allowlist_go_straight_to_paid(self) -> None:
         self.service.plugin.registryValue.side_effect = make_registry_side_effect(
             {"geminiFreeKeyModels": ["gemini/gemini-flash-lite-latest"]}

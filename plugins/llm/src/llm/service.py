@@ -3378,13 +3378,20 @@ class LLMService:
                 if isinstance(exc, litellm.RateLimitError):
                     parked_s = _free_tier_park_seconds(exc)
                     self._free_tier_skip_until[skip] = time.monotonic() + parked_s
+                # quota= names what Google says was exhausted, so a 429 can be
+                # told apart (daily quota, per-minute limit, a tool the free
+                # tier does not serve) from the log instead of by inference.
+                quota_ids = sorted(set(re.findall(r'"quotaId":\s*"([^"]+)"', str(exc))))
                 self.log.warning(
-                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s parked_s=%i",
+                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s parked_s=%i "
+                    "quota=%s detail=%s",
                     op,
                     model,
                     skip[1],
                     type(exc).__name__,
                     int(parked_s),
+                    ",".join(quota_ids) or "-",
+                    apikeys.scrub(" ".join(str(exc).split()))[:300],
                 )
             else:
                 # _extract_usage books a free-tier call at $0.
