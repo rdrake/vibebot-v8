@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
 
 import litellm
@@ -5712,7 +5712,7 @@ Examples (echo → action_prompt: ""):
             ImageResult on success, None if data is empty (content blocked).
             Raises exceptions for other errors.
         """
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, Any] = {}
         api_base = self._image_api_base(channel, fallback=fallback)
         if api_base:
             # Aimed at the box: its own bearer token, and the generation knobs

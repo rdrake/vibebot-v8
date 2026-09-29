@@ -13,15 +13,22 @@ repos:
     hooks:
       - id: gitleaks
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.10
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
-
   - repo: local
     hooks:
+      # ruff runs from the project venv so the hook, `make check` and CI all
+      # use the version uv.lock pins.
+      - id: ruff
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
       - id: ty
         name: ty type checker
         entry: uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/
