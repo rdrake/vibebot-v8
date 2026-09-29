@@ -556,3 +556,20 @@ class TestInstallSecretFilter:
         assert first >= 1
         assert second == 0
         assert sum(isinstance(f, apikeys.SecretFilter) for f in target_handler.filters) == 1
+
+
+class TestFreeKeyFor:
+    def test_gemini_gets_the_free_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_FREE_API_KEY", " AIza-free-key-for-tests-0000 ")
+        assert apikeys.free_key_for("gemini/gemini-flash-latest") == "AIza-free-key-for-tests-0000"
+
+    def test_other_providers_get_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_FREE_API_KEY", "AIza-free-key-for-tests-0000")
+        assert apikeys.free_key_for("xai/grok-4.3") is None
+        assert apikeys.free_key_for("vertex_ai/gemini-2.5-pro") is None
+
+    def test_unset_or_blank_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_FREE_API_KEY", "  ")
+        assert apikeys.free_key_for("gemini/gemini-flash-latest") is None
+        monkeypatch.delenv("GEMINI_FREE_API_KEY")
+        assert apikeys.free_key_for("gemini/gemini-flash-latest") is None

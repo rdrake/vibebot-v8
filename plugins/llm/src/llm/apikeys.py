@@ -81,6 +81,24 @@ def api_key_for(model: str) -> str | None:
     return os.environ.get(name, "").strip() or None
 
 
+# A Gemini key on a project with billing off. Rate limits and spend caps are
+# per project, not per key, so this is a second, independent quota: calls try
+# it first and fall back to GEMINI_API_KEY when it is exhausted or busy.
+# Free-tier prompts are used by Google to improve its products.
+GEMINI_FREE_ENV_VAR = "GEMINI_FREE_API_KEY"
+
+
+def free_key_for(model: str) -> str | None:
+    """Free-tier key to try before :func:`api_key_for`, or None.
+
+    Only Gemini has one. None when unset, so a deployment without the variable
+    behaves exactly as before.
+    """
+    if provider_of(model) != "gemini":
+        return None
+    return os.environ.get(GEMINI_FREE_ENV_VAR, "").strip() or None
+
+
 # Self-hosted endpoints are not LiteLLM providers, so provider_of() cannot
 # place them and PROVIDER_ENV_VARS has nothing to say about them. They still
 # belong here rather than in service.py: this module is where a credential is

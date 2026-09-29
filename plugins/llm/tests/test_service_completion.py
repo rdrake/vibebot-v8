@@ -23,20 +23,22 @@ class TestResolveGroundingKwargs:
         self.service, _ = make_service()
 
     @pytest.mark.parametrize(
-        ("model", "kind"),
-        [
-            ("gemini/gemini-2.5-flash", "search"),
-            ("gemini/gemini-2.5-flash", "url"),
-            ("vertex_ai/gemini-2.5-pro", "search"),
-            ("vertex_ai_beta/gemini-2.5-pro", "url"),
-        ],
+        "model",
+        ["gemini/gemini-2.5-flash", "vertex_ai/gemini-2.5-pro", "vertex_ai_beta/gemini-2.5-pro"],
     )
-    def test_gemini_provider_registers_both_grounding_tools(self, model: str, kind: str) -> None:
-        # Gemini supports both googleSearch and urlContext on the same
-        # request; registering both lets the model pivot between
-        # searching the web and fetching a specific URL within one turn.
-        kwargs = self.service._resolve_grounding_kwargs(model, kind)
+    def test_gemini_search_registers_both_grounding_tools(self, model: str) -> None:
+        # Both tools let a search pivot to fetching a URL it surfaced.
+        kwargs = self.service._resolve_grounding_kwargs(model, "search")
         assert kwargs == {"tools": [{"googleSearch": {}}, {"urlContext": {}}]}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["gemini/gemini-2.5-flash", "vertex_ai/gemini-2.5-pro", "vertex_ai_beta/gemini-2.5-pro"],
+    )
+    def test_gemini_url_registers_url_context_only(self, model: str) -> None:
+        # googleSearch would make the free tier 429 on Gemini 3.x.
+        kwargs = self.service._resolve_grounding_kwargs(model, "url")
+        assert kwargs == {"tools": [{"urlContext": {}}]}
 
     @pytest.mark.parametrize("kind", ["search", "url"])
     def test_xai_provider_drops_tools_chat_completions_path(self, kind: str) -> None:
@@ -115,9 +117,7 @@ class TestSearchCompletionProviderRouting:
         )
         self.service.url_completion("https://example.com", channel="#t")
         kwargs = self._captured_kwargs()
-        # Both grounding tools ride together so Gemini can pivot from
-        # fetching the URL to searching for related context within one turn.
-        assert kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
+        assert kwargs["tools"] == [{"urlContext": {}}]
 
     def test_xai_url_skips_chat_completions(self, mocker: MockerFixture) -> None:
         # Same dispatch story for URL fetch — xAI uses Responses API
@@ -1206,11 +1206,7 @@ class TestUrlCompletion:
         assert "not allowed" in parsed["error"].lower()
 
     def test_passes_url_context_tool(self, service: LLMService, mocker: MockerFixture) -> None:
-        """url_completion passes both urlContext and googleSearch to Gemini.
-
-        Both grounding tools ride on the same call so the model can pivot
-        from fetching a URL to searching the web within one turn.
-        """
+        """url_completion passes urlContext alone to Gemini."""
         resp = _make_litellm_response(mocker)
         mock_completion = mocker.patch("llm.service.litellm.completion", return_value=resp)
         mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
@@ -1220,7 +1216,7 @@ class TestUrlCompletion:
         call_kwargs = mock_completion.call_args
         all_kwargs = call_kwargs.kwargs
         assert "tools" in all_kwargs
-        assert all_kwargs["tools"] == [{"googleSearch": {}}, {"urlContext": {}}]
+        assert all_kwargs["tools"] == [{"urlContext": {}}]
 
     def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """url_completion returns error ToolResult on failure."""
@@ -1700,3 +1696,105 @@ def test_assistant_result_was_verse_defaults_false():
 
 def test_assistant_result_was_verse_settable():
     assert AssistantResult(content="x", was_verse=True).was_verse is True
+
+
+class TestGeminiFreeKey:
+    """_timed_completion tries GEMINI_FREE_API_KEY first and falls back to the paid key."""
+
+    FREE = "AIza-free-key-for-tests-0000"
+    PAID = FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+    SEARCH_TOOLS = [{"googleSearch": {}}, {"urlContext": {}}]
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+        import litellm
+
+        self.litellm = litellm
+        monkeypatch.setenv("GEMINI_FREE_API_KEY", self.FREE)
+        self.service, _ = make_service()
+        self.completion = mocker.patch("llm.service.litellm.completion")
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.5)
+
+    def _call(self, model: str = "gemini/gemini-flash-latest", tools=None):
+        extra = {"tools": tools} if tools is not None else {}
+        return self.service._timed_completion(
+            "assistant_step_1", model=model, messages=[{"role": "user", "content": "hi"}], **extra
+        )
+
+    def _keys(self) -> list[str | None]:
+        return [c.kwargs["api_key"] for c in self.completion.call_args_list]
+
+    def _rate_limited(self):
+        return self.litellm.RateLimitError(
+            message="quota", model="gemini-flash-latest", llm_provider="gemini"
+        )
+
+    def test_free_key_serves_and_books_zero(self) -> None:
+        self.completion.return_value = make_completion_response()
+        response = self._call()
+        assert self._keys() == [self.FREE]
+        assert self.service._extract_usage(response, "gemini/gemini-flash-latest")[2] == 0.0
+
+    def test_paid_call_is_still_priced(self) -> None:
+        self.completion.side_effect = [self._rate_limited(), make_completion_response()]
+        response = self._call()
+        assert self._keys() == [self.FREE, self.PAID]
+        assert self.service._extract_usage(response, "gemini/gemini-flash-latest")[2] == 0.5
+
+    def test_429_parks_free_key_for_that_model_and_search_pair(self) -> None:
+        self.completion.side_effect = [
+            self._rate_limited(),
+            make_completion_response(),
+            make_completion_response(),
+            make_completion_response(),
+        ]
+        self._call(tools=self.SEARCH_TOOLS)
+        self._call(tools=self.SEARCH_TOOLS)  # parked: straight to paid
+        self._call()  # no search: free key still open
+        assert self._keys() == [self.FREE, self.PAID, self.PAID, self.FREE]
+
+    def test_parked_free_key_reopens_after_the_window(self) -> None:
+        self.completion.side_effect = [
+            self._rate_limited(),
+            make_completion_response(),
+            make_completion_response(),
+        ]
+        self._call()
+        for pair in self.service._free_tier_skip_until:
+            self.service._free_tier_skip_until[pair] = 0.0
+        self._call()
+        assert self._keys() == [self.FREE, self.PAID, self.FREE]
+
+    @pytest.mark.parametrize("error", ["ServiceUnavailableError", "InternalServerError"])
+    def test_overload_falls_back_without_parking(self, error: str) -> None:
+        busy = getattr(self.litellm, error)(
+            message="high demand", model="gemini-flash-latest", llm_provider="gemini"
+        )
+        self.completion.side_effect = [
+            busy,
+            make_completion_response(),
+            make_completion_response(),
+        ]
+        self._call()
+        self._call()
+        assert self._keys() == [self.FREE, self.PAID, self.FREE]
+
+    def test_other_errors_do_not_retry_on_paid(self) -> None:
+        self.completion.side_effect = self.litellm.BadRequestError(
+            message="bad", model="gemini-flash-latest", llm_provider="gemini"
+        )
+        with pytest.raises(self.litellm.BadRequestError):
+            self._call()
+        assert self._keys() == [self.FREE]
+
+    def test_non_gemini_models_never_see_the_free_key(self) -> None:
+        self.completion.return_value = make_completion_response()
+        self._call(model="xai/grok-4.3")
+        assert self._keys() == [FAKE_PROVIDER_KEYS["XAI_API_KEY"]]
+
+    def test_without_free_key_only_paid_is_called(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GEMINI_FREE_API_KEY")
+        self.completion.side_effect = self._rate_limited()
+        with pytest.raises(self.litellm.RateLimitError):
+            self._call()
+        assert self._keys() == [self.PAID]
