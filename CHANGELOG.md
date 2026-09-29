@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for CTCP disclosure (`changelog`)
 - Regenerate for reminder unreact (`changelog`)
 - Regenerate for stored clock offsets (`changelog`)
 - Regenerate for CTCP probe gate (`changelog`)
@@ -665,6 +666,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Try the Gemini free-tier key first, fall back to paid (`llm`)
 - Store the CTCP TIME answer per user in the database (`reminders`)
 - Probe CTCP TIME only when the request names a wall clock (`reminders`)
 - Parse and reschedule in the owner's time zone (`scheduled-tasks`)
