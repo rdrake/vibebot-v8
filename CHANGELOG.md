@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for memoryModel and search cap (`changelog`)
 - Regenerate for GitHub link digests (`changelog`)
 - Regenerate for Gemini free-key fallback (`changelog`)
 - Regenerate for CTCP disclosure (`changelog`)
@@ -668,6 +669,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Retry the Gemini free key once on overload before paying (`llm`)
 - MemoryModel for extraction and a three-search cap per request (`llm`)
 - Read GitHub links through the GitHub API (`llm`)
 - Try the Gemini free-tier key first, fall back to paid (`llm`)
