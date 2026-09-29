@@ -84,6 +84,7 @@ def mycommand(self, irc, msg, args, text):
     # Your logic here
     irc.reply("Response")
 
+
 mycommand = wrap(mycommand, ["text"])
 ```
 
