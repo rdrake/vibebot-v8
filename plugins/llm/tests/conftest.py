@@ -783,6 +783,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # exercised by TestQueryableOnlyGate opt-in per test rather than
         # incidental via this fixture's own unconfigured-key fallback.
         "statusQueryablePages": [],
+        # Empty = every Gemini model may try the free key (config default).
+        "geminiFreeKeyModels": [],
     }
     if overrides:
         defaults.update(overrides)

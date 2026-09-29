@@ -16,10 +16,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import litellm
 import markdown
@@ -69,8 +70,29 @@ litellm.request_timeout = 120  # 2 minutes
 # one wasted 0.2s call per window, short enough to pick the free tier back up
 # after a per-minute limit clears. See _timed_completion.
 _FREE_TIER_SKIP_SECONDS = 300.0
+# A 429 naming a per-day quota will not clear in five minutes: Google resets
+# free-tier daily quotas at midnight Pacific. Parking until then saves one
+# doomed round trip per window for the rest of the day.
+_FREE_TIER_DAILY_RESET_TZ = ZoneInfo("America/Los_Angeles")
 # Marker _timed_completion leaves in a response's _hidden_params.
 _KEY_TIER_PARAM = "vibebot_key_tier"
+
+
+def _free_tier_park_seconds(exc: Exception, now: datetime | None = None) -> float:
+    """How long a free-tier 429 parks the free key.
+
+    Google's 429 body names the exhausted quota (``...PerDay...`` or
+    ``...PerMinute...``). A daily one parks until the next midnight Pacific;
+    anything else parks for ``_FREE_TIER_SKIP_SECONDS``.
+    """
+    if "PerDay" not in str(exc):
+        return _FREE_TIER_SKIP_SECONDS
+    local = (now or datetime.now(UTC)).astimezone(_FREE_TIER_DAILY_RESET_TZ)
+    reset = datetime.combine(
+        local.date() + timedelta(days=1), datetime.min.time(), _FREE_TIER_DAILY_RESET_TZ
+    )
+    return max((reset - local).total_seconds(), _FREE_TIER_SKIP_SECONDS)
+
 
 # Per-image cost for models not in LiteLLM's built-in cost map.
 # Used as fallback when litellm.completion_cost() returns 0.
@@ -3276,8 +3298,9 @@ class LLMService:
         under load). Measured 2026-09-29: the free tier serves every model with
         ``urlContext``, but ``googleSearch`` on any Gemini 3.x model is an
         instant 429 — so a 429 parks the free key for that (model, search)
-        pair for ``_FREE_TIER_SKIP_SECONDS`` instead of paying the doomed
-        round trip on every call.
+        pair instead of paying the doomed round trip on every call: until
+        midnight Pacific for a daily quota, ``_FREE_TIER_SKIP_SECONDS``
+        otherwise. ``geminiFreeKeyModels`` limits which models try it at all.
         """
         # The key is a property of the model being called, resolved here rather
         # than threaded in, so no caller can pair one provider's model with
@@ -3335,7 +3358,8 @@ class LLMService:
             return response
 
         free_key = apikeys.free_key_for(model)
-        if not free_key:
+        free_models = self.plugin.registryValue("geminiFreeKeyModels") or []
+        if not free_key or (free_models and model not in free_models):
             return attempt(paid_key, "")
 
         skip = (
@@ -3350,14 +3374,17 @@ class LLMService:
                 litellm.ServiceUnavailableError,
                 litellm.InternalServerError,  # LiteLLM's mapping of "The model is overloaded."
             ) as exc:
+                parked_s = 0.0
                 if isinstance(exc, litellm.RateLimitError):
-                    self._free_tier_skip_until[skip] = time.monotonic() + _FREE_TIER_SKIP_SECONDS
+                    parked_s = _free_tier_park_seconds(exc)
+                    self._free_tier_skip_until[skip] = time.monotonic() + parked_s
                 self.log.warning(
-                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s",
+                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s parked_s=%i",
                     op,
                     model,
                     skip[1],
                     type(exc).__name__,
+                    int(parked_s),
                 )
             else:
                 # _extract_usage books a free-tier call at $0.

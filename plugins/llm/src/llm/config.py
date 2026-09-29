@@ -292,6 +292,20 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerGlobalValue(
+    LLM,
+    "geminiFreeKeyModels",
+    registry.SpaceSeparatedListOfStrings(
+        [],
+        _("""Gemini models that try GEMINI_FREE_API_KEY before the paid key.
+        Empty means every Gemini model. List only models the free tier actually
+        serves: on 2026-09-29 gemini-flash-latest answered 503 to most free
+        calls and ran out of its daily quota by mid-afternoon, while
+        gemini-flash-lite-latest served all 24 of its calls free. Each failed
+        free attempt adds its round trip before the paid call."""),
+    ),
+)
+
 conf.registerChannelValue(
     LLM,
     "subjectResearchEnabled",

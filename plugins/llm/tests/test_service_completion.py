@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
 from llm.service import AssistantRequestContext, AssistantResult, CompletionResult, LLMService
 
-from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS, make_completion_response, make_registry_side_effect
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -1778,6 +1779,28 @@ class TestGeminiFreeKey:
         self._call()
         self._call()
         assert self._keys() == [self.FREE, self.PAID, self.FREE]
+
+    def test_daily_quota_429_parks_until_midnight_pacific(self) -> None:
+        from llm.service import _FREE_TIER_SKIP_SECONDS, _free_tier_park_seconds
+
+        daily = self.litellm.RateLimitError(
+            message='"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"',
+            model="gemini-flash-latest",
+            llm_provider="gemini",
+        )
+        # 14:26 UTC on 2026-09-29 is 07:26 PDT: the quota resets at 07:00 UTC.
+        now = datetime(2026, 9, 29, 14, 26, tzinfo=UTC)
+        assert _free_tier_park_seconds(daily, now) == (16 * 60 + 34) * 60
+        assert _free_tier_park_seconds(self._rate_limited(), now) == _FREE_TIER_SKIP_SECONDS
+
+    def test_models_outside_the_allowlist_go_straight_to_paid(self) -> None:
+        self.service.plugin.registryValue.side_effect = make_registry_side_effect(
+            {"geminiFreeKeyModels": ["gemini/gemini-flash-lite-latest"]}
+        )
+        self.completion.return_value = make_completion_response()
+        self._call()
+        self._call(model="gemini/gemini-flash-lite-latest")
+        assert self._keys() == [self.PAID, self.FREE]
 
     def test_other_errors_do_not_retry_on_paid(self) -> None:
         self.completion.side_effect = self.litellm.BadRequestError(

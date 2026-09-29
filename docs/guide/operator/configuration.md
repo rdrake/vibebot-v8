@@ -48,6 +48,12 @@ Two limits of the free tier shape the rest of the configuration:
 
 Rate limits are per Google project, not per key, so the free key needs its own project.
 
+A 429 that names a daily quota parks the free key for that model until midnight Pacific, when Google resets it; any other 429 parks it for five minutes. `geminiFreeKeyModels` (global, space-separated, empty = every Gemini model) limits which models try the free key at all. Every failed free attempt adds its round trip before the paid call, so list only models the free tier actually serves. On 2026-09-29 `gemini-flash-latest` answered 503 to most free calls, while `gemini-flash-lite-latest` and `gemini-2.5-flash` were served:
+
+```
+@config supybot.plugins.LLM.geminiFreeKeyModels gemini/gemini-flash-lite-latest gemini/gemini-2.5-flash
+```
+
 Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. The default `imageModel` is `gemini/imagen-4.0-fast-generate-001`, so a fresh install needs only `GEMINI_API_KEY` for chat, `@code`, `@draw`, and search.
 
 ### Running on local models
