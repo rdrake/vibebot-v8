@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for dependency bump (`changelog`)
 - Keep ruff 0.16 out of Markdown code blocks (`ruff`)
 - Regenerate for llms.txt (`changelog`)
 - Regenerate for local-model docs (`changelog`)
@@ -676,6 +677,8 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- DrawEnabled and animateEnabled; memeEnabled now gates @meme too (`llm`)
+- GeminiFreeKeyModels allowlist and park the free key until the daily reset (`llm`)
 - Retry the Gemini free key once on overload before paying (`llm`)
 - MemoryModel for extraction and a three-search cap per request (`llm`)
 - Read GitHub links through the GitHub API (`llm`)
