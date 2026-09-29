@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for feature switches and free-key allowlist (`changelog`)
 - Regenerate for dependency bump (`changelog`)
 - Keep ruff 0.16 out of Markdown code blocks (`ruff`)
 - Regenerate for llms.txt (`changelog`)
@@ -677,6 +678,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Log the quota a free-key 429 names (`llm`)
 - DrawEnabled and animateEnabled; memeEnabled now gates @meme too (`llm`)
 - GeminiFreeKeyModels allowlist and park the free key until the daily reset (`llm`)
 - Retry the Gemini free key once on overload before paying (`llm`)
