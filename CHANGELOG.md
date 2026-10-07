@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for free-key quota logging (`changelog`)
 - Regenerate for feature switches and free-key allowlist (`changelog`)
 - Regenerate for dependency bump (`changelog`)
 - Keep ruff 0.16 out of Markdown code blocks (`ruff`)
@@ -476,6 +477,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Dependencies
 
+- Litellm 1.103.0, markdown 3.11, nh3 0.3.7, hypothesis 6.168.3, prek 0.5.4, pytest-mock 3.16.0, ruff 0.16.9, ty 0.0.84
 - Litellm 1.95.0, feedparser 6.0.14, markdown 3.10.3, hypothesis 6.165.0, prek 0.5.3, ruff 0.16.8, ty 0.0.83
 - Consolidated dependency upgrade via uv lock --upgrade
 - Consolidate Dependabot bumps into one re-lock (#67-#71)
