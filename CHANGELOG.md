@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- A bot replying to the bot's line does not address it (`chat`)
 - Tell the chat model the bot sends CTCP TIME for reminders (`prompts`)
 - Take back the ⏰ reaction when a reminder is cancelled (`reminders`)
 - Chat can list and cancel reminders again (`reminders`)
@@ -405,6 +406,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for Haiku 5.5 defaults and free-key removal (`changelog`)
 - Regenerate for dependency bump (`changelog`)
 - Regenerate for free-key quota logging (`changelog`)
 - Regenerate for feature switches and free-key allowlist (`changelog`)
