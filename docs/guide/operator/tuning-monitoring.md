@@ -26,7 +26,7 @@ Guidance from operating this surface:
 Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.
 
 ```
-@config channel #yourchan plugins.LLM.assistantModel gemini/gemini-flash-latest
+@config channel #yourchan plugins.LLM.assistantModel anthropic/claude-haiku-5-5
 ```
 
 ## Context tuning

@@ -216,7 +216,7 @@ class TestConfigValues:
         import llm.config  # noqa: F401 — import side effect registers values
         import supybot.conf as conf
 
-        assert conf.supybot.plugins.LLM.assistantModel() == "gemini/gemini-flash-latest"
+        assert conf.supybot.plugins.LLM.assistantModel() == "anthropic/claude-haiku-5-5"
         assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
         assert conf.supybot.plugins.LLM.imageModel() == "gemini/imagen-4.0-fast-generate-001"
 

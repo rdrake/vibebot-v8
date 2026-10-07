@@ -10023,7 +10023,7 @@ class LLM(callbacks.Plugin):
             min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
         except (TypeError, ValueError):
             min_keep = 20
-        model = self.registryValue("verseCompactionModel") or "gemini/gemini-flash-lite-latest"
+        model = self.registryValue("verseCompactionModel") or "anthropic/claude-haiku-5-5"
         client = _compaction.LiteLLMVerseClient()
         return min_keep, model, client
 

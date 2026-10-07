@@ -37,18 +37,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-### Gemini free-tier key
-
-`GEMINI_FREE_API_KEY` is optional: a Gemini key from a project with billing turned off. When set, every Gemini chat-completions call tries it first and falls back to `GEMINI_API_KEY` when the free tier answers 429 (quota) or is overloaded. After a 429 the free key is skipped for that model for five minutes. Calls served by the free key are recorded at $0, and each `completion_timing` log line ends in `key=free` or `key=paid`.
-
-Two limits of the free tier shape the rest of the configuration:
-
-- Google Search grounding is unavailable on free-tier Gemini 3.x models. Point `searchModel` at `gemini/gemini-2.5-flash`, which searches on both tiers.
-- Google uses free-tier prompts and responses to improve its products. Paid-tier traffic is not used that way.
-
-Rate limits are per Google project, not per key, so the free key needs its own project.
-
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. The default `imageModel` is `gemini/imagen-4.0-fast-generate-001`, so a fresh install needs only `GEMINI_API_KEY` for chat, `@code`, `@draw`, and search.
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@code`, `XAI_API_KEY` for search, and `GEMINI_API_KEY` for `@draw` (the default `imageModel` is `gemini/imagen-4.0-fast-generate-001`).
 
 ### Running on local models
 
@@ -144,8 +133,8 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `assistantModel` | channel | `gemini/gemini-flash-latest` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
-| `codeModel` | channel | `gemini/gemini-flash-latest` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
+| `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
+| `codeModel` | channel | `anthropic/claude-haiku-5-5` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
 | `imageModel` | channel | `gemini/imagen-4.0-fast-generate-001` | Model for `@draw` |
 | `imageApiBase` | channel | empty | Draw against an OpenAI-shaped endpoint of your own instead of the provider `imageModel` names — see [Drawing against a self-hosted endpoint](#drawing-against-a-self-hosted-endpoint) |
 | `imageSteps` | channel | `0` | Denoising steps for a self-hosted endpoint. `0` lets the server choose. Ignored unless `imageApiBase` is set |
@@ -154,18 +143,18 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `imageFallbackModel` | channel | empty | Model for `imageFallbackApiBase`. A plain string, not a validated model name |
 | `imageFallbackSteps` | channel | `0` | Denoising steps for the fallback endpoint |
 | `imageFallbackSize` | channel | empty | Output geometry as `WxH` for the fallback endpoint |
-| `searchModel` | channel | empty | Model for web search and URL fetch. Falls back to `assistantModel`. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
+| `searchModel` | channel | `xai/grok-4.3` | Model for web search and URL fetch. Falls back to `assistantModel`. Only xAI and Gemini models search; any other provider answers from its own knowledge. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
 | `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` or `@animate` request names before the planner writes the prompt — see [Subject research](#subject-research) |
 | `subjectResearchModel` | channel | empty | Model for the subject-research pre-stage. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
-| `verseCompactionModel` | global | `gemini/gemini-flash-lite-latest` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
+| `verseCompactionModel` | global | `anthropic/claude-haiku-5-5` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
 
 Channel overrides let different channels run different models:
 
 ```
 @config channel #dev plugins.LLM.assistantModel anthropic/claude-sonnet-4-20250514
-@config channel #casual plugins.LLM.assistantModel gemini/gemini-flash-latest
+@config channel #casual plugins.LLM.assistantModel anthropic/claude-haiku-5-5
 ```
 
 ### Subject research
@@ -337,7 +326,7 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeScheduledTaskLimit` | channel | `5` | Active scheduled LLM tasks per creator per channel. `0` disables scheduling |
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
 | `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST` / `NAMES`) to chat. `@channels` and `@names` work regardless |
-| `memeModel` | channel | `gemini/gemini-flash-latest` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. One JSON completion over the ~30 KB catalog per pick, about 8.5K prompt tokens, $0.01, 3 s. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
+| `memeModel` | channel | `anthropic/claude-haiku-5-5` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. One JSON completion over the ~30 KB catalog per pick, about 8.5K prompt tokens, $0.01, 3 s. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
 | `memeEditModel` | global | `xai/grok-imagine-image` | Image-edit model for the picker's `draw` (and `make_meme`'s): the captioned meme goes to xAI's `/v1/images/edits` with the instruction. `xai/` only. About $0.02 per edit, refusals billed too |
 | `memeEnabled` | channel | `True` | `False` refuses `@meme` and hides the `make_meme` tool from chat |
 | `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |

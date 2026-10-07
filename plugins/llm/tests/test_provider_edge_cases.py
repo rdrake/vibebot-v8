@@ -408,6 +408,57 @@ class TestAnthropicSpecificBehaviors:
         tools = anthropic_service._get_gemini_tools("anthropic/claude-3-opus")
         assert tools is None
 
+    @pytest.mark.parametrize(
+        ("thinking_blocks", "expected"),
+        [
+            ([{"type": "thinking", "thinking": "", "signature": "sig"}], True),
+            (None, False),
+        ],
+    )
+    def test_tool_turn_carries_thinking_blocks_back(
+        self,
+        anthropic_service: LLMService,
+        mocker: MockerFixture,
+        thinking_blocks: list | None,
+        expected: bool,
+    ) -> None:
+        """GIVEN a tool-call turn with thinking blocks WHEN the loop continues
+        THEN the assistant turn sent back carries them; without any, the key
+        is absent so OpenAI-compatible providers never see it."""
+        from llm.assistant import ToolResult
+
+        from .conftest import make_tool_call
+
+        first = make_completion_response(None, tool_calls=[make_tool_call("probe", {})])
+        first.choices[0].message.thinking_blocks = thinking_blocks
+        responses = [first, make_completion_response("done")]
+        calls: list[dict] = []
+
+        def fake_completion(**kwargs: object) -> object:
+            calls.append(kwargs)  # type: ignore[arg-type]
+            return responses[len(calls) - 1]
+
+        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        anthropic_service.assistant_completion(
+            prompt="probe it",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            capabilities=frozenset({"llm.ask"}),
+            account="rdrake",
+            extra_tools=[{"type": "function", "function": {"name": "probe", "parameters": {}}}],
+            extra_handlers={"probe": lambda _args: ToolResult(content="ok")},
+        )
+
+        assert len(calls) == 2
+        turn = next(m for m in calls[1]["messages"] if m.get("tool_calls"))
+        assert ("thinking_blocks" in turn) is expected
+        if expected:
+            assert turn["thinking_blocks"] == thinking_blocks
+
 
 class TestSummarizeEdgeCases:
     """Test edge cases in the summarize method."""

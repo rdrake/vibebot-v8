@@ -161,7 +161,7 @@ conf.registerChannelValue(
     LLM,
     "assistantModel",
     ValidatedModelName(
-        "gemini/gemini-flash-latest",
+        "anthropic/claude-haiku-5-5",
         _("""Model used for all assistant text+tool work (chat, planner loop,
         memory, reminder parsing, scheduled tasks). Must support
         vision if image URLs in chat should work."""),
@@ -172,7 +172,7 @@ conf.registerChannelValue(
     LLM,
     "codeModel",
     ValidatedModelName(
-        "gemini/gemini-flash-latest",
+        "anthropic/claude-haiku-5-5",
         _("""Model for code generation"""),
     ),
 )
@@ -286,8 +286,10 @@ conf.registerChannelValue(
     LLM,
     "searchModel",
     ValidatedModelName(
-        "",
-        _("""Model for search/fetch tools. Falls back to assistantModel if empty."""),
+        "xai/grok-4.3",
+        _("""Model for search/fetch tools. Falls back to assistantModel if empty.
+        Only xAI and Gemini models search; any other provider answers from
+        its own knowledge without looking anything up."""),
     ),
 )
 
@@ -691,7 +693,7 @@ conf.registerGlobalValue(
     LLM,
     "verseCompactionModel",
     registry.String(
-        "gemini/gemini-flash-lite-latest",
+        "anthropic/claude-haiku-5-5",
         _("""Model used by the verse compaction job to summarise old events
         into a lore digest. Mirrors the default of the old
         ``loomModel`` key; split out when the loom was removed so compaction
@@ -1299,7 +1301,7 @@ conf.registerChannelValue(
     LLM,
     "memeModel",
     ValidatedModelName(
-        "gemini/gemini-flash-latest",
+        "anthropic/claude-haiku-5-5",
         _("""Model that picks a template and writes captions when @meme (or
         make_meme's brief) does not name a template the catalog knows. One
         JSON completion over the ~30 KB catalog per pick (about $0.01, 3 s).

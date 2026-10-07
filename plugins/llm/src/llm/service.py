@@ -5026,8 +5026,9 @@ Examples (echo → action_prompt: ""):
         # finish_reason check below are what make a leak harmless. Providers
         # differ on whether they accept the parameter (xAI's grok-4 rejects it),
         # so drop_params carries it the same way the assistant path carries its
-        # sampling overrides.
-        optional_kwargs["reasoning_effort"] = "disable"
+        # sampling overrides. "low" rather than "disable": Anthropic rejects
+        # "disable" with a 400 that drop_params does not catch.
+        optional_kwargs["reasoning_effort"] = "low"
         optional_kwargs.setdefault("drop_params", True)
         response = self._completion_with_tool_fallback(
             model=model,
@@ -6512,6 +6513,11 @@ Examples (echo → action_prompt: ""):
                         ],
                     }
                 )
+                # Anthropic asks for the turn's thinking blocks back alongside
+                # its tool calls; without them the next step reasons from scratch.
+                thinking_blocks = getattr(message, "thinking_blocks", None)
+                if isinstance(thinking_blocks, list) and thinking_blocks:
+                    messages[-1]["thinking_blocks"] = thinking_blocks
 
                 # Execute each tool call and append results
                 storybook_ok = False

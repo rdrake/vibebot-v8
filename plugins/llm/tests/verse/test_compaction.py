@@ -13,7 +13,7 @@ def test_verse_compaction_model_key_registered() -> None:
     from supybot import conf
 
     val = conf.supybot.plugins.LLM.verseCompactionModel()
-    assert val == "gemini/gemini-flash-lite-latest"
+    assert val == "anthropic/claude-haiku-5-5"
 
 
 def test_relocated_client_types_importable_from_compaction():

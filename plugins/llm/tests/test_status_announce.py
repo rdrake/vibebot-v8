@@ -736,7 +736,9 @@ class TestStatusAnnounceCompletion:
         result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert result == "Claude API is degraded."
 
-    def test_reasoning_is_disabled_so_thinking_cannot_eat_the_output_budget(self, service, mocker):
+    def test_reasoning_is_turned_down_so_thinking_cannot_eat_the_output_budget(
+        self, service, mocker
+    ):
         """Asked for, but not relied on.
 
         gemini-flash-latest honours this intermittently — 8/8 in one sample,
@@ -744,12 +746,12 @@ class TestStatusAnnounceCompletion:
         thinkingConfig passthrough no better. It stays because the honoured
         case costs ~10x less. ``drop_params`` keeps the parameter harmless on a
         provider that rejects it, matching the sampling overrides on the
-        assistant path.
+        assistant path. "low", not "disable": Anthropic 400s on "disable".
         """
         mock_completion = mocker.patch("llm.service.litellm.completion")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         service.status_announce_completion(facts={"name": "x"}, channel="#test")
-        assert mock_completion.call_args.kwargs["reasoning_effort"] == "disable"
+        assert mock_completion.call_args.kwargs["reasoning_effort"] == "low"
         assert mock_completion.call_args.kwargs["drop_params"] is True
 
     def test_the_cap_leaves_room_for_thinking_plus_a_sentence(self, service, mocker):
