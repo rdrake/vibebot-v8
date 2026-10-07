@@ -266,6 +266,33 @@ class TestDoPrivmsg:
         )
         plugin.context.add_message.assert_not_called()
 
+    @pytest.mark.parametrize("signal", ["host", "flag"])
+    def test_doprivmsg_reply_from_a_bot_is_chatter(
+        self, plugin_with_mocks: tuple, signal: str
+    ) -> None:
+        """GIVEN a bot's +draft/reply to the bot's line WHEN doPrivmsg THEN plain chatter.
+
+        Ender answers every link with a reply carrying the page title; routing
+        that reply made the two bots talk to each other.
+        """
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+        plugin._own_msgids[(mock_irc.network, "bot-1")] = None
+        mock_msg.args = ("#channel", "Title: Example Domain (at example.com)")
+        mock_msg.server_tags = {"+draft/reply": "bot-1"}
+        if signal == "host":
+            mock_msg.prefix = "Ender!ender@ender.Bot.AfterNET.Org"
+            plugin.registryValue.side_effect = lambda name, *_a, **_k: (
+                ["Bot.AfterNET.Org"] if name == "botLoopHostSuffixes" else True
+            )
+        else:
+            mock_msg.prefix = "Ender!ender@ender.Users.AfterNET.Org"
+            plugin._bot_flags[plugin._bot_flag_key(mock_irc, mock_msg.nick)] = True
+
+        plugin.doPrivmsg(mock_irc, mock_msg)
+
+        plugin._route_addressed_to_assistant.assert_not_called()
+        plugin.context.add_message.assert_called_once()
+
     def test_doprivmsg_reply_to_someone_else_is_chatter(self, plugin_with_mocks: tuple) -> None:
         """GIVEN +draft/reply to a msgid the bot never sent WHEN doPrivmsg THEN plain chatter."""
         plugin, mock_irc, mock_msg = plugin_with_mocks

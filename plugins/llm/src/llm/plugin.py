@@ -2624,7 +2624,14 @@ class LLM(callbacks.Plugin):
         addressed_text = text.strip() if is_pm else self._strip_nick_address(irc.nick, text)
         if not addressed_text and action_body is not None and not is_pm:
             addressed_text = self._strip_nick_mention(irc.nick, text)
-        if not addressed_text and not is_pm and self._is_reply_to_own_line(irc, msg):
+        # A bot replying to one of our lines is not talking to us: Ender
+        # answers every link with a reply carrying its title.
+        if (
+            not addressed_text
+            and not is_pm
+            and self._is_reply_to_own_line(irc, msg)
+            and not self._sender_is_bot(irc, msg)
+        ):
             addressed_text = text.strip()
 
         if addressed_text:
