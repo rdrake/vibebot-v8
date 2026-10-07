@@ -2834,9 +2834,13 @@ class LLM(callbacks.Plugin):
         The host is free and decides on the first line. The +B flag needs a
         WHO, so it only answers for nicks we have already asked about — None
         means nobody has told us yet and the caller should treat it as a
-        person.
+        person. AfterNET advertises BOT=B, so per IRCv3 bot-mode a +B sender's
+        lines also carry a ``bot`` tag, which answers on the first line.
         """
         if self._host_is_a_bot_host(getattr(msg, "prefix", None)):
+            return True
+        tags = getattr(msg, "server_tags", None)
+        if isinstance(tags, dict) and "bot" in tags:
             return True
         return self._known_bot(irc, getattr(msg, "nick", "") or "")
 

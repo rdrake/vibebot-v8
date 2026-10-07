@@ -117,6 +117,28 @@ class TestBotHostDetection:
 
         assert plugin._sender_is_bot(mock_irc, msg) is True
 
+    def test_the_bot_tag_is_a_bot(self, plugin_env, mocker: MockerFixture) -> None:
+        """GIVEN the IRCv3 bot tag on a Users host THEN it is a bot with no WHO."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(
+            nick="Ender",
+            prefix="Ender!ender@ender.Users.AfterNET.Org",
+            server_tags={"bot": None, "msgid": "x"},
+        )
+
+        assert plugin._sender_is_bot(mock_irc, msg) is True
+
+    def test_no_bot_tag_is_not(self, plugin_env, mocker: MockerFixture) -> None:
+        """Other tags alone say nothing about the sender."""
+        plugin, mock_irc, _ = plugin_env
+        msg = mocker.MagicMock(
+            nick="rdrake",
+            prefix="rdrake!rdrake@rdrake.Users.AfterNET.Org",
+            server_tags={"msgid": "x", "+draft/reply": "y"},
+        )
+
+        assert plugin._sender_is_bot(mock_irc, msg) is not True
+
     def test_a_junk_prefix_does_not_raise(self, plugin_env, mocker: MockerFixture) -> None:
         """Server-originated and malformed prefixes must not break the guard."""
         plugin, mock_irc, _ = plugin_env
