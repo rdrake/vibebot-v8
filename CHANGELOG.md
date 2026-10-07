@@ -405,6 +405,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for dependency bump (`changelog`)
 - Regenerate for free-key quota logging (`changelog`)
 - Regenerate for feature switches and free-key allowlist (`changelog`)
 - Regenerate for dependency bump (`changelog`)
@@ -680,6 +681,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Default text models to Claude Haiku 5.5, search to grok (`llm`)
 - Log the quota a free-key 429 names (`llm`)
 - DrawEnabled and animateEnabled; memeEnabled now gates @meme too (`llm`)
 - GeminiFreeKeyModels allowlist and park the free key until the daily reset (`llm`)
@@ -1139,6 +1141,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Refactor
 
+- Drop the Gemini free-key fallback (`llm`)
 - One refcounted +typing indicator per channel (`typing`)
 - Extract _reply_mores_length, unify three drifted copies (`llm`)
 - Plan @animate through the assistant, like @draw (`animate`)
