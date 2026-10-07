@@ -16,11 +16,10 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
 
 import litellm
 import markdown
@@ -64,35 +63,6 @@ from .usertz import SOURCE_CTCP, SOURCE_SET, UTC_DEFAULT, UserTz
 # Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
 # See: https://github.com/BerriAI/litellm/issues/14635
 litellm.request_timeout = 120  # 2 minutes
-
-# How long a 429 from the Gemini free key parks it for that (model, search)
-# pair. Long enough that a deterministic 429 (googleSearch on Gemini 3.x) costs
-# one wasted 0.2s call per window, short enough to pick the free tier back up
-# after a per-minute limit clears. See _timed_completion.
-_FREE_TIER_SKIP_SECONDS = 300.0
-# A 429 naming a per-day quota will not clear in five minutes: Google resets
-# free-tier daily quotas at midnight Pacific. Parking until then saves one
-# doomed round trip per window for the rest of the day.
-_FREE_TIER_DAILY_RESET_TZ = ZoneInfo("America/Los_Angeles")
-# Marker _timed_completion leaves in a response's _hidden_params.
-_KEY_TIER_PARAM = "vibebot_key_tier"
-
-
-def _free_tier_park_seconds(exc: Exception, now: datetime | None = None) -> float:
-    """How long a free-tier 429 parks the free key.
-
-    Google's 429 body names the exhausted quota (``...PerDay...`` or
-    ``...PerMinute...``). A daily one parks until the next midnight Pacific;
-    anything else parks for ``_FREE_TIER_SKIP_SECONDS``.
-    """
-    if "PerDay" not in str(exc):
-        return _FREE_TIER_SKIP_SECONDS
-    local = (now or datetime.now(UTC)).astimezone(_FREE_TIER_DAILY_RESET_TZ)
-    reset = datetime.combine(
-        local.date() + timedelta(days=1), datetime.min.time(), _FREE_TIER_DAILY_RESET_TZ
-    )
-    return max((reset - local).total_seconds(), _FREE_TIER_SKIP_SECONDS)
-
 
 # Per-image cost for models not in LiteLLM's built-in cost map.
 # Used as fallback when litellm.completion_cost() returns 0.
@@ -2086,9 +2056,6 @@ class LLMService:
         # for the gap_s field on completion_timing. See _cache_gap_seconds.
         self._cache_gap_last: dict[tuple[str, str], float] = {}
         self._cache_gap_lock = threading.Lock()
-        # (model, uses_search) → monotonic time before which the Gemini free
-        # key is skipped. See _timed_completion.
-        self._free_tier_skip_until: dict[tuple[str, bool], float] = {}
         # Image models already warned about for having no price. See _image_price.
         self._unpriced_models: set[str] = set()
 
@@ -2889,13 +2856,11 @@ class LLMService:
         context fetching). Returns a dict to ``update()`` into the
         ``optional_kwargs`` passed to LiteLLM.
 
-        - Gemini / Vertex AI, ``search``: both native grounding tools
-          (``googleSearch`` + ``urlContext``), so a search can pivot to
-          "fetch this URL the search surfaced" without a second round trip.
-        - Gemini / Vertex AI, ``url``: ``urlContext`` only. The free tier
-          429s any Gemini 3.x request carrying ``googleSearch`` but serves
-          ``urlContext`` on every model, and flash-lite given both searched
-          instead of opening the link (probe, 2026-09-29).
+        - Gemini / Vertex AI: register both native grounding tools
+          (``googleSearch`` + ``urlContext``) regardless of ``kind``.
+          Gemini decides at runtime which to invoke, so a request that
+          starts as "search" can pivot to "fetch this URL the search
+          surfaced" without a second tool round-trip — and vice versa.
         - xAI (Grok): returns ``{"tools": []}``. xAI Live Search on
           ``/v1/chat/completions`` is deprecated; web search is only
           available on ``/v1/responses`` via ``{"type": "web_search"}``.
@@ -2915,8 +2880,6 @@ class LLMService:
             provider = model.split("/", 1)[0].lower()
 
         if provider in ("gemini", "vertex_ai", "vertex_ai_beta"):
-            if kind == "url":
-                return {"tools": [{"urlContext": {}}]}
             return {"tools": [{"googleSearch": {}}, {"urlContext": {}}]}
 
         # xAI and any other provider: no chat-completions grounding.
@@ -3080,11 +3043,6 @@ class LLMService:
         if model in IMAGE_COST_PER_IMAGE:
             return prompt_tokens, completion_tokens, cost
 
-        # Served on the free key: nothing billed.
-        hidden = getattr(response, "_hidden_params", None)
-        if isinstance(hidden, dict) and hidden.get(_KEY_TIER_PARAM) == "free":
-            return prompt_tokens, completion_tokens, cost
-
         # completion_cost can fail for unsupported models — graceful degradation.
         # model= must be passed explicitly: ImageResponse has no .model attr,
         # and text completion responses may omit the provider prefix.
@@ -3167,7 +3125,6 @@ class LLMService:
         gap_s: float = -1.0,
         response: Any | None = None,
         error: Exception | None = None,
-        key_tier: str = "",
     ) -> None:
         """One-line structured profiling record for any model call.
 
@@ -3184,15 +3141,13 @@ class LLMService:
                            cached_tokens is non-zero; read it next to
                            prefix_hash to tell a cold cache from a broken prefix.
           tool_calls     — tool calls returned by the model on this turn
-          key            — free|paid, only on providers with a free key
         """
-        key = f" key={key_tier}" if key_tier else ""
         if error is not None:
             self.log.warning(
                 f"completion_timing op={op} model={model} msgs={n_messages} "
                 f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
                 f"gap_s={gap_s:.0f} elapsed_ms={elapsed_ms:.0f} result=error "
-                f"error_type={type(error).__name__}{key}"
+                f"error_type={type(error).__name__}"
             )
             return
 
@@ -3230,7 +3185,7 @@ class LLMService:
             f"msg_chars={msg_chars} tools={n_tools} prefix_hash={prefix_hash} "
             f"gap_s={gap_s:.0f} elapsed_ms={elapsed_ms:.0f} "
             f"prompt_tokens={pt} cached_tokens={cached} "
-            f"completion_tokens={ct} tool_calls={n_tool_calls}{key}"
+            f"completion_tokens={ct} tool_calls={n_tool_calls}"
         )
 
     @staticmethod
@@ -3291,22 +3246,12 @@ class LLMService:
         channel: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Run litellm.completion and emit a completion_timing log line.
-
-        Gemini calls try the free-tier key first when one is configured and
-        fall back to the paid key on 429 (quota), or 503/500 (free tier shed
-        under load). Measured 2026-09-29: the free tier serves every model with
-        ``urlContext``, but ``googleSearch`` on any Gemini 3.x model is an
-        instant 429 — so a 429 parks the free key for that (model, search)
-        pair instead of paying the doomed round trip on every call: until
-        midnight Pacific for a daily quota, ``_FREE_TIER_SKIP_SECONDS``
-        otherwise. ``geminiFreeKeyModels`` limits which models try it at all.
-        """
+        """Run litellm.completion and emit a completion_timing log line."""
         # The key is a property of the model being called, resolved here rather
         # than threaded in, so no caller can pair one provider's model with
         # another's credential. None means "unmanaged" — LiteLLM resolves it
         # from its own environment (ADC for vertex_ai, and so on).
-        paid_key = apikeys.api_key_for(model)
+        kwargs["api_key"] = apikeys.api_key_for(model)
         cache_key = self._xai_cache_key(model, channel, op)
         if cache_key:
             existing = kwargs.get("extra_headers") or {}
@@ -3322,84 +3267,36 @@ class LLMService:
         n_messages = len(messages)
         prefix_hash = self._prefix_hash(messages, kwargs.get("tools"))
         gap_s = self._cache_gap_seconds(model, op)
-
-        def attempt(api_key: str | None, key_tier: str) -> Any:
-            t0 = time.monotonic()
-            try:
-                response = litellm.completion(
-                    model=model, messages=messages, **{**kwargs, "api_key": api_key}
-                )
-            except Exception as exc:
-                self._log_completion_timing(
-                    op=op,
-                    model=model,
-                    elapsed_ms=(time.monotonic() - t0) * 1000.0,
-                    n_messages=n_messages,
-                    msg_chars=msg_chars,
-                    n_tools=n_tools,
-                    prefix_hash=prefix_hash,
-                    gap_s=gap_s,
-                    error=exc,
-                    key_tier=key_tier,
-                )
-                raise
+        t0 = time.monotonic()
+        try:
+            response = litellm.completion(model=model, messages=messages, **kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
             self._log_completion_timing(
                 op=op,
                 model=model,
-                elapsed_ms=(time.monotonic() - t0) * 1000.0,
+                elapsed_ms=elapsed_ms,
                 n_messages=n_messages,
                 msg_chars=msg_chars,
                 n_tools=n_tools,
                 prefix_hash=prefix_hash,
                 gap_s=gap_s,
-                response=response,
-                key_tier=key_tier,
+                error=exc,
             )
-            return response
-
-        free_key = apikeys.free_key_for(model)
-        free_models = self.plugin.registryValue("geminiFreeKeyModels") or []
-        if not free_key or (free_models and model not in free_models):
-            return attempt(paid_key, "")
-
-        skip = (
-            model,
-            any("googleSearch" in t for t in kwargs.get("tools") or [] if isinstance(t, dict)),
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        self._log_completion_timing(
+            op=op,
+            model=model,
+            elapsed_ms=elapsed_ms,
+            n_messages=n_messages,
+            msg_chars=msg_chars,
+            n_tools=n_tools,
+            prefix_hash=prefix_hash,
+            gap_s=gap_s,
+            response=response,
         )
-        if time.monotonic() >= self._free_tier_skip_until.get(skip, 0.0):
-            try:
-                response = attempt(free_key, "free")
-            except (
-                litellm.RateLimitError,
-                litellm.ServiceUnavailableError,
-                litellm.InternalServerError,  # LiteLLM's mapping of "The model is overloaded."
-            ) as exc:
-                parked_s = 0.0
-                if isinstance(exc, litellm.RateLimitError):
-                    parked_s = _free_tier_park_seconds(exc)
-                    self._free_tier_skip_until[skip] = time.monotonic() + parked_s
-                # quota= names what Google says was exhausted, so a 429 can be
-                # told apart (daily quota, per-minute limit, a tool the free
-                # tier does not serve) from the log instead of by inference.
-                quota_ids = sorted(set(re.findall(r'"quotaId":\s*"([^"]+)"', str(exc))))
-                self.log.warning(
-                    "gemini_free_fallback op=%s model=%s search=%s error_type=%s parked_s=%i "
-                    "quota=%s detail=%s",
-                    op,
-                    model,
-                    skip[1],
-                    type(exc).__name__,
-                    int(parked_s),
-                    ",".join(quota_ids) or "-",
-                    apikeys.scrub(" ".join(str(exc).split()))[:300],
-                )
-            else:
-                # _extract_usage books a free-tier call at $0.
-                hidden = getattr(response, "_hidden_params", None)
-                if isinstance(hidden, dict):
-                    hidden[_KEY_TIER_PARAM] = "free"
-                return response
-        return attempt(paid_key, "paid")
+        return response
 
     def _handle_llm_error(self, error: Exception, operation: str) -> str:
         """Handle LiteLLM errors with consistent messaging and logging.
