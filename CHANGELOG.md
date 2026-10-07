@@ -406,6 +406,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for bot-reply addressing fix (`changelog`)
 - Regenerate for Haiku 5.5 defaults and free-key removal (`changelog`)
 - Regenerate for dependency bump (`changelog`)
 - Regenerate for free-key quota logging (`changelog`)
@@ -500,6 +501,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- BotLoopHostSuffixes also gates reply addressing (`chat`)
 - Generate llms.txt and llms-full.txt with mkdocs-llmstxt
 - Local-model setup, free Gemini key in env template, drop unused data dir (`ops`)
 - TLA+ models and a Lean proof behind the four fixes (`formal`)
@@ -683,6 +685,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- The IRCv3 bot tag marks a sender as a bot (`chat`)
 - Default text models to Claude Haiku 5.5, search to grok (`llm`)
 - Log the quota a free-key 429 names (`llm`)
 - DrawEnabled and animateEnabled; memeEnabled now gates @meme too (`llm`)
