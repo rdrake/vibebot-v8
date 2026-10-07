@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import sys
 import threading
 import types
 from collections.abc import Generator
@@ -501,19 +502,18 @@ class TestInstallSecretFilter:
         raw key reached ``docker logs`` through before "LiteLLM" was added to
         ``targets``. A logger's own handler runs before propagation, so
         covering root/supybot/llm alone never touched it.
+
+        litellm's handler re-reads ``sys.stderr`` on every emit, so the
+        capture patches ``sys.stderr`` rather than ``handler.stream``.
         """
         secret = "xai-fake-value-long-enough"
         monkeypatch.setenv("XAI_API_KEY", secret)
         logger = logging.getLogger("LiteLLM")
-        handler = next(h for h in logger.handlers if isinstance(h, logging.StreamHandler))
+        assert any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
         buffer = io.StringIO()
-        original_stream = handler.stream
-        handler.stream = buffer
-        try:
-            apikeys.install_secret_filter()
-            logger.error("litellm auth failure: key=%s", secret)
-        finally:
-            handler.stream = original_stream
+        monkeypatch.setattr(sys, "stderr", buffer)
+        apikeys.install_secret_filter()
+        logger.error("litellm auth failure: key=%s", secret)
         output = buffer.getvalue()
         assert secret not in output
         assert "[REDACTED]" in output

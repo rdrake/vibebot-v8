@@ -219,7 +219,9 @@ class TestXssPrevention:
 
     def test_data_urls_stripped(self, service: LLMService, tmp_path) -> None:
         """GIVEN content with data: URL WHEN saved THEN URL stripped."""
-        malicious = '<a href="data:text/html,<script>alert(1)</script>">Click</a>'
+        # No "<" inside the href: markdown 3.11 escapes such a tag as text, and
+        # nh3 would never see the data: URL as an attribute.
+        malicious = '<a href="data:text/html,alert(1)">Click</a>'
         url = service.save_code_to_http(malicious)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
