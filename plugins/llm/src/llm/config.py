@@ -1242,7 +1242,10 @@ conf.registerGlobalValue(
         case-insensitively against the host part of the sender's hostmask, and
         treated as proof the sender is a bot. This carries the guard where the
         +B user mode cannot: grok never sets the mode but does live on
-        grok.Bot.AfterNET.Org. Empty the list to rely on +B alone."""),
+        grok.Bot.AfterNET.Org. A bot matched here, or flagged +B, also cannot
+        address the bot by replying to its lines. A full host works as a
+        suffix, for a bot on a user host. Empty the list to rely on +B
+        alone."""),
     ),
 )
 

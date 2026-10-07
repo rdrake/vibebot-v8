@@ -281,7 +281,7 @@ Two bots that answer each other never get bored, so replies to another bot are c
 |---------|-------|---------|-------------|
 | `botLoopReplyLimit` | channel | `3` | Consecutive replies to one bot before the bot goes quiet. `0` disables the guard |
 | `botLoopWindow` | channel | `300` | Seconds of quiet after which that bot's count resets |
-| `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host |
+| `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host. A sender matched here, or one with the +B mode, cannot address the bot by replying to its lines. A full host works too, for a bot on a user host |
 
 A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, long-running service bots among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
 
