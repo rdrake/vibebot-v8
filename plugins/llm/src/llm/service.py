@@ -2892,6 +2892,37 @@ class LLMService:
         """True if ``model`` is an xAI ``provider/name`` identifier."""
         return "/" in model and model.split("/", 1)[0].lower() == "xai"
 
+    @staticmethod
+    def _is_anthropic_model(model: str) -> bool:
+        """True if ``model`` is an Anthropic ``provider/name`` identifier."""
+        return "/" in model and model.split("/", 1)[0].lower() == "anthropic"
+
+    @staticmethod
+    def _with_system_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A copy of ``messages`` with an Anthropic cache breakpoint on the system prompt.
+
+        Anthropic caches only up to a marked block. Marking the first system
+        message caches the tool schemas plus that prompt, which is identical
+        for every call in a channel; the top-level ``cache_control`` set beside
+        this caches the growing tail, which is what a tool loop's later steps
+        reuse. Measured on claude-haiku-5-5: a 4.3K-token prefix read back
+        4,225 tokens on the second call, $0.00054 → $0.000055. The caller's
+        list is not touched; it is reused across tool-loop steps and stored.
+        """
+        marker = {"type": "ephemeral"}
+        for index, message in enumerate(messages):
+            if message.get("role") != Role.SYSTEM:
+                continue
+            content = message.get("content")
+            if isinstance(content, list) and content and isinstance(content[-1], dict):
+                # LiteLLM reads the marker per block when content is a list.
+                content = [*content[:-1], {**content[-1], "cache_control": marker}]
+                marked = {**message, "content": content}
+            else:
+                marked = {**message, "cache_control": marker}
+            return [*messages[:index], marked, *messages[index + 1 :]]
+        return messages
+
     # Op label → cache lane. Each lane pins to a (potentially) distinct
     # backend, so the bot's short-prompt ops (memory, helper) stop evicting
     # the long-prefix main-reply cache on the same server. See ``_xai_cache_key``.
@@ -3262,6 +3293,9 @@ class LLMService:
             # scatter chat requests and cached_tokens stays at 0.
             existing_body = kwargs.get("extra_body") or {}
             kwargs["extra_body"] = {"prompt_cache_key": cache_key, **existing_body}
+        if self._is_anthropic_model(model):
+            messages = self._with_system_cache_marker(messages)
+            kwargs.setdefault("cache_control", {"type": "ephemeral"})
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)

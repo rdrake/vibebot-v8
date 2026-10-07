@@ -592,6 +592,77 @@ class TestAPIKeyHandling:
         assert fake_key not in str(result)
 
 
+class TestAnthropicPromptCaching:
+    """Anthropic caches only marked prefixes; the boundary marks them."""
+
+    def _capture(self, make_service, monkeypatch: pytest.MonkeyPatch) -> tuple:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key-for-tests-0000")
+        service, _ = make_service()
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "litellm.completion",
+            lambda **kwargs: seen.update(kwargs) or _stub_response(),
+        )
+        return service, seen
+
+    def test_anthropic_call_marks_system_and_tail(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an anthropic model WHEN completing THEN the first system message
+        carries a breakpoint, automatic caching is on, and the caller's list is
+        untouched (it is reused across tool-loop steps)."""
+        service, seen = self._capture(make_service, monkeypatch)
+        messages = [
+            {"role": "system", "content": "prompt"},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "late note"},
+        ]
+
+        service._timed_completion(
+            "ask", model="anthropic/claude-haiku-5-5", messages=messages, channel=None
+        )
+
+        sent = seen["messages"]
+        assert sent[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in sent[2]
+        assert seen["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in messages[0]
+
+    def test_list_content_marks_the_last_block(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LiteLLM reads the marker per block when system content is a list."""
+        service, seen = self._capture(make_service, monkeypatch)
+        messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+            },
+            {"role": "user", "content": "hi"},
+        ]
+
+        service._timed_completion(
+            "ask", model="anthropic/claude-haiku-5-5", messages=messages, channel=None
+        )
+
+        blocks = seen["messages"][0]["content"]
+        assert "cache_control" not in blocks[0]
+        assert blocks[1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_other_providers_are_not_marked(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an xai model WHEN completing THEN no Anthropic cache fields."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        service, seen = self._capture(make_service, monkeypatch)
+        messages = [{"role": "system", "content": "prompt"}, {"role": "user", "content": "hi"}]
+
+        service._timed_completion("ask", model="xai/grok-4.3", messages=messages, channel=None)
+
+        assert "cache_control" not in seen
+        assert "cache_control" not in seen["messages"][0]
+
+
 class TestBoundaryKeyResolution:
     """The key litellm receives is the one the model's provider variable holds."""
 
