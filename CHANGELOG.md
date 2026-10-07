@@ -406,6 +406,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the bot tag (`changelog`)
 - Regenerate for bot-reply addressing fix (`changelog`)
 - Regenerate for Haiku 5.5 defaults and free-key removal (`changelog`)
 - Regenerate for dependency bump (`changelog`)
@@ -685,6 +686,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Anthropic prompt caching (`llm`)
 - The IRCv3 bot tag marks a sender as a bot (`chat`)
 - Default text models to Claude Haiku 5.5, search to grok (`llm`)
 - Log the quota a free-key 429 names (`llm`)
