@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Strip a reply's leading self speaker label (`chat`)
 - A bot replying to the bot's line does not address it (`chat`)
 - Tell the chat model the bot sends CTCP TIME for reminders (`prompts`)
 - Take back the ⏰ reaction when a reminder is cancelled (`reminders`)
@@ -406,6 +407,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the search_web date (`changelog`)
 - Regenerate for Anthropic prompt caching (`changelog`)
 - Regenerate for the bot tag (`changelog`)
 - Regenerate for bot-reply addressing fix (`changelog`)
