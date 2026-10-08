@@ -136,6 +136,7 @@ capabilities at fire time, and recurring chains cap at 50 fires.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@usage` | `[<nick> \| #channel]` | Show API usage statistics. A nick queried in a channel is scoped to that channel, account-wide by PM. The global overview by PM is admin-only. |
+| `@model` | `[<channel>]` | Which model answered the bot's last reply in the channel, and how long ago, next to the chat model the channel is set to use. Forgotten on restart. |
 
 ```
 @usage

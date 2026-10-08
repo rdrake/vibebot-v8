@@ -888,6 +888,7 @@ class TestCommandRegistry:
             "versedit",
             "channels",
             "names",
+            "model",
         }
         assert names == expected
 

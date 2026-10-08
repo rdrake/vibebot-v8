@@ -269,6 +269,21 @@ The bot carries no usage tool and no usage figures in its prompt, so asking in c
 
 ---
 
+## `model`
+
+Show which model answered the bot's last reply in a channel, and which chat model the channel is set to use.
+
+**Usage:** `@model [<channel>]`
+
+```
+@model          → Last reply in #linux: anthropic/claude-haiku-5-5, 2m ago. Set to: anthropic/claude-haiku-5-5.
+@model #tv      → another channel
+```
+
+The two can differ: a runtime `@config` change is lost when the bot restarts, and the reply after that runs on whatever `bot.conf` holds. The bot forgets the last reply on restart too, and says so.
+
+---
+
 ## `channels`
 
 List the busiest public channels on the network, with user counts and topics.

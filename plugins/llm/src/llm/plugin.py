@@ -650,6 +650,16 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
         category="utility",
     ),
     CommandInfo(
+        name="model",
+        args="[<channel>]",
+        description=(
+            "Show which model answered the bot's last reply in a channel and how "
+            "long ago, next to the chat model the channel is set to use."
+        ),
+        examples=("@model", "@model #tv"),
+        category="utility",
+    ),
+    CommandInfo(
         name="names",
         args="[<channel>]",
         description=(
@@ -862,6 +872,15 @@ def _format_compaction_outcome(
     return f"{head}; aged {ao.retired} entities (kept {aged_kept})"
 
 
+def _format_ago(seconds: float) -> str:
+    """Compact age for @model: 45s, 12m, 3h, 2d."""
+    seconds = max(0, int(seconds))
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            return f"{seconds // size}{unit}"
+    return f"{seconds}s"
+
+
 class LLM(callbacks.Plugin):
     """AI-powered commands using LiteLLM.
 
@@ -947,6 +966,9 @@ class LLM(callbacks.Plugin):
         # Bounded LRU keyed (network, msgid); see _remember_own_msgid.
         self._own_msgids: collections.OrderedDict[tuple[str, str], None] = collections.OrderedDict()
         self._own_msgids_lock = threading.Lock()
+        # (network, channel) -> (model, time) of the last assistant reply, for
+        # @model. In memory only: a restart forgets it, which @model says.
+        self._served_models: dict[tuple[str, str], tuple[str, float]] = {}
         # Pending LIST / NAMES queries: fed by do322/do353 et al. on the
         # driver thread, awaited by @channels/@names and the irc_lookup tool.
         self._irc_queries = ircquery.IrcQueryRegistry()
@@ -4848,6 +4870,11 @@ class LLM(callbacks.Plugin):
         empty-response error branch; that is the existing behaviour and must
         be preserved.
         """
+        if result.model and channel:
+            served = getattr(self, "_served_models", None)
+            if served is None:
+                served = self._served_models = {}
+            served[(self._network_of(irc), channel.lower())] = (result.model, time.time())
         if suppress_reminder_mutations and result.last_successful_tool in _REMINDER_MUTATION_TOOLS:
             # Any text is dropped, not just empty text: told it may stay
             # quiet, gemini narrated the silence instead (2026-09-25:
@@ -8278,6 +8305,34 @@ class LLM(callbacks.Plugin):
         self._safe_reply(irc, ircquery.format_channels(rows, pattern=pattern, min_users=min_users))
 
     channels = wrap(channels, [getopts({"min": "positiveInt"}), optional("something")])
+
+    def model(self, irc: callbacks.Irc, msg: IrcMsg, args: list, channel: str) -> None:
+        """[<channel>]
+
+        Says which model answered the bot's last reply in the channel and how
+        long ago, next to the chat model the channel is set to use. A runtime
+        @config change can be undone by a restart, so the two can differ.
+        """
+        if self._is_old_message(msg):
+            return
+        configured = self.registryValue("assistantModel", channel) or "unset"
+        served = (getattr(self, "_served_models", None) or {}).get(
+            (self._network_of(irc), channel.lower())
+        )
+        if served is None:
+            self._safe_reply(
+                irc,
+                _("No reply in %s since the bot started. Set to: %s.") % (channel, configured),
+            )
+            return
+        name, at = served
+        self._safe_reply(
+            irc,
+            _("Last reply in %s: %s, %s ago. Set to: %s.")
+            % (channel, name, _format_ago(time.time() - at), configured),
+        )
+
+    model = wrap(model, ["channel"])
 
     def names(
         self,

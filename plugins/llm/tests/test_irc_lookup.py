@@ -383,3 +383,50 @@ class TestIrcLookupWhois:
             "irc_lookup" in str(c.args[0]) and "whois" in str(c.args)
             for c in log.info.call_args_list
         )
+
+
+class TestModelCommand:
+    """@model: which model answered the channel's last reply, next to the setting."""
+
+    def test_reports_the_serving_model_and_the_setting(self, lookup_env, mocker) -> None:
+        plugin, irc, msg = lookup_env
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"assistantModel": "anthropic/claude-haiku-5-5"}
+        )
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        plugin._served_models = {("afternet", "#test"): ("xai/grok-4.3", 1000.0 - 150)}
+
+        plugin.model(irc, msg, [])
+
+        assert irc.reply.call_args.args[0] == (
+            "Last reply in #test: xai/grok-4.3, 2m ago. Set to: anthropic/claude-haiku-5-5."
+        )
+
+    def test_nothing_recorded_since_start(self, lookup_env) -> None:
+        plugin, irc, msg = lookup_env
+        plugin._served_models = {}
+
+        plugin.model(irc, msg, [])
+
+        assert irc.reply.call_args.args[0].startswith("No reply in #test since the bot started.")
+
+    def test_dispatch_records_the_model(self, lookup_env, mocker) -> None:
+        """Every assistant reply passes _dispatch_assistant_reply; it notes the model."""
+        plugin, irc, msg = lookup_env
+        plugin._served_models = {}
+        result = mocker.MagicMock(model="anthropic/claude-haiku-5-5", last_successful_tool=None)
+
+        plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="rdrake", channel="#Test", response=""
+        )
+
+        assert plugin._served_models[("afternet", "#test")][0] == "anthropic/claude-haiku-5-5"
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"), [(5, "5s"), (150, "2m"), (7200, "2h"), (200000, "2d")]
+)
+def test_format_ago(seconds: int, expected: str) -> None:
+    from llm.plugin import _format_ago
+
+    assert _format_ago(seconds) == expected
