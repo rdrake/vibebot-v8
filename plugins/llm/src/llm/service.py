@@ -2898,6 +2898,26 @@ class LLMService:
         return "/" in model and model.split("/", 1)[0].lower() == "anthropic"
 
     @staticmethod
+    def _with_search_date(tools: list[dict[str, Any]], today: str) -> list[dict[str, Any]]:
+        """A copy of ``tools`` whose search_web description ends with today's date.
+
+        Anthropic found Haiku 5.5's searches better grounded when the date sits
+        in the system prompt or the search tool's description; here it only
+        reached the model in the user-role context message. The tool schemas
+        are shared across requests and providers, so the list and its dicts
+        are copied, never edited. Changes once a day, so the prompt cache
+        rewrites once a day.
+        """
+        out = []
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if isinstance(function, dict) and function.get("name") == "search_web":
+                description = f"{function.get('description', '')} The current date is {today}."
+                tool = {**tool, "function": {**function, "description": description.strip()}}
+            out.append(tool)
+        return out
+
+    @staticmethod
     def _with_system_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """A copy of ``messages`` with an Anthropic cache breakpoint on the system prompt.
 
@@ -3294,6 +3314,11 @@ class LLMService:
             existing_body = kwargs.get("extra_body") or {}
             kwargs["extra_body"] = {"prompt_cache_key": cache_key, **existing_body}
         if self._is_anthropic_model(model):
+            # Before the prefix hash, so it fingerprints what was sent.
+            if kwargs.get("tools"):
+                kwargs["tools"] = self._with_search_date(
+                    kwargs["tools"], time.strftime("%Y-%m-%d", time.gmtime())
+                )
             messages = self._with_system_cache_marker(messages)
             kwargs.setdefault("cache_control", {"type": "ephemeral"})
         n_tools = len(kwargs.get("tools") or [])

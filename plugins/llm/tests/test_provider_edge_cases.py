@@ -6,6 +6,7 @@ and edge cases that may occur with different LLM providers.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import litellm
@@ -661,6 +662,43 @@ class TestAnthropicPromptCaching:
 
         assert "cache_control" not in seen
         assert "cache_control" not in seen["messages"][0]
+
+    @staticmethod
+    def _search_tools() -> list[dict]:
+        return [
+            {"type": "function", "function": {"name": "search_web", "description": "Search."}},
+            {"type": "function", "function": {"name": "fetch_url", "description": "Fetch."}},
+        ]
+
+    def test_anthropic_search_tool_carries_the_date(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GIVEN an anthropic call with search_web WHEN completing THEN its
+        description ends with today's date, other tools and the caller's
+        schemas are untouched."""
+        service, seen = self._capture(make_service, monkeypatch)
+        tools = self._search_tools()
+
+        service._timed_completion(
+            "ask", model="anthropic/claude-haiku-5-5", messages=[], channel=None, tools=tools
+        )
+
+        sent = {t["function"]["name"]: t["function"]["description"] for t in seen["tools"]}
+        assert re.fullmatch(r"Search\. The current date is \d{4}-\d{2}-\d{2}\.", sent["search_web"])
+        assert sent["fetch_url"] == "Fetch."
+        assert tools == self._search_tools()
+
+    def test_other_providers_get_no_date(
+        self, make_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
+        service, seen = self._capture(make_service, monkeypatch)
+
+        service._timed_completion(
+            "ask", model="xai/grok-4.3", messages=[], channel=None, tools=self._search_tools()
+        )
+
+        assert seen["tools"][0]["function"]["description"] == "Search."
 
 
 class TestBoundaryKeyResolution:
