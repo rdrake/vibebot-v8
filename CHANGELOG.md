@@ -407,6 +407,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the self-label strip (`changelog`)
 - Regenerate for the search_web date (`changelog`)
 - Regenerate for Anthropic prompt caching (`changelog`)
 - Regenerate for the bot tag (`changelog`)
@@ -689,6 +690,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- @model says which model answered the channel's last reply (`chat`)
 - Today's date in search_web's description for Anthropic models (`llm`)
 - Anthropic prompt caching (`llm`)
 - The IRCv3 bot tag marks a sender as a bot (`chat`)
