@@ -891,3 +891,48 @@ class TestGuardsUseTheEffectiveModel:
         kwargs = completion.call_args.kwargs
         assert kwargs["model"] == "gemini/gemini-3-flash-preview"
         assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+
+
+class TestStripSelfLabel:
+    """Models continue the ``nick: text`` channel transcript and label their reply."""
+
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            (
+                "vibebot: Your bollocks are two satsumas, eck.",
+                "Your bollocks are two satsumas, eck.",
+            ),
+            ("VibeBot, fine, I'll do it.", "fine, I'll do it."),
+            ("<vibebot> sure thing", "sure thing"),
+            ("vibebot I'm an IRC bot.", "I'm an IRC bot."),
+            ("vibebot is just a bot with opinions.", "vibebot is just a bot with opinions."),
+            ("rdrake: your code sucks.", "rdrake: your code sucks."),
+            ("Ask vibebot: it knows.", "Ask vibebot: it knows."),
+            ("vibebot:", "vibebot:"),
+        ],
+    )
+    def test_strips_only_a_leading_self_label(self, reply: str, expected: str) -> None:
+        from llm.service import _strip_self_label
+
+        assert _strip_self_label(reply, "vibebot") == expected
+
+    def test_final_reply_is_unlabelled(self, make_service, mocker) -> None:
+        """GIVEN the model labels its reply WHEN the turn ends THEN the label is gone."""
+        service, _ = make_service()
+        mocker.patch(
+            "llm.service.litellm.completion",
+            return_value=make_completion_response("vibebot: Eck, you absolute weapon."),
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+
+        result = service.assistant_completion(
+            prompt="call eck a weapon",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="vibebot",
+        )
+
+        assert result.content == "Eck, you absolute weapon."

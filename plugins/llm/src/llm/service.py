@@ -1149,6 +1149,26 @@ class _ReplyGuard:
     max_retries: int
 
 
+def _strip_self_label(text: str, bot_nick: str) -> str:
+    """Drop a leading speaker label that names the bot itself.
+
+    The channel history reaches the model as ``nick: text`` lines, the bot's own
+    among them, and both grok and Haiku sometimes continue that transcript by
+    labelling their reply: "vibebot: Your bollocks are…" (#afternet,
+    2026-10-08 00:37:09) or "vibebot I'm an IRC assistant…" (00:38:01). The
+    bare-name form is only stripped before a capital, so a reply that is about
+    the bot ("vibebot is just a bot") keeps its subject.
+    """
+    if not text or not bot_nick:
+        return text
+    nick = re.escape(bot_nick)
+    label = re.compile(
+        rf"^\s*(?:<\s*{nick}\s*>|{nick}\s*[:,]|{nick}(?=\s+(?-i:[A-Z])))\s*", re.IGNORECASE
+    )
+    stripped = label.sub("", text, count=1)
+    return stripped if stripped.strip() else text
+
+
 _PRE_IMAGE_REPLY_GUARDS: tuple[_ReplyGuard, ...] = (
     _ReplyGuard(
         key="echo",
@@ -6538,6 +6558,14 @@ Examples (echo → action_prompt: ""):
                             last_successful_tool=last_successful_tool,
                         )
 
+                    unlabelled = _strip_self_label(content, bot_nick)
+                    if unlabelled != content:
+                        self.log.info(
+                            "assistant_completion: stripped self speaker label model=%s channel=%s",
+                            model,
+                            channel,
+                        )
+                        content = unlabelled
                     return AssistantResult(
                         content=self.sanitize_output(content),
                         prompt_tokens=total_prompt_tokens,
