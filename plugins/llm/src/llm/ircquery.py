@@ -107,6 +107,7 @@ class IrcQueryRegistry:
         self._list_cache: dict[str, tuple[float, list[ChannelRow]]] = {}
         self._names: dict[tuple[str, str], _Pending] = {}
         self._whois: dict[tuple[str, str], _Pending] = {}
+        self._generic: dict[tuple[str, str, str], _Pending] = {}
         self._errors: dict[tuple[str, str], str] = {}
 
     # ---------------------------------------------------------------- LIST
@@ -259,13 +260,83 @@ class IrcQueryRegistry:
         if pending is not None:
             pending.done.set()
 
+    # ------------------------------------------------------------- generic
+
+    # WHOWAS, WHOX, TOPIC, the network summary, CTCP replies, MONITOR and
+    # CHATHISTORY batches share one shape: raw rows keyed by (kind, target),
+    # closed by an end line. The plugin's handlers feed rows; the tool that
+    # asked turns them into fields, so this module stays protocol-agnostic.
+
+    def collect(
+        self,
+        kind: str,
+        network: str,
+        target: str,
+        send: Callable[[], None],
+        *,
+        timeout: float,
+        partial: bool = False,
+    ) -> tuple[list, str | None] | None:
+        """Wait for ``(rows, error)`` under ``(kind, target)``; None on timeout.
+
+        ``partial`` returns whatever arrived when the end line never does
+        (a client that answers CTCP VERSION but not PING, an ADMIN with no
+        259), and None only when nothing did.
+        """
+        key = (kind, network, _lower(target))
+        with self._lock:
+            pending = self._generic.get(key)
+            owner = pending is None
+            if owner:
+                pending = self._generic[key] = _Pending()
+        assert pending is not None
+        if owner:
+            send()
+        if not pending.done.wait(timeout):
+            with self._lock:
+                if self._generic.get(key) is pending:
+                    del self._generic[key]
+                rows = list(pending.rows)
+            return (rows, None) if partial and rows else None
+        return list(pending.rows), pending.error
+
+    def pending(self, kind: str, network: str, target: str) -> bool:
+        with self._lock:
+            return (kind, network, _lower(target)) in self._generic
+
+    def feed(self, kind: str, network: str, target: str, row: object) -> bool:
+        """Append ``row`` to a waiting ``(kind, target)``; False if none waits."""
+        with self._lock:
+            pending = self._generic.get((kind, network, _lower(target)))
+            if pending is None:
+                return False
+            pending.rows.append(row)
+            return True
+
+    def close(self, kind: str, network: str, target: str, error: str | None = None) -> bool:
+        """Wake the waiter on ``(kind, target)``; False if none waits."""
+        with self._lock:
+            pending = self._generic.pop((kind, network, _lower(target)), None)
+        if pending is None:
+            return False
+        pending.error = error
+        pending.done.set()
+        return True
+
     # -------------------------------------------------------------- errors
+
+    # Generic kinds whose target is a nick or channel an error numeric can
+    # name (401/403/406/442). CTCP waits are closed by their own timeout.
+    _ERROR_KINDS = ("whowas", "who", "topic")
 
     def on_error(self, network: str, target: str, text: str) -> None:
         """Close whichever pending query ``target`` names (channel, nick, or LIST)."""
         key = (network, _lower(target))
         with self._lock:
             pending = self._names.pop(key, None) or self._whois.pop(key, None)
+            for kind in self._ERROR_KINDS:
+                if pending is None:
+                    pending = self._generic.pop((kind, network, key[1]), None)
             if pending is None and target.upper() == "LIST":
                 pending = self._lists.pop(network, None)
             if pending is None:

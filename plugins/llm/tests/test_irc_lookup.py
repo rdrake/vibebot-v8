@@ -171,7 +171,7 @@ class TestIrcLookupTool:
 
         assert [s["function"]["name"] for s in schemas] == ["irc_lookup"]
         params = schemas[0]["function"]["parameters"]
-        assert params["properties"]["kind"]["enum"] == ["channels", "names", "whois"]
+        assert params["properties"]["kind"]["enum"][:3] == ["channels", "names", "whois"]
         assert set(handlers) == {"irc_lookup"}
 
     def test_channels_returns_structured_rows(self, lookup_env) -> None:
@@ -321,11 +321,7 @@ class TestIrcLookupWhois:
     def test_schema_offers_whois(self, lookup_env) -> None:
         plugin, irc, _msg = lookup_env
         schemas, _ = plugin._build_irc_lookup_tool(irc)
-        assert schemas[0]["function"]["parameters"]["properties"]["kind"]["enum"] == [
-            "channels",
-            "names",
-            "whois",
-        ]
+        assert "whois" in schemas[0]["function"]["parameters"]["properties"]["kind"]["enum"]
 
     def test_whois_sends_remote_whois_and_returns_fields(self, lookup_env) -> None:
         plugin, irc, _msg = lookup_env

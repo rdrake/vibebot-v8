@@ -201,6 +201,10 @@ _LAST_MSGID_CAP = 2000
 # (👨‍👩‍👧, 🏳️‍🌈) take several; anything longer is text, not a reaction.
 _REACT_EMOJI_MAX_CHARS = 8
 
+# WHOX query token for irc_lookup kind=who. Limnoria's own join-time WHO
+# uses "1" (irclib do354); a different token keeps the two from mixing.
+_WHO_LOOKUP_TOKEN = "7"
+
 # The stored react-only note ("[reacted 👍 to bob's message]"), as the model
 # reproduces it in plain text; see _dispatch_assistant_reply.
 _FAKE_REACT_NOTE_RE = re.compile(r"\s*\[(?:reacted|no recent message)\b", re.IGNORECASE)
@@ -853,6 +857,21 @@ def _patch_irc_docapnew() -> None:
     irclib.Irc.doCapNew = doCapNew
 
 
+# Draft caps irc_lookup kind=history and delete_last_reply need. Limnoria's
+# list has neither, and AfterNET (Nefarious) gates CHATHISTORY and REDACT on
+# them. Requested like draft/multiline: only with experimentalExtensions.
+_EXTRA_EXPERIMENTAL_CAPS = frozenset({"draft/chathistory", "draft/message-redaction"})
+
+
+def _patch_request_caps() -> None:
+    """Add _EXTRA_EXPERIMENTAL_CAPS to what Limnoria asks for at connect."""
+    from supybot import irclib
+
+    irclib.Irc.REQUEST_EXPERIMENTAL_CAPABILITIES = (
+        set(irclib.Irc.REQUEST_EXPERIMENTAL_CAPABILITIES) | _EXTRA_EXPERIMENTAL_CAPS
+    )
+
+
 def _format_compaction_outcome(
     co: CompactionOutcome,
     ao: AgingOutcome | None,
@@ -952,6 +971,7 @@ class LLM(callbacks.Plugin):
 
         _patch_irc_dojoin(self)
         _patch_irc_docapnew()
+        _patch_request_caps()
 
         # Initialize conversation context (loads persisted conversations from DB)
         self._init_context()
@@ -2616,7 +2636,7 @@ class LLM(callbacks.Plugin):
         with self._own_msgids_lock:
             return (irc.network, target) in self._own_msgids
 
-    def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg:  # noqa: N802
+    def inFilter(self, irc: callbacks.Irc, msg: IrcMsg) -> IrcMsg | None:  # noqa: N802
         """Sanitize PRIVMSG text before Limnoria's tokenizer processes it.
 
         Limnoria's command tokenizer interprets ``[…]`` as nested-command
@@ -2632,10 +2652,13 @@ class LLM(callbacks.Plugin):
            are unbalanced — prevents the tokenizer crash while keeping the
            text readable for the LLM.
         """
+        if self._capture_history(irc, msg):
+            return None
         self._remember_own_msgid(irc, msg)
         self._remember_last_msgid(irc, msg)
         if msg.command == "NOTICE":
             self._capture_ctcp_time(irc, msg)
+            self._capture_ctcp_reply(irc, msg)
         if msg.command != "PRIVMSG" or len(msg.args) < 2:
             return msg
 
@@ -2794,6 +2817,11 @@ class LLM(callbacks.Plugin):
         here costs nothing: the reply is already arriving.
         """
         args = getattr(msg, "args", ())
+        if len(args) == 9 and args[1] == _WHO_LOOKUP_TOKEN:
+            # irc_lookup kind=who: <me> 7 <chan> <user> <host> <nick> <flags>
+            # <account> :<realname>
+            self._irc_queries.feed("who", self._network_of(irc), args[2], tuple(args[3:]))
+            return
         if len(args) != 9 or args[1] != "1":
             return
         nick, status = args[5], args[6]
@@ -2851,11 +2879,21 @@ class LLM(callbacks.Plugin):
 
     do401 = do403
     do263 = do403
+    do406 = do403  # ERR_WASNOSUCHNICK
+    do442 = do403  # ERR_NOTONCHANNEL (TOPIC)
 
     def do311(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """WHOIS body lines: ``<me> <nick> ...`` — parsed in ircquery."""
         if len(msg.args) >= 2:
             self._irc_queries.on_whois_numeric(self._network_of(irc), msg.command, msg.args[1:])
+            if msg.command in ("312", "301"):
+                # WHOWAS reuses 312 (server + signoff time) and 301 (away).
+                self._irc_queries.feed(
+                    "whowas",
+                    self._network_of(irc),
+                    msg.args[1],
+                    (msg.command, tuple(msg.args[1:])),
+                )
 
     do301 = do311
     do312 = do311
@@ -2868,6 +2906,145 @@ class LLM(callbacks.Plugin):
         """RPL_ENDOFWHOIS."""
         if len(msg.args) >= 2:
             self._irc_queries.on_whois_end(self._network_of(irc), msg.args[1])
+
+    # -- generic collectors (see IrcQueryRegistry.collect) ------------------
+
+    def _feed_query(self, irc: callbacks.Irc, kind: str, target: str, msg: IrcMsg) -> bool:
+        return self._irc_queries.feed(
+            kind, self._network_of(irc), target, (msg.command, tuple(msg.args[1:]))
+        )
+
+    def do314(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_WHOWASUSER: ``<me> <nick> <user> <host> * :<realname>``."""
+        if len(msg.args) >= 2:
+            self._feed_query(irc, "whowas", msg.args[1], msg)
+
+    def do369(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_ENDOFWHOWAS."""
+        if len(msg.args) >= 2:
+            self._irc_queries.close("whowas", self._network_of(irc), msg.args[1])
+
+    def do332(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_TOPIC: ``<me> <channel> :<topic>``."""
+        if len(msg.args) >= 3:
+            self._feed_query(irc, "topic", msg.args[1], msg)
+
+    def do333(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_TOPICWHOTIME: ``<me> <channel> <setter> <ts>`` — ends a TOPIC."""
+        if len(msg.args) >= 2 and self._feed_query(irc, "topic", msg.args[1], msg):
+            self._irc_queries.close("topic", self._network_of(irc), msg.args[1])
+
+    def do331(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_NOTOPIC."""
+        if len(msg.args) >= 2:
+            self._irc_queries.close(
+                "topic", self._network_of(irc), msg.args[1], error="no topic is set"
+            )
+
+    def do251(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """LUSERS / VERSION / ADMIN lines for the ``network`` lookup."""
+        self._feed_query(irc, "network", "*", msg)
+        if msg.command in ("259", "423"):
+            # ADMIN is sent last, so its end (or "no admin info") ends it all.
+            self._irc_queries.close("network", self._network_of(irc), "*")
+
+    do252 = do251
+    do253 = do251
+    do254 = do251
+    do255 = do251
+    do256 = do251
+    do257 = do251
+    do258 = do251
+    do259 = do251
+    do265 = do251
+    do266 = do251
+    do351 = do251
+    do423 = do251
+
+    def _query_collect(
+        self,
+        irc: callbacks.Irc,
+        kind: str,
+        target: str,
+        *lines: ircmsgs.IrcMsg,
+        timeout: float | None = None,
+        partial: bool = False,
+    ) -> tuple[list, str | None] | None:
+        """Send ``lines`` and wait for the rows a ``(kind, target)`` collects."""
+
+        def send() -> None:
+            with self._irc_send_lock:
+                for line in lines:
+                    irc.queueMsg(line)
+
+        return self._irc_queries.collect(
+            kind,
+            self._network_of(irc),
+            target,
+            send,
+            timeout=self._IRC_QUERY_TIMEOUT if timeout is None else timeout,
+            partial=partial,
+        )
+
+    # CTCP replies come from a user's client, which may ignore them entirely.
+    _CTCP_TIMEOUT = 6.0
+
+    def _capture_ctcp_reply(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Hand a CTCP VERSION / PING reply NOTICE to the lookup waiting on it."""
+        if len(msg.args) < 2 or not ircutils.strEqual(msg.args[0], irc.nick):
+            return
+        text = msg.args[1]
+        for kind in ("VERSION", "PING"):
+            if text.startswith(f"\x01{kind} "):
+                body = text[len(kind) + 2 :].rstrip("\x01")
+                net = self._network_of(irc)
+                if self._irc_queries.feed(f"ctcp-{kind}", net, msg.nick or "", body):
+                    self._irc_queries.close(f"ctcp-{kind}", net, msg.nick or "")
+                return
+
+    # CHATHISTORY: the server answers with a ``chathistory`` BATCH of
+    # PRIVMSG / NOTICE lines. inFilter hands them to the waiting lookup and
+    # drops them, so a replayed "vibebot ..." is never answered twice and
+    # ChannelLogger does not log an hour of chat a second time.
+
+    @staticmethod
+    def _history_batch(irc: callbacks.Irc, msg: IrcMsg):
+        """The chathistory batch ``msg`` belongs to, or None."""
+        if not (getattr(msg, "server_tags", None) or {}).get("batch"):
+            return None
+        try:
+            batches = irc.state.getParentBatches(msg)
+        except (ValueError, AttributeError):
+            return None
+        for batch in batches:
+            if batch.type == "chathistory":
+                return batch
+        return None
+
+    def _capture_history(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
+        """Feed a chathistory line, or close on its batch end.
+
+        True means ``msg`` is a replayed history line and must be dropped,
+        whether or not a lookup was still waiting for it: nothing in this
+        plugin should act on a line from an hour ago.
+        """
+        net = self._network_of(irc)
+        if msg.command == "BATCH":
+            if msg.args and msg.args[0].startswith("-"):
+                batch = msg.tagged("batch")
+                if batch is not None and batch.type == "chathistory" and batch.arguments:
+                    self._irc_queries.close("history", net, batch.arguments[0])
+            return False
+        if msg.command not in ("PRIVMSG", "NOTICE") or len(msg.args) < 2:
+            return False
+        batch = self._history_batch(irc, msg)
+        if batch is None:
+            return False
+        if batch.arguments:
+            tags = getattr(msg, "server_tags", None) or {}
+            row = (tags.get("time", ""), msg.nick or "", msg.args[1], tags.get("msgid", ""))
+            self._irc_queries.feed("history", net, batch.arguments[0], row)
+        return True
 
     def _query_channels(self, irc: callbacks.Irc) -> list[ircquery.ChannelRow] | None:
         """Fetch (or reuse the cached) LIST for this network; None on silence."""
@@ -3102,6 +3279,7 @@ class LLM(callbacks.Plugin):
         notified yet, send the startup notification.
         """
         channel = msg.args[1]
+        self._irc_queries.close("who", self._network_of(irc), channel)
         self._pending_channels.discard(channel)
 
         if not self._pending_channels and not self._startup_notified:
@@ -4272,12 +4450,14 @@ class LLM(callbacks.Plugin):
             return bare
         return f'{head} "{clipped}"{tail}'
 
-    def _build_irc_lookup_tool(self, irc: callbacks.Irc):
+    def _build_irc_lookup_tool(self, irc: callbacks.Irc, channel: str = ""):
         """Build the per-request ``irc_lookup`` tool schema + handler.
 
         Same shape as :meth:`_build_bridge_tool` and injected the same way:
         the handler closes over the live ``irc`` so it can send LIST / NAMES
-        and wait on the numerics. Returns ``([schema], {"irc_lookup": fn})``.
+        and wait on the numerics. ``channel`` is where the request came from:
+        kind=history reads only that channel. Returns
+        ``([schema], {"irc_lookup": fn})``.
         """
         from .assistant import ToolResult
 
@@ -4296,17 +4476,49 @@ class LLM(callbacks.Plugin):
                     "their host, real name, server, channels, account, idle "
                     "time and whether they are an IRC operator. Use it whenever "
                     "someone asks who a nick is, whether they are online, or "
-                    "what channels they are in."
+                    "what channels they are in. kind='whowas' is for a nick "
+                    "that is gone: when they left, their host and quit-time "
+                    "server. kind='who' lists a channel's members with who is "
+                    "away, an oper, an op/voice, a bot, and their account. "
+                    "kind='topic' gives a channel's topic and who set it when. "
+                    "kind='network' gives user/oper/channel counts, the server "
+                    "software and the admin contact. kind='ctcp_version' asks a "
+                    "nick's IRC client what it is; kind='ctcp_ping' measures "
+                    "their lag (many clients ignore both). kind='history' "
+                    "returns the recent lines of THIS channel from the server's "
+                    "history, newest last (count up to 100, default 50): use it "
+                    "for 'what did I miss', 'summarize the last hour', or what "
+                    "someone said earlier."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "kind": {"type": "string", "enum": ["channels", "names", "whois"]},
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "channels",
+                                "names",
+                                "whois",
+                                "whowas",
+                                "who",
+                                "topic",
+                                "network",
+                                "ctcp_version",
+                                "ctcp_ping",
+                                "history",
+                            ],
+                        },
                         "target": {
                             "type": "string",
                             "description": (
-                                "Channel name or glob (channels), channel (names), or nick (whois)."
+                                "Channel name or glob (channels), channel (names, "
+                                "who, topic), or nick (whois, whowas, ctcp_*). "
+                                "Omit for network and history."
                             ),
+                        },
+                        "count": {
+                            "type": "integer",
+                            "description": "Lines of history to fetch (1-100).",
                         },
                     },
                     "required": ["kind"],
@@ -4384,11 +4596,202 @@ class LLM(callbacks.Plugin):
                     "nicks": result.nicks[:100],
                 }
                 return ToolResult(content=json.dumps(envelope))
-            return ToolResult(
-                content=json.dumps({"error": "kind must be 'channels', 'names' or 'whois'"})
-            )
+            extra = self._irc_lookup_more(irc, kind, target, channel, arguments.get("count"))
+            if extra is not None:
+                return ToolResult(content=json.dumps(extra))
+            return ToolResult(content=json.dumps({"error": "unknown kind"}))
 
         return [schema], {"irc_lookup": handler}
+
+    def _irc_lookup_more(
+        self, irc: callbacks.Irc, kind: str, target: str, channel: str, count: Any
+    ) -> dict[str, Any] | None:
+        """irc_lookup kinds past channels/names/whois; None for an unknown kind."""
+        silent = {"error": self._IRC_QUERY_SILENT}
+        needs_nick = kind in ("whowas", "ctcp_version", "ctcp_ping")
+        if needs_nick and (
+            not target or len(target) > 64 or not ircutils.isNick(target, strictRfc=False)
+        ):
+            return {"error": "target must be a nick"}
+        if kind in ("who", "topic") and not ircutils.isChannel(target):
+            return {"error": "target must be a channel name like #chan"}
+
+        if kind == "whowas":
+            got = self._query_collect(
+                irc, "whowas", target, ircmsgs.IrcMsg(command="WHOWAS", args=(target, "3"))
+            )
+            if got is None:
+                return silent
+            rows, error = got
+            if error:
+                return {"error": error}
+            entries: list[dict[str, Any]] = []
+            for numeric, args in rows:
+                if numeric == "314" and len(args) >= 5:
+                    entries.append(
+                        {
+                            "nick": args[0],
+                            "user": args[1],
+                            "host": args[2],
+                            "realname": ircquery.clean_text(args[4], 120),
+                        }
+                    )
+                elif numeric == "312" and entries and len(args) >= 3:
+                    entries[-1]["server"] = args[1]
+                    entries[-1]["last_seen"] = args[2]
+                elif numeric == "301" and entries and len(args) >= 2:
+                    entries[-1]["away"] = ircquery.clean_text(args[1], 120)
+            return {"status": "ok", "nick": target, "entries": entries}
+
+        if kind == "who":
+            got = self._query_collect(
+                irc,
+                "who",
+                target,
+                ircmsgs.IrcMsg(command="WHO", args=(target, f"%tcuhnfar,{_WHO_LOOKUP_TOKEN}")),
+            )
+            if got is None:
+                return silent
+            rows, error = got
+            if error:
+                return {"error": error}
+            members = []
+            for user, host, nick, flags, account, realname in (r for r in rows if len(r) == 6):
+                members.append(
+                    {
+                        "nick": nick,
+                        "away": flags.startswith("G"),
+                        "oper": "*" in flags,
+                        "status": "".join(c for c in flags if c in "@%+"),
+                        "bot": "B" in flags,
+                        "account": None if account == "0" else account,
+                        "host": f"{user}@{host}",
+                        "realname": ircquery.clean_text(realname, 60),
+                    }
+                )
+            return {
+                "status": "ok",
+                "channel": target,
+                "count": len(members),
+                "members": members[:100],
+            }
+
+        if kind == "topic":
+            if target in irc.state.channels:
+                got = self._query_collect(
+                    irc, "topic", target, ircmsgs.IrcMsg(command="TOPIC", args=(target,))
+                )
+                if got is None:
+                    return silent
+                rows, error = got
+                if error:
+                    return {"status": "ok", "channel": target, "topic": None, "note": error}
+                out: dict[str, Any] = {"status": "ok", "channel": target}
+                for numeric, args in rows:
+                    if numeric == "332" and len(args) >= 2:
+                        out["topic"] = ircquery.clean_text(args[1], 300)
+                    elif numeric == "333" and len(args) >= 3:
+                        out["set_by"] = args[1].split("!", 1)[0]
+                        with contextlib.suppress(ValueError):
+                            out["set_at"] = datetime.fromtimestamp(int(args[2]), UTC).isoformat()
+                return out
+            # Not joined: Limnoria's state would throw on the 332, and LIST
+            # carries the topic (without the setter) for any public channel.
+            listed = self._query_channels(irc)
+            if listed is None:
+                return silent
+            for r in listed:
+                if ircutils.strEqual(r.name, target):
+                    return {
+                        "status": "ok",
+                        "channel": r.name,
+                        "topic": ircquery.clean_text(r.topic, 300),
+                        "note": "setter unknown: the bot is not in this channel",
+                    }
+            return {"error": "no such public channel"}
+
+        if kind == "network":
+            got = self._query_collect(
+                irc,
+                "network",
+                "*",
+                ircmsgs.IrcMsg(command="LUSERS"),
+                ircmsgs.IrcMsg(command="VERSION"),
+                ircmsgs.IrcMsg(command="ADMIN"),
+                partial=True,
+            )
+            if got is None:
+                return silent
+            rows, _ = got
+            lines: dict[str, list[str]] = {"users": [], "server": [], "admin": []}
+            for numeric, args in rows:
+                if numeric in ("251", "255", "265", "266") and args:
+                    lines["users"].append(args[-1])
+                elif numeric in ("252", "253", "254") and len(args) >= 2:
+                    lines["users"].append(f"{args[0]} {args[1]}")
+                elif numeric == "351" and len(args) >= 2:
+                    lines["server"].append(f"{args[0]} on {args[1]}")
+                elif numeric in ("257", "258", "259") and args:
+                    lines["admin"].append(ircquery.clean_text(args[-1], 120))
+            return {"status": "ok", "network": self._network_of(irc), **lines}
+
+        if kind in ("ctcp_version", "ctcp_ping"):
+            what = "VERSION" if kind == "ctcp_version" else "PING"
+            stamp = str(int(time.time() * 1000))
+            payload = f"\x01{what}\x01" if what == "VERSION" else f"\x01PING {stamp}\x01"
+            got = self._query_collect(
+                irc,
+                f"ctcp-{what}",
+                target,
+                ircmsgs.privmsg(target, payload),
+                timeout=self._CTCP_TIMEOUT,
+            )
+            if got is None or not got[0]:
+                return {
+                    "status": "ok",
+                    "nick": target,
+                    "reply": None,
+                    "note": "no reply: the client ignores CTCP or the nick is offline",
+                }
+            body = str(got[0][0])
+            if what == "VERSION":
+                return {"status": "ok", "nick": target, "client": ircquery.clean_text(body, 200)}
+            try:
+                lag_ms = int(time.time() * 1000) - int(body.split()[0])
+            except (ValueError, IndexError):
+                return {"status": "ok", "nick": target, "reply": ircquery.clean_text(body, 60)}
+            return {"status": "ok", "nick": target, "lag_ms": lag_ms}
+
+        if kind == "history":
+            if not ircutils.isChannel(channel):
+                return {"error": "history works in a channel, not a private message"}
+            if target and not ircutils.strEqual(target, channel):
+                return {"error": f"history only covers this channel ({channel})"}
+            try:
+                n = max(1, min(100, int(count))) if count is not None else 50
+            except (TypeError, ValueError):
+                n = 50
+            if "draft/chathistory" not in getattr(irc.state, "capabilities_ack", set()):
+                return {"error": "the server has not granted chat history to the bot"}
+            got = self._query_collect(
+                irc,
+                "history",
+                channel,
+                ircmsgs.IrcMsg(command="CHATHISTORY", args=("LATEST", channel, "*", str(n))),
+            )
+            if got is None:
+                return silent
+            rows, _ = got
+            out_lines = []
+            for ts, nick, text, _msgid in rows:
+                hhmm = ts[11:16] if len(ts) >= 16 else "?"
+                body = text
+                if body.startswith("\x01ACTION ") and body.endswith("\x01"):
+                    body = f"* {body[8:-1]}"
+                out_lines.append(f"{hhmm} <{nick}> {ircquery.clean_text(body, 300)}")
+            return {"status": "ok", "channel": channel, "times": "UTC", "lines": out_lines}
+
+        return None
 
     @staticmethod
     def _valid_react_emoji(emoji: str) -> bool:
@@ -7358,7 +7761,7 @@ class LLM(callbacks.Plugin):
                 # them it is advertised to every speaker so the channel's
                 # cacheable prompt prefix stays byte-stable.
                 if self.registryValue("ircLookupEnabled", channel):
-                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc)
+                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc, channel)
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 if self.registryValue("reactEnabled", channel):

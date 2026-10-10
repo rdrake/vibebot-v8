@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm import ircquery
 from llm.service import AssistantResult
 
 from .conftest import make_registry_side_effect, make_reminder_row
@@ -1432,6 +1433,7 @@ class TestStartupNotification:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         plugin._pending_channels = set()
+        plugin._irc_queries = ircquery.IrcQueryRegistry()
         plugin._startup_notified = False
         plugin.log = mocker.MagicMock()
 

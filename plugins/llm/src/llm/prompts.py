@@ -157,7 +157,13 @@ IRC_LOOKUP_GUIDANCE = (
     "for a nick, names or channels for a channel) before answering — never "
     "answer from conversation history, memories, or a guess, and never say "
     "you have no record of someone without calling it first. A nick you "
-    "have never seen is exactly the case it is for."
+    "have never seen is exactly the case it is for. The same rule covers "
+    "when someone left or was last on (kind=whowas), who in a channel is "
+    "away, an op or a bot (kind=who), who set the topic (kind=topic), how "
+    "big the network is or what server it runs (kind=network), what client "
+    "or lag someone has (kind=ctcp_version / ctcp_ping), and 'what did I "
+    "miss', 'summarize the last hour' or what someone said earlier here "
+    "(kind=history) — your conversation history is not the channel's."
 )
 
 
