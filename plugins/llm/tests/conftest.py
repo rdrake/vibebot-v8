@@ -746,6 +746,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "memeEnabled": False,
         # Same reason: opt in per test (config.py defaults it True).
         "reactEnabled": False,
+        "redactEnabled": False,
+        "notifyOnlineEnabled": False,
         # story (mirrors draw — expensive image command)
         "storyRateLimitCount": 2,
         "storyRateLimitWindow": 300,

@@ -47,6 +47,7 @@ from .profile import (
     PROFILES,
 )
 from .service import (
+    SILENT_TOOLS,
     AssistantRequestContext,
     AssistantResult,
     CompletionResult,
@@ -201,13 +202,25 @@ _LAST_MSGID_CAP = 2000
 # (👨‍👩‍👧, 🏳️‍🌈) take several; anything longer is text, not a reaction.
 _REACT_EMOJI_MAX_CHARS = 8
 
+# delete_last_reply: how many of the bot's own lines to remember per
+# channel, and how far apart two lines can be and still be one reply (a
+# long answer goes out as several lines over a second or two).
+_OWN_LINES_PER_TARGET = 20
+_REPLY_BURST_SECONDS = 5.0
+
+# notify_when_online limits: MONITOR holds 128 nicks per connection on
+# AfterNET; one person should not fill it, and a watch nobody saw fire in a
+# week is stale.
+_WATCHES_PER_REQUESTER = 5
+_WATCH_MAX_AGE = 7 * 86400
+
 # WHOX query token for irc_lookup kind=who. Limnoria's own join-time WHO
 # uses "1" (irclib do354); a different token keeps the two from mixing.
 _WHO_LOOKUP_TOKEN = "7"
 
 # The stored react-only note ("[reacted 👍 to bob's message]"), as the model
 # reproduces it in plain text; see _dispatch_assistant_reply.
-_FAKE_REACT_NOTE_RE = re.compile(r"\s*\[(?:reacted|no recent message)\b", re.IGNORECASE)
+_FAKE_REACT_NOTE_RE = re.compile(r"\s*\[(?:reacted|no recent message|deleted my)\b", re.IGNORECASE)
 
 # Re-ask the network about an unflagged nick at most this often. A WHO per
 # stranger is cheap, one per stranger per hour is nothing, and the answer is
@@ -2581,6 +2594,21 @@ class LLM(callbacks.Plugin):
             self._own_msgids[(irc.network, msgid)] = None
             while len(self._own_msgids) > _OWN_MSGID_CAP:
                 self._own_msgids.popitem(last=False)
+        # delete_last_reply's view: the bot's recent lines per target. A
+        # multiline reply is one BATCH (its opener's msgid redacts the lot).
+        if msg.command == "BATCH":
+            target = msg.args[2] if len(msg.args) >= 3 else ""
+        else:
+            target = msg.args[0] if msg.args else ""
+        if not target:
+            return
+        own_lines = getattr(self, "_own_lines", None)
+        if own_lines is None:
+            own_lines = self._own_lines = {}
+        key = (irc.network, ircutils.toLower(target))
+        with self._own_msgids_lock:
+            lines = own_lines.setdefault(key, collections.deque(maxlen=_OWN_LINES_PER_TARGET))
+            lines.append((msgid, time.time()))
 
     def _remember_last_msgid(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Record the msgid of each channel PRIVMSG under its sender, so the
@@ -3294,6 +3322,8 @@ class LLM(callbacks.Plugin):
         """
         self._pending_channels.clear()
         self._startup_notified = False
+        if hasattr(self, "db"):
+            self._resend_monitors(irc)
 
         # If no channels are configured, send notification immediately
         # (we need to check after a short delay to allow channel joins to start)
@@ -4903,6 +4933,214 @@ class LLM(callbacks.Plugin):
 
         return [schema], {"react": handler}
 
+    def _build_redact_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+        """Build the per-request ``delete_last_reply`` tool (IRCv3 REDACT).
+
+        Takes back the bot's latest reply where the request came from: every
+        line it sent within _REPLY_BURST_SECONDS of its newest one. Silent
+        like react. Returns ``([schema], {"delete_last_reply": fn})``.
+        """
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "delete_last_reply",
+                "description": (
+                    "Delete your own most recent reply in this channel (it "
+                    "disappears for people whose clients support message "
+                    "deletion). Use when someone asks you to delete, remove or "
+                    "take back what you just said. A successful delete IS your "
+                    "whole reply: no text is sent after it."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            where = msg.args[0] if msg.args else ""
+            target = where if ircutils.isChannel(where) else msg.nick
+            self.log.info("delete_last_reply: target=%r network=%s", target, self._network_of(irc))
+            if "draft/message-redaction" not in getattr(irc.state, "capabilities_ack", set()):
+                return ToolResult(
+                    content=json.dumps({"error": "the server has not granted message deletion"})
+                )
+            key = (irc.network, ircutils.toLower(target))
+            with self._own_msgids_lock:
+                lines = getattr(self, "_own_lines", {}).get(key)
+                if not lines:
+                    burst: list[str] = []
+                else:
+                    newest = lines[-1][1]
+                    burst = [m for m, ts in lines if newest - ts <= _REPLY_BURST_SECONDS]
+                    # Forget them, so a second "delete that" reaches further back.
+                    while lines and lines[-1][0] in burst:
+                        lines.pop()
+            if not burst:
+                return ToolResult(
+                    content=json.dumps(
+                        {"error": "no reply of mine here to delete (I forget them on restart)"}
+                    )
+                )
+            for msgid in burst:
+                self._safe_queue(
+                    irc,
+                    ircmsgs.IrcMsg(command="REDACT", args=(target, msgid, f"asked by {msg.nick}")),
+                )
+            n = len(burst)
+            return ToolResult(
+                content=json.dumps(
+                    {
+                        "status": "ok",
+                        "message": f"deleted my last reply ({n} line{'s' if n != 1 else ''})",
+                    }
+                )
+            )
+
+        return [schema], {"delete_last_reply": handler}
+
+    def _build_notify_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+        """Build the per-request ``notify_when_online`` tool (IRC MONITOR).
+
+        Returns ``([schema], {"notify_when_online": fn})``.
+        """
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "notify_when_online",
+                "description": (
+                    "Tell the asker when a nick comes online (the server "
+                    "pushes the sign-on; nothing polls). action='watch' "
+                    "(default) starts a watch and says whether they are "
+                    "already on; action='cancel' stops one; action='list' "
+                    "shows the asker's watches. A watch fires once, then ends; "
+                    "it lapses after 7 days."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "nick": {"type": "string", "description": "Who to watch for."},
+                        "action": {"type": "string", "enum": ["watch", "cancel", "list"]},
+                    },
+                },
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            action = str(arguments.get("action", "") or "watch").strip().lower()
+            nick = str(arguments.get("nick", "") or "").strip()
+            net = self._network_of(irc)
+            requester = msg.nick or ""
+            where = msg.args[0] if msg.args else ""
+            target = where if ircutils.isChannel(where) else requester
+            self.log.info("notify_when_online: action=%s nick=%r network=%s", action, nick, net)
+
+            def result(payload: dict[str, Any]) -> ToolResult:
+                return ToolResult(content=json.dumps(payload))
+
+            if action == "list":
+                mine = self.db.list_nick_watches(net, requester, max_age=_WATCH_MAX_AGE)
+                return result({"status": "ok", "watching": mine})
+            if not nick or len(nick) > 64 or not ircutils.isNick(nick, strictRfc=False):
+                return result({"error": "nick must be an IRC nick"})
+            if ircutils.strEqual(nick, irc.nick):
+                return result({"error": "that is me"})
+            if action == "cancel":
+                if not self.db.delete_nick_watch(net, nick, requester):
+                    return result({"error": f"you were not watching {nick}"})
+                if nick.lower() not in self.db.list_nick_watches(net):
+                    self._safe_queue(irc, ircmsgs.IrcMsg(command="MONITOR", args=("-", nick)))
+                return result({"status": "ok", "message": f"stopped watching {nick}"})
+            if action != "watch":
+                return result({"error": "action must be watch, cancel or list"})
+            mine = self.db.list_nick_watches(net, requester, max_age=_WATCH_MAX_AGE)
+            if nick.lower() not in mine and len(mine) >= _WATCHES_PER_REQUESTER:
+                return result({"error": f"you already watch {len(mine)} nicks; cancel one first"})
+            got = self._query_collect(
+                irc, "monitor", nick, ircmsgs.IrcMsg(command="MONITOR", args=("+", nick))
+            )
+            status = got[0][0] if got and got[0] else None
+            if got and got[1]:
+                return result({"error": got[1]})
+            if status == "730":
+                if nick.lower() not in self.db.list_nick_watches(net):
+                    self._safe_queue(irc, ircmsgs.IrcMsg(command="MONITOR", args=("-", nick)))
+                return result({"status": "ok", "online": True, "message": f"{nick} is online now"})
+            # Offline (731), or the server stayed silent: watch either way.
+            self.db.add_nick_watch(net, nick, requester, target)
+            return result(
+                {
+                    "status": "ok",
+                    "online": False,
+                    "message": f"{nick} is offline; {requester} will be told here when they sign on",
+                }
+            )
+
+        return [schema], {"notify_when_online": handler}
+
+    # -- MONITOR numerics ----------------------------------------------------
+
+    @staticmethod
+    def _monitor_nicks(msg: IrcMsg) -> list[str]:
+        """Nicks out of a 730/731 target list: ``nick!user@host,nick2,...``."""
+        if len(msg.args) < 2:
+            return []
+        return [t.split("!", 1)[0] for t in msg.args[-1].split(",") if t]
+
+    def do730(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """RPL_MONONLINE: answer a pending watch, or deliver the sign-on."""
+        net = self._network_of(irc)
+        for nick in self._monitor_nicks(msg):
+            if self._irc_queries.feed("monitor", net, nick, msg.command):
+                self._irc_queries.close("monitor", net, nick)
+                continue
+            if msg.command != "730":
+                continue
+            try:
+                watchers = self.db.pop_nick_watches(net, nick)
+            except Exception:
+                self.log.exception("notify_when_online: watch lookup failed for %s", nick)
+                continue
+            for requester, target in watchers:
+                self.log.info(
+                    "notify_when_online: %s is on, telling %s in %s", nick, requester, target
+                )
+                self._safe_queue(
+                    irc, ircmsgs.privmsg(target, f"{requester}: {nick} is online now.")
+                )
+            if watchers:
+                self._safe_queue(irc, ircmsgs.IrcMsg(command="MONITOR", args=("-", nick)))
+
+    do731 = do730  # RPL_MONOFFLINE
+
+    def do734(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """ERR_MONLISTFULL: ``<me> <limit> <targets> :<text>``."""
+        if len(msg.args) >= 3:
+            for nick in msg.args[2].split(","):
+                self._irc_queries.close(
+                    "monitor", self._network_of(irc), nick, error="the bot's watch list is full"
+                )
+
+    def _resend_monitors(self, irc: callbacks.Irc) -> None:
+        """MONITOR lists die with the connection: re-add every stored watch."""
+        try:
+            nicks = self.db.list_nick_watches(self._network_of(irc), max_age=_WATCH_MAX_AGE)
+        except Exception:
+            self.log.exception("notify_when_online: could not reload watches")
+            return
+        chunk: list[str] = []
+        for nick in [*nicks, None]:
+            if nick is not None and len(",".join([*chunk, nick])) < 400:
+                chunk.append(nick)
+                continue
+            if chunk:
+                self._safe_queue(
+                    irc, ircmsgs.IrcMsg(command="MONITOR", args=("+", ",".join(chunk)))
+                )
+            chunk = [nick] if nick is not None else []
+
     def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
         """Build the per-request Limnoria bridge tool schemas + handlers.
 
@@ -5510,7 +5748,7 @@ class LLM(callbacks.Plugin):
         # A react-only turn (see the short-circuit in assistant_completion):
         # the emoji is the reply. Nothing goes to IRC, but the stored turn
         # says what happened, for the same reason the reminder note does.
-        if result.last_successful_tool == "react" and not (response or "").strip():
+        if result.last_successful_tool in SILENT_TOOLS and not (response or "").strip():
             detail = result.last_tool_message.strip()
             self.log.info("react-only reply %s/%s: %s", channel, nick, detail)
             return (f"[{detail}]" if detail else "[reacted]"), True
@@ -7768,6 +8006,14 @@ class LLM(callbacks.Plugin):
                     react_schemas, react_handlers = self._build_react_tool(irc, msg)
                     bridge_schemas = [*(bridge_schemas or []), *react_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **react_handlers}
+                if self.registryValue("redactEnabled", channel):
+                    redact_schemas, redact_handlers = self._build_redact_tool(irc, msg)
+                    bridge_schemas = [*(bridge_schemas or []), *redact_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **redact_handlers}
+                if self.registryValue("notifyOnlineEnabled", channel):
+                    notify_schemas, notify_handlers = self._build_notify_tool(irc, msg)
+                    bridge_schemas = [*(bridge_schemas or []), *notify_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **notify_handlers}
                 if self.registryValue("memeEnabled", channel):
                     meme_schemas, meme_handlers = self._build_meme_tool(msg)
                     bridge_schemas = [*(bridge_schemas or []), *meme_schemas]

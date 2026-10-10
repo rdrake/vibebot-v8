@@ -1365,6 +1365,30 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "redactEnabled",
+    registry.Boolean(
+        True,
+        _("""When True, chat advertises the delete_last_reply tool: "delete
+        that" takes back the bot's latest reply in the channel with IRCv3
+        REDACT (draft/message-redaction). Like react, a successful delete
+        sends no text."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "notifyOnlineEnabled",
+    registry.Boolean(
+        True,
+        _("""When True, chat advertises the notify_when_online tool: "tell me
+        when Larry is on" adds Larry to the bot's IRC MONITOR list and says so
+        in the channel when he signs on. Watches fire once, are kept across
+        restarts, and lapse after 7 days; 5 per person."""),
+    ),
+)
+
 # ============================================================================
 # Limnoria tool bridge (Phase 1)
 # ============================================================================

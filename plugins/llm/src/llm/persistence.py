@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -655,6 +655,22 @@ class LLMDatabase:
                     msgid TEXT NOT NULL,
                     seen_at REAL NOT NULL,
                     PRIMARY KEY (network, channel, nick)
+                );
+            """)
+            conn.commit()
+
+        if current_version < 23:
+            # notify_when_online: who asked to hear when a nick signs on, and
+            # where to say it. MONITOR lists die with the connection, so the
+            # plugin re-sends them from here on every connect.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS nick_watches (
+                    network TEXT NOT NULL,
+                    nick TEXT NOT NULL,
+                    requester TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (network, nick, requester)
                 );
             """)
             conn.commit()
@@ -2363,6 +2379,61 @@ class LLMDatabase:
             (limit,),
         ).fetchall()
         return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+    def add_nick_watch(self, network: str, nick: str, requester: str, target: str) -> None:
+        """Record (or refresh) ``requester``'s watch on ``nick``."""
+        with self._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO nick_watches (network, nick, requester, target, created_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(network, nick, requester) DO UPDATE SET "
+                "target = excluded.target, created_at = excluded.created_at",
+                (network, nick.lower(), requester.lower(), target, time.time()),
+            )
+
+    def pop_nick_watches(self, network: str, nick: str) -> list[tuple[str, str]]:
+        """Remove and return every ``(requester, target)`` watching ``nick``."""
+        with self._write_txn() as conn:
+            rows = conn.execute(
+                "SELECT requester, target FROM nick_watches WHERE network = ? AND nick = ?",
+                (network, nick.lower()),
+            ).fetchall()
+            conn.execute(
+                "DELETE FROM nick_watches WHERE network = ? AND nick = ?",
+                (network, nick.lower()),
+            )
+        return [(r[0], r[1]) for r in rows]
+
+    def delete_nick_watch(self, network: str, nick: str, requester: str) -> bool:
+        with self._write_txn() as conn:
+            cur = conn.execute(
+                "DELETE FROM nick_watches WHERE network = ? AND nick = ? AND requester = ?",
+                (network, nick.lower(), requester.lower()),
+            )
+        return cur.rowcount > 0
+
+    def list_nick_watches(
+        self, network: str, requester: str | None = None, *, max_age: float | None = None
+    ) -> list[str]:
+        """Watched nicks on ``network`` (one requester's, or everyone's),
+        dropping any older than ``max_age`` seconds first."""
+        if max_age is not None:
+            with self._write_txn() as conn:
+                conn.execute(
+                    "DELETE FROM nick_watches WHERE created_at < ?", (time.time() - max_age,)
+                )
+        conn = self._connect()
+        if requester is None:
+            rows = conn.execute(
+                "SELECT DISTINCT nick FROM nick_watches WHERE network = ? ORDER BY nick",
+                (network,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT nick FROM nick_watches WHERE network = ? AND requester = ? ORDER BY nick",
+                (network, requester.lower()),
+            ).fetchall()
+        return [r[0] for r in rows]
 
     # ------------------------------------------------------------------
     # Avatar persona operations (verse-only, separate from user_instructions)

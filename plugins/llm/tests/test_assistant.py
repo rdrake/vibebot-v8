@@ -2119,8 +2119,10 @@ class TestMetaCompletion:
         # step_2 skipped — only the first (tool-calling) completion ran.
         assert completion.call_count == 1
 
-    def _run_react(self, service, mocker, handler, *, alongside: str | None = None):  # type: ignore[no-untyped-def]
-        tool_call = make_tool_call("react", {"emoji": "👍"}, call_id="call_r")
+    def _run_react(
+        self, service, mocker, handler, *, alongside: str | None = None, tool: str = "react"
+    ):  # type: ignore[no-untyped-def]
+        tool_call = make_tool_call(tool, {"emoji": "👍"}, call_id="call_r")
         first = make_completion_response(alongside, tool_calls=[tool_call])
         second = make_completion_response("Reacted with 👍!")
         completion = mocker.patch(
@@ -2140,7 +2142,7 @@ class TestMetaCompletion:
             db=mocker.MagicMock(),
             context=mocker.MagicMock(),
             bot_nick="VibeBot",
-            extra_handlers={"react": handler},
+            extra_handlers={tool: handler},
         )
         return result, completion
 
@@ -2162,6 +2164,21 @@ class TestMetaCompletion:
         assert result.content == ""
         assert result.last_successful_tool == "react"
         assert result.last_tool_message == "reacted 👍 to bob's message"
+        assert completion.call_count == 1
+
+    def test_delete_last_reply_is_silent_too(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        handler = mocker.MagicMock(
+            return_value=ToolResult(
+                content='{"status": "ok", "message": "deleted my last reply (1 line)"}'
+            )
+        )
+
+        result, completion = self._run_react(service, mocker, handler, tool="delete_last_reply")
+
+        assert result.content == ""
+        assert result.last_successful_tool == "delete_last_reply"
         assert completion.call_count == 1
 
     def test_failed_react_falls_through_to_text(

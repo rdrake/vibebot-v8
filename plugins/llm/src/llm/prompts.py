@@ -178,6 +178,19 @@ REACT_GUIDANCE = (
 )
 
 
+# Appended ONLY when delete_last_reply / notify_when_online are injected.
+REDACT_GUIDANCE = (
+    "- delete_last_reply takes back your latest reply here and sends no text. "
+    "Call it when someone asks you to delete, remove or take back what you "
+    "said; never claim you deleted something without calling it."
+)
+NOTIFY_GUIDANCE = (
+    "- notify_when_online: when someone asks to be told when a nick comes "
+    "online or gets back, call it; never promise to tell them without it, "
+    "because you cannot otherwise notice anyone signing on."
+)
+
+
 # Appended to the chat framework ONLY when the make_meme tool is injected
 # (memeEnabled channels). The model's job here is transcription, not taste:
 # the user names the template and the captions, the tool resolves the name

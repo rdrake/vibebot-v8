@@ -52,9 +52,11 @@ from .prompts import (
     MEME_PICK_PROMPT,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
+    NOTIFY_GUIDANCE,
     PENDING_TASKS_GUIDANCE,
     PROMPTS,
     REACT_GUIDANCE,
+    REDACT_GUIDANCE,
 )
 from .tracing import TraceFilter, extract_server_headers, request_id
 from .typing_holds import TypingHolds
@@ -575,6 +577,11 @@ def _image_url_host(url: str) -> str:
 # the fabrication guard and both short-circuit the turn: the URL is the
 # deliverable, and a step_2 sentence about it is latency the user pays for.
 _IMAGE_MINTING_TOOLS = frozenset({"generate_image", "make_meme"})
+
+# Tools whose success IS the reply (an emoji on a message, a line taken
+# back): a step that called only these ends the turn with no text. See the
+# short-circuit in assistant_completion and _dispatch_assistant_reply.
+SILENT_TOOLS = frozenset({"react", "delete_last_reply"})
 
 # The planner's shape words → xAI ``aspect_ratio``. 2:3 / 3:2 rather than the
 # phone-shaped 9:16 / 16:9: a poster or a landscape, not a wallpaper.
@@ -6032,6 +6039,15 @@ Examples (echo → action_prompt: ""):
                 (t.get("function", t) or {}).get("name") == "react" for t in (extra_tools or [])
             ):
                 framework += "\n" + REACT_GUIDANCE
+            for tool_name, guidance in (
+                ("delete_last_reply", REDACT_GUIDANCE),
+                ("notify_when_online", NOTIFY_GUIDANCE),
+            ):
+                if any(
+                    (t.get("function", t) or {}).get("name") == tool_name
+                    for t in (extra_tools or [])
+                ):
+                    framework += "\n" + guidance
             # Pending-task operating rules ride only when the reminder/
             # scheduled-task tools are in the request (chat profile with
             # pendingTasksEnabled on for the channel — the plugin passes
@@ -6620,7 +6636,7 @@ Examples (echo → action_prompt: ""):
                 # the short-circuit below has to deliver this step's images and
                 # nothing else.
                 step_image_urls: list[str] = []
-                react_ok = False
+                silent_ok = False
                 # Recorded before dispatch, not after: a call that raises or
                 # errors still means the model reached for a tool, and only a
                 # turn that reached for none can be complaining about nothing.
@@ -6712,8 +6728,8 @@ Examples (echo → action_prompt: ""):
                         last_tool_message = str(parsed.get("message", "")).strip()
                         if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
-                        if tc.function.name == "react":
-                            react_ok = True
+                        if tc.function.name in SILENT_TOOLS:
+                            silent_ok = True
                         if tc.function.name == "generate_video":
                             video_tool_called = True
                         if tc.function.name in _IMAGE_MINTING_TOOLS:
@@ -6764,18 +6780,19 @@ Examples (echo → action_prompt: ""):
                         final_text_after_tools="",
                     )
 
-                # Short-circuit: a step that only reacted is done — the emoji
-                # is the reply. step_2 would narrate it ("Reacted with 👍")
+                # Short-circuit: a step that only called SILENT_TOOLS is done —
+                # the emoji (or the deleted line) is the reply. step_2 would narrate it ("Reacted with 👍")
                 # into the channel, the way gemini narrated a reminder ack.
                 # Any text the model wrote alongside the call is dropped for
-                # the same reason. When every react failed the turn continues
+                # the same reason. When every such call failed the turn continues
                 # so the model can answer in text.
-                if react_ok and all(tc.function.name == "react" for tc in message.tool_calls):
+                if silent_ok and all(tc.function.name in SILENT_TOOLS for tc in message.tool_calls):
                     total_prompt_tokens += executor.accumulated_prompt_tokens
                     total_completion_tokens += executor.accumulated_completion_tokens
                     total_cost += executor.accumulated_cost
                     self.log.info(
-                        "assistant_completion: short-circuit after react, skipping step_%i",
+                        "assistant_completion: short-circuit after %s, skipping step_%i",
+                        last_successful_tool,
                         _step + 2,
                     )
                     return AssistantResult(
@@ -6786,7 +6803,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
-                        last_successful_tool="react",
+                        last_successful_tool=last_successful_tool,
                         last_tool_message=last_tool_message,
                         final_text_after_tools="",
                         was_verse=was_verse,
