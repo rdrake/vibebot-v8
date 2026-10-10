@@ -325,7 +325,7 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeAllowMutating` | channel | `False` | Expose state-changing commands through the bridge |
 | `bridgeScheduledTaskLimit` | channel | `5` | Active scheduled LLM tasks per creator per channel. `0` disables scheduling |
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
-| `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST` / `NAMES`) to chat. `@channels` and `@names` work regardless |
+| `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHO`, topic, network info, CTCP) to chat. Its `history` kind also needs `privacyOptInOnly` off. `@channels` and `@names` work regardless |
 | `memeModel` | channel | `anthropic/claude-haiku-5-5` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. One JSON completion over the ~30 KB catalog per pick, about 8.5K prompt tokens, $0.01, 3 s. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
 | `memeEditModel` | global | `xai/grok-imagine-image` | Image-edit model for the picker's `draw` (and `make_meme`'s): the captioned meme goes to xAI's `/v1/images/edits` with the instruction. `xai/` only. About $0.02 per edit, refusals billed too |
 | `memeEnabled` | channel | `True` | `False` refuses `@meme` and hides the `make_meme` tool from chat |

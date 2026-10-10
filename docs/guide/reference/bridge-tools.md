@@ -153,13 +153,26 @@ bridge or no bridge. It exists because nothing stock answers the first
 two questions — Limnoria has no `LIST` command at all, and
 `Channel.nicks` only reads channels the bot has joined — and because a
 `whois` buried in the bridge's command table is one the model tends to
-skip; as a named kind on a three-way tool it gets picked.
+skip; as a named kind on its own tool it gets picked.
 
 | `kind` | What it sends | What comes back |
 |--------|---------------|-----------------|
 | `channels` | `LIST` | Up to 25 public channels sorted by user count, each with `name`, `users` and a cleaned `topic`, plus `total`. `target` filters by exact name or glob (`#linux*`). |
 | `names` | `NAMES <target>` | `count` and up to 100 nicks with their `@`/`+` prefixes, for any channel the server will show — joined or not. |
 | `whois` | `WHOIS <target> <target>` | `user`, `host`, `realname`, `server`, `channels` (with prefixes), `account`, `oper`, `away`, `idle_seconds`, `signon`. The doubled nick asks the user's own server, so idle time comes back. |
+| `whowas` | `WHOWAS <target> 3` | Up to 3 `entries` for a nick that has left, each with `user`, `host`, `realname`, and where the server says so `server`, `last_seen` and `away`. |
+| `who` | `WHO <target>` (WHOX) | `count` and up to 100 `members`, each with `away`, `oper`, `status` (`@`/`%`/`+`), `bot`, `account` (`null` when not logged in), `host` and `realname`. |
+| `topic` | `TOPIC <target>`, or `LIST` when the bot is not in the channel | `topic`, plus `set_by` and `set_at` for a joined channel. For a channel the bot is not in, the setter is unknown and only public channels answer. |
+| `network` | `LUSERS`, `VERSION`, `ADMIN` | `users` (user, oper and channel counts), `server` (software and server name) and `admin` (contact lines). |
+| `ctcp_version` / `ctcp_ping` | CTCP `VERSION` / `PING` to `<target>` | `client`, or `lag_ms`. Many clients ignore CTCP; then `reply` is `null` with a note. |
+| `history` | `CHATHISTORY LATEST <this channel> * <count>` | `lines` from the server's history, newest last, as `HH:MM <nick> text` in UTC. `count` is 1–100, default 50. Only the channel the request came from; refused in a PM. |
+
+`history` is the "what did I miss" kind. It ships ordinary channel
+chatter to the provider, so it obeys `privacyOptInOnly`. With that
+setting on (the default) the schema leaves out the kind, its `count`
+parameter and every mention of history, and the handler refuses a call
+that names it anyway without sending anything. It also needs the server to grant `draft/chathistory`, which
+the bot requests at connect.
 
 The server enforces its own visibility rules: a `+s` channel is absent
 from `LIST` and answers `NAMES` with nothing, exactly as it would for a
