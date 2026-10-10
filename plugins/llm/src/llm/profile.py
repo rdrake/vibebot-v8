@@ -91,7 +91,9 @@ PROFILES: dict[str, Profile] = {
         model_setting="assistantModel",
         prompt_id="chat",
         overlay_setting="assistantSystemPrompt",
-        max_output_tokens=2000,
+        # Haiku 5.5 thinks by default and thinking counts against this cap:
+        # at 2000 one chat turn spent it all thinking and returned no text.
+        max_output_tokens=4096,
         force_search_on_explicit=True,
     ),
     PROFILE_CODE: Profile(

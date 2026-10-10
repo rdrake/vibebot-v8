@@ -1180,14 +1180,28 @@ class TestSafeError:
         plugin, _irc, _msg = plugin_env
         target_irc = mocker.MagicMock()
         plugin._safe_error(target_irc, "bad things", prefixNick=True)
-        target_irc.error.assert_called_once_with("bad things", prefixNick=True, Raise=False)
+        target_irc.error.assert_called_once_with("bad things", prefixNick=True)
 
-    def test_safe_error_forwards_raise_false_by_default(self, plugin_env, mocker) -> None:
+    def test_safe_error_works_on_a_proxy_without_raise(self, plugin_env) -> None:
+        """Prod 2026-10-10: the addressed path's ReplyIrcProxy forwards kwargs
+        to _makeReply, which has no Raise — TypeError, and no reply at all."""
+        plugin, _irc, _msg = plugin_env
+        sent: list[str] = []
+
+        class NoRaiseProxy:
+            def error(self, s, prefixNick=False):  # noqa: N803
+                sent.append(s)
+
+        plugin._safe_error(NoRaiseProxy(), "empty")
+
+        assert sent == ["empty"]
+
+    def test_safe_error_forwards_raise_true(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env
         target_irc = mocker.MagicMock()
-        plugin._safe_error(target_irc, "msg")
+        plugin._safe_error(target_irc, "msg", Raise=True)
         _args, kwargs = target_irc.error.call_args
-        assert kwargs.get("Raise") is False
+        assert kwargs.get("Raise") is True
 
     def test_safe_error_returns_none(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env

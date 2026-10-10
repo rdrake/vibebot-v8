@@ -4898,8 +4898,13 @@ class LLM(callbacks.Plugin):
         if self._llm_executor.closing:
             self.log.debug("safe_error dropped (closing)")
             return
+        # Only NestedCommandsIrcProxy.error knows Raise; the ReplyIrcProxy an
+        # addressed (non-command) turn carries forwards every kwarg to
+        # _makeReply, which raises TypeError on it. Prod 2026-10-10: an empty
+        # Haiku reply crashed here and the user saw nothing at all.
+        extra = {"Raise": True} if Raise else {}
         with self._irc_send_lock:
-            irc.error(text, prefixNick=prefixNick, Raise=Raise)
+            irc.error(text, prefixNick=prefixNick, **extra)
 
     def _send_long_reply(
         self,

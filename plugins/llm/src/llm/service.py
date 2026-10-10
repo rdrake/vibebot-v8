@@ -6181,8 +6181,9 @@ Examples (echo → action_prompt: ""):
             # so the user gets a teaser+URL anyway. The cap was 600 originally
             # but truncated explicit story / essay requests in the URL itself —
             # bumped to 2000 (~1500 words, ~40s worst case) so long-form asks
-            # complete. code/draw stay unbounded (short summaries plus a URL by
-            # design); verse is now capped at 2000 too — see PROFILE_VERSE —
+            # complete, then to 4096 for chat because Haiku 5.5's thinking
+            # shares the cap. code/draw stay unbounded (short summaries plus a
+            # URL by design); verse is capped too — see PROFILE_VERSE —
             # because an unbounded non-reasoning generation collapses into
             # run-on gibberish in its tail.
             if profile.max_output_tokens is not None:
