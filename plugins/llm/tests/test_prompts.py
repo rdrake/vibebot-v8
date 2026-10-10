@@ -202,6 +202,17 @@ class TestIrcLookupGuidanceSplit:
         assert "conversation history" in g
 
 
+class TestReactGuidanceSplit:
+    """The react rule rides only when the react tool is injected."""
+
+    def test_chat_prompt_does_not_mention_react_tool(self):
+        assert "react adds" not in prompts.CHAT_SYSTEM_PROMPT
+        assert "react adds" in prompts.REACT_GUIDANCE
+
+    def test_guidance_forbids_reacting_instead_of_answering(self):
+        assert "Never react instead of answering" in prompts.REACT_GUIDANCE
+
+
 class TestPendingTasksGuidanceSplit:
     """Reminder/scheduling rules ride only with the pending-task tools."""
 

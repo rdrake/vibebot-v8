@@ -1498,6 +1498,35 @@ class TestMetaCompletion:
         assert IRC_LOOKUP_GUIDANCE in captured[0]
         assert IRC_LOOKUP_GUIDANCE not in captured[1]
 
+    def test_react_guidance_rides_only_with_the_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        from llm.prompts import REACT_GUIDANCE
+
+        captured: list = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
+            return make_completion_response("Done.")
+
+        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        react = {"type": "function", "function": {"name": "react", "parameters": {}}}
+        common = {
+            "prompt": "react to bob",
+            "nick": "testuser",
+            "channel": "#test",
+            "db": mocker.MagicMock(),
+            "context": mocker.MagicMock(),
+            "bot_nick": "VibeBot",
+        }
+
+        service.assistant_completion(**common, extra_tools=[react], extra_handlers={})
+        service.assistant_completion(**common)
+
+        assert REACT_GUIDANCE in captured[0]
+        assert REACT_GUIDANCE not in captured[1]
+
     def test_assistant_completion_excluding_pending_tools_drops_guidance(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
