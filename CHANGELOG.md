@@ -410,6 +410,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the empty-reply fix (`changelog`)
 - Regenerate for react persistence (`changelog`)
 - Regenerate for the react miss (`changelog`)
 - Regenerate for the react tool (`changelog`)
@@ -697,6 +698,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Irc_lookup gains whowas, who, topic, network, ctcp and history (`chat`)
 - React tool adds an emoji reaction to a message (`chat`)
 - @model says which model answered the channel's last reply (`chat`)
 - Today's date in search_web's description for Anthropic models (`llm`)
