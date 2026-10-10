@@ -173,8 +173,10 @@ IRC_LOOKUP_GUIDANCE = (
 REACT_GUIDANCE = (
     "- react adds an emoji reaction to a message and sends no text. Call it "
     "when someone asks you to react to a message or to someone, or when an "
-    "emoji alone is the fitting reply. Never react instead of answering a "
-    "question or doing what was asked."
+    "emoji alone is the fitting reply; never send a lone emoji as text. "
+    "When the request is a reply to a message, the reaction goes on that "
+    "message. Never react instead of answering a question or doing what "
+    "was asked."
 )
 
 

@@ -4861,8 +4861,9 @@ class LLM(callbacks.Plugin):
         """Build the per-request ``react`` tool schema + handler.
 
         Same shape as :meth:`_build_irc_lookup_tool`. With no ``nick`` the
-        reaction lands on the message that triggered this turn; with one, on
-        that nick's latest line in this channel (see _remember_last_msgid).
+        reaction lands on the message the request replied to (``+draft/reply``)
+        or, without one, on the request itself; with a nick, on that nick's
+        latest line in this channel (see _remember_last_msgid).
         Returns ``([schema], {"react": fn})``.
         """
         from .assistant import ToolResult
@@ -4873,8 +4874,9 @@ class LLM(callbacks.Plugin):
                 "name": "react",
                 "description": (
                     "Add an emoji reaction to a message in this channel. With no "
-                    "nick it reacts to the message you are answering; with a "
-                    "nick, to that person's most recent message here. A "
+                    "nick it reacts to the message the user replied to, or to "
+                    "their own message when it is not a reply; with a nick, to "
+                    "that person's most recent message here. A "
                     "successful reaction IS your whole reply: no text is sent "
                     "after it. Use one real emoji character, not a :name:."
                 ),
@@ -4886,7 +4888,7 @@ class LLM(callbacks.Plugin):
                             "type": "string",
                             "description": (
                                 "Whose latest message to react to. Omit for the "
-                                "message you are answering."
+                                "message the user replied to, or their own."
                             ),
                         },
                     },
@@ -4906,10 +4908,16 @@ class LLM(callbacks.Plugin):
             where = msg.args[0] if msg.args else ""
             in_channel = ircutils.isChannel(where)
             target = where if in_channel else msg.nick
-            trigger_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
-            if not nick or ircutils.strEqual(nick, msg.nick):
+            tags = getattr(msg, "server_tags", None) or {}
+            trigger_msgid = tags.get("msgid") or ""
+            reply_msgid = tags.get("+draft/reply") or ""
+            if not nick and reply_msgid:
+                # A client reply points at the message they mean.
+                target_label = f"the message {msg.nick} replied to"
+                msgid = reply_msgid
+            elif not nick or ircutils.strEqual(nick, msg.nick):
                 # The requester's latest line is the one being answered.
-                who = msg.nick
+                target_label = f"{msg.nick}'s message"
                 msgid = trigger_msgid
             else:
                 msgid = ""
@@ -4918,7 +4926,7 @@ class LLM(callbacks.Plugin):
                     with self._last_msgids_lock:
                         msgid = self._last_msgids.get(key, "")
                 if msgid:
-                    who = nick
+                    target_label = f"{nick}'s message"
                 elif trigger_msgid and self.llm_service.send_reaction(
                     irc, target, trigger_msgid, "❌"
                 ):
@@ -4950,7 +4958,7 @@ class LLM(callbacks.Plugin):
                 )
             return ToolResult(
                 content=json.dumps(
-                    {"status": "ok", "message": f"reacted {emoji} to {who}'s message"}
+                    {"status": "ok", "message": f"reacted {emoji} to {target_label}"}
                 )
             )
 
