@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- React on a reply targets the replied-to message (`chat`)
 - Irc_lookup schema omits every history mention when privacyOptInOnly (`chat`)
 - Empty-reply error reaches the user; chat cap 4096 (`chat`)
 - React remembers who spoke across restarts (`chat`)
@@ -411,6 +412,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for irc_lookup docs (`changelog`)
 - Regenerate for history schema (`changelog`)
 - Regenerate for privacyOptInOnly (`changelog`)
 - Regenerate for history gate (`changelog`)
@@ -1282,6 +1284,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Reverts
 
+- Drop low effort for Anthropic chat models (`chat`)
 - Drop dedicated framework, restore chat-prefix cache stability (`verse`)
 - Drop xai_conv_id diagnostic log
 - Restore chunks-based gate on pastebin trigger
