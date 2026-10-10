@@ -5275,36 +5275,3 @@ class TestOverlayReadsViaProfiles:
 
         assert "SENTINEL_SCHED_OVERLAY" in registry_calls
         assert "assistantSystemPrompt" not in registry_calls
-
-
-class TestChatEffort:
-    """Chat asks Anthropic models for low effort; nobody else gets the param."""
-
-    @pytest.mark.parametrize(
-        ("model", "expected"),
-        [
-            ("anthropic/claude-haiku-5-5", "low"),
-            ("xai/grok-4-1-fast-non-reasoning", None),
-        ],
-    )
-    def test_reasoning_effort_only_for_anthropic(
-        self, make_service, mocker: MockerFixture, model: str, expected: str | None
-    ) -> None:
-        service, _plugin = make_service(assistantModel=model)
-        completion = mocker.patch(
-            "llm.service.litellm.completion", return_value=make_completion_response("hi")
-        )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
-
-        service.assistant_completion(
-            prompt="hello",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-        )
-
-        kwargs = completion.call_args.kwargs
-        assert kwargs.get("reasoning_effort") == expected
-        assert kwargs["max_tokens"] == 4096

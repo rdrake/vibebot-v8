@@ -73,9 +73,6 @@ class Profile:
             ``None`` leaves the provider default in place.
         frequency_penalty: Frequency penalty for the LiteLLM completion.
             ``None`` leaves the provider default in place.
-        anthropic_effort: ``reasoning_effort`` sent when the model is an
-            ``anthropic/`` one (LiteLLM turns it into adaptive thinking plus
-            ``output_config.effort``). Other providers never see it.
     """
 
     id: str
@@ -86,7 +83,6 @@ class Profile:
     force_search_on_explicit: bool
     temperature: float | None = None
     frequency_penalty: float | None = None
-    anthropic_effort: str | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -99,9 +95,6 @@ PROFILES: dict[str, Profile] = {
         # at 2000 one chat turn spent it all thinking and returned no text.
         max_output_tokens=4096,
         force_search_on_explicit=True,
-        # Haiku 5.5 defaults to medium; a chat line rarely needs that much
-        # thinking, and the API's guidance for chat routes is low.
-        anthropic_effort="low",
     ),
     PROFILE_CODE: Profile(
         id=PROFILE_CODE,

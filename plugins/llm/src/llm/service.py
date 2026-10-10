@@ -6222,8 +6222,6 @@ Examples (echo → action_prompt: ""):
                 optional_kwargs.setdefault("frequency_penalty", profile.frequency_penalty)
             if profile.temperature is not None or profile.frequency_penalty is not None:
                 optional_kwargs.setdefault("drop_params", True)
-            if profile.anthropic_effort and model.lower().startswith("anthropic/"):
-                optional_kwargs.setdefault("reasoning_effort", profile.anthropic_effort)
 
             # Canonical, deduplicated, capped source list, plus the frozen
             # name -> source mapping. Read once: they gate both the tool
